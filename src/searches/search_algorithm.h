@@ -112,6 +112,7 @@ struct SearchRunControl {
     std::function<void(const SearchLiveUpdate &)>
             improvementTimelineSampled;
     std::function<void(std::uint32_t)> cudaBatchSizeChanged;
+    std::function<void()> cudaWinnerResolved;
     std::function<std::optional<std::vector<SandboxInputEvent>>()>
             promotedBaselineInputs;
     std::optional<std::uint64_t> iterationLimit;

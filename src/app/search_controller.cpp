@@ -700,9 +700,13 @@ void SearchController::setModifierPassSetting(int index,
 
 void SearchController::setEvaluationTargetSetting(const QString &key,
                                                   const QString &value) {
-    if (!configuration_.setEvaluationTargetSetting(key, value)) return;
-    if (configuration_.evaluationTargetId() ==
-        QString::fromLatin1(kVolumeEntryEvaluationId)) {
+    const bool isCuboid = configuration_.evaluationTargetId() ==
+            QString::fromLatin1(kVolumeEntryEvaluationId);
+    if (!configuration_.setEvaluationTargetSetting(
+                key, value, !isCuboid)) {
+        return;
+    }
+    if (isCuboid) {
         synchronizeCuboidSetting(key, value);
     } else if (configuration_.evaluationTargetId() ==
                QString::fromLatin1(kCustomVolumeEntryEvaluationId)) {
@@ -727,7 +731,7 @@ void SearchController::synchronizeSelectedCuboid() {
     for (const char *const key : keys) {
         const QString qKey = QString::fromLatin1(key);
         changed |= configuration_.setEvaluationTargetSetting(
-                qKey, target.value(qKey).toString());
+                qKey, target.value(qKey).toString(), false);
     }
     if (changed) {
         emit evaluationTargetSettingsChanged();

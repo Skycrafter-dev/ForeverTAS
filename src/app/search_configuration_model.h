@@ -42,7 +42,9 @@ public:
     bool setSearchAlgorithmId(const QString &value);
     bool setEvaluationTargetId(const QString &value);
     bool setSearchAlgorithmSetting(const QString &key, const QString &value);
-    bool setEvaluationTargetSetting(const QString &key, const QString &value);
+    bool setEvaluationTargetSetting(const QString &key,
+                                    const QString &value,
+                                    bool persist = true);
 
     bool addModifierPass(const QString &id);
     bool removeModifierPass(int index);

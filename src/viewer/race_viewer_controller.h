@@ -76,6 +76,7 @@ struct RaceViewerRun {
     QVector3D position{};
     QQuaternion rotation{};
     std::vector<RaceViewerSplit> checkpointSplits;
+    std::shared_ptr<ManualDriveRuntime> runtime;
 };
 
 struct RaceViewerMeshBuffers {
@@ -402,6 +403,10 @@ private:
             const QString &name,
             const std::vector<RaceViewerFrame> &frames);
     void scheduleInputPreviewRebuild();
+    void scheduleStoredRunRebuilds();
+    void startStoredRunRebuilds();
+    void cancelStoredRunRebuilds();
+    void waitForStoredRunWorker();
     void startInputPreviewBuild();
     void applyInputPreviewResult(
             std::uint64_t previewSerial,
@@ -420,7 +425,8 @@ private:
                    QString name,
                    std::vector<RaceViewerFrame> frames,
                    std::vector<SandboxInputEvent> inputs,
-                   bool select);
+                   bool select,
+                   std::shared_ptr<ManualDriveRuntime> runtime = nullptr);
     const RaceViewerRun *selectedRun() const noexcept;
     RaceViewerRun *selectedRun() noexcept;
     QQuick3DGeometry *ellipsoidFilledGeometryForRun(int runIndex);
@@ -537,10 +543,13 @@ private:
     std::shared_ptr<ManualDriveRuntime> inputPreviewRuntime_;
     QThread *workerThread_ = nullptr;
     QThread *inputPreviewThread_ = nullptr;
+    QThread *storedRunThread_ = nullptr;
     std::uint64_t loadSerial_ = 0u;
     std::uint64_t inputPreviewSerial_ = 0u;
+    std::uint64_t storedRunSerial_ = 0u;
     PhysicsBackend loadedBackend_ = PhysicsBackend::OptimizedCpu;
     bool inputPreviewBuildPending_ = false;
+    bool storedRunBuildPending_ = false;
 };
 
 }  // namespace forevertas::viewer

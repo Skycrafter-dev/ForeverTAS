@@ -1,7 +1,7 @@
 #ifndef FOREVERTAS_APP_CUBOID_TARGET_MODEL_H
 #define FOREVERTAS_APP_CUBOID_TARGET_MODEL_H
 
-#include <QObject>
+#include <QAbstractListModel>
 #include <QString>
 #include <QTimer>
 #include <QVariantList>
@@ -12,7 +12,7 @@
 
 namespace forevertas::app {
 
-class CuboidTargetModel final : public QObject {
+class CuboidTargetModel final : public QAbstractListModel {
     Q_OBJECT
 
     Q_PROPERTY(QVariantList targets READ targets NOTIFY targetsChanged)
@@ -26,6 +26,20 @@ class CuboidTargetModel final : public QObject {
                        selectedTargetChanged)
 
 public:
+    enum Role {
+        IdRole = Qt::UserRole + 1,
+        NameRole,
+        CenterRole,
+        SizeRole,
+        CenterXRole,
+        CenterYRole,
+        CenterZRole,
+        SizeXRole,
+        SizeYRole,
+        SizeZRole,
+        SelectedRole,
+    };
+
     explicit CuboidTargetModel(
             const QVariantMap &legacySettings = {},
             QObject *parent = nullptr);
@@ -37,6 +51,9 @@ public:
     bool editingEnabled() const;
     int selectedIndex() const;
     QVariantMap selectedTarget() const;
+    int rowCount(const QModelIndex &parent = QModelIndex()) const override;
+    QVariant data(const QModelIndex &index, int role) const override;
+    QHash<int, QByteArray> roleNames() const override;
 
     Q_INVOKABLE int addTarget(double centerX,
                               double centerY,

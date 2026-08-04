@@ -517,6 +517,41 @@ int main(int argc, char **argv) {
                                 viewer.previewInputScript().contains(
                                         QStringLiteral("press left")) &&
                                 FindActivityTick(viewer, 'l') >= 0;
+                        const QString snapshotScript = QStringLiteral(
+                                "0.00 press up\n"
+                                "1.00 press left\n"
+                                "1.20 rel left\n"
+                                "2.00 rel up");
+                        viewer.setPreviewInputScript(snapshotScript);
+                        const bool snapshotBaselineReady = WaitUntil([&]() {
+                            return FindActivityTick(viewer, 'l') >= 100 &&
+                                    FindActivityTick(viewer, 'r') < 0;
+                        });
+                        viewer.jumpToEnd();
+                        const QVector3D snapshotBaselinePosition =
+                                viewer.carPosition();
+                        viewer.setPreviewInputScript(QStringLiteral(
+                                "0.00 press up\n"
+                                "1.00 press right\n"
+                                "1.20 rel right\n"
+                                "2.00 rel up"));
+                        const bool snapshotEditReady = WaitUntil([&]() {
+                            return FindActivityTick(viewer, 'r') >= 100 &&
+                                    FindActivityTick(viewer, 'l') < 0;
+                        });
+                        viewer.setPreviewInputScript(snapshotScript);
+                        const bool snapshotRestoreReady = WaitUntil([&]() {
+                            return FindActivityTick(viewer, 'l') >= 100 &&
+                                    FindActivityTick(viewer, 'r') < 0;
+                        });
+                        viewer.jumpToEnd();
+                        const bool snapshotRoundTripExact =
+                                snapshotBaselineReady && snapshotEditReady &&
+                                snapshotRestoreReady &&
+                                (viewer.carPosition() -
+                                 snapshotBaselinePosition)
+                                                .lengthSquared() <
+                                        0.00000001f;
                         viewer.jumpToStart();
                         viewer.play();
                         viewer.setPreviewInputScript(
@@ -561,6 +596,7 @@ int main(int argc, char **argv) {
                                 previewToggleHidden &&
                                 valueEditApplied &&
                                 eventEditApplied &&
+                                snapshotRoundTripExact &&
                                 playbackContinuedAfterEdit &&
                                 invalidEditCleared &&
                                 finalPreviewReady &&
@@ -580,6 +616,8 @@ int main(int argc, char **argv) {
                                     << trajectoryGeometryValid
                                     << ", valueEdit=" << valueEditApplied
                                     << ", eventEdit=" << eventEditApplied
+                                    << ", snapshotRoundTrip="
+                                    << snapshotRoundTripExact
                                     << ", playbackEdit="
                                     << playbackContinuedAfterEdit
                                     << ", invalidClear="

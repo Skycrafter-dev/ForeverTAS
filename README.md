@@ -85,6 +85,11 @@ finishes the current
 iteration, restores the global best, then performs one fresh canonical
 simulation and records one viewer sample per physics tick. The completed Best
 run is added to the Race Viewer only after that Stop-triggered sampling pass.
+CUDA searches reconstruct changed winners and every viewer trajectory with the
+Reference backend; unchanged device incumbents do not trigger redundant CPU
+reconstruction. Viewable input-backed runs keep physics snapshots at one-second
+intervals, so edits and Simulation-horizon changes resume from the latest valid
+snapshot rather than replaying the whole run from zero.
 The optional Conditions script filters which simulated ticks are eligible for
 the selected evaluation target. Each non-empty line is an ANDed comparison;
 it supports the BfV2 car, previous-car, wheel, and search-state variables,

@@ -13,6 +13,7 @@ split_compile_jobs="${FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS:-4}"
 : "${CUDA_ARCHITECTURES:?CUDA_ARCHITECTURES is required}"
 : "${CUDA_ARCHITECTURE_KEY:?CUDA_ARCHITECTURE_KEY is required}"
 : "${FOREVERVALIDATOR_COMMIT:?FOREVERVALIDATOR_COMMIT is required}"
+: "${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT:?FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT is required}"
 : "${FOREVERTAS_VERSION:?FOREVERTAS_VERSION is required}"
 : "${FOREVERTAS_TOOLCHAIN_IMAGE:?FOREVERTAS_TOOLCHAIN_IMAGE is required}"
 
@@ -52,7 +53,7 @@ search_key="$({
         "architectures=${CUDA_ARCHITECTURES}" \
         "architecture_key=${CUDA_ARCHITECTURE_KEY}" \
         "split_compile_jobs=${split_compile_jobs}" \
-        "validator=${actual_validator_commit}"
+        "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}"
     nvcc --version
     c++ -dumpfullversion -dumpversion
 } | sha256sum | cut -d' ' -f1)"
@@ -71,9 +72,29 @@ verify_architectures() {
     grep -q "sm_120\.ptx" <<<"${output}"
 }
 
+verify_cache_integrity() {
+    local directory="$1"
+    local object="${directory}/cuda_search_executor.cu.o"
+    local metadata="${directory}/metadata.txt"
+    verify_architectures "${object}" || return 1
+    [[ -f "${metadata}" ]] || return 1
+    grep -Fxq 'cache_schema=cuda-search-object-v1' "${metadata}" || return 1
+    grep -Fxq "toolchain=${FOREVERTAS_TOOLCHAIN_IMAGE}" "${metadata}" || return 1
+    grep -Fxq "cuda=${CUDA_VERSION}" "${metadata}" || return 1
+    grep -Fxq "architectures=${CUDA_ARCHITECTURES}" "${metadata}" || return 1
+    grep -Fxq "split_compile_jobs=${split_compile_jobs}" "${metadata}" || return 1
+    grep -Fxq "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}" "${metadata}" || return 1
+    if [[ ! -f "${directory}/object.sha256" ]]; then
+        (cd "${directory}" &&
+         sha256sum cuda_search_executor.cu.o > object.sha256.tmp &&
+         mv object.sha256.tmp object.sha256)
+    fi
+    (cd "${directory}" && sha256sum --check --status object.sha256)
+}
+
 prebuilt_option="-DFOREVERVALIDATOR_CUDA_SEARCH_PREBUILT_OBJECT="
 cache_hit=false
-if verify_architectures "${cached_search_object}"; then
+if verify_cache_integrity "${search_cache_dir}"; then
     cache_hit=true
     prebuilt_option="-DFOREVERVALIDATOR_CUDA_SEARCH_PREBUILT_OBJECT=${cached_search_object}"
     echo "Reusing cached CUDA search object ${search_key}"
@@ -129,14 +150,16 @@ if [[ "${cache_hit}" == false ]]; then
         "cuda=${CUDA_VERSION}" \
         "architectures=${CUDA_ARCHITECTURES}" \
         "split_compile_jobs=${split_compile_jobs}" \
-        "validator=${actual_validator_commit}" \
+        "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}" \
         > "${temporary_cache_dir}/metadata.txt"
+    (cd "${temporary_cache_dir}" &&
+     sha256sum cuda_search_executor.cu.o > object.sha256)
     mv "${temporary_cache_dir}" "${search_cache_dir}"
     cached_search_object="${search_cache_dir}/cuda_search_executor.cu.o"
     echo "Cached CUDA search object ${search_key}"
 fi
 
-verify_architectures "${cached_search_object}"
+verify_cache_integrity "${search_cache_dir}"
 "${CUDA_PATH}/bin/cuobjdump" --list-elf "${cached_search_object}" \
     | tee "${build_dir}/cuda-elf-images.txt"
 "${CUDA_PATH}/bin/cuobjdump" --list-ptx "${cached_search_object}" \

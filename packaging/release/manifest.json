@@ -12,7 +12,7 @@
     },
     "forevervalidator": {
       "repository": "https://github.com/Skycrafter-dev/ForeverValidator.git",
-      "commit": "970645c5fb23b92d78069c3e2f381a3be8aa19f8",
+      "commit": "a370e6cd57e6681cda8ddc4f4ce3a9e0496e65d7",
       "version": "0.2.2",
       "tag": "v0.2.2"
     }
@@ -23,7 +23,12 @@
     "ptx_architecture": 120,
     "cmake_architectures": "50-real;52-real;61-real;70-real;75-real;86-real;89-real;120-real;120-virtual",
     "architecture_key": "sm50-sm52-sm61-sm70-sm75-sm86-sm89-sm120-ptx120",
-    "split_compile_jobs": 4
+    "split_compile_jobs": 4,
+    "search_object_source_commit": "970645c5fb23b92d78069c3e2f381a3be8aa19f8",
+    "search_object_output_neutral_paths": [
+      "include/forevervalidator/experimental/physics_sandbox.h",
+      "src/validation/api/validation_api.cpp"
+    ]
   },
   "toolchains": {
     "linux": {

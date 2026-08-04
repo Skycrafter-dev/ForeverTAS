@@ -216,8 +216,12 @@ std::vector<SearchTimelineFrame> SampleBestTimeline(
         const SearchRunControl *control) {
     ReportProgress(
             control, SearchProgressStage::FinalSamplingSetup, 0u, 0u);
+    SearchRequest samplingRequest = request;
+    if (samplingRequest.backend == PhysicsBackend::Cuda) {
+        samplingRequest.backend = PhysicsBackend::Reference;
+    }
     TimelineSamplingRuntime runtime =
-            CreateTimelineSamplingRuntime(request, replay, identity);
+            CreateTimelineSamplingRuntime(samplingRequest, replay, identity);
     return SampleTimeline(runtime, inputs, control, true);
 }
 
@@ -234,7 +238,7 @@ public:
           identity_(std::move(identity)),
           control_(control),
           callback_(std::move(callback)) {
-        request_.backend = PhysicsBackend::OptimizedCpu;
+        request_.backend = PhysicsBackend::Reference;
         samplingControl_.cancellationRequested = [this]() {
             return discardRequested_.load(std::memory_order_relaxed) ||
                     (control_ != nullptr &&
@@ -345,20 +349,20 @@ private:
     std::thread worker_;
 };
 
-class CudaWinnerCpuWorker final {
+class CudaWinnerReferenceWorker final {
 public:
-    CudaWinnerCpuWorker(
+    CudaWinnerReferenceWorker(
             SearchRequest request,
             forevervalidator::AssetBytes replay,
             forevervalidator::ReplayIdentity identity)
         : request_(std::move(request)),
           replay_(std::move(replay)),
           identity_(std::move(identity)) {
-        request_.backend = PhysicsBackend::OptimizedCpu;
+        request_.backend = PhysicsBackend::Reference;
         worker_ = std::thread([this]() { Run(); });
     }
 
-    ~CudaWinnerCpuWorker() {
+    ~CudaWinnerReferenceWorker() {
         {
             std::lock_guard<std::mutex> guard(mutex_);
             stopRequested_ = true;
@@ -382,7 +386,7 @@ public:
             std::lock_guard<std::mutex> guard(mutex_);
             if (stopRequested_ || pending_) {
                 throw std::runtime_error(
-                        "optimized CPU winner worker is unavailable");
+                        "reference winner worker is unavailable");
             }
             pending_.emplace(std::move(task));
         }
@@ -424,19 +428,19 @@ private:
                             "CUDA winner tick exceeds the Simulation horizon");
                 }
                 Require(runtime->sandbox.RestoreState(runtime->initialState),
-                        "restoring optimized CPU winner worker");
+                        "restoring reference winner worker");
                 Require(runtime->sandbox.ReplaceInputs(task->inputs),
-                        "replacing optimized CPU winner inputs");
+                        "replacing reference winner inputs");
                 forevervalidator::experimental::PhysicsSandboxStateView view =
                         task->tick == 0u
                         ? Require(runtime->sandbox.ReadState(),
-                                  "reading optimized CPU winner state")
+                                  "reading reference winner state")
                         : Require(runtime->sandbox.AdvanceTicks(task->tick),
-                                  "simulating optimized CPU winner");
+                                  "simulating reference winner");
                 forevervalidator::experimental::PhysicsSandboxState snapshot =
                         Require(
                                 runtime->sandbox.CaptureState(),
-                                "capturing optimized CPU winner state");
+                                "capturing reference winner state");
                 task->result.set_value({view, std::move(snapshot)});
             } catch (...) {
                 task->result.set_exception(std::current_exception());
@@ -544,9 +548,9 @@ SearchResult RunLoadedSearch(
     std::uint64_t sampledImprovementCount = 0u;
     bool sampledBaseline = false;
 #if FOREVERVALIDATOR_HAS_CUDA
-    std::unique_ptr<CudaWinnerCpuWorker> cudaWinnerWorker;
+    std::unique_ptr<CudaWinnerReferenceWorker> cudaWinnerWorker;
     if (request.backend == PhysicsBackend::Cuda) {
-        cudaWinnerWorker = std::make_unique<CudaWinnerCpuWorker>(
+        cudaWinnerWorker = std::make_unique<CudaWinnerReferenceWorker>(
                 request, replay, identity);
     }
 #endif
@@ -644,11 +648,15 @@ SearchResult RunLoadedSearch(
                     cudaEvaluator ? &*cudaEvaluator : nullptr,
 #if FOREVERVALIDATOR_HAS_CUDA
                     cudaWinnerWorker
-                            ? [worker = cudaWinnerWorker.get()](
+                            ? [worker = cudaWinnerWorker.get(), control](
                                       const std::vector<
                                               PhysicsSandboxInputEvent>
                                               &inputs,
                                       std::uint32_t tick) {
+                                  if (control != nullptr &&
+                                      control->cudaWinnerResolved) {
+                                      control->cudaWinnerResolved();
+                                  }
                                   return worker->Resolve(inputs, tick);
                               }
                             : std::function<SearchExecutionContext::

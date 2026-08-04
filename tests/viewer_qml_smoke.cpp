@@ -980,6 +980,9 @@ int main(int argc, char **argv) {
                     QObject *const cpuWorkerCountField =
                             root->findChild<QObject *>(QStringLiteral(
                                     "cpuWorkerCountField"));
+                    QObject *const simulationHorizonField =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "simulationHorizonField"));
                     auto *const randomizeSeedsOnStartCheckBox =
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(QStringLiteral(
@@ -2282,7 +2285,14 @@ int main(int argc, char **argv) {
                             randomizeSeedsOnStartCheckBox != nullptr &&
                             randomizeSeedsOnStartCheckBox
                                     ->property("checked")
-                                    .toBool();
+                                    .toBool() &&
+                            simulationHorizonField != nullptr &&
+                            simulationHorizonField
+                                            ->property("dragStep")
+                                            .toDouble() == 1000.0 &&
+                            !simulationHorizonField
+                                     ->property("liveScrub")
+                                     .toBool();
                     if (backendSelectorValid) {
                         controller.setSimulationBackendId(
                                 QStringLiteral("optimized-cpu"));
@@ -3829,6 +3839,9 @@ int main(int argc, char **argv) {
                             root->findChildren<QObject *>(
                                         QStringLiteral("cuboidTargetModel"))
                                     .size();
+                    const QList<QObject *> initialCuboidModelObjects =
+                            root->findChildren<QObject *>(
+                                    QStringLiteral("cuboidTargetModel"));
                     const double initialCuboidSize =
                             controller.cuboidTargets()
                                     ->selectedTarget()
@@ -3884,6 +3897,16 @@ int main(int argc, char **argv) {
                             removeCuboidButton->property("enabled").toBool();
                     controller.focusSelectedCuboid();
                     QCoreApplication::processEvents();
+                    QElapsedTimer cuboidStressTimer;
+                    cuboidStressTimer.start();
+                    for (int edit = 0; edit < 1000; ++edit) {
+                        controller.cuboidTargets()->resizeSelected(
+                                QStringLiteral("x"), 0.001);
+                    }
+                    QCoreApplication::processEvents();
+                    const QList<QObject *> cuboidModelsAfterStress =
+                            root->findChildren<QObject *>(
+                                    QStringLiteral("cuboidTargetModel"));
                     cuboidEditorValid &=
                             viewport != nullptr &&
                             viewport->property("cuboidFocused").toBool() &&
@@ -3915,6 +3938,9 @@ int main(int argc, char **argv) {
                                             .value(QStringLiteral("sizeX"))
                                             .toDouble() >
                                     initialCuboidSize &&
+                            cuboidStressTimer.elapsed() < 250 &&
+                            cuboidModelsAfterStress ==
+                                    initialCuboidModelObjects &&
                             controller.evaluationTargetSettings()
                                             .value(QStringLiteral("sizeX"))
                                             .toDouble() >
@@ -5227,6 +5253,42 @@ int main(int argc, char **argv) {
                                         root->findChildren<QObject *>(
                                                 QStringLiteral(
                                                         "runCarWireModel"));
+                                const QString originalSelectedRun =
+                                        viewer.selectedRunId();
+                                const qint64 originalRunTime = viewer.timeMs();
+                                const QVariantList stressRunOptions =
+                                        viewer.runOptions();
+                                for (int cycle = 0;
+                                     cycle < 200 &&
+                                     stressRunOptions.size() > 1;
+                                     ++cycle) {
+                                    viewer.setSelectedRunId(
+                                            stressRunOptions[
+                                                    cycle %
+                                                    stressRunOptions.size()]
+                                                    .toMap()
+                                                    .value(QStringLiteral("id"))
+                                                    .toString());
+                                    viewer.setCurrentTick(
+                                            cycle % std::max<qint64>(
+                                                    1, viewer.tickCount()));
+                                }
+                                viewer.setSelectedRunId(originalSelectedRun);
+                                viewer.setTimeMs(originalRunTime);
+                                QCoreApplication::processEvents();
+                                const bool carDelegatesStable =
+                                        carRoots ==
+                                                root->findChildren<QObject *>(
+                                                        QStringLiteral(
+                                                                "runCarRoot")) &&
+                                        carFilledModels ==
+                                                root->findChildren<QObject *>(
+                                                        QStringLiteral(
+                                                                "runCarFilledModel")) &&
+                                        carWireModels ==
+                                                root->findChildren<QObject *>(
+                                                        QStringLiteral(
+                                                                "runCarWireModel"));
                                 QObject *const selectedCarRoot =
                                         root->findChild<QObject *>(
                                                 QStringLiteral(
@@ -7004,6 +7066,39 @@ int main(int argc, char **argv) {
                                                                 "freeMoveLeft")
                                                         .toBool() &&
                                                 !viewer.manualLeft();
+                                        const QVector3D arrowStartPosition =
+                                                currentViewport
+                                                        ->property(
+                                                                "freeCameraPosition")
+                                                        .value<QVector3D>();
+                                        const double arrowMovementStart =
+                                                currentViewport
+                                                        ->property(
+                                                                "freeMoveStartedAt")
+                                                        .toDouble();
+                                        QVariant arrowMovementStepped;
+                                        const bool arrowMovedSideways =
+                                                arrowPressed &&
+                                                arrowMovementStart > 0.0 &&
+                                                QMetaObject::invokeMethod(
+                                                        currentViewport,
+                                                        "stepFreeCameraMovement",
+                                                        Q_RETURN_ARG(
+                                                                QVariant,
+                                                                arrowMovementStepped),
+                                                        Q_ARG(
+                                                                QVariant,
+                                                                QVariant(
+                                                                        arrowMovementStart +
+                                                                        1000.0))) &&
+                                                arrowMovementStepped.toBool() &&
+                                                (currentViewport
+                                                                 ->property(
+                                                                         "freeCameraPosition")
+                                                                 .value<QVector3D>() -
+                                                 arrowStartPosition)
+                                                                .lengthSquared() >
+                                                        0.000001f;
                                         const bool arrowReleased =
                                                 sendCameraKeyPhase(
                                                         QEvent::KeyRelease,
@@ -7019,7 +7114,9 @@ int main(int argc, char **argv) {
                                                 forwardPressed &&
                                                 movementAdvanced &&
                                                 forwardReleased &&
-                                                arrowPressed && arrowReleased;
+                                                arrowPressed &&
+                                                arrowMovedSideways &&
+                                                arrowReleased;
                                         viewer.setCameraPreset(1);
                                         QMetaObject::invokeMethod(
                                                 currentViewport,
@@ -7101,6 +7198,7 @@ int main(int argc, char **argv) {
                                 completed = true;
                                 exitCode =
                                         geometryAttached && rootsVisible &&
+                                                        carDelegatesStable &&
                                                         initialModelState &&
                                                         bestSelectedInitially &&
                                                         onlyBestSelected &&

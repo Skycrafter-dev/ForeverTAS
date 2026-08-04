@@ -49,7 +49,7 @@ QString Number(double value) {
 
 CuboidTargetModel::CuboidTargetModel(const QVariantMap &legacySettings,
                                      QObject *parent)
-    : QObject(parent) {
+    : QAbstractListModel(parent) {
     persistenceTimer_.setSingleShot(true);
     persistenceTimer_.setInterval(150);
     connect(&persistenceTimer_, &QTimer::timeout,
@@ -74,6 +74,45 @@ QVariantList CuboidTargetModel::targets() const {
 
 int CuboidTargetModel::count() const {
     return static_cast<int>(targets_.size());
+}
+
+int CuboidTargetModel::rowCount(const QModelIndex &parent) const {
+    return parent.isValid() ? 0 : count();
+}
+
+QVariant CuboidTargetModel::data(const QModelIndex &index, int role) const {
+    if (!index.isValid() || index.row() < 0 || index.row() >= count()) {
+        return {};
+    }
+    const Target &target = targets_[static_cast<std::size_t>(index.row())];
+    switch (role) {
+    case IdRole: return target.id;
+    case NameRole: return target.name;
+    case CenterRole: return target.center;
+    case SizeRole: return target.size;
+    case CenterXRole: return Number(target.center.x());
+    case CenterYRole: return Number(target.center.y());
+    case CenterZRole: return Number(target.center.z());
+    case SizeXRole: return Number(target.size.x());
+    case SizeYRole: return Number(target.size.y());
+    case SizeZRole: return Number(target.size.z());
+    case SelectedRole: return index.row() == selectedIndex_;
+    default: return {};
+    }
+}
+
+QHash<int, QByteArray> CuboidTargetModel::roleNames() const {
+    return {{IdRole, "targetId"},
+            {NameRole, "targetName"},
+            {CenterRole, "targetCenter"},
+            {SizeRole, "targetSize"},
+            {CenterXRole, "targetCenterX"},
+            {CenterYRole, "targetCenterY"},
+            {CenterZRole, "targetCenterZ"},
+            {SizeXRole, "targetSizeX"},
+            {SizeYRole, "targetSizeY"},
+            {SizeZRole, "targetSizeZ"},
+            {SelectedRole, "targetSelected"}};
 }
 
 int CuboidTargetModel::maximumCount() const {
@@ -105,12 +144,22 @@ int CuboidTargetModel::addTarget(double centerX,
         count() >= maximumCount()) {
         return -1;
     }
+    const int insertionIndex = count();
+    beginInsertRows({}, insertionIndex, insertionIndex);
     targets_.push_back(Target{
             QUuid::createUuid().toString(QUuid::WithoutBraces),
             nextDefaultName(),
             center,
             QVector3D(10.0F, 10.0F, 10.0F)});
+    endInsertRows();
+    const int previousSelection = selectedIndex_;
     selectedIndex_ = count() - 1;
+    if (previousSelection >= 0 && previousSelection < count()) {
+        emit dataChanged(index(previousSelection), index(previousSelection),
+                         {SelectedRole});
+    }
+    emit dataChanged(index(selectedIndex_), index(selectedIndex_),
+                     {SelectedRole});
     persist();
     emit targetsChanged();
     emit selectedTargetChanged();
@@ -129,8 +178,16 @@ int CuboidTargetModel::duplicateSelected() {
     duplicate.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     duplicate.name = nextDefaultName();
     duplicate.center += QVector3D(1.0F, 0.0F, 1.0F);
+    const int insertionIndex = count();
+    beginInsertRows({}, insertionIndex, insertionIndex);
     targets_.push_back(std::move(duplicate));
+    endInsertRows();
+    const int previousSelection = selectedIndex_;
     selectedIndex_ = count() - 1;
+    emit dataChanged(index(previousSelection), index(previousSelection),
+                     {SelectedRole});
+    emit dataChanged(index(selectedIndex_), index(selectedIndex_),
+                     {SelectedRole});
     persist();
     emit targetsChanged();
     emit selectedTargetChanged();
@@ -143,11 +200,17 @@ bool CuboidTargetModel::removeTarget(int index) {
         return false;
     }
     const int previousSelection = selectedIndex_;
+    beginRemoveRows({}, index, index);
     targets_.erase(targets_.begin() + index);
     if (selectedIndex_ > index) {
         --selectedIndex_;
     } else if (selectedIndex_ == index) {
         selectedIndex_ = std::min(index, count() - 1);
+    }
+    endRemoveRows();
+    if (selectedIndex_ >= 0) {
+        emit dataChanged(this->index(selectedIndex_),
+                         this->index(selectedIndex_), {SelectedRole});
     }
     persist();
     emit targetsChanged();
@@ -162,7 +225,12 @@ bool CuboidTargetModel::selectTarget(int index) {
         selectedIndex_ == index) {
         return false;
     }
+    const int previousSelection = selectedIndex_;
     selectedIndex_ = index;
+    emit dataChanged(this->index(previousSelection),
+                     this->index(previousSelection), {SelectedRole});
+    emit dataChanged(this->index(selectedIndex_), this->index(selectedIndex_),
+                     {SelectedRole});
     persist();
     emit targetsChanged();
     emit selectedTargetChanged();
@@ -177,6 +245,7 @@ bool CuboidTargetModel::setName(int index, const QString &name) {
     target.name = normalized;
     persist();
     notifyTargetChanged(index);
+    emit targetsChanged();
     return true;
 }
 
@@ -477,7 +546,7 @@ void CuboidTargetModel::schedulePersist() {
 }
 
 void CuboidTargetModel::notifyTargetChanged(int index) {
-    emit targetsChanged();
+    emit dataChanged(this->index(index), this->index(index));
     if (index == selectedIndex_) emit selectedTargetChanged();
 }
 

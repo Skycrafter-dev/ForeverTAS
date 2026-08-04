@@ -29,6 +29,7 @@ values = {
     "CUDA_ARCHITECTURE_KEY": m["cuda"]["architecture_key"],
     "FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS": str(m["cuda"]["split_compile_jobs"]),
     "FOREVERVALIDATOR_COMMIT": m["sources"]["forevervalidator"]["commit"],
+    "FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT": m["cuda"]["search_object_source_commit"],
 }
 for key, value in values.items():
     print(f"export {key}={shlex.quote(value)}")
@@ -50,6 +51,7 @@ docker run --rm --init \
     --env CUDA_ARCHITECTURES \
     --env CUDA_ARCHITECTURE_KEY \
     --env FOREVERVALIDATOR_COMMIT \
+    --env FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT \
     --env FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS \
     --env FOREVERTAS_VERSION \
     --env LINUXDEPLOY_VERSION \

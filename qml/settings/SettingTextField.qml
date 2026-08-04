@@ -10,6 +10,7 @@ RowLayout {
     property bool running: false
     property string fieldObjectName: ""
     property real dragStep: 1
+    property bool liveScrub: true
     property int decimals: 0
     property bool integer: true
     property real minimum: -Number.MAX_VALUE
@@ -32,6 +33,7 @@ RowLayout {
         value: root.value
         enabled: !root.running
         dragStep: root.dragStep
+        liveScrub: root.liveScrub
         decimals: root.decimals
         integer: root.integer
         minimum: root.minimum

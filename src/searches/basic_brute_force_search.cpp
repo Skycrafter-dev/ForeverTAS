@@ -557,7 +557,8 @@ SearchResult RunCudaBasicBruteForce(
     };
     const auto adoptBest =
             [&](PhysicsSandboxCudaSearchBatch &batch) {
-                if (!batch.bestValid) {
+                if (!batch.bestValid ||
+                    (!batch.bestChanged && best.evaluation.has_value())) {
                     return;
                 }
                 best.source = batch.bestIsMutation
@@ -601,8 +602,8 @@ SearchResult RunCudaBasicBruteForce(
                                     best.view.finishTime->estimatedNs) !=
                                     batch.bestScore) {
                             throw std::runtime_error(
-                                    "optimized CPU winner finish time does not "
-                                    "match CUDA");
+                                "reference winner finish time does not match "
+                                "CUDA");
                         }
                     }
                 } else {

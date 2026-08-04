@@ -304,7 +304,7 @@ void SearchWorker::run() {
                     publishImprovement(
                             live,
                             PhysicsBackendId(
-                                    PhysicsBackend::OptimizedCpu));
+                                    PhysicsBackend::Reference));
                 };
     }
 #endif
@@ -318,7 +318,11 @@ void SearchWorker::run() {
         completion->packsDirectory =
                 FilePathFromUtf8(request_.packDirectory);
         completion->replayPath = FilePathFromUtf8(request_.replayPath);
-        const std::string_view backendId = PhysicsBackendId(request_.backend);
+        const PhysicsBackend resultBackend =
+                request_.backend == PhysicsBackend::Cuda
+                ? PhysicsBackend::Reference
+                : request_.backend;
+        const std::string_view backendId = PhysicsBackendId(resultBackend);
         completion->simulationBackendId = QString::fromLatin1(
                 backendId.data(), static_cast<qsizetype>(backendId.size()));
         completion->bestInputs = std::move(result.bestInputs);

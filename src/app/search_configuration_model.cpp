@@ -265,7 +265,8 @@ bool SearchConfigurationModel::setSearchAlgorithmSetting(
 
 bool SearchConfigurationModel::setEvaluationTargetSetting(
         const QString &key,
-        const QString &value) {
+        const QString &value,
+        bool persist) {
     const EvaluationTargetRegistration *const registration =
             FindEvaluationTarget(evaluationTargetId_.toStdString());
     if (registration == nullptr ||
@@ -275,8 +276,10 @@ bool SearchConfigurationModel::setEvaluationTargetSetting(
         return false;
     }
     evaluationTargetSettings_.insert(key, value);
-    persistOptionSetting(
-            QStringLiteral("evaluation"), evaluationTargetId_, key, value);
+    if (persist) {
+        persistOptionSetting(
+                QStringLiteral("evaluation"), evaluationTargetId_, key, value);
+    }
     return true;
 }
 

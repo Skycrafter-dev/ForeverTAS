@@ -24,6 +24,7 @@ $env:FOREVERTAS_VERSION = $Release.release.version
 $env:CUDA_ARCHITECTURES = $Release.cuda.cmake_architectures
 $env:CUDA_ARCHITECTURE_KEY = $Release.cuda.architecture_key
 $env:FOREVERVALIDATOR_COMMIT = $Release.sources.forevervalidator.commit
+$env:FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT = $Release.cuda.search_object_source_commit
 $env:VCPKG_COMMIT = $Release.toolchains.windows.vcpkg_commit
 $env:FOREVERTAS_CACHE_ROOT = $Release.cache.windows
 $env:FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS = [string]$Release.cuda.split_compile_jobs

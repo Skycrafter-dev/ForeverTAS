@@ -56,6 +56,8 @@ def load_manifest(path: Path) -> dict:
         raise SystemExit("manifest changed the pinned CUDA release or architecture floor")
     if cuda["split_compile_jobs"] != 4:
         raise SystemExit("manifest changed the validated CUDA split-compile value")
+    if not cuda.get("search_object_source_commit"):
+        raise SystemExit("manifest has no CUDA search-object source identity")
     if manifest["release"]["tag"] != f"v{manifest['release']['version']}":
         raise SystemExit("release tag and version do not match")
     return manifest
@@ -70,9 +72,10 @@ def sha256(path: Path) -> str:
 
 
 def source_state(manifest: dict, validator_root: Path) -> dict:
+    tas_cmake = (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8")
     tas_version = next(
         line.split("VERSION", 1)[1].split()[0]
-        for line in (REPO_ROOT / "CMakeLists.txt").read_text(encoding="utf-8").splitlines()
+        for line in tas_cmake.splitlines()
         if line.strip().startswith("VERSION")
     )
     validator_cmake = (validator_root / "CMakeLists.txt").read_text(encoding="utf-8")
@@ -89,8 +92,30 @@ def source_state(manifest: dict, validator_root: Path) -> dict:
     }
     if state["version"] != manifest["release"]["version"]:
         raise SystemExit("ForeverTAS CMake version does not match the manifest")
-    if state["forevervalidator"] != manifest["sources"]["forevervalidator"]["commit"]:
+    validator_commit = manifest["sources"]["forevervalidator"]["commit"]
+    if f"GIT_TAG {validator_commit}" not in tas_cmake:
+        raise SystemExit(
+            "ForeverTAS CMake ForeverValidator pin does not match the manifest")
+    if state["forevervalidator"] != validator_commit:
         raise SystemExit("ForeverValidator checkout does not match the manifest commit")
+    search_source = manifest["cuda"]["search_object_source_commit"]
+    git("cat-file", "-e", f"{search_source}^{{commit}}", cwd=validator_root)
+    changed_since_search_source = set(filter(None, git(
+        "diff", "--name-only", search_source, state["forevervalidator"],
+        cwd=validator_root,
+    ).splitlines()))
+    output_neutral_paths = set(
+        manifest["cuda"].get("search_object_output_neutral_paths", []))
+    unexpected_paths = changed_since_search_source - output_neutral_paths
+    if unexpected_paths:
+        raise SystemExit(
+            "CUDA search-object source identity is stale; changed paths are not "
+            "declared output-neutral: " + ", ".join(sorted(unexpected_paths)))
+    stale_paths = output_neutral_paths - changed_since_search_source
+    if stale_paths:
+        raise SystemExit(
+            "CUDA search-object output-neutral declarations are stale: " +
+            ", ".join(sorted(stale_paths)))
     validator_tag = manifest["sources"]["forevervalidator"]["tag"]
     validator_tag_target = git("rev-parse", f"{validator_tag}^{{}}", cwd=validator_root)
     if validator_tag_target != state["forevervalidator"]:
@@ -156,13 +181,15 @@ def release_notes(manifest: dict) -> str:
 ### Highlights
 
 - Standalone `Challenge.Gbx` maps now load directly, while replays remain map and scenario sources rather than control or duration authorities.
-- Race camera initialization respects rotated spawns. The viewer now has editable scripted telemetry with a downward-opening, window-bounded, scrollable field picker, target placement from the current camera or car, and an optional draw-through-blocks target mode.
-- Giving up a manual takeover restarts the selected Inputs or Best run from its beginning. Copied takeover inputs reproduce the driven race at the tick boundary, and a dedicated selected-car render path remains attached while runs and render modes change.
-- Continuous cuboid moves and resizes coalesce persistence instead of rewriting the complete settings file for every pointer event.
+- Race camera initialization respects rotated spawns. Free-camera arrow keys strafe rather than scrub the timeline. Scripted telemetry has a downward-opening, window-bounded, scrollable field picker, target placement from the current camera or car, and an optional draw-through-blocks target mode.
+- Giving up a manual takeover restarts the selected Inputs or Best run from its beginning. Copied takeover inputs reproduce the driven race at the tick boundary, and cars use stable render nodes that remain attached while runs, modes, and ticks change.
+- Continuous cuboid moves and resizes update granular model roles and coalesce persistence instead of rebuilding 3D delegates or rewriting the complete settings file for every pointer event.
+- Simulation-horizon scrubbing moves in one-second steps and resimulates only when editing ends. Inputs, Best, and Manual trajectories retain one-second physics snapshots so later input edits and horizon changes resume from the latest valid state.
 - Browse actions use the Linux and Windows system file pickers, unsuffixed integer counters omit decimal zeroes while compact-unit values retain two digits, and packaged transport controls retain their intended silhouettes.
 - Modifier seeds randomize automatically on each search start by default. Modifier windows that extend beyond the Simulation horizon are silently limited at execution time while the saved user configuration remains unchanged.
 - Persisted BfV2-compatible condition scripts select eligible evaluation ticks on both CPU and CUDA. A satisfying mutation always outranks a baseline with no eligible tick; the chosen target remains the sole score comparator once conditions pass.
 - Disjoint cuboid sweeps are rejected before exact slab math on CPU and CUDA, restoring volume-entry throughput to point-target parity on the validated RTX 5060.
+- CUDA incumbents are reconstructed only when the device reports an actual best change. Every CUDA winner and improvement shown in the viewer is reconstructed by the Reference backend, which remains the authority for user-visible results.
 
 ### Input timelines
 

@@ -44,74 +44,6 @@ ApplicationWindow {
         }
     }
 
-    ListModel {
-        id: runPoseModel
-        dynamicRoles: true
-    }
-
-    ListModel {
-        id: carEllipsoidModel
-        dynamicRoles: true
-    }
-
-    function synchronizeRunPoses() {
-        const poses = window.viewer.runPoses
-        while (runPoseModel.count < poses.length) {
-            runPoseModel.append({
-                                    "runId": "",
-                                    "runName": "",
-                                    "runIndex": 0,
-                                    "runPosition": Qt.vector3d(0, 0, 0),
-                                    "runRotation": Qt.quaternion(1, 0, 0, 0),
-                                    "runSelected": false
-                                })
-        }
-        while (runPoseModel.count > poses.length)
-            runPoseModel.remove(runPoseModel.count - 1)
-        for (let index = 0; index < poses.length; ++index) {
-            const pose = poses[index]
-            runPoseModel.setProperty(index, "runId", pose.id)
-            runPoseModel.setProperty(index, "runName", pose.name)
-            runPoseModel.setProperty(index, "runIndex", pose.index)
-            runPoseModel.setProperty(index, "runPosition", pose.position)
-            runPoseModel.setProperty(index, "runRotation", pose.rotation)
-            runPoseModel.setProperty(index, "runSelected", pose.selected)
-        }
-    }
-
-    function synchronizeCarEllipsoids() {
-        const ellipsoids = window.viewer.carEllipsoids
-        while (carEllipsoidModel.count < ellipsoids.length) {
-            carEllipsoidModel.append({
-                                         "ellipsoidIndex":
-                                             carEllipsoidModel.count,
-                                         "ellipsoidActive": false,
-                                         "ellipsoidPosition":
-                                             Qt.vector3d(0, 0, 0),
-                                         "ellipsoidRotation":
-                                             Qt.quaternion(1, 0, 0, 0),
-                                         "ellipsoidRadii":
-                                             Qt.vector3d(1, 1, 1)
-                                     })
-        }
-        for (let index = 0; index < carEllipsoidModel.count; ++index) {
-            const active = index < ellipsoids.length
-            carEllipsoidModel.setProperty(index, "ellipsoidActive", active)
-            if (!active)
-                continue
-            const ellipsoid = ellipsoids[index]
-            carEllipsoidModel.setProperty(index,
-                                          "ellipsoidPosition",
-                                          ellipsoid.position)
-            carEllipsoidModel.setProperty(index,
-                                          "ellipsoidRotation",
-                                          ellipsoid.rotation)
-            carEllipsoidModel.setProperty(index,
-                                          "ellipsoidRadii",
-                                          ellipsoid.radii)
-        }
-    }
-
     function runColor(index) {
         const colors = ["#ff8a3d", "#3d8dff", "#63c77b", "#c57aeb",
                         "#e7c24f", "#54c7c1"]
@@ -194,8 +126,6 @@ ApplicationWindow {
     }
 
     Component.onCompleted: Qt.callLater(function() {
-        synchronizeRunPoses()
-        synchronizeCarEllipsoids()
         if (window.viewer.loaded)
             viewport.resetCameraFocus()
     })
@@ -203,18 +133,8 @@ ApplicationWindow {
     Connections {
         target: window.viewer
 
-        function onRunsChanged() {
-            window.synchronizeRunPoses()
-        }
         function onSceneChanged() {
-            window.synchronizeCarEllipsoids()
             viewport.resetCameraFocus()
-        }
-        function onPoseChanged() {
-            window.synchronizeRunPoses()
-        }
-        function onSelectedRunChanged() {
-            window.synchronizeRunPoses()
         }
     }
 
@@ -454,6 +374,7 @@ ApplicationWindow {
         autoRepeat: true
         enabled: window.viewer.runCount > 0
                  && !window.viewer.manualDriving
+                 && !viewport.freeCamera
                  && !(window.viewer.takeOverOnInput
                       && window.viewer.playing)
         onActivated: window.stepViewerTick(-1)
@@ -466,6 +387,7 @@ ApplicationWindow {
         autoRepeat: true
         enabled: window.viewer.runCount > 0
                  && !window.viewer.manualDriving
+                 && !viewport.freeCamera
                  && !(window.viewer.takeOverOnInput
                       && window.viewer.playing)
         onActivated: window.stepViewerTick(1)
@@ -1538,23 +1460,21 @@ ApplicationWindow {
                         property bool interactive: false
 
                         Repeater3D {
-                            model: window.controller.cuboidTargets.targets
+                            model: window.controller.cuboidTargets
 
                             delegate: Node {
                                 id: cuboidRoot
 
                                 required property int index
-                                required property var modelData
+                                required property vector3d targetCenter
+                                required property vector3d targetSize
+                                required property bool targetSelected
                                 readonly property int targetIndex: index
-                                readonly property vector3d targetSize:
-                                    modelData.size
-                                readonly property bool targetSelected:
-                                    modelData.selected
                                 readonly property bool targetActive:
                                     targetSelected
                                     && window.controller.evaluationTargetId
                                        === "volume-entry-time"
-                                position: modelData.center
+                                position: targetCenter
 
                                 Model {
                                     objectName: "cuboidTargetModel"
@@ -1969,22 +1889,16 @@ ApplicationWindow {
                                     rotation: poseRoot.modelData.rotation
 
                                     Repeater3D {
-                                        model: carEllipsoidModel
+                                        model: window.viewer.carEllipsoids.length
 
                                         delegate: Node {
-                                            required property bool
-                                                ellipsoidActive
-                                            required property var
-                                                ellipsoidPosition
-                                            required property var
-                                                ellipsoidRotation
-                                            required property var
-                                                ellipsoidRadii
+                                            required property int index
+                                            readonly property var ellipsoid:
+                                                window.viewer.carEllipsoids[index]
 
-                                            visible: ellipsoidActive
-                                            position: ellipsoidPosition
-                                            rotation: ellipsoidRotation
-                                            scale: ellipsoidRadii
+                                            position: ellipsoid.position
+                                            rotation: ellipsoid.rotation
+                                            scale: ellipsoid.radii
 
                                             Model {
                                                 objectName:
@@ -2427,38 +2341,34 @@ ApplicationWindow {
                         }
 
                         Repeater3D {
-                            model: runPoseModel
+                            model: window.viewer.runCount
 
                             delegate: Node {
                                 id: runCarRoot
 
-                                required property string runId
-                                required property string runName
-                                required property int runIndex
-                                required property var runPosition
-                                required property var runRotation
-                                required property bool runSelected
+                                required property int index
+                                readonly property var runPose:
+                                    window.viewer.runPoses[index]
+                                readonly property int runIndex: index
 
                                 objectName: "runCarRoot"
-                                visible: !runSelected
-                                position: runPosition
-                                rotation: runRotation
+                                visible: !runPose.selected
+                                position: runPose.position
+                                rotation: runPose.rotation
 
                                 Repeater3D {
-                                    model: carEllipsoidModel
+                                    model: window.viewer.carEllipsoids.length
 
                                     delegate: Node {
-                                        required property int ellipsoidIndex
-                                        required property bool ellipsoidActive
-                                        required property var ellipsoidPosition
-                                        required property var ellipsoidRotation
-                                        required property var ellipsoidRadii
+                                        required property int index
+                                        readonly property var ellipsoid:
+                                            window.viewer.carEllipsoids[
+                                                index]
 
                                         objectName: "runCarEllipsoidNode"
-                                        visible: ellipsoidActive
-                                        position: ellipsoidPosition
-                                        rotation: ellipsoidRotation
-                                        scale: ellipsoidRadii
+                                        position: ellipsoid.position
+                                        rotation: ellipsoid.rotation
+                                        scale: ellipsoid.radii
 
                                         Model {
                                             objectName: "runCarFilledModel"
@@ -2512,19 +2422,17 @@ ApplicationWindow {
                             rotation: window.viewer.carRotation
 
                             Repeater3D {
-                                model: carEllipsoidModel
+                                model: window.viewer.carEllipsoids.length
 
                                 delegate: Node {
-                                    required property bool ellipsoidActive
-                                    required property var ellipsoidPosition
-                                    required property var ellipsoidRotation
-                                    required property var ellipsoidRadii
+                                    required property int index
+                                    readonly property var ellipsoid:
+                                        window.viewer.carEllipsoids[index]
 
                                     objectName: "selectedRunCarEllipsoidNode"
-                                    visible: ellipsoidActive
-                                    position: ellipsoidPosition
-                                    rotation: ellipsoidRotation
-                                    scale: ellipsoidRadii
+                                    position: ellipsoid.position
+                                    rotation: ellipsoid.rotation
+                                    scale: ellipsoid.radii
 
                                     Model {
                                         objectName: "selectedRunCarFilledModel"
@@ -4313,6 +4221,8 @@ ApplicationWindow {
                             running: window.controller.running
                             minimum: 10
                             maximum: 2147481040
+                            dragStep: 1000
+                            liveScrub: false
                             onEdited: value =>
                                 window.controller.simulationHorizonMs = value
                         }

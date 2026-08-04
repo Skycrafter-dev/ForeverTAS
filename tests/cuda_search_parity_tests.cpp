@@ -2,17 +2,25 @@
 #include "mutations/input_event_utils.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/replay_input_script.h"
+#include "physics_backend.h"
+#include "replay_file_io.h"
 #include "searches/algorithm_registry.h"
 #include "searches/search_runner.h"
 
+#include <forevervalidator/experimental/physics_sandbox.h>
+#include <forevervalidator/native.h>
+
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <fstream>
 #include <future>
 #include <iostream>
 #include <iomanip>
+#include <iterator>
 #include <map>
 #include <mutex>
 #include <sstream>
@@ -79,7 +87,8 @@ SearchResult Run(const char *packs,
                  bool autoPromoteBest = false,
                  std::uint32_t simulationHorizonMs =
                          forevertas::kDefaultSimulationHorizonMs,
-                 const std::string &conditionScript = {}) {
+                 const std::string &conditionScript = {},
+                 std::uint64_t *winnerResolutionCount = nullptr) {
     SearchRequest request{packs, replay};
     request.baseInputCommands = ReplayInputCommands(packs, replay);
     request.backend = backend;
@@ -110,6 +119,11 @@ SearchResult Run(const char *packs,
                     calibrationUpdates->push_back(value);
                 }
             };
+    control.cudaWinnerResolved = [winnerResolutionCount]() {
+        if (winnerResolutionCount != nullptr) {
+            ++*winnerResolutionCount;
+        }
+    };
     bool calibrationFinished = false;
     control.progressChanged =
             [calibrationCompleted, &calibrationFinished](
@@ -510,16 +524,348 @@ bool CheckPreciseFinishParity(const char *packs, const char *replay) {
                     reference, cuda, "precise finish CUDA");
 }
 
+bool CheckUnchangedIncumbentIsNotReconstructed(const char *packs,
+                                                const char *replay) {
+    std::uint64_t resolutions = 0u;
+    static_cast<void>(Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Cuda,
+            32u,
+            64u,
+            {DefaultModifier(
+                    forevertas::kExistingEventPerturbationModifierId)},
+            DefaultEvaluator(forevertas::kVelocityEvaluationId),
+            false,
+            nullptr,
+            false,
+            std::nullopt,
+            nullptr,
+            false,
+            false,
+            false,
+            forevertas::kDefaultSimulationHorizonMs,
+            "iterations = 0",
+            &resolutions));
+    if (resolutions != 1u) {
+        std::cerr << "unchanged CUDA incumbent was reconstructed "
+                  << resolutions << " times instead of once\n";
+        return false;
+    }
+    return true;
+}
+
+SearchResult RunFixedScript(const char *packs,
+                            const char *scenario,
+                            const std::string &script,
+                            forevertas::PhysicsBackend backend,
+                            bool specialize,
+                            std::uint32_t horizonMs) {
+    const forevertas::InputScriptParseResult parsed =
+            forevertas::ParseInputScript(script);
+    if (!parsed) throw std::runtime_error(*parsed.error);
+    SearchRequest request{packs, scenario};
+    request.baseInputCommands = parsed.commands;
+    request.backend = backend;
+    request.parallelSampleCount = 1u;
+    request.useCudaSessionSpecialization = specialize;
+    request.simulationHorizonMs = horizonMs;
+    request.evaluationTarget =
+            DefaultEvaluator(forevertas::kPreciseFinishTimeEvaluationId);
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 0u;
+    control.sampleBestTimeline = true;
+    return forevertas::RunSearch(request, &control);
+}
+
+struct RawFrame {
+    std::uint64_t timeMs = 0u;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    bool completed = false;
+    std::optional<std::uint32_t> finishTimeMs;
+};
+
+std::vector<RawFrame> SimulateFixedScript(
+        const char *packs,
+        const char *scenario,
+        const std::vector<forevertas::SandboxInputEvent> &inputs,
+        forevertas::PhysicsBackend backend,
+        std::uint32_t horizonMs) {
+    using namespace forevervalidator;
+    using namespace forevervalidator::experimental;
+    PhysicsSandboxOptions options;
+    options.backend = forevertas::ToForeverValidatorBackend(backend);
+    options.tickDurationMs = forevertas::kSearchTickDurationMs;
+    options.timelineMode = PhysicsSandboxTimelineMode::Canonical;
+    options.simulationHorizonMs = horizonMs;
+    auto source = OpenInstalledPackDirectory(packs);
+    if (!source) throw std::runtime_error("could not open Packs directory");
+    auto created = CreatePhysicsSandbox(std::move(source).Value(), options);
+    if (!created) throw std::runtime_error("could not create raw sandbox");
+    PhysicsSandbox sandbox = std::move(created).Value();
+    const ReplayIdentity identity{scenario};
+    auto bytes = forevertas::ReadReplayFileUtf8(scenario, identity);
+    if (!bytes) throw std::runtime_error("could not read raw scenario");
+    AssetBytes scenarioBytes = std::move(bytes).Value();
+    if (!sandbox.LoadScenario(
+                {scenarioBytes.data(), scenarioBytes.size()}, identity)) {
+        throw std::runtime_error("could not load raw scenario");
+    }
+    if (!sandbox.ReplaceInputs(inputs)) {
+        throw std::runtime_error("could not install raw sandbox inputs");
+    }
+    auto read = sandbox.ReadState();
+    if (!read) throw std::runtime_error("could not read raw sandbox state");
+    PhysicsSandboxStateView state = read.Value();
+    std::vector<RawFrame> frames;
+    frames.reserve(horizonMs / forevertas::kSearchTickDurationMs + 1u);
+    const auto append = [&]() {
+        frames.push_back({state.timeMs,
+                          state.car.position.x,
+                          state.car.position.y,
+                          state.car.position.z,
+                          state.raceCompleted,
+                          state.finishTimeMs});
+    };
+    append();
+    while (state.timeMs < horizonMs && !state.raceCompleted) {
+        auto advanced = sandbox.AdvanceTicks(1u);
+        if (!advanced) throw std::runtime_error("raw simulation failed");
+        state = advanced.Value();
+        append();
+    }
+    return frames;
+}
+
+bool DiagnoseFixedScript(const char *packs,
+                         const char *scenario,
+                         const char *scriptPath,
+                         std::uint32_t horizonMs) {
+    std::ifstream file(scriptPath, std::ios::binary);
+    if (!file) throw std::runtime_error("could not read input script");
+    const std::string script(std::istreambuf_iterator<char>(file), {});
+    const std::array<std::pair<const char *, SearchResult>, 4> results{{
+            {"reference", RunFixedScript(packs, scenario, script,
+                    forevertas::PhysicsBackend::Reference, false, horizonMs)},
+            {"optimized", RunFixedScript(packs, scenario, script,
+                    forevertas::PhysicsBackend::OptimizedCpu, false,
+                    horizonMs)},
+            {"cuda-regular", RunFixedScript(packs, scenario, script,
+                    forevertas::PhysicsBackend::Cuda, false, horizonMs)},
+            {"cuda-specialized", RunFixedScript(packs, scenario, script,
+                    forevertas::PhysicsBackend::Cuda, true, horizonMs)},
+    }};
+    for (const auto &[name, result] : results) {
+        const auto finish = result.bestTimeline.empty()
+                ? std::optional<std::uint32_t>{}
+                : result.bestTimeline.back().finishTimeMs;
+        std::cout << name << " finish="
+                  << (finish ? std::to_string(*finish) : "none")
+                  << " completed=" << result.bestState.raceCompleted
+                  << " score=" << std::setprecision(17) << result.bestScore
+                  << " evaluation_time=" << result.bestEvaluationTimeMs
+                  << " time=" << result.bestState.timeMs
+                  << " position=" << result.bestState.car.position.x << ","
+                  << result.bestState.car.position.y << ","
+                  << result.bestState.car.position.z << "\n";
+    }
+    const std::array<std::pair<const char *, std::vector<RawFrame>>, 3>
+            rawResults{{
+                    {"reference-raw", SimulateFixedScript(
+                         packs, scenario, results.front().second.bestInputs,
+                         forevertas::PhysicsBackend::Reference, horizonMs)},
+                    {"optimized-raw", SimulateFixedScript(
+                         packs, scenario, results.front().second.bestInputs,
+                         forevertas::PhysicsBackend::OptimizedCpu, horizonMs)},
+                    {"cuda-raw", SimulateFixedScript(
+                         packs, scenario, results.front().second.bestInputs,
+                         forevertas::PhysicsBackend::Cuda, horizonMs)},
+            }};
+    const auto &reference = rawResults.front().second;
+    bool okay = true;
+    for (std::size_t resultIndex = 1u; resultIndex < rawResults.size();
+         ++resultIndex) {
+        const auto &candidate = rawResults[resultIndex].second;
+        const std::size_t common = std::min(reference.size(), candidate.size());
+        std::size_t first = common;
+        for (std::size_t index = 0u; index < common; ++index) {
+            const auto &left = reference[index];
+            const auto &right = candidate[index];
+            if (left.x != right.x || left.y != right.y || left.z != right.z ||
+                left.completed != right.completed ||
+                left.finishTimeMs != right.finishTimeMs) {
+                first = index;
+                break;
+            }
+        }
+        if (first != common || reference.size() != candidate.size()) {
+            okay = false;
+            std::cerr << rawResults[resultIndex].first
+                      << " first divergence tick="
+                      << first << " time="
+                      << (first < common ? reference[first].timeMs : -1)
+                      << " reference_frames=" << reference.size()
+                      << " candidate_frames=" << candidate.size();
+            if (first < common) {
+                std::cerr << " reference_position="
+                          << reference[first].x << ","
+                          << reference[first].y << ","
+                          << reference[first].z
+                          << " candidate_position="
+                          << candidate[first].x << ","
+                          << candidate[first].y << ","
+                          << candidate[first].z;
+            }
+            std::cerr << "\n";
+        }
+    }
+    return okay;
+}
+
+SearchResult RunMismatchMutation(const char *packs,
+                                 const char *scenario,
+                                 const std::string &script,
+                                 forevertas::PhysicsBackend backend,
+                                 bool specialize,
+                                 std::uint64_t iterations = 1u) {
+    const forevertas::InputScriptParseResult parsed =
+            forevertas::ParseInputScript(script);
+    if (!parsed) throw std::runtime_error(*parsed.error);
+    SearchRequest request{packs, scenario};
+    request.baseInputCommands = parsed.commands;
+    request.backend = backend;
+    request.parallelSampleCount = backend == forevertas::PhysicsBackend::Cuda
+            ? static_cast<std::uint32_t>(
+                      std::min<std::uint64_t>(iterations, 40000u))
+            : 1u;
+    request.useCudaSessionSpecialization = specialize;
+    request.simulationHorizonMs = 25000u;
+    request.searchAlgorithm.settings["autoPromoteBest"] = "true";
+    OptionConfiguration modifier = DefaultModifier(
+            forevertas::kExistingEventPerturbationModifierId);
+    modifier.settings = {{"minTimeMs", "4000"},
+                         {"maxTimeMs", "8500"},
+                         {"minCount", "1"},
+                         {"maxCount", "12"},
+                         {"maxTimeShiftMs", "100"},
+                         {"steerMode", "delta"},
+                         {"steerDeltaMin", "-1"},
+                         {"steerDeltaMax", "1"},
+                         {"steerAbsoluteMin", "-1"},
+                         {"steerAbsoluteMax", "1"},
+                         {"toggleAccelerate", "false"},
+                         {"toggleBrake", "true"},
+                         {"seed", "3837657081"}};
+    request.modifiers = {std::move(modifier)};
+    request.evaluationTarget =
+            DefaultEvaluator(forevertas::kVelocityEvaluationId);
+    request.evaluationTarget.settings["minTimeMs"] = "10000";
+    request.evaluationTarget.settings["maxTimeMs"] = "10000";
+    const forevertas::ConditionCompileResult condition =
+            forevertas::CompileConditionScript("iterations > 0");
+    if (condition.error) throw std::runtime_error(*condition.error);
+    request.condition = condition.program;
+    forevertas::SearchRunControl control;
+    control.iterationLimit = iterations;
+    control.sampleBestTimeline = true;
+    control.reuseLoadedSandbox = true;
+    return forevertas::RunSearch(request, &control);
+}
+
+bool DiagnoseMutationBackend(const char *packs,
+                             const char *scenario,
+                             const char *scriptPath,
+                             const char *backendName,
+                             std::uint64_t iterations) {
+    std::ifstream file(scriptPath, std::ios::binary);
+    if (!file) throw std::runtime_error("could not read input script");
+    const std::string script(std::istreambuf_iterator<char>(file), {});
+    const std::string name(backendName);
+    const forevertas::PhysicsBackend backend = name == "reference"
+            ? forevertas::PhysicsBackend::Reference
+            : name == "optimized"
+            ? forevertas::PhysicsBackend::OptimizedCpu
+            : forevertas::PhysicsBackend::Cuda;
+    const bool specialize = name == "cuda-specialized";
+    const SearchResult result = RunMismatchMutation(
+            packs, scenario, script, backend, specialize, iterations);
+    std::cout << name << " winner="
+              << (result.winnerSource ==
+                                  forevertas::SearchWinnerSource::Mutation
+                          ? "mutation" : "baseline")
+              << " iteration="
+              << (result.winningIterationIndex
+                          ? std::to_string(*result.winningIterationIndex)
+                          : "none")
+              << " score=" << std::setprecision(17) << result.bestScore
+              << "\n" << forevertas::FormatInputScript(result.bestInputs);
+    return true;
+}
+
+bool DiagnoseMismatchMutation(const char *packs,
+                              const char *scenario,
+                              const char *scriptPath) {
+    std::ifstream file(scriptPath, std::ios::binary);
+    if (!file) throw std::runtime_error("could not read input script");
+    const std::string script(std::istreambuf_iterator<char>(file), {});
+    const std::array<std::pair<const char *, SearchResult>, 4> results{{
+            {"reference", RunMismatchMutation(packs, scenario, script,
+                    forevertas::PhysicsBackend::Reference, false)},
+            {"optimized", RunMismatchMutation(packs, scenario, script,
+                    forevertas::PhysicsBackend::OptimizedCpu, false)},
+            {"cuda-regular", RunMismatchMutation(packs, scenario, script,
+                    forevertas::PhysicsBackend::Cuda, false)},
+            {"cuda-specialized", RunMismatchMutation(packs, scenario, script,
+                    forevertas::PhysicsBackend::Cuda, true)},
+    }};
+    bool okay = true;
+    const std::string expected = forevertas::FormatInputScript(
+            results.front().second.bestInputs);
+    for (const auto &[name, result] : results) {
+        const std::string formatted =
+                forevertas::FormatInputScript(result.bestInputs);
+        std::cout << name << " winner="
+                  << (result.winnerSource ==
+                                      forevertas::SearchWinnerSource::Mutation
+                              ? "mutation" : "baseline")
+                  << " score=" << std::setprecision(17) << result.bestScore
+                  << " finish="
+                  << (result.bestTimeline.empty() ||
+                              !result.bestTimeline.back().finishTimeMs
+                              ? "none"
+                              : std::to_string(*result.bestTimeline.back()
+                                                       .finishTimeMs))
+                  << " same_inputs=" << (formatted == expected) << "\n";
+        if (formatted != expected ||
+            result.bestScore != results.front().second.bestScore) {
+            okay = false;
+            std::cerr << name << " inputs:\n" << formatted;
+        }
+    }
+    return okay;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
+    const bool scriptParity = argc == 6 &&
+            std::string(argv[1]) == "--script-parity";
+    const bool mutationParity = argc == 5 &&
+            std::string(argv[1]) == "--mutation-parity";
+    const bool mutationBackend = argc == 7 &&
+            std::string(argv[1]) == "--mutation-backend";
     const bool calibrationOnly =
             argc == 4 &&
             std::string(argv[1]) == "--calibration-only";
     const bool preciseFinishOnly =
             argc == 4 &&
             std::string(argv[1]) == "--precise-finish-only";
-    if ((!calibrationOnly && !preciseFinishOnly && argc != 3) ||
+    if ((!scriptParity && !mutationParity && !mutationBackend &&
+         !calibrationOnly &&
+         !preciseFinishOnly &&
+         argc != 3) ||
         ((calibrationOnly || preciseFinishOnly) && argc != 4)) {
         std::cerr << "expected Packs directory and replay path\n";
         return 2;
@@ -528,6 +874,21 @@ int main(int argc, char **argv) {
     const char *const packs = argv[focusedMode ? 2 : 1];
     const char *const replay = argv[focusedMode ? 3 : 2];
     try {
+        if (scriptParity) {
+            return DiagnoseFixedScript(
+                    argv[2], argv[3], argv[4],
+                    static_cast<std::uint32_t>(std::stoul(argv[5])))
+                    ? 0 : 1;
+        }
+        if (mutationParity) {
+            return DiagnoseMismatchMutation(argv[2], argv[3], argv[4])
+                    ? 0 : 1;
+        }
+        if (mutationBackend) {
+            return DiagnoseMutationBackend(
+                    argv[2], argv[3], argv[4], argv[5],
+                    std::stoull(argv[6])) ? 0 : 1;
+        }
         if (calibrationOnly) {
             return CheckCalibration(packs, replay) ? 0 : 1;
         }
@@ -535,6 +896,7 @@ int main(int argc, char **argv) {
             return CheckPreciseFinishParity(packs, replay) ? 0 : 1;
         }
         bool okay = CheckCudaKernelModeParity(packs, replay);
+        okay &= CheckUnchangedIncumbentIsNotReconstructed(packs, replay);
         const OptionConfiguration velocity =
                 DefaultEvaluator(forevertas::kVelocityEvaluationId);
         OptionConfiguration coverageVelocity = velocity;

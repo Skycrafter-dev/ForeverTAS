@@ -1143,6 +1143,89 @@ bool CheckSandboxCloneAndWindowParity(
     return restored.timeMs == 500u;
 }
 
+bool CheckResizableCanonicalHorizon(const char *packsDirectory,
+                                    const char *replayPath) {
+    using namespace forevervalidator;
+    using namespace forevervalidator::experimental;
+    const ReplayIdentity identity{replayPath};
+    const AssetBytes replay = Require(
+            forevertas::ReadReplayFileUtf8(replayPath, identity),
+            "reading resizable-horizon replay");
+    const auto create = [&](std::uint32_t horizonMs) {
+        PhysicsSandboxOptions options;
+        options.backend = SimulationBackend::OptimizedCpu;
+        options.tickDurationMs = forevertas::kSearchTickDurationMs;
+        options.timelineMode = PhysicsSandboxTimelineMode::Canonical;
+        options.simulationHorizonMs = horizonMs;
+        PhysicsSandbox sandbox = Require(
+                CreatePhysicsSandbox(
+                        Require(OpenInstalledPackDirectory(packsDirectory),
+                                "opening resizable-horizon Packs"),
+                        options),
+                "creating resizable-horizon sandbox");
+        Require(sandbox.LoadReplay({replay.data(), replay.size()}, identity),
+                "loading resizable-horizon replay");
+        return sandbox;
+    };
+
+    PhysicsSandbox resized = create(6000u);
+    const PhysicsSandboxState initial = Require(
+            resized.CaptureState(), "capturing resizable initial state");
+    Require(resized.AdvanceTicks(200u),
+            "advancing to resizable snapshot");
+    const PhysicsSandboxState snapshot = Require(
+            resized.CaptureState(), "capturing resizable snapshot");
+    Require(resized.SetSimulationHorizonMs(8000u),
+            "extending canonical horizon");
+    const PhysicsSandboxStateView restoredExtended = Require(
+            resized.RestoreState(snapshot),
+            "restoring snapshot after extending horizon");
+    if (restoredExtended.timeMs != 2000u) {
+        std::cerr << "extended-horizon snapshot restored at wrong time\n";
+        return false;
+    }
+    const PhysicsSandboxStateView extended = Require(
+            resized.AdvanceTicks(600u),
+            "advancing extended canonical horizon");
+    PhysicsSandbox freshExtended = create(8000u);
+    const PhysicsSandboxStateView expectedExtended = Require(
+            freshExtended.AdvanceTicks(800u),
+            "advancing fresh extended horizon");
+    if (!SameSandboxState(extended, expectedExtended)) {
+        std::cerr << "extended cached simulation diverged from a fresh run\n";
+        return false;
+    }
+
+    const auto invalidShrink = resized.SetSimulationHorizonMs(4000u);
+    if (invalidShrink) {
+        std::cerr << "horizon shrank behind the simulation cursor\n";
+        return false;
+    }
+    Require(resized.RestoreState(initial),
+            "restoring initial state before shrinking horizon");
+    Require(resized.SetSimulationHorizonMs(4000u),
+            "shrinking canonical horizon");
+    const PhysicsSandboxStateView restoredShrunk = Require(
+            resized.RestoreState(snapshot),
+            "restoring snapshot after shrinking horizon");
+    if (restoredShrunk.timeMs != 2000u) {
+        std::cerr << "shrunk-horizon snapshot restored at wrong time\n";
+        return false;
+    }
+    const PhysicsSandboxStateView shrunk = Require(
+            resized.AdvanceTicks(200u),
+            "advancing shrunk canonical horizon");
+    PhysicsSandbox freshShrunk = create(4000u);
+    const PhysicsSandboxStateView expectedShrunk = Require(
+            freshShrunk.AdvanceTicks(400u),
+            "advancing fresh shrunk horizon");
+    if (!SameSandboxState(shrunk, expectedShrunk)) {
+        std::cerr << "shrunk cached simulation diverged from a fresh run\n";
+        return false;
+    }
+    return true;
+}
+
 bool CheckInputAfterHorizonAccepted(const char *packsDirectory,
                                     const char *replayPath) {
     forevertas::SearchRequest request{packsDirectory, replayPath};
@@ -1427,6 +1510,7 @@ int main(int argc, char **argv) {
             !CheckKeyboardSteeringBaseline(argv[1], argv[2]) ||
             !CheckKeyboardSteeringPhysicsParity(argv[1], argv[2]) ||
             !CheckSandboxCloneAndWindowParity(argv[1], argv[2]) ||
+            !CheckResizableCanonicalHorizon(argv[1], argv[2]) ||
             !CheckMultiThreadedCpuBackend(argv[1], argv[2]) ||
             !CheckStuntTargetBackend(
                     argv[1],
