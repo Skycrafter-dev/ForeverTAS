@@ -217,9 +217,11 @@ std::vector<SearchTimelineFrame> SampleBestTimeline(
     ReportProgress(
             control, SearchProgressStage::FinalSamplingSetup, 0u, 0u);
     SearchRequest samplingRequest = request;
+#if FOREVERVALIDATOR_HAS_CUDA
     if (samplingRequest.backend == PhysicsBackend::Cuda) {
         samplingRequest.backend = PhysicsBackend::Reference;
     }
+#endif
     TimelineSamplingRuntime runtime =
             CreateTimelineSamplingRuntime(samplingRequest, replay, identity);
     return SampleTimeline(runtime, inputs, control, true);

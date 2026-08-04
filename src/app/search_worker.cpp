@@ -318,10 +318,12 @@ void SearchWorker::run() {
         completion->packsDirectory =
                 FilePathFromUtf8(request_.packDirectory);
         completion->replayPath = FilePathFromUtf8(request_.replayPath);
-        const PhysicsBackend resultBackend =
-                request_.backend == PhysicsBackend::Cuda
-                ? PhysicsBackend::Reference
-                : request_.backend;
+        PhysicsBackend resultBackend = request_.backend;
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (resultBackend == PhysicsBackend::Cuda) {
+            resultBackend = PhysicsBackend::Reference;
+        }
+#endif
         const std::string_view backendId = PhysicsBackendId(resultBackend);
         completion->simulationBackendId = QString::fromLatin1(
                 backendId.data(), static_cast<qsizetype>(backendId.size()));
