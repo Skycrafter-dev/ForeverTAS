@@ -40,8 +40,13 @@ signals:
     void progressChanged(double value, const QString &status);
     void metricsChanged(const QString &iterationCountText,
                         const QString &throughputText,
-                        const QString &elapsedText);
-    void cudaBatchSizeChanged(std::uint32_t batchSize);
+                        const QString &elapsedText,
+                        const QString &evaluationCountText,
+                        const QString &mutationCountText,
+                        const QString &improvementCountText);
+    void throughputReset();
+    void cudaCalibrationActiveChanged(bool active);
+    void cudaActiveBatchSizeChanged(std::uint32_t batchSize);
     void bestChanged(const QString &summary, const QString &inputsText);
     void improvementFound(
             forevertas::app::SearchImprovementPtr improvement);

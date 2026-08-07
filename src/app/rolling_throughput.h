@@ -16,8 +16,13 @@ public:
     }
 
     void Reset() {
+        Reset(0u, Duration::zero());
+    }
+
+    void Reset(std::uint64_t totalIterations, Duration elapsed) {
         samples_.clear();
-        samples_.push_back({Duration::zero(), 0.0});
+        samples_.push_back(
+                {elapsed, static_cast<double>(totalIterations)});
     }
 
     double Observe(std::uint64_t totalIterations, Duration elapsed) {

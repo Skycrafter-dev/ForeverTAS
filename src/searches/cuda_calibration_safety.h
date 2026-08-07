@@ -2,6 +2,7 @@
 #define FOREVERTAS_SEARCHES_CUDA_CALIBRATION_SAFETY_H
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -43,6 +44,9 @@ struct CudaCalibrationSafetyDecision {
 class CudaCalibrationSafetyPlanner final {
   public:
     void Observe(const CudaCalibrationBatchProfile &profile);
+    std::optional<std::uint32_t> NextStagedProbe(
+            std::uint32_t requestedBatchSize,
+            const CudaCalibrationDeviceLimits &limits) const;
     CudaCalibrationSafetyDecision Evaluate(
             std::uint32_t candidateBatchSize,
             std::uint32_t currentBatchCapacity,
@@ -58,8 +62,9 @@ class CudaCalibrationSafetyPlanner final {
     std::uint64_t EstimateLocalWorkingSetBytes(
             std::uint32_t candidateBatchSize,
             const CudaCalibrationDeviceLimits &limits) const;
-    double
-    PredictKernelMilliseconds(std::uint32_t candidateBatchSize) const;
+    double PredictKernelMilliseconds(
+            std::uint32_t candidateBatchSize,
+            const CudaCalibrationDeviceLimits &limits) const;
 
     std::vector<CudaCalibrationBatchProfile> profiles_;
 };

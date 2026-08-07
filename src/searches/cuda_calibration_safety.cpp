@@ -15,6 +15,7 @@ constexpr double kAllocationEstimateMargin = 1.15;
 constexpr double kGridLimitFraction = 0.90;
 constexpr double kWatchdogKernelBudgetMilliseconds = 250.0;
 constexpr double kKernelPredictionMargin = 1.25;
+constexpr std::uint32_t kMaximumUnrepresentativeGrowthFactor = 8u;
 
 std::uint64_t SaturatingCeil(double value) {
     if (!std::isfinite(value) || value <= 0.0) {
@@ -38,6 +39,65 @@ std::uint64_t SaturatingAdd(std::uint64_t left, std::uint64_t right) {
         return std::numeric_limits<std::uint64_t>::max();
     }
     return left + right;
+}
+
+std::uint64_t SaturatingMultiply(
+        std::uint64_t left,
+        std::uint64_t right) {
+    if (left != 0u &&
+        right > std::numeric_limits<std::uint64_t>::max() / left) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return left * right;
+}
+
+std::uint64_t SimulationWaveCapacity(
+        const CudaCalibrationBatchProfile &profile,
+        const CudaCalibrationDeviceLimits &limits) {
+    return SaturatingMultiply(
+            SaturatingMultiply(
+                    profile.simulationThreadsPerBlock,
+                    profile.simulationActiveBlocksPerMultiprocessor),
+            limits.multiprocessorCount);
+}
+
+std::uint64_t RepresentativeBatchSize(
+        const CudaCalibrationBatchProfile &profile,
+        const CudaCalibrationDeviceLimits &limits) {
+    return SimulationWaveCapacity(profile, limits);
+}
+
+bool HasRepresentativeProfile(
+        const std::vector<CudaCalibrationBatchProfile> &profiles,
+        const CudaCalibrationDeviceLimits &limits) {
+    return std::any_of(
+            profiles.begin(),
+            profiles.end(),
+            [&limits](const CudaCalibrationBatchProfile &profile) {
+                const std::uint64_t representativeBatchSize =
+                        RepresentativeBatchSize(profile, limits);
+                return representativeBatchSize != 0u &&
+                        profile.batchSize >= representativeBatchSize;
+            });
+}
+
+std::uint32_t LargestMeasuredBatchSize(
+        const std::vector<CudaCalibrationBatchProfile> &profiles) {
+    std::uint32_t result = 0u;
+    for (const CudaCalibrationBatchProfile &profile : profiles) {
+        result = std::max(result, profile.batchSize);
+    }
+    return result;
+}
+
+std::uint64_t WaveCount(std::uint32_t batchSize,
+                        std::uint64_t waveCapacity) {
+    if (batchSize == 0u || waveCapacity == 0u) {
+        return 0u;
+    }
+    return (static_cast<std::uint64_t>(batchSize) - 1u) /
+                    waveCapacity +
+            1u;
 }
 
 }  // namespace
@@ -76,6 +136,35 @@ void CudaCalibrationSafetyPlanner::Observe(
             profile.simulationActiveBlocksPerMultiprocessor;
     existing->simulationTheoreticalOccupancy =
             profile.simulationTheoreticalOccupancy;
+}
+
+std::optional<std::uint32_t>
+CudaCalibrationSafetyPlanner::NextStagedProbe(
+        std::uint32_t requestedBatchSize,
+        const CudaCalibrationDeviceLimits &limits) const {
+    if (requestedBatchSize <= 1u || profiles_.empty() ||
+        HasRepresentativeProfile(profiles_, limits)) {
+        return std::nullopt;
+    }
+    const std::uint32_t largestMeasured =
+            LargestMeasuredBatchSize(profiles_);
+    const bool hasCapacitySlope = std::any_of(
+            profiles_.begin(),
+            profiles_.end(),
+            [](const CudaCalibrationBatchProfile &profile) {
+                return profile.batchCapacity > 1u;
+            });
+    if (!hasCapacitySlope) {
+        return std::min(requestedBatchSize, 2u);
+    }
+    const std::uint64_t stagedLimit =
+            static_cast<std::uint64_t>(largestMeasured) *
+            kMaximumUnrepresentativeGrowthFactor;
+    if (requestedBatchSize <= stagedLimit) {
+        return std::nullopt;
+    }
+    return static_cast<std::uint32_t>(std::min<std::uint64_t>(
+            requestedBatchSize, stagedLimit));
 }
 
 CudaCalibrationSafetyDecision CudaCalibrationSafetyPlanner::Evaluate(
@@ -133,6 +222,17 @@ CudaCalibrationSafetyDecision CudaCalibrationSafetyPlanner::Evaluate(
         return Unsafe("CUDA simulation occupancy is invalid");
     }
 
+    const std::uint32_t largestMeasured =
+            LargestMeasuredBatchSize(profiles_);
+    const std::uint64_t maximumUnrepresentativeProbe =
+            static_cast<std::uint64_t>(largestMeasured) *
+            kMaximumUnrepresentativeGrowthFactor;
+    if (!HasRepresentativeProfile(profiles_, limits) &&
+        candidateBatchSize > maximumUnrepresentativeProbe) {
+        return Unsafe(
+                "CUDA calibration requires a staged occupancy probe");
+    }
+
     const std::uint64_t blocks =
             (static_cast<std::uint64_t>(candidateBatchSize) + threads -
              1u) /
@@ -184,7 +284,7 @@ CudaCalibrationSafetyDecision CudaCalibrationSafetyPlanner::Evaluate(
     }
 
     result.predictedKernelMilliseconds =
-            PredictKernelMilliseconds(candidateBatchSize);
+            PredictKernelMilliseconds(candidateBatchSize, limits);
     if (limits.kernelExecutionTimeoutEnabled &&
         (result.predictedKernelMilliseconds <= 0.0 ||
          result.predictedKernelMilliseconds >
@@ -236,6 +336,7 @@ std::uint64_t
 CudaCalibrationSafetyPlanner::EstimateTransientReservationBytes(
         std::uint32_t candidateBatchSize) const {
     double maximumBytesPerCandidate = 0.0;
+    bool measuredCapacitySlope = false;
     if (profiles_.size() == 1u) {
         maximumBytesPerCandidate =
                 static_cast<double>(
@@ -248,6 +349,7 @@ CudaCalibrationSafetyPlanner::EstimateTransientReservationBytes(
                 left.residentDeviceBytes > right.residentDeviceBytes) {
                 continue;
             }
+            measuredCapacitySlope = true;
             maximumBytesPerCandidate = std::max(
                     maximumBytesPerCandidate,
                     static_cast<double>(
@@ -256,10 +358,13 @@ CudaCalibrationSafetyPlanner::EstimateTransientReservationBytes(
                             (right.batchCapacity - left.batchCapacity));
         }
     }
-    return SaturatingCeil(
+    const std::uint64_t estimate = SaturatingCeil(
             maximumBytesPerCandidate *
             static_cast<double>(candidateBatchSize) *
             kAllocationEstimateMargin);
+    return measuredCapacitySlope
+            ? std::max<std::uint64_t>(estimate, 1u)
+            : estimate;
 }
 
 std::uint64_t CudaCalibrationSafetyPlanner::EstimateResidentBytes(
@@ -335,110 +440,65 @@ CudaCalibrationSafetyPlanner::EstimateLocalWorkingSetBytes(
 }
 
 double CudaCalibrationSafetyPlanner::PredictKernelMilliseconds(
-        std::uint32_t candidateBatchSize) const {
+        std::uint32_t candidateBatchSize,
+        const CudaCalibrationDeviceLimits &limits) const {
     if (profiles_.empty()) {
         return 0.0;
     }
-    if (profiles_.size() == 1u) {
-        const CudaCalibrationBatchProfile &profile = profiles_.front();
-        return profile.batchSize == 0u
-                       ? 0.0
-                       : profile.kernelMilliseconds *
-                                 static_cast<double>(
-                                         candidateBatchSize) /
-                                 profile.batchSize *
-                                 kKernelPredictionMargin;
+    if (HasRepresentativeProfile(profiles_, limits)) {
+        double maximumMillisecondsPerWave = 0.0;
+        const CudaCalibrationBatchProfile *representative = nullptr;
+        for (const CudaCalibrationBatchProfile &profile : profiles_) {
+            if (profile.batchSize <
+                RepresentativeBatchSize(profile, limits)) {
+                continue;
+            }
+            const std::uint64_t waves = WaveCount(
+                    profile.batchSize,
+                    SimulationWaveCapacity(profile, limits));
+            if (waves == 0u) {
+                continue;
+            }
+            const double millisecondsPerWave =
+                    profile.kernelMilliseconds /
+                    static_cast<double>(waves);
+            if (representative == nullptr ||
+                millisecondsPerWave > maximumMillisecondsPerWave) {
+                representative = &profile;
+                maximumMillisecondsPerWave = millisecondsPerWave;
+            }
+        }
+        if (representative != nullptr) {
+            const std::uint64_t candidateWaves = WaveCount(
+                    candidateBatchSize,
+                    SimulationWaveCapacity(*representative, limits));
+            return maximumMillisecondsPerWave *
+                    static_cast<double>(candidateWaves) *
+                    kKernelPredictionMargin;
+        }
     }
 
-    std::vector<const CudaCalibrationBatchProfile *> ordered;
-    ordered.reserve(profiles_.size());
-    for (const CudaCalibrationBatchProfile &profile : profiles_) {
-        const auto duplicate = std::find_if(
-                ordered.begin(),
-                ordered.end(),
-                [&profile](
-                        const CudaCalibrationBatchProfile *candidate) {
-                    return candidate->batchSize == profile.batchSize;
-                });
-        if (duplicate == ordered.end()) {
-            ordered.push_back(&profile);
-        } else if (
-                profile.kernelMilliseconds >
-                (*duplicate)->kernelMilliseconds) {
-            *duplicate = &profile;
-        }
-    }
-    std::sort(
-            ordered.begin(),
-            ordered.end(),
-            [](const CudaCalibrationBatchProfile *left,
-               const CudaCalibrationBatchProfile *right) {
-                return left->batchSize < right->batchSize;
-            });
-    if (ordered.size() == 1u) {
-        const CudaCalibrationBatchProfile &profile =
-                *ordered.front();
-        return profile.kernelMilliseconds *
-                static_cast<double>(candidateBatchSize) /
-                profile.batchSize *
-                kKernelPredictionMargin;
-    }
-    const auto upper = std::lower_bound(
-            ordered.begin(),
-            ordered.end(),
-            candidateBatchSize,
-            [](const CudaCalibrationBatchProfile *profile,
-               std::uint32_t size) {
-                return profile->batchSize < size;
-            });
-    if (upper != ordered.end()) {
-        if (upper == ordered.begin() ||
-            (*upper)->batchSize == candidateBatchSize) {
-            return (*upper)->kernelMilliseconds *
-                   kKernelPredictionMargin;
-        }
-        const CudaCalibrationBatchProfile &high = **upper;
-        const CudaCalibrationBatchProfile &low = **(upper - 1);
-        return std::max(
-                       low.kernelMilliseconds,
-                       high.kernelMilliseconds) *
-                kKernelPredictionMargin;
-    }
-    const std::size_t firstTrendIndex =
-            ordered.size() > 3u ? ordered.size() - 3u : 0u;
+    const std::uint32_t largestMeasured =
+            LargestMeasuredBatchSize(profiles_);
     double maximumMeasuredMilliseconds = 0.0;
-    for (const CudaCalibrationBatchProfile *profile : ordered) {
+    double largestBatchMilliseconds = 0.0;
+    for (const CudaCalibrationBatchProfile &profile : profiles_) {
         maximumMeasuredMilliseconds = std::max(
                 maximumMeasuredMilliseconds,
-                profile->kernelMilliseconds);
+                profile.kernelMilliseconds);
+        if (profile.batchSize == largestMeasured) {
+            largestBatchMilliseconds = std::max(
+                    largestBatchMilliseconds,
+                    profile.kernelMilliseconds);
+        }
     }
-    const std::uint32_t largestMeasuredBatch =
-            ordered.back()->batchSize;
-    double maximumSlope = 0.0;
-    const CudaCalibrationBatchProfile &previous =
-            *ordered[ordered.size() - 2u];
-    const CudaCalibrationBatchProfile &latest = *ordered.back();
-    if (latest.kernelMilliseconds > previous.kernelMilliseconds) {
-        maximumSlope = (latest.kernelMilliseconds -
-                        previous.kernelMilliseconds) /
-                       (latest.batchSize - previous.batchSize);
-    }
-    const CudaCalibrationBatchProfile &trendStart =
-            *ordered[firstTrendIndex];
-    if (latest.kernelMilliseconds > trendStart.kernelMilliseconds) {
-        maximumSlope = std::max(
-                maximumSlope,
-                (latest.kernelMilliseconds -
-                 trendStart.kernelMilliseconds) /
-                        (latest.batchSize - trendStart.batchSize));
-    }
-    const std::uint32_t additionalCandidates =
-            candidateBatchSize > largestMeasuredBatch
-                    ? candidateBatchSize - largestMeasuredBatch
-                    : 0u;
-    return (maximumMeasuredMilliseconds +
-            maximumSlope * additionalCandidates) *
-           kKernelPredictionMargin;
+    const double growth = candidateBatchSize > largestMeasured
+            ? static_cast<double>(candidateBatchSize) / largestMeasured
+            : 1.0;
+    return std::max(
+                   maximumMeasuredMilliseconds,
+                   largestBatchMilliseconds * growth) *
+            kKernelPredictionMargin;
 }
 
 }  // namespace forevertas

@@ -27,6 +27,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -1639,6 +1640,11 @@ bool TestRollingThroughput() {
     okay &= Check(
             throughput.Observe(100u, 15s) == 0.0,
             "idle throughput did not decay over the rolling window");
+
+    throughput.Reset(1'000u, 20s);
+    okay &= Check(
+            std::abs(throughput.Observe(1'300u, 22s) - 150.0) < 1e-9,
+            "throughput reset retained work from the previous CUDA batch");
     return okay;
 }
 
@@ -1673,6 +1679,36 @@ bool TestCudaBatchCalibrationStrategy() {
         return 9100.0 - distance * (950.0 / 5300.0);
     };
 
+    forevertas::CudaBatchCalibrator overriddenStart(65536u);
+    bool okay = Check(
+            overriddenStart.CurrentBatchSize() == 65536u &&
+                    overriddenStart.BestBatchSize() == 65536u,
+            "CUDA calibration ignored its overridden starting batch");
+    observe(&overriddenStart, 1000.0);
+    okay &= Check(
+            overriddenStart.CurrentBatchSize() == 131072u,
+            "CUDA calibration did not grow from its overridden start");
+
+    forevertas::CudaBatchCalibrator rejectedStart(
+            std::numeric_limits<std::uint32_t>::max());
+    const std::uint32_t rejectedBatch =
+            rejectedStart.CurrentBatchSize();
+    rejectedStart.RejectUnsafeCurrent();
+    okay &= Check(
+            !rejectedStart.Complete() &&
+                    !rejectedStart.HasReliableMeasurement() &&
+                    rejectedStart.CurrentBatchSize() ==
+                            rejectedBatch / 2u,
+            "CUDA calibration retained or completed on an unsafe first "
+            "probe");
+    rejectedStart.CapacityUnavailable();
+    okay &= Check(
+            !rejectedStart.Complete() &&
+                    rejectedStart.CurrentBatchSize() ==
+                            rejectedBatch / 4u,
+            "CUDA calibration did not keep reducing an unavailable first "
+            "probe");
+
     const auto calibrate = [&observe](
                                    const auto &throughputForSize,
                                    std::uint32_t capacity) {
@@ -1698,7 +1734,7 @@ bool TestCudaBatchCalibrationStrategy() {
             102400u);
     const std::uint32_t calibratedSize =
             calibrator.BestBatchSize();
-    bool okay = Check(
+    okay &= Check(
             calibrator.Complete(),
             "CUDA calibration did not converge");
     okay &= Check(
@@ -1842,9 +1878,10 @@ bool TestCudaCalibrationSafety() {
     planner.Observe(second);
 
     CudaCalibrationDeviceLimits memoryLimited = limits;
-    memoryLimited.freeMemoryBytes = 2u * gib;
+    memoryLimited.freeMemoryBytes =
+            1300u * 1024u * 1024u;
     const auto memoryDecision =
-            planner.Evaluate(100u, 2u, memoryLimited);
+            planner.Evaluate(16u, 2u, memoryLimited);
     okay &= Check(
             !memoryDecision.safe &&
                     memoryDecision.requiredTransientBytes > 0u &&
@@ -1852,17 +1889,55 @@ bool TestCudaCalibrationSafety() {
                             512u * 1024u * 1024u,
             "CUDA calibration crossed the reserved memory headroom");
 
-    CudaCalibrationDeviceLimits launchLimited = limits;
-    launchLimited.maximumGridDimensionX = 10u;
+    CudaCalibrationSafetyPlanner fixedResident;
+    CudaCalibrationBatchProfile fixedFirst = first;
+    fixedFirst.residentDeviceBytes = 1024u * 1024u * 1024u;
+    fixedResident.Observe(fixedFirst);
+    CudaCalibrationBatchProfile fixedSecond = fixedFirst;
+    fixedSecond.batchCapacity = 2u;
+    fixedSecond.residentDeviceBytes += 1024u;
+    fixedResident.Observe(fixedSecond);
+    const std::uint32_t representativeBatchSize =
+            fixedFirst.simulationThreadsPerBlock *
+            fixedFirst.simulationActiveBlocksPerMultiprocessor *
+            limits.multiprocessorCount;
+    CudaCalibrationBatchProfile fixedRepresentative = fixedFirst;
+    fixedRepresentative.batchSize = representativeBatchSize;
+    fixedRepresentative.batchCapacity = representativeBatchSize;
+    fixedRepresentative.residentDeviceBytes +=
+            static_cast<std::uint64_t>(representativeBatchSize) * 1024u;
+    fixedResident.Observe(fixedRepresentative);
     okay &= Check(
-            !planner.Evaluate(2560u, 2u, launchLimited).safe,
+            fixedResident.Evaluate(
+                    100000u, representativeBatchSize, limits).safe,
+            "CUDA calibration treated fixed resident state as "
+            "per-candidate memory");
+    const auto trueMemoryOverflow =
+            fixedResident.Evaluate(
+                    5000000u, representativeBatchSize, limits);
+    okay &= Check(
+            !trueMemoryOverflow.safe &&
+                    trueMemoryOverflow.requiredTransientBytes > 5u * gib,
+            "CUDA calibration ignored a measured marginal-memory "
+            "headroom overflow");
+
+    CudaCalibrationDeviceLimits launchLimited = limits;
+    launchLimited.maximumGridDimensionX = 1u;
+    okay &= Check(
+            !planner.Evaluate(16u, 2u, launchLimited).safe,
             "CUDA calibration approached the grid launch limit");
 
     CudaCalibrationDeviceLimits watchdog = limits;
     watchdog.kernelExecutionTimeoutEnabled = true;
+    const auto unstagedWatchdog =
+            planner.Evaluate(300u, 2u, watchdog);
     okay &= Check(
-            !planner.Evaluate(300u, 2u, watchdog).safe,
-            "CUDA calibration approached the kernel watchdog limit");
+            !unstagedWatchdog.safe &&
+                    unstagedWatchdog.reason.find("staged") !=
+                            std::string::npos &&
+                    planner.NextStagedProbe(300u, watchdog) == 16u,
+            "CUDA calibration allowed an unmeasured jump from a tiny "
+            "bootstrap batch");
 
     CudaCalibrationDeviceLimits occupancyLimited = limits;
     occupancyLimited.registersPerMultiprocessor = 32768u;
@@ -1898,6 +1973,46 @@ bool TestCudaCalibrationSafety() {
                             .predictedKernelMilliseconds >= 550.0,
             "CUDA calibration ignored the slowest profile for a batch "
             "measured under multiple capacities");
+
+    CudaCalibrationSafetyPlanner wavePlanner;
+    CudaCalibrationBatchProfile oneCandidateWave = first;
+    oneCandidateWave.residentDeviceBytes = 1u;
+    oneCandidateWave.kernelMilliseconds = 100.0;
+    wavePlanner.Observe(oneCandidateWave);
+    const std::uint32_t waveCapacity =
+            oneCandidateWave.simulationThreadsPerBlock *
+            oneCandidateWave.simulationActiveBlocksPerMultiprocessor *
+            limits.multiprocessorCount;
+    const auto unprovenWaveDecision =
+            wavePlanner.Evaluate(waveCapacity, 1u, watchdog);
+    okay &= Check(
+            !unprovenWaveDecision.safe &&
+                    unprovenWaveDecision.reason.find("staged") !=
+                            std::string::npos,
+            "CUDA calibration treated one active candidate as a measured "
+            "device wave");
+    CudaCalibrationBatchProfile representative = oneCandidateWave;
+    representative.batchSize = representativeBatchSize;
+    representative.batchCapacity = representativeBatchSize;
+    representative.residentDeviceBytes = representativeBatchSize;
+    wavePlanner.Observe(representative);
+    const auto oneWaveDecision = wavePlanner.Evaluate(
+            waveCapacity, representativeBatchSize, watchdog);
+    okay &= Check(
+            oneWaveDecision.safe &&
+                    oneWaveDecision.predictedKernelMilliseconds == 125.0,
+            "CUDA calibration rejected a wave after measuring the full "
+            "resident cohort");
+    const auto threeWaveDecision =
+            wavePlanner.Evaluate(
+                    waveCapacity * 3u,
+                    representativeBatchSize,
+                    watchdog);
+    okay &= Check(
+            !threeWaveDecision.safe &&
+                    threeWaveDecision.predictedKernelMilliseconds == 375.0,
+            "CUDA calibration allowed a first probe spanning too many "
+            "watchdog-limited device waves");
 
     CudaCalibrationSafetyPlanner decreasingKernel;
     CudaCalibrationBatchProfile slowerSmall = nearWatchdog;

@@ -10,7 +10,8 @@ namespace forevertas {
 
 class CudaBatchCalibrator final {
 public:
-    CudaBatchCalibrator() = default;
+    explicit CudaBatchCalibrator(
+            std::uint32_t initialBatchSize = 1u) noexcept;
 
     std::uint32_t CurrentBatchSize() const noexcept;
     std::uint32_t BestBatchSize() const noexcept;

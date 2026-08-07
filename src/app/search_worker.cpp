@@ -7,6 +7,7 @@
 
 #include <chrono>
 #include <exception>
+#include <optional>
 #include <utility>
 
 namespace forevertas::app {
@@ -205,6 +206,20 @@ void SearchWorker::run() {
     emit stageChanged(QStringLiteral("Preparing search..."), true);
 
     SearchRunControl control;
+    struct LiveMetricWindow final {
+        RollingThroughput throughput;
+        std::uint64_t iterations = 0u;
+        std::chrono::steady_clock::duration elapsed{};
+        std::optional<SearchProgressStage> stage;
+        std::optional<std::uint32_t> cudaBatchSize;
+        std::optional<bool> cudaCalibrationActive;
+
+        void ResetThroughput() {
+            throughput.Reset(iterations, elapsed);
+        }
+    };
+    const auto liveMetricWindow =
+            std::make_shared<LiveMetricWindow>();
     control.reuseLoadedSandbox = true;
     control.stopRequested = [flag = stopRequested_]() {
         return flag->load(std::memory_order_relaxed);
@@ -215,18 +230,38 @@ void SearchWorker::run() {
     control.beginIteration = [phase = iterationPhase_]() {
         return TryBeginSearchIteration(phase);
     };
-    control.progressChanged = [this](const SearchProgress &progress) {
+    control.progressChanged =
+            [this, liveMetricWindow](const SearchProgress &progress) {
+        if (PhysicsBackendId(request_.backend) == "cuda" &&
+            liveMetricWindow->stage != progress.stage) {
+            liveMetricWindow->stage = progress.stage;
+            liveMetricWindow->ResetThroughput();
+            emit throughputReset();
+        }
+        if (PhysicsBackendId(request_.backend) == "cuda") {
+            const bool calibrationActive =
+                    progress.stage == SearchProgressStage::Calibration;
+            if (liveMetricWindow->cudaCalibrationActive !=
+                calibrationActive) {
+                liveMetricWindow->cudaCalibrationActive =
+                        calibrationActive;
+                emit cudaCalibrationActiveChanged(calibrationActive);
+            }
+        }
+        if (PhysicsBackendId(request_.backend) == "cuda" &&
+            (progress.stage == SearchProgressStage::FinalSamplingSetup ||
+             progress.stage == SearchProgressStage::FinalSampling) &&
+            liveMetricWindow->cudaBatchSize.value_or(0u) != 0u) {
+            liveMetricWindow->cudaBatchSize = 0u;
+            emit cudaActiveBatchSizeChanged(0u);
+        }
         if (progress.stage == SearchProgressStage::FinalSampling) {
             const double value = progress.totalWork == 0u
                     ? 1.0
                     : static_cast<double>(progress.completedWork) /
                               static_cast<double>(progress.totalWork);
-            const bool cuda =
-                    PhysicsBackendId(request_.backend) == "cuda";
-            const QString status = cuda
-                    ? QStringLiteral(
-                              "Sampling best run on CUDA: %1 of %2 ticks")
-                    : QStringLiteral("Sampling best run: %1 of %2 ticks");
+            const QString status = QStringLiteral(
+                    "Sampling best run with reference physics: %1 of %2 ticks");
             emit progressChanged(
                     value,
                     status
@@ -243,8 +278,13 @@ void SearchWorker::run() {
                         request_.useCudaSessionSpecialization),
                 true);
     };
-    control.cudaBatchSizeChanged = [this](std::uint32_t batchSize) {
-        emit cudaBatchSizeChanged(batchSize);
+    control.cudaBatchSizeChanged =
+            [this, liveMetricWindow](std::uint32_t batchSize) {
+        if (liveMetricWindow->cudaBatchSize != batchSize) {
+            liveMetricWindow->cudaBatchSize = batchSize;
+            liveMetricWindow->ResetThroughput();
+        }
+        emit cudaActiveBatchSizeChanged(batchSize);
     };
     const auto publishedTrajectoryNumber =
             std::make_shared<std::atomic_uint64_t>(0u);
@@ -277,7 +317,7 @@ void SearchWorker::run() {
                            latestIteration =
                                    std::optional<std::uint64_t>{},
                            publishImprovement,
-                           throughput = RollingThroughput()](
+                           liveMetricWindow](
                                   const SearchLiveUpdate &live) mutable {
         if (latestInputsText.isEmpty() ||
             latestSource != live.winnerSource ||
@@ -287,11 +327,20 @@ void SearchWorker::run() {
             latestSource = live.winnerSource;
             latestIteration = live.winningIterationIndex;
         }
+        const double throughput = liveMetricWindow->throughput.Observe(
+                live.iterations, live.elapsed);
+        liveMetricWindow->iterations = live.iterations;
+        liveMetricWindow->elapsed = live.elapsed;
         emit metricsChanged(
                 FormatCompactNumber(static_cast<double>(live.iterations)),
-                IterationsPerSecond(
-                        throughput.Observe(live.iterations, live.elapsed)),
-                RoundedDuration(live.elapsed));
+                IterationsPerSecond(throughput),
+                RoundedDuration(live.elapsed),
+                FormatCompactNumber(
+                        static_cast<double>(live.evaluatorCalls)),
+                FormatCompactNumber(
+                        static_cast<double>(live.totalMutationCount)),
+                FormatCompactNumber(static_cast<double>(
+                        live.mutationImprovementCount)));
         publishImprovement(live, PhysicsBackendId(request_.backend));
         emit bestChanged(
                 FormatLive(live, QStringLiteral("Current best")),

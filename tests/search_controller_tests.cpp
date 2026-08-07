@@ -1094,6 +1094,17 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                   "unexpected default CUDA parallel sample count");
     okay &= Check(!controller.cudaCalibrationEnabled(),
                   "CUDA calibration was unexpectedly enabled by default");
+    okay &= Check(
+            controller.cudaCalibrationStartSampleCount() ==
+                    QString::number(
+                            forevertas::
+                                    kDefaultCudaCalibrationStartSampleCount),
+            "unexpected default CUDA calibration starting sample count");
+    okay &= Check(
+            controller.cudaActiveCalibrationBatchSampleCount().isEmpty(),
+            "inactive CUDA calibration exposed a stale active batch");
+    okay &= Check(controller.cudaActiveBatchSampleCount().isEmpty(),
+                  "inactive search exposed a stale CUDA batch");
     okay &= Check(controller.cudaSessionSpecializationEnabled(),
                   "CUDA fast mode was not enabled by default");
     okay &= Check(controller.searchAlgorithmOptions().size() == 1,
@@ -1193,6 +1204,13 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     okay &= Check(controller.cudaCalibrationEnabled() &&
                           controller.canStart(),
                   "CUDA calibration depended on the manual sample count");
+    controller.setCudaCalibrationStartSampleCount(QStringLiteral("0"));
+    okay &= Check(!controller.canStart(),
+                  "zero CUDA calibration starting samples enabled Start");
+    controller.setCudaCalibrationStartSampleCount(
+            QStringLiteral("150000"));
+    okay &= Check(controller.canStart(),
+                  "valid CUDA calibration starting samples disabled Start");
     controller.setCudaCalibrationEnabled(false);
     okay &= Check(!controller.canStart(),
                   "manual CUDA mode ignored its invalid sample count");
@@ -1339,6 +1357,8 @@ bool TestPersistence(const QString &packsDirectory,
         controller.setCpuWorkerCount(QStringLiteral("6"));
         controller.setCudaParallelSampleCount(QStringLiteral("384"));
         controller.setCudaCalibrationEnabled(true);
+        controller.setCudaCalibrationStartSampleCount(
+                QStringLiteral("150000"));
         controller.setCudaSessionSpecializationEnabled(false);
         controller.setDarkMode(true);
         controller.setSearchAlgorithmSetting(
@@ -1376,6 +1396,10 @@ bool TestPersistence(const QString &packsDirectory,
                   "CPU worker count was not persisted");
     okay &= Check(restored.cudaCalibrationEnabled(),
                   "CUDA calibration mode was not persisted");
+    okay &= Check(
+            restored.cudaCalibrationStartSampleCount() ==
+                    QStringLiteral("150000"),
+            "CUDA calibration starting sample count was not persisted");
     okay &= Check(!restored.cudaSessionSpecializationEnabled(),
                   "CUDA fast mode selection was not persisted");
     okay &= Check(restored.darkMode(),
@@ -1429,6 +1453,14 @@ bool TestPersistence(const QString &packsDirectory,
                                   "backends/cuda/calibrationEnabled"))
                                   .toBool(),
                   "CUDA calibration mode was not stored canonically");
+    okay &= Check(
+            QSettings()
+                            .value(QStringLiteral(
+                                    "backends/cuda/"
+                                    "calibrationStartSampleCount"))
+                            .toString() == QStringLiteral("150000"),
+            "CUDA calibration starting sample count was not stored "
+            "canonically");
     okay &= Check(!QSettings().value(QStringLiteral(
                                   "backends/cuda/sessionSpecializationEnabled"))
                                    .toBool(),
@@ -1584,14 +1616,48 @@ bool TestStopAbortsBeforeFirstIteration(const QString &packsDirectory,
     QSettings().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
+#if FOREVERVALIDATOR_HAS_CUDA
+    controller.setSimulationBackendId(QStringLiteral("cuda"));
+    controller.setCudaParallelSampleCount(QStringLiteral("777"));
+    controller.setCudaCalibrationEnabled(true);
+    controller.setCudaCalibrationStartSampleCount(QStringLiteral("3"));
+    QSignalSpy activeBatchSpy(
+            &controller,
+            &SearchController::cudaActiveCalibrationBatchSampleCountChanged);
+    QSignalSpy cudaBatchSpy(
+            &controller,
+            &SearchController::cudaActiveBatchSampleCountChanged);
+#endif
     QSignalSpy completionSpy(
             &controller, &SearchController::searchCompleted);
 
     QElapsedTimer elapsed;
     elapsed.start();
     controller.startSearch();
-    controller.stopSearch();
+#if FOREVERVALIDATOR_HAS_CUDA
     bool okay = Check(
+            controller.cudaActiveCalibrationBatchSampleCount().isEmpty() &&
+                    controller.cudaActiveBatchSampleCount().isEmpty() &&
+                    controller.liveMetricsVisible() &&
+                    !controller.iterationCountText().isEmpty() &&
+                    !controller.elapsedText().isEmpty() &&
+                    !controller.evaluationCountText().isEmpty() &&
+                    !controller.mutationCountText().isEmpty() &&
+                    !controller.improvementCountText().isEmpty() &&
+                    controller.cudaParallelSampleCount() ==
+                            QStringLiteral("777") &&
+                    QSettings()
+                                    .value(QStringLiteral(
+                                            "backends/cuda/"
+                                            "parallelSampleCount"))
+                                    .toString() == QStringLiteral("777"),
+            "CUDA startup did not immediately expose activity metrics or "
+            "overwrote the saved manual batch");
+#else
+    bool okay = true;
+#endif
+    controller.stopSearch();
+    okay &= Check(
             controller.running() && controller.stopping() &&
                     controller.statusText() ==
                             QStringLiteral("Aborting search startup..."),
@@ -1606,6 +1672,16 @@ bool TestStopAbortsBeforeFirstIteration(const QString &packsDirectory,
                     completionSpy.isEmpty() &&
                     controller.resultText().isEmpty(),
             "startup abort ran or completed a search iteration");
+#if FOREVERVALIDATOR_HAS_CUDA
+    okay &= Check(
+            controller.cudaActiveCalibrationBatchSampleCount().isEmpty() &&
+                    controller.cudaActiveBatchSampleCount().isEmpty() &&
+                    controller.cudaParallelSampleCount() ==
+                            QStringLiteral("777") &&
+                    activeBatchSpy.isEmpty() &&
+                    cudaBatchSpy.isEmpty(),
+            "ending calibration did not clear only the transient CUDA batch");
+#endif
     return okay;
 }
 
@@ -1815,6 +1891,9 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
                                         QStringLiteral("00:")) &&
                                 !controller.elapsedText().contains(
                                         QLatin1Char('.')) &&
+                                !controller.evaluationCountText().isEmpty() &&
+                                !controller.mutationCountText().isEmpty() &&
+                                !controller.improvementCountText().isEmpty() &&
                                 controller.resultText().contains(
                                         QStringLiteral("Last improvement:")) &&
                                 !controller.resultText()
@@ -1920,6 +1999,9 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
                           !controller.iterationCountText().isEmpty() &&
                           !controller.throughputText().isEmpty() &&
                           !controller.elapsedText().isEmpty() &&
+                          !controller.evaluationCountText().isEmpty() &&
+                          !controller.mutationCountText().isEmpty() &&
+                          !controller.improvementCountText().isEmpty() &&
                           !controller.resultText().isEmpty() &&
                           !controller.bestInputsText().isEmpty(),
                   "completed search did not preserve the final best display");

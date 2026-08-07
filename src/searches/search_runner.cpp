@@ -837,6 +837,7 @@ SearchResult RunLoadedSearch(
                     executionControl,
                     request.parallelSampleCount,
                     request.calibrateCudaParallelSampleCount,
+                    request.cudaCalibrationStartSampleCount,
                     request.useCudaSessionSpecialization,
                     cudaModifiers.empty() ? nullptr : &cudaModifiers,
                     cudaEvaluator ? &*cudaEvaluator : nullptr,
@@ -1124,6 +1125,8 @@ SearchResult RunMultiThreadedCpuSearch(
                             };
                     workerControl.progressChanged = {};
                     workerControl.cudaBatchSizeChanged = {};
+                    workerControl.cudaBatchCapacityChanged = {};
+                    workerControl.cudaBatchExecuted = {};
                     workerControl.liveChanged =
                             [&, workerIndex](
                                     const SearchLiveUpdate &live) {

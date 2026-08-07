@@ -18,6 +18,9 @@ ApplicationWindow {
         renderMode === "textured-rt"
     property real measuredFps: 0
     property int framesSinceSample: 0
+    readonly property bool fpsSamplingEnabled:
+        window.visible && window.active && window.viewer.loaded
+        && !window.controller.running
     readonly property var settingsWheelRedirectorObject:
         settingsWheelRedirector
 
@@ -30,14 +33,21 @@ ApplicationWindow {
     FrameAnimation {
         id: frameRateMonitor
         objectName: "frameRateMonitor"
-        running: window.visible
+        running: window.fpsSamplingEnabled
         onTriggered: ++window.framesSinceSample
+        onRunningChanged: {
+            if (!running) {
+                window.framesSinceSample = 0
+                window.measuredFps = 0
+            }
+        }
     }
 
     Timer {
+        objectName: "frameRateSampleTimer"
         interval: 1000
         repeat: true
-        running: window.visible
+        running: window.fpsSamplingEnabled
         onTriggered: {
             window.measuredFps = window.framesSinceSample
             window.framesSinceSample = 0
@@ -1174,8 +1184,10 @@ ApplicationWindow {
                     }
 
                     FrameAnimation {
+                        objectName: "viewRotationSmoothingAnimation"
                         running: viewport.viewRotationSmoothing
                                  && window.visible
+                                 && window.active
                         onTriggered:
                             viewport.stepViewRotation(frameTime)
                     }
@@ -3092,17 +3104,20 @@ ApplicationWindow {
                                 Label {
                                     Layout.fillWidth: true
                                     text: window.viewer.loaded
-                                          ? qsTr("%1 triangles · %2 batches · %3 FPS")
+                                          ? qsTr("%1 triangles · %2 batches · %3")
                                                 .arg(window.controller
                                                          .formatCompactNumber(
                                                              window.viewer
-                                                               .visualTriangleCount))
+                                                                .visualTriangleCount))
                                                 .arg(window.controller
                                                          .formatCompactNumber(
                                                              window.viewer
-                                                               .visualBatchCount))
-                                                .arg(Math.round(
-                                                         window.measuredFps))
+                                                                .visualBatchCount))
+                                                .arg(window.controller.running
+                                                     ? qsTr("FPS monitoring paused")
+                                                     : qsTr("%1 FPS")
+                                                           .arg(Math.round(
+                                                                    window.measuredFps)))
                                           : window.viewer.statusText
                                     color: AppTheme.viewerOverlayMuted
                                     font.pixelSize: 11
@@ -4265,6 +4280,8 @@ ApplicationWindow {
                             objectName: "cudaParallelSampleSettings"
                             visible: window.controller.simulationBackendId
                                      === "cuda"
+                                     && !window.controller
+                                         .cudaCalibrationEnabled
                             fieldObjectName: "cudaParallelSampleCountField"
                             label: qsTr("Parallel samples at a time")
                             value: window.controller.cudaParallelSampleCount
@@ -4284,6 +4301,24 @@ ApplicationWindow {
                             onToggled:
                                 window.controller.cudaCalibrationEnabled =
                                     checked
+                        }
+
+                        SettingTextField {
+                            objectName: "cudaCalibrationStartSampleSettings"
+                            visible: window.controller.simulationBackendId
+                                     === "cuda"
+                                     && window.controller
+                                         .cudaCalibrationEnabled
+                            fieldObjectName:
+                                "cudaCalibrationStartSampleCountField"
+                            label: qsTr("Calibration starting samples")
+                            value: window.controller
+                                .cudaCalibrationStartSampleCount
+                            running: window.controller.running
+                            minimum: 1
+                            onEdited: value =>
+                                window.controller
+                                    .cudaCalibrationStartSampleCount = value
                         }
                     }
 
@@ -4496,6 +4531,87 @@ ApplicationWindow {
                             wrapMode: Text.WordWrap
                         }
 
+                        Rectangle {
+                            id: cudaBatchStatusPanel
+
+                            objectName: "cudaBatchStatusPanel"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight:
+                                Math.max(18,
+                                         cudaBatchStatusLabel.implicitHeight)
+                                + 16
+                            visible: window.controller.running
+                                     && window.controller.liveMetricsVisible
+                                     && window.controller.simulationBackendId
+                                         === "cuda"
+                                     && window.controller
+                                         .cudaActiveBatchSampleCount.length > 0
+                            radius: 7
+                            color: AppTheme.surfaceRaised
+                            border.width: 1
+                            border.color: AppTheme.border
+                            Accessible.name: qsTr("CUDA batch activity")
+                            Accessible.description: cudaBatchStatusLabel.text
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                spacing: 7
+
+                                BusyIndicator {
+                                    objectName: "cudaBatchBusyIndicator"
+                                    Layout.preferredWidth: 18
+                                    Layout.preferredHeight: 18
+                                    running: cudaBatchStatusPanel.visible
+                                    Accessible.name: qsTr("CUDA is working")
+                                }
+
+                                Label {
+                                    id: cudaBatchStatusLabel
+
+                                    objectName: "cudaBatchStatusLabel"
+                                    Layout.fillWidth: true
+                                    text: window.controller
+                                                  .cudaActiveBatchSampleCount
+                                                  .length === 0
+                                          ? qsTr("Preparing CUDA batch activity...")
+                                          : window.controller
+                                                  .cudaActiveCalibrationBatchSampleCount
+                                                  .length > 0
+                                          ? window.controller.throughputText.length > 0
+                                            ? qsTr("Calibrating CUDA: active/next batch %1 candidates · last completed rate %2 candidates/s")
+                                                  .arg(window.controller
+                                                           .cudaActiveBatchSampleCount)
+                                                  .arg(window.controller
+                                                           .throughputText)
+                                            : qsTr("Calibrating CUDA: active/next batch %1 candidates · waiting for the first completed batch...")
+                                                  .arg(window.controller
+                                                           .cudaActiveBatchSampleCount)
+                                          : window.controller.throughputText.length > 0
+                                            ? qsTr("CUDA is working: batch capacity %1 candidates · last completed rate %2 candidates/s")
+                                                  .arg(window.controller
+                                                           .cudaActiveBatchSampleCount)
+                                                  .arg(window.controller
+                                                           .throughputText)
+                                            : qsTr("CUDA is working: batch capacity %1 candidates · waiting for the first completed batch...")
+                                                  .arg(window.controller
+                                                           .cudaActiveBatchSampleCount)
+                                    color: AppTheme.text
+                                    font.pixelSize: 11
+                                    font.family: "monospace"
+                                    wrapMode: Text.WordWrap
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+
+                            HoverHandler {
+                                id: cudaBatchStatusHover
+                            }
+                            ToolTip.visible: cudaBatchStatusHover.hovered
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr("The batch value is the active/next calibration size or the configured normal-search capacity. The rate is the most recent completed rolling measurement and resets at each CUDA stage.")
+                        }
+
                         RowLayout {
                             id: searchMetricsRow
 
@@ -4522,7 +4638,7 @@ ApplicationWindow {
 
                                     Label {
                                         Layout.fillWidth: true
-                                        text: qsTr("Iterations")
+                                        text: qsTr("Candidates")
                                         color: AppTheme.textMuted
                                         font.pixelSize: 10
                                         horizontalAlignment: Text.AlignHCenter
@@ -4540,6 +4656,15 @@ ApplicationWindow {
                                         elide: Text.ElideRight
                                     }
                                 }
+
+                                Accessible.name: qsTr("Candidates simulated")
+                                Accessible.description: qsTr("Candidate input sequences simulated so far")
+                                HoverHandler {
+                                    id: iterationsMetricHover
+                                }
+                                ToolTip.visible: iterationsMetricHover.hovered
+                                ToolTip.delay: 350
+                                ToolTip.text: qsTr("Candidate input sequences simulated so far.")
                             }
 
                             Rectangle {
@@ -4560,7 +4685,7 @@ ApplicationWindow {
 
                                     Label {
                                         Layout.fillWidth: true
-                                        text: qsTr("Throughput")
+                                        text: qsTr("Candidate rate")
                                         color: AppTheme.textMuted
                                         font.pixelSize: 10
                                         horizontalAlignment: Text.AlignHCenter
@@ -4581,6 +4706,15 @@ ApplicationWindow {
                                         elide: Text.ElideRight
                                     }
                                 }
+
+                                Accessible.name: qsTr("Candidate rate")
+                                Accessible.description: qsTr("Candidates simulated per second in the current rolling window")
+                                HoverHandler {
+                                    id: throughputMetricHover
+                                }
+                                ToolTip.visible: throughputMetricHover.hovered
+                                ToolTip.delay: 350
+                                ToolTip.text: qsTr("Candidates simulated per second over the current rolling window. CUDA calibration resets this rate for each batch and stage.")
                             }
 
                             Rectangle {
@@ -4619,6 +4753,168 @@ ApplicationWindow {
                                         elide: Text.ElideRight
                                     }
                                 }
+
+                                Accessible.name: qsTr("Elapsed search time")
+                                Accessible.description: qsTr("Time spent in the active search")
+                                HoverHandler {
+                                    id: elapsedMetricHover
+                                }
+                                ToolTip.visible: elapsedMetricHover.hovered
+                                ToolTip.delay: 350
+                                ToolTip.text: qsTr("Time spent in the active search.")
+                            }
+                        }
+
+                        RowLayout {
+                            id: searchActivityRow
+
+                            objectName: "searchActivityRow"
+                            Layout.fillWidth: true
+                            visible: window.controller.liveMetricsVisible
+                            spacing: 6
+
+                            Rectangle {
+                                objectName: "evaluationsMetricCard"
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: 54
+                                radius: 7
+                                color: AppTheme.surfaceRaised
+                                border.width: 1
+                                border.color: AppTheme.border
+                                clip: true
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 7
+                                    spacing: 1
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: qsTr("Target slots")
+                                        color: AppTheme.textMuted
+                                        font.pixelSize: 10
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+
+                                    Label {
+                                        objectName: "evaluationsMetricValue"
+                                        Layout.fillWidth: true
+                                        text: window.controller
+                                            .evaluationCountText
+                                        color: AppTheme.text
+                                        font.family: "monospace"
+                                        font.pixelSize: 13
+                                        font.weight: Font.DemiBold
+                                        horizontalAlignment: Text.AlignHCenter
+                                        elide: Text.ElideRight
+                                    }
+                                }
+
+                                Accessible.name: qsTr("Target scan slots")
+                                Accessible.description: qsTr("Scheduled candidate-tick slots in the target evaluation window")
+                                HoverHandler {
+                                    id: evaluationsMetricHover
+                                }
+                                ToolTip.visible: evaluationsMetricHover.hovered
+                                ToolTip.delay: 350
+                                ToolTip.text: qsTr("Scheduled candidate-tick slots in the target evaluation window. CUDA reports this as an upper bound; early finishes and condition filters can skip actual target calls.")
+                            }
+
+                            Rectangle {
+                                objectName: "mutationsMetricCard"
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: 54
+                                radius: 7
+                                color: AppTheme.surfaceRaised
+                                border.width: 1
+                                border.color: AppTheme.border
+                                clip: true
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 7
+                                    spacing: 1
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: qsTr("Input mutations")
+                                        color: AppTheme.textMuted
+                                        font.pixelSize: 10
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+
+                                    Label {
+                                        objectName: "mutationsMetricValue"
+                                        Layout.fillWidth: true
+                                        text: window.controller
+                                            .mutationCountText
+                                        color: AppTheme.text
+                                        font.family: "monospace"
+                                        font.pixelSize: 13
+                                        font.weight: Font.DemiBold
+                                        horizontalAlignment: Text.AlignHCenter
+                                        elide: Text.ElideRight
+                                    }
+                                }
+
+                                Accessible.name: qsTr("Input mutations")
+                                Accessible.description: qsTr("Individual input-edit operations generated across candidates")
+                                HoverHandler {
+                                    id: mutationsMetricHover
+                                }
+                                ToolTip.visible: mutationsMetricHover.hovered
+                                ToolTip.delay: 350
+                                ToolTip.text: qsTr("Individual input-edit operations generated across all candidates.")
+                            }
+
+                            Rectangle {
+                                objectName: "improvementsMetricCard"
+                                Layout.fillWidth: true
+                                Layout.preferredWidth: 1
+                                Layout.preferredHeight: 54
+                                radius: 7
+                                color: AppTheme.surfaceRaised
+                                border.width: 1
+                                border.color: AppTheme.border
+                                clip: true
+
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 7
+                                    spacing: 1
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: qsTr("Better results")
+                                        color: AppTheme.textMuted
+                                        font.pixelSize: 10
+                                        horizontalAlignment: Text.AlignHCenter
+                                    }
+
+                                    Label {
+                                        objectName: "improvementsMetricValue"
+                                        Layout.fillWidth: true
+                                        text: window.controller
+                                            .improvementCountText
+                                        color: AppTheme.text
+                                        font.family: "monospace"
+                                        font.pixelSize: 13
+                                        font.weight: Font.DemiBold
+                                        horizontalAlignment: Text.AlignHCenter
+                                        elide: Text.ElideRight
+                                    }
+                                }
+
+                                Accessible.name: qsTr("Better results")
+                                Accessible.description: qsTr("Mutations accepted because they improved the current best")
+                                HoverHandler {
+                                    id: improvementsMetricHover
+                                }
+                                ToolTip.visible: improvementsMetricHover.hovered
+                                ToolTip.delay: 350
+                                ToolTip.text: qsTr("Mutations accepted because they improved the current best result.")
                             }
                         }
 

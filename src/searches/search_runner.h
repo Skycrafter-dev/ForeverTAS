@@ -19,6 +19,8 @@ namespace forevertas {
 inline constexpr std::uint32_t kSearchTickDurationMs =
         kInputTimelineTickDurationMs;
 inline constexpr std::uint32_t kDefaultCudaParallelSampleCount = 256u;
+inline constexpr std::uint32_t
+        kDefaultCudaCalibrationStartSampleCount = 1u;
 inline constexpr std::uint32_t kMaximumCpuWorkerCount = 256u;
 inline constexpr std::uint32_t kDefaultSimulationHorizonMs = 6000u;
 inline constexpr std::uint32_t kMaximumSimulationHorizonMs = 2147481040u;
@@ -41,6 +43,8 @@ struct SearchRequest {
     PhysicsBackend backend = PhysicsBackend::Reference;
     std::uint32_t parallelSampleCount = 1u;
     bool calibrateCudaParallelSampleCount = false;
+    std::uint32_t cudaCalibrationStartSampleCount =
+            kDefaultCudaCalibrationStartSampleCount;
     OptionConfiguration searchAlgorithm =
             DefaultSearchAlgorithmConfiguration();
     std::vector<OptionConfiguration> modifiers =

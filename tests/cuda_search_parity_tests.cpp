@@ -21,11 +21,13 @@
 #include <iostream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -88,12 +90,20 @@ SearchResult Run(const char *packs,
                  std::uint32_t simulationHorizonMs =
                          forevertas::kDefaultSimulationHorizonMs,
                  const std::string &conditionScript = {},
-                 std::uint64_t *winnerResolutionCount = nullptr) {
+                 std::uint64_t *winnerResolutionCount = nullptr,
+                 std::uint32_t calibrationStartBatchSize =
+                         forevertas::
+                                 kDefaultCudaCalibrationStartSampleCount,
+                 std::vector<std::uint32_t> *capacityUpdates = nullptr,
+                 std::vector<std::pair<std::uint64_t, std::uint32_t>>
+                         *batchExecutions = nullptr) {
     SearchRequest request{packs, replay};
     request.baseInputCommands = ReplayInputCommands(packs, replay);
     request.backend = backend;
     request.parallelSampleCount = batchSize;
     request.calibrateCudaParallelSampleCount = calibrate;
+    request.cudaCalibrationStartSampleCount =
+            calibrationStartBatchSize;
     request.useCudaSessionSpecialization = useSessionSpecialization;
     request.simulationHorizonMs = simulationHorizonMs;
     request.searchAlgorithm.settings["autoPromoteBest"] =
@@ -117,6 +127,22 @@ SearchResult Run(const char *packs,
                     (calibrationUpdates->empty() ||
                      calibrationUpdates->back() != value)) {
                     calibrationUpdates->push_back(value);
+                }
+            };
+    control.cudaBatchCapacityChanged =
+            [capacityUpdates](std::uint32_t value) {
+                if (capacityUpdates != nullptr &&
+                    (capacityUpdates->empty() ||
+                     capacityUpdates->back() != value)) {
+                    capacityUpdates->push_back(value);
+                }
+            };
+    control.cudaBatchExecuted =
+            [batchExecutions](std::uint64_t firstCandidateId,
+                              std::uint32_t candidateCount) {
+                if (batchExecutions != nullptr) {
+                    batchExecutions->emplace_back(
+                            firstCandidateId, candidateCount);
                 }
             };
     control.cudaWinnerResolved = [winnerResolutionCount]() {
@@ -383,6 +409,9 @@ bool CheckCalibration(const char *packs, const char *replay) {
     velocity.settings["maxTimeMs"] = "1010";
 
     std::vector<std::uint32_t> updates;
+    std::vector<std::uint32_t> capacityUpdates;
+    std::vector<std::pair<std::uint64_t, std::uint32_t>>
+            batchExecutions;
     bool calibrationCompleted = false;
     const SearchResult calibrated = Run(
             packs,
@@ -397,24 +426,164 @@ bool CheckCalibration(const char *packs, const char *replay) {
             false,
             std::nullopt,
             &calibrationCompleted,
-            true);
+            true,
+            true,
+            false,
+            forevertas::kDefaultSimulationHorizonMs,
+            {},
+            nullptr,
+            std::numeric_limits<std::uint32_t>::max(),
+            &capacityUpdates,
+            &batchExecutions);
     const bool grew = std::any_of(
             updates.begin(),
             updates.end(),
             [](std::uint32_t value) {
                 return value > 1u;
             });
-    if (updates.size() < 3u || updates.front() != 1u || !grew ||
+    const bool boundedBootstrap =
+            !capacityUpdates.empty() &&
+            capacityUpdates.front() == 1u &&
+            std::none_of(
+                    capacityUpdates.begin(),
+                    capacityUpdates.end(),
+                    [](std::uint32_t value) {
+                        return value ==
+                                std::numeric_limits<
+                                        std::uint32_t>::max();
+                    });
+    std::vector<std::uint32_t> executedBatchChanges;
+    for (const auto &[firstCandidateId, candidateCount] :
+         batchExecutions) {
+        static_cast<void>(firstCandidateId);
+        if (executedBatchChanges.empty() ||
+            executedBatchChanges.back() != candidateCount) {
+            executedBatchChanges.push_back(candidateCount);
+        }
+    }
+    const bool truthfulStagedProbes =
+            updates.size() >= 2u &&
+            updates.front() == 2u &&
+            updates[1] > updates.front() &&
+            updates == executedBatchChanges &&
+            std::none_of(
+                    updates.begin(),
+                    updates.end(),
+                    [](std::uint32_t value) {
+                        return value ==
+                                std::numeric_limits<
+                                        std::uint32_t>::max();
+                    });
+    const bool nonOverlappingBootstrap =
+            batchExecutions.size() >= 2u &&
+            batchExecutions[0].first == 0u &&
+            batchExecutions[0].second == 2u &&
+            batchExecutions[1].first == 2u &&
+            batchExecutions[1].second == updates[1] &&
+            std::none_of(
+                    batchExecutions.begin(),
+                    batchExecutions.end(),
+                    [](const auto &execution) {
+                        return execution.second ==
+                                std::numeric_limits<
+                                        std::uint32_t>::max();
+                    });
+    if (updates.size() < 3u || !truthfulStagedProbes || !grew ||
+        !boundedBootstrap || !nonOverlappingBootstrap ||
         !calibrationCompleted) {
         std::cerr
                 << "real CUDA calibration depended on the configured "
-                   "batch size, did not grow, or did not complete; "
+                   "batch size, allocated/executed the unsafe first probe, "
+                   "did not grow, or did not complete; "
                    "completed="
                 << calibrationCompleted << " updates=";
         for (std::uint32_t update : updates) {
             std::cerr << update << ',';
         }
+        std::cerr << " capacities=";
+        for (std::uint32_t capacity : capacityUpdates) {
+            std::cerr << capacity << ',';
+        }
+        std::cerr << " executions=";
+        for (const auto &[firstCandidateId, candidateCount] :
+             batchExecutions) {
+            std::cerr << firstCandidateId << '+' << candidateCount << ',';
+        }
         std::cerr << '\n';
+        return false;
+    }
+
+    std::vector<std::pair<std::uint64_t, std::uint32_t>>
+            oneIterationExecutions;
+    std::vector<std::uint32_t> oneIterationBatches;
+    std::vector<std::uint32_t> oneIterationCapacities;
+    bool oneIterationCalibrationCompleted = false;
+    const SearchResult oneIteration = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Cuda,
+            64u,
+            1u,
+            {insertion},
+            velocity,
+            true,
+            &oneIterationBatches,
+            false,
+            std::nullopt,
+            &oneIterationCalibrationCompleted,
+            false,
+            true,
+            false,
+            forevertas::kDefaultSimulationHorizonMs,
+            {},
+            nullptr,
+            std::numeric_limits<std::uint32_t>::max(),
+            &oneIterationCapacities,
+            &oneIterationExecutions);
+    std::vector<std::pair<std::uint64_t, std::uint32_t>>
+            zeroIterationExecutions;
+    std::vector<std::uint32_t> zeroIterationBatches;
+    std::vector<std::uint32_t> zeroIterationCapacities;
+    const SearchResult zeroIteration = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Cuda,
+            64u,
+            0u,
+            {insertion},
+            velocity,
+            true,
+            &zeroIterationBatches,
+            false,
+            std::nullopt,
+            nullptr,
+            false,
+            true,
+            false,
+            forevertas::kDefaultSimulationHorizonMs,
+            {},
+            nullptr,
+            std::numeric_limits<std::uint32_t>::max(),
+            &zeroIterationCapacities,
+            &zeroIterationExecutions);
+    const bool boundedIterationBudgets =
+            oneIteration.iterations == 1u &&
+            oneIterationExecutions.size() == 1u &&
+            oneIterationExecutions.front() ==
+                    std::pair<std::uint64_t, std::uint32_t>{0u, 1u} &&
+            oneIterationBatches == std::vector<std::uint32_t>{1u} &&
+            oneIterationCapacities ==
+                    std::vector<std::uint32_t>{1u} &&
+            !oneIterationCalibrationCompleted &&
+            zeroIteration.iterations == 0u &&
+            zeroIterationExecutions.empty() &&
+            zeroIterationBatches.empty() &&
+            zeroIterationCapacities ==
+                    std::vector<std::uint32_t>{1u};
+    if (!boundedIterationBudgets) {
+        std::cerr
+                << "CUDA calibration bootstrap exceeded the zero/one "
+                   "iteration budget\n";
         return false;
     }
     return calibrated.iterations != 0u &&

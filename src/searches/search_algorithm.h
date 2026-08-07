@@ -112,6 +112,9 @@ struct SearchRunControl {
     std::function<void(const SearchLiveUpdate &)>
             improvementTimelineSampled;
     std::function<void(std::uint32_t)> cudaBatchSizeChanged;
+    std::function<void(std::uint32_t)> cudaBatchCapacityChanged;
+    std::function<void(std::uint64_t, std::uint32_t)>
+            cudaBatchExecuted;
     std::function<void()> cudaWinnerResolved;
     std::function<std::optional<std::vector<SandboxInputEvent>>()>
             promotedBaselineInputs;
@@ -144,6 +147,7 @@ struct SearchExecutionContext {
     const SearchRunControl *control = nullptr;
     std::uint32_t cudaBatchSize = 1u;
     bool calibrateCudaBatchSize = false;
+    std::uint32_t cudaCalibrationStartBatchSize = 1u;
     bool useCudaSessionSpecialization = false;
     const std::vector<forevervalidator::experimental::
                               PhysicsSandboxCudaModifier>

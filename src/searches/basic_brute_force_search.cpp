@@ -123,6 +123,21 @@ void ReportCudaBatchSize(const SearchRunControl *control,
     }
 }
 
+void ReportCudaBatchCapacity(const SearchRunControl *control,
+                             std::uint32_t batchCapacity) {
+    if (control != nullptr && control->cudaBatchCapacityChanged) {
+        control->cudaBatchCapacityChanged(batchCapacity);
+    }
+}
+
+void ReportCudaBatchExecution(const SearchRunControl *control,
+                              std::uint64_t firstCandidateId,
+                              std::uint32_t candidateCount) {
+    if (control != nullptr && control->cudaBatchExecuted) {
+        control->cudaBatchExecuted(firstCandidateId, candidateCount);
+    }
+}
+
 bool CudaBatchProfilingEnabled() {
     static const bool enabled = []() {
 #if defined(_WIN32)
@@ -486,18 +501,24 @@ SearchResult RunCudaBasicBruteForce(
     if (context.cudaModifiers == nullptr ||
         context.cudaEvaluator == nullptr ||
         (!context.calibrateCudaBatchSize &&
-         context.cudaBatchSize == 0u)) {
+         context.cudaBatchSize == 0u) ||
+        (context.calibrateCudaBatchSize &&
+         context.cudaCalibrationStartBatchSize == 0u)) {
         throw std::invalid_argument(
                 "CUDA search configuration is unavailable");
     }
 
-    constexpr std::uint32_t calibrationInitialBatchSize = 1u;
-    const std::uint32_t initialBatchSize =
+    constexpr std::uint32_t calibrationBootstrapBatchSize = 1u;
+    const std::uint32_t requestedBatchSize =
             context.calibrateCudaBatchSize
-            ? calibrationInitialBatchSize
+            ? context.cudaCalibrationStartBatchSize
             : context.cudaBatchSize;
+    const std::uint32_t initialSessionCapacity =
+            context.calibrateCudaBatchSize
+            ? calibrationBootstrapBatchSize
+            : requestedBatchSize;
     PhysicsSandboxCudaSearchConfiguration configuration;
-    configuration.maximumBatchSize = initialBatchSize;
+    configuration.maximumBatchSize = initialSessionCapacity;
     configuration.earliestMutationTimeMs = earliestMutationTimeMs;
     configuration.evaluationStartTimeMs = evaluationPlan.startTimeMs;
     configuration.evaluationEndTimeMs = evaluationPlan.endTimeMs;
@@ -518,12 +539,13 @@ SearchResult RunCudaBasicBruteForce(
             CreatePhysicsSandboxCudaSearchSession(
                     context.sandbox, configuration),
             "creating resident CUDA search session"));
+    ReportCudaBatchCapacity(context.control, initialSessionCapacity);
     std::optional<CudaBatchCalibrator> calibrator;
     CudaCalibrationSafetyPlanner calibrationSafety;
     if (context.calibrateCudaBatchSize) {
-        calibrator.emplace();
+        calibrator.emplace(requestedBatchSize);
     }
-    std::uint32_t sessionCapacity = initialBatchSize;
+    std::uint32_t sessionCapacity = initialSessionCapacity;
     const std::uint64_t timelineTickCount =
             static_cast<std::uint64_t>(
                     (evaluationPlan.endTimeMs -
@@ -641,30 +663,54 @@ SearchResult RunCudaBasicBruteForce(
     adoptBest(baseline);
     reportLive(true);
     if (calibrator) {
-        ReportCudaBatchSize(
-                context.control, calibrator->CurrentBatchSize());
         ReportProgress(
                 context.control, SearchProgressStage::Calibration, 0u);
     } else {
+        ReportCudaBatchSize(context.control, requestedBatchSize);
         ReportProgress(
                 context.control, SearchProgressStage::Mutations, 0u);
     }
 
     std::uint64_t iterationIndex = 0u;
+    std::optional<std::uint32_t> reportedCalibrationBatchSize;
     while (!StopRequested(context.control) &&
            !IterationLimitReached(context.control, iterations)) {
         CheckCancellation(context.control);
-        std::uint32_t batchSize = calibrator
+        std::optional<CudaCalibrationDeviceLimits> calibrationLimits;
+        std::optional<std::uint32_t> stagedProbe;
+        if (calibrator) {
+            calibrationLimits = QueryCudaCalibrationDeviceLimits();
+            if (!calibrator->Complete()) {
+                stagedProbe = calibrationSafety.NextStagedProbe(
+                        calibrator->CurrentBatchSize(),
+                        *calibrationLimits);
+            }
+        }
+        const bool calibrationBootstrap = stagedProbe.has_value();
+        std::uint32_t batchSize = calibrationBootstrap
+                ? *stagedProbe
+                : calibrator
                 ? calibrator->CurrentBatchSize()
                 : context.cudaBatchSize;
-        if (calibrator &&
-            (!calibrator->Complete() ||
-             batchSize > sessionCapacity)) {
+        if (context.control != nullptr &&
+            context.control->iterationLimit) {
+            batchSize = static_cast<std::uint32_t>(
+                    std::min<std::uint64_t>(
+                            batchSize,
+                            *context.control->iterationLimit -
+                                    iterations));
+        }
+        const bool requiresCalibrationSafety = calibrator &&
+                ((calibrationBootstrap && batchSize > 2u) ||
+                 (!calibrationBootstrap &&
+                  (!calibrator->Complete() ||
+                   batchSize > sessionCapacity)));
+        if (requiresCalibrationSafety) {
             const CudaCalibrationSafetyDecision decision =
                     calibrationSafety.Evaluate(
                             batchSize,
                             sessionCapacity,
-                            QueryCudaCalibrationDeviceLimits());
+                            *calibrationLimits);
             if (!decision.safe) {
                 ReportRejectedCudaCalibrationBatch(
                         batchSize, decision);
@@ -681,9 +727,6 @@ SearchResult RunCudaBasicBruteForce(
                             decision.reason);
                 }
                 calibrator->RejectUnsafeCurrent();
-                ReportCudaBatchSize(
-                        context.control,
-                        calibrator->CurrentBatchSize());
                 if (calibrator->Complete()) {
                     ReportCudaCalibrationSelection(
                             *calibrator);
@@ -711,9 +754,6 @@ SearchResult RunCudaBasicBruteForce(
                     throw std::runtime_error(std::move(message));
                 }
                 calibrator->CapacityUnavailable();
-                ReportCudaBatchSize(
-                        context.control,
-                        calibrator->CurrentBatchSize());
                 if (calibrator->Complete()) {
                     ReportCudaCalibrationSelection(
                             *calibrator);
@@ -725,14 +765,8 @@ SearchResult RunCudaBasicBruteForce(
                 continue;
             }
             sessionCapacity = reserved.Value();
-        }
-        if (context.control != nullptr &&
-            context.control->iterationLimit) {
-            batchSize = static_cast<std::uint32_t>(
-                    std::min<std::uint64_t>(
-                            batchSize,
-                            *context.control->iterationLimit -
-                                    iterations));
+            ReportCudaBatchCapacity(
+                    context.control, sessionCapacity);
         }
         const bool exhaustsSequence =
                 batchSize != 0u &&
@@ -743,6 +777,11 @@ SearchResult RunCudaBasicBruteForce(
             batchSize = static_cast<std::uint32_t>(
                     std::numeric_limits<std::uint64_t>::max() -
                     iterationIndex + 1u);
+        }
+        if (calibrator &&
+            reportedCalibrationBatchSize != batchSize) {
+            ReportCudaBatchSize(context.control, batchSize);
+            reportedCalibrationBatchSize = batchSize;
         }
         const auto batchStarted = std::chrono::steady_clock::now();
         BeginIteration(context.control);
@@ -759,14 +798,20 @@ SearchResult RunCudaBasicBruteForce(
         const auto batchElapsed =
                 std::chrono::steady_clock::now() - batchStarted;
         ReportCudaBatchProfile(
-                "mutations", batch, timelineTickCount, batchElapsed);
+                calibrationBootstrap
+                        ? "calibration-bootstrap"
+                        : "mutations",
+                batch,
+                timelineTickCount,
+                batchElapsed);
         std::optional<CudaCalibrationSafetyDecision>
                 executedCalibrationSafety;
         if (calibrator) {
             calibrationSafety.Observe(
                     CudaCalibrationProfile(
                             batch, sessionCapacity));
-            if (!calibrator->Complete()) {
+            if (!calibrationBootstrap &&
+                !calibrator->Complete()) {
                 executedCalibrationSafety =
                         calibrationSafety.Evaluate(
                                 batch.candidateCount,
@@ -777,6 +822,10 @@ SearchResult RunCudaBasicBruteForce(
         if (batch.cancelled) {
             throw SearchCancelled();
         }
+        ReportCudaBatchExecution(
+                context.control,
+                batch.firstCandidateId,
+                batch.candidateCount);
         iterations += batch.candidateCount;
         evaluatorCalls += batch.evaluatorCalls;
         totalMutationCount += batch.totalMutationCount;
@@ -809,7 +858,8 @@ SearchResult RunCudaBasicBruteForce(
                         "updating CUDA condition times");
             }
         }
-        if (calibrator && !calibrator->Complete()) {
+        if (calibrator && !calibrationBootstrap &&
+            !calibrator->Complete()) {
             if (executedCalibrationSafety &&
                 !executedCalibrationSafety->safe) {
                 ReportRejectedCudaCalibrationBatch(
@@ -832,8 +882,6 @@ SearchResult RunCudaBasicBruteForce(
                         "CUDA calibration could not obtain a "
                         "repeatable throughput measurement");
             }
-            ReportCudaBatchSize(
-                    context.control, calibrator->CurrentBatchSize());
             if (calibrator->Complete()) {
                 ReportCudaCalibrationSelection(*calibrator);
                 ReportProgress(
@@ -852,7 +900,7 @@ SearchResult RunCudaBasicBruteForce(
                     calibrator
                     ? (calibrator->Complete()
                                ? calibrator->BestBatchSize()
-                               : calibrationInitialBatchSize)
+                               : sessionCapacity)
                     : sessionCapacity;
             if (calibrator) {
                 const CudaCalibrationSafetyDecision decision =
@@ -891,6 +939,8 @@ SearchResult RunCudaBasicBruteForce(
                             context.sandbox, configuration),
                     "recreating promoted CUDA search session"));
             sessionCapacity = recreatedCapacity;
+            ReportCudaBatchCapacity(
+                    context.control, sessionCapacity);
         }
         if (batch.mutationImprovementCount != 0u) {
             lastImprovementElapsed =
