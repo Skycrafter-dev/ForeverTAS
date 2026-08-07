@@ -103,6 +103,15 @@ portable layout.
 and coordinates exact-source Linux and Windows builds. Run the two platform
 builds sequentially so they do not compete for host CPU and memory.
 
+Publish the exact ForeverValidator commit pinned by both `CMakeLists.txt` and
+the release manifest before publishing the corresponding ForeverTAS change.
+An ordinary source configure resolves that commit through FetchContent and
+cannot fetch a local-only commit. The local release driver can validate the
+publication stack in order: it exports the exact local Validator checkout into
+each prepared source tree and passes it through
+`FETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR`. That local override makes packaging
+possible before publication, but it does not make the pin remotely reachable.
+
 The Linux build reuses a content-addressed toolchain image from
 `packaging/release/linux-toolchain.Dockerfile`. The image pins Ubuntu 22.04, CUDA
 12.8, Qt 6.9.3, CMake, and sccache instead of reinstalling them for every job.
