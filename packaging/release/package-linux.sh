@@ -8,6 +8,11 @@ dist_dir="${repo_root}/dist"
 cache_root="${FOREVERTAS_CACHE_ROOT:-/cache}"
 search_cache_root="${cache_root}/cuda-search"
 split_compile_jobs="${FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS:-4}"
+cache_schema="cuda-search-object-v2"
+expected_cuda_architectures="61-real;62-real;70-real;72-real;75-real;80-real;86-real;87-real;89-real;90-real;100-real;101-real;120-real;120-virtual"
+expected_architecture_key="sm61-sm62-sm70-sm72-sm75-sm80-sm86-sm87-sm89-sm90-sm100-sm101-sm120-ptx120"
+expected_cubin_architectures="61 62 70 72 75 80 86 87 89 90 100 101 120"
+expected_ptx_architecture="120"
 
 : "${CUDA_VERSION:?CUDA_VERSION is required}"
 : "${CUDA_ARCHITECTURES:?CUDA_ARCHITECTURES is required}"
@@ -16,6 +21,19 @@ split_compile_jobs="${FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS:-4}"
 : "${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT:?FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT is required}"
 : "${FOREVERTAS_VERSION:?FOREVERTAS_VERSION is required}"
 : "${FOREVERTAS_TOOLCHAIN_IMAGE:?FOREVERTAS_TOOLCHAIN_IMAGE is required}"
+
+if [[ "${CUDA_VERSION}" != "12.8.1" ||
+      "${CUDA_ARCHITECTURES}" != "${expected_cuda_architectures}" ||
+      "${CUDA_ARCHITECTURE_KEY}" != "${expected_architecture_key}" ||
+      "${split_compile_jobs}" != "4" ]]; then
+    echo "Linux release inputs do not match the validated CUDA contract" >&2
+    exit 1
+fi
+if [[ ! "${FOREVERVALIDATOR_COMMIT}" =~ ^[0-9a-f]{40}$ ||
+      "${FOREVERVALIDATOR_COMMIT}" != "${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}" ]]; then
+    echo "ForeverValidator release and CUDA object commits must be one exact lowercase SHA" >&2
+    exit 1
+fi
 
 if [[ -d "${validator_root}/.git" ]]; then
     actual_validator_commit="$(git -C "${validator_root}" rev-parse HEAD)"
@@ -45,31 +63,39 @@ report_cache() {
 }
 trap report_cache EXIT
 
-search_key="$({
-    printf '%s\n' \
-        "cache_schema=cuda-search-object-v1" \
-        "toolchain=${FOREVERTAS_TOOLCHAIN_IMAGE}" \
-        "cuda=${CUDA_VERSION}" \
-        "architectures=${CUDA_ARCHITECTURES}" \
-        "architecture_key=${CUDA_ARCHITECTURE_KEY}" \
-        "split_compile_jobs=${split_compile_jobs}" \
-        "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}"
+toolchain_identity="$({
+    printf '%s\n' "image=${FOREVERTAS_TOOLCHAIN_IMAGE}"
     nvcc --version
     c++ -dumpfullversion -dumpversion
 } | sha256sum | cut -d' ' -f1)"
+cache_identity=(
+    "cache_schema=${cache_schema}"
+    "toolchain=${toolchain_identity}"
+    "cuda=${CUDA_VERSION}"
+    "architectures=${CUDA_ARCHITECTURES}"
+    "architecture_key=${CUDA_ARCHITECTURE_KEY}"
+    "split_compile_jobs=${split_compile_jobs}"
+    "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}"
+)
+search_key="$(printf '%s\n' "${cache_identity[@]}" |
+    sha256sum | cut -d' ' -f1)"
 search_cache_dir="${search_cache_root}/${search_key}"
 cached_search_object="${search_cache_dir}/cuda_search_executor.cu.o"
 
 verify_architectures() {
     local object="$1"
-    local output architecture
+    local output actual
     [[ -f "${object}" ]] || return 1
     output="$("${CUDA_PATH}/bin/cuobjdump" --list-elf "${object}")" || return 1
-    for architecture in 50 52 61 70 75 86 89 120; do
-        grep -q "sm_${architecture}\.cubin" <<<"${output}" || return 1
-    done
+    actual="$(grep -oE 'sm_[0-9]+\.cubin' <<<"${output}" |
+        sed -E 's/^sm_([0-9]+)\.cubin$/\1/' |
+        sort -n -u | paste -sd' ' - || true)"
+    [[ "${actual}" == "${expected_cubin_architectures}" ]] || return 1
     output="$("${CUDA_PATH}/bin/cuobjdump" --list-ptx "${object}")" || return 1
-    grep -q "sm_120\.ptx" <<<"${output}"
+    actual="$(grep -oE 'sm_[0-9]+\.ptx' <<<"${output}" |
+        sed -E 's/^sm_([0-9]+)\.ptx$/\1/' |
+        sort -n -u | paste -sd' ' - || true)"
+    [[ "${actual}" == "${expected_ptx_architecture}" ]]
 }
 
 verify_cache_integrity() {
@@ -78,18 +104,17 @@ verify_cache_integrity() {
     local metadata="${directory}/metadata.txt"
     verify_architectures "${object}" || return 1
     [[ -f "${metadata}" ]] || return 1
-    grep -Fxq 'cache_schema=cuda-search-object-v1' "${metadata}" || return 1
-    grep -Fxq "toolchain=${FOREVERTAS_TOOLCHAIN_IMAGE}" "${metadata}" || return 1
-    grep -Fxq "cuda=${CUDA_VERSION}" "${metadata}" || return 1
-    grep -Fxq "architectures=${CUDA_ARCHITECTURES}" "${metadata}" || return 1
-    grep -Fxq "split_compile_jobs=${split_compile_jobs}" "${metadata}" || return 1
-    grep -Fxq "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}" "${metadata}" || return 1
-    if [[ ! -f "${directory}/object.sha256" ]]; then
-        (cd "${directory}" &&
-         sha256sum cuda_search_executor.cu.o > object.sha256.tmp &&
-         mv object.sha256.tmp object.sha256)
-    fi
+    cmp -s <(printf '%s\n' "${cache_identity[@]}") "${metadata}" || return 1
+    [[ -f "${directory}/object.sha256" ]] || return 1
     (cd "${directory}" && sha256sum --check --status object.sha256)
+}
+
+verify_session_lto_artifacts() {
+    local generated_directory="$1"
+    local lto_ir="${generated_directory}/forevervalidator_cuda_search.ltoir"
+    local lto_header="${generated_directory}/forevervalidator_cuda_search_lto_ir.h"
+    [[ -s "${lto_ir}" && -s "${lto_header}" ]] &&
+        grep -Fq 'ForeverValidatorCudaSearchLtoIr' "${lto_header}"
 }
 
 prebuilt_option="-DFOREVERVALIDATOR_CUDA_SEARCH_PREBUILT_OBJECT="
@@ -144,13 +169,7 @@ if [[ "${cache_hit}" == false ]]; then
     mkdir -p "${temporary_cache_dir}"
     cp "${built_search_object}" \
         "${temporary_cache_dir}/cuda_search_executor.cu.o"
-    printf '%s\n' \
-        "cache_schema=cuda-search-object-v1" \
-        "toolchain=${FOREVERTAS_TOOLCHAIN_IMAGE}" \
-        "cuda=${CUDA_VERSION}" \
-        "architectures=${CUDA_ARCHITECTURES}" \
-        "split_compile_jobs=${split_compile_jobs}" \
-        "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}" \
+    printf '%s\n' "${cache_identity[@]}" \
         > "${temporary_cache_dir}/metadata.txt"
     (cd "${temporary_cache_dir}" &&
      sha256sum cuda_search_executor.cu.o > object.sha256)
@@ -160,6 +179,11 @@ if [[ "${cache_hit}" == false ]]; then
 fi
 
 verify_cache_integrity "${search_cache_dir}"
+if ! verify_session_lto_artifacts \
+        "${build_dir}/_deps/forevervalidator-build/generated"; then
+    echo "CUDA session-specialization LTO artifacts are missing or empty" >&2
+    exit 1
+fi
 "${CUDA_PATH}/bin/cuobjdump" --list-elf "${cached_search_object}" \
     | tee "${build_dir}/cuda-elf-images.txt"
 "${CUDA_PATH}/bin/cuobjdump" --list-ptx "${cached_search_object}" \
@@ -211,7 +235,7 @@ fi
 cat > "${dist_dir}/cuda-fatbinary-linux.json" <<JSON
 {
   "cuda": "12.8.1",
-  "cubin_architectures": [50, 52, 61, 70, 75, 86, 89, 120],
+  "cubin_architectures": [61, 62, 70, 72, 75, 80, 86, 87, 89, 90, 100, 101, 120],
   "ptx_architecture": 120,
   "split_compile_jobs": 4,
   "scope": "all CUDA objects and final ForeverTAS ELF",

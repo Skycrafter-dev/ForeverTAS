@@ -51,12 +51,74 @@ def git(*args: str, cwd: Path = REPO_ROOT) -> str:
     return run(["git", "-C", str(cwd), *args], capture=True)
 
 
+def require_manifest_fields(
+    value: object,
+    required: set[str],
+    context: str,
+    optional: set[str] | None = None,
+) -> dict:
+    if not isinstance(value, dict):
+        raise SystemExit(f"manifest {context} must be an object")
+    optional = optional or set()
+    actual = set(value)
+    missing = required - actual
+    unsupported = actual - required - optional
+    if missing:
+        raise SystemExit(
+            f"manifest {context} is missing fields: " +
+            ", ".join(sorted(missing)))
+    if unsupported:
+        raise SystemExit(
+            f"manifest {context} has unsupported fields: " +
+            ", ".join(sorted(unsupported)))
+    return value
+
+
 def load_manifest(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as stream:
         manifest = json.load(stream)
+    require_manifest_fields(
+        manifest,
+        {"schema", "release", "sources", "cuda", "toolchains", "cache",
+         "artifacts"},
+        "root",
+    )
     if manifest.get("schema") != 1:
         raise SystemExit("unsupported release manifest schema")
-    cuda = manifest["cuda"]
+    require_manifest_fields(
+        manifest["release"], {"product", "version", "tag", "repository"},
+        "release")
+    sources = require_manifest_fields(
+        manifest["sources"], {"forevertas", "forevervalidator"}, "sources")
+    require_manifest_fields(sources["forevertas"], {"ref"},
+                            "ForeverTAS source")
+    validator_source = require_manifest_fields(
+        sources["forevervalidator"], {"repository", "commit", "version"},
+        "ForeverValidator source", {"tag"})
+    cuda = require_manifest_fields(
+        manifest["cuda"],
+        {"version", "architectures", "ptx_architecture",
+         "cmake_architectures", "architecture_key", "split_compile_jobs",
+         "search_object_source_commit"},
+        "CUDA",
+    )
+    toolchains = require_manifest_fields(
+        manifest["toolchains"], {"linux", "windows"}, "toolchains")
+    require_manifest_fields(
+        toolchains["linux"],
+        {"base", "qt", "cmake", "sccache", "linuxdeploy",
+         "linuxdeploy_plugin_qt"},
+        "Linux toolchain",
+    )
+    require_manifest_fields(
+        toolchains["windows"],
+        {"host", "qt", "cmake", "ninja", "sccache", "vcpkg_commit"},
+        "Windows toolchain",
+    )
+    require_manifest_fields(manifest["cache"], {"linux", "windows"},
+                            "cache")
+    require_manifest_fields(manifest["artifacts"], {"linux", "windows"},
+                            "artifacts")
     if cuda["version"] != "12.8.1":
         raise SystemExit("manifest changed the pinned CUDA release")
     if cuda["architectures"] != ARCHITECTURE_LIST:
@@ -70,7 +132,7 @@ def load_manifest(path: Path) -> dict:
     if cuda["split_compile_jobs"] != 4:
         raise SystemExit("manifest changed the validated CUDA split-compile value")
     search_object_source_commit = cuda.get("search_object_source_commit")
-    validator_commit = manifest["sources"]["forevervalidator"].get("commit")
+    validator_commit = validator_source.get("commit")
     if not VALID_40_HEX.fullmatch(validator_commit or ""):
         raise SystemExit("manifest does not contain a valid ForeverValidator commit SHA")
     if not VALID_40_HEX.fullmatch(search_object_source_commit or ""):
@@ -90,6 +152,24 @@ def sha256(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def forevervalidator_cmake_pin(tas_cmake: str) -> str:
+    cmake_without_comments = re.sub(r"(?m)#.*$", "", tas_cmake)
+    declarations = re.findall(
+        r"FetchContent_Declare\s*\(\s*ForeverValidator\b(.*?)\)",
+        cmake_without_comments,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if len(declarations) != 1:
+        raise SystemExit(
+            "ForeverTAS CMake must declare ForeverValidator exactly once")
+    tags = re.findall(
+        r"\bGIT_TAG\s+([^\s)]+)", declarations[0], flags=re.IGNORECASE)
+    if len(tags) != 1 or not VALID_40_HEX.fullmatch(tags[0]):
+        raise SystemExit(
+            "ForeverTAS CMake ForeverValidator pin is not one exact lowercase SHA")
+    return tags[0]
 
 
 def source_state(manifest: dict, validator_root: Path) -> dict:
@@ -114,7 +194,7 @@ def source_state(manifest: dict, validator_root: Path) -> dict:
     if state["version"] != manifest["release"]["version"]:
         raise SystemExit("ForeverTAS CMake version does not match the manifest")
     validator_commit = manifest["sources"]["forevervalidator"]["commit"]
-    if f"GIT_TAG {validator_commit}" not in tas_cmake:
+    if forevervalidator_cmake_pin(tas_cmake) != validator_commit:
         raise SystemExit(
             "ForeverTAS CMake ForeverValidator pin does not match the manifest")
     if state["forevervalidator"] != validator_commit:
@@ -159,7 +239,8 @@ def stage_manifest(manifest_path: Path, destination: Path) -> None:
     target.parent.mkdir(parents=True, exist_ok=True)
     selected = manifest_path.read_bytes()
     target.write_bytes(selected)
-    if target.read_bytes() != selected:
+    if (target.read_bytes() != selected or
+            sha256(target) != hashlib.sha256(selected).hexdigest()):
         raise SystemExit("failed to copy selected manifest into release source tree")
 
 
@@ -214,7 +295,7 @@ def release_notes(manifest: dict) -> str:
 
 ### CUDA compatibility
 
-The x86_64 packages contain native cubins for `sm_61`, `sm_62`, `sm_70`, `sm_72`, `sm_75`, `sm_80`, `sm_86`, `sm_87`, `sm_89`, `sm_90`, `sm_100`, `sm_101`, and `sm_120`. On desktop NVIDIA hardware, cubins are forward-compatible within the same compute-capability major version, so the native set covers compute capabilities 6.x, 7.x, 8.x, 9.0, 10.0, 10.1, 10.3, and 12.x. In current product terms this includes supported Pascal through Blackwell architectures that match the listed compute capabilities. See NVIDIA's [GPU compute-capability tables](https://developer.nvidia.com/cuda-gpus) and [binary-compatibility rules](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#cuda-binary-compatibility).
+The x86_64 packages contain native cubins for `sm_61`, `sm_62`, `sm_70`, `sm_72`, `sm_75`, `sm_80`, `sm_86`, `sm_87`, `sm_89`, `sm_90`, `sm_100`, `sm_101`, and `sm_120`. Those images explicitly cover compute capabilities 6.1, 6.2, 7.0, 7.2, 7.5, 8.0, 8.6, 8.7, 8.9, 9.0, 10.0, 10.1, and 12.0. NVIDIA cubins are forward-compatible with later minor revisions in the same major family, which can additionally cover revisions such as 10.3, but they are not backward-compatible with omitted lower revisions such as 6.0. In current product terms this includes supported Pascal through Blackwell architectures that match that coverage. See NVIDIA's [GPU compute-capability tables](https://developer.nvidia.com/cuda-gpus) and [binary-compatibility rules](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#cuda-binary-compatibility).
 
 The fatbinary also contains `compute_120` PTX. A future NVIDIA architecture above compute capability 12.x may work by driver JIT compilation, with a slower first startup while the driver cache is populated, but it was not available for hardware validation and is not guaranteed by this release.
 

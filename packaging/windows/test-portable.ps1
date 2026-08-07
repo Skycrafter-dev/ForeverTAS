@@ -61,6 +61,20 @@ try {
             throw "Missing deployed runtime file: $RequiredPath"
         }
     }
+    $CudaRuntimeFamilies = [ordered]@{
+        cudart = "cudart64_*.dll"
+        nvrtc = "nvrtc64_120_0.dll"
+        nvrtc_builtins = "nvrtc-builtins64_*.dll"
+        nvJitLink = "nvJitLink_*.dll"
+    }
+    foreach ($Family in $CudaRuntimeFamilies.GetEnumerator()) {
+        $RuntimeMatches = @(
+            Get-ChildItem $ApplicationDirectory -File -Filter $Family.Value
+        )
+        if ($RuntimeMatches.Count -ne 1) {
+            throw "Expected exactly one $($Family.Key) CUDA runtime DLL, found $($RuntimeMatches.Count)"
+        }
+    }
 
     $Dumpbin = (Get-Command "dumpbin.exe" -ErrorAction Stop).Source
     $SystemDirectory = Join-Path $env:SystemRoot "System32"

@@ -13,9 +13,24 @@ if ([string]::IsNullOrWhiteSpace($Manifest)) {
     $Manifest = Join-Path $PSScriptRoot "manifest.json"
 }
 $Release = Get-Content (Resolve-Path $Manifest) -Raw | ConvertFrom-Json
+$ExpectedCubinArchitectures = "61,62,70,72,75,80,86,87,89,90,100,101,120"
+$ExpectedCudaArchitectures = "61-real;62-real;70-real;72-real;75-real;80-real;86-real;87-real;89-real;90-real;100-real;101-real;120-real;120-virtual"
+$ExpectedArchitectureKey = "sm61-sm62-sm70-sm72-sm75-sm80-sm86-sm87-sm89-sm90-sm100-sm101-sm120-ptx120"
 if ($Release.cuda.version -ne "12.8.1" -or
+        ($Release.cuda.architectures -join ",") -cne
+            $ExpectedCubinArchitectures -or
+        $Release.cuda.ptx_architecture -ne 120 -or
+        $Release.cuda.cmake_architectures -cne
+            $ExpectedCudaArchitectures -or
+        $Release.cuda.architecture_key -cne $ExpectedArchitectureKey -or
         $Release.cuda.split_compile_jobs -ne 4) {
-    throw "The Windows release requires CUDA 12.8.1 and split-compile 4"
+    throw "The manifest does not match the validated CUDA release contract"
+}
+if ($Release.sources.forevervalidator.commit -cnotmatch
+        '^[0-9a-f]{40}$' -or
+        $Release.sources.forevervalidator.commit -cne
+            $Release.cuda.search_object_source_commit) {
+    throw "ForeverValidator release identities must be one exact lowercase SHA"
 }
 
 . C:\Tools\Enter-BuildEnv.ps1

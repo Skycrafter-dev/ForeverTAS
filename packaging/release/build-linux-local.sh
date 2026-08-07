@@ -25,6 +25,8 @@ values = {
     "LINUXDEPLOY_VERSION": m["toolchains"]["linux"]["linuxdeploy"],
     "LINUXDEPLOY_PLUGIN_QT_VERSION": m["toolchains"]["linux"]["linuxdeploy_plugin_qt"],
     "CUDA_VERSION": m["cuda"]["version"],
+    "CUDA_CUBIN_ARCHITECTURES": ",".join(str(value) for value in m["cuda"]["architectures"]),
+    "CUDA_PTX_ARCHITECTURE": str(m["cuda"]["ptx_architecture"]),
     "CUDA_ARCHITECTURES": m["cuda"]["cmake_architectures"],
     "CUDA_ARCHITECTURE_KEY": m["cuda"]["architecture_key"],
     "FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS": str(m["cuda"]["split_compile_jobs"]),
@@ -35,6 +37,24 @@ for key, value in values.items():
     print(f"export {key}={shlex.quote(value)}")
 PY
 )"
+
+expected_cubin_architectures="61,62,70,72,75,80,86,87,89,90,100,101,120"
+expected_cuda_architectures="61-real;62-real;70-real;72-real;75-real;80-real;86-real;87-real;89-real;90-real;100-real;101-real;120-real;120-virtual"
+expected_architecture_key="sm61-sm62-sm70-sm72-sm75-sm80-sm86-sm87-sm89-sm90-sm100-sm101-sm120-ptx120"
+if [[ "${CUDA_VERSION}" != "12.8.1" ||
+      "${CUDA_CUBIN_ARCHITECTURES}" != "${expected_cubin_architectures}" ||
+      "${CUDA_PTX_ARCHITECTURE}" != "120" ||
+      "${CUDA_ARCHITECTURES}" != "${expected_cuda_architectures}" ||
+      "${CUDA_ARCHITECTURE_KEY}" != "${expected_architecture_key}" ||
+      "${FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS}" != "4" ]]; then
+    printf 'ERROR: manifest does not match the validated CUDA release contract.\n' >&2
+    exit 2
+fi
+if [[ ! "${FOREVERVALIDATOR_COMMIT}" =~ ^[0-9a-f]{40}$ ||
+      "${FOREVERVALIDATOR_COMMIT}" != "${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}" ]]; then
+    printf 'ERROR: ForeverValidator release identities must be one exact lowercase SHA.\n' >&2
+    exit 2
+fi
 
 cache_root="${FOREVERTAS_RELEASE_CACHE:-${repo_root}/.release-cache/linux}"
 toolchain_image="$(${repo_root}/packaging/release/ensure-linux-toolchain.sh)"

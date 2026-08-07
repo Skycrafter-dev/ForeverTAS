@@ -266,6 +266,15 @@ test -f "${extracted_appdir}/usr/plugins/wayland-graphics-integration-client/lib
 test -f "${extracted_appdir}/usr/plugins/wayland-decoration-client/libadwaita.so"
 if [[ "${FOREVERTAS_ENABLE_CUDA:-OFF}" == "ON" ]]; then
     test -f "${extracted_appdir}/usr/lib/libnvrtc-builtins.so.12.8"
+    for required_cuda_runtime in 'libnvrtc.so*' 'libnvJitLink.so*'; do
+        if ! find "${extracted_appdir}" \
+                \( -type f -o -type l \) \
+                -name "${required_cuda_runtime}" -print -quit |
+                grep -q .; then
+            echo "AppImage is missing ${required_cuda_runtime}." >&2
+            exit 1
+        fi
+    done
 fi
 
 if find "${extracted_appdir}" \

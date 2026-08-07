@@ -6,6 +6,11 @@ $ValidatorRoot = Join-Path $RepoRoot ".dependencies/ForeverValidator"
 $BuildDirectory = Join-Path $RepoRoot "build/release"
 $DistDirectory = Join-Path $RepoRoot "dist"
 $SplitCompileJobs = $env:FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS
+$CacheSchema = "cuda-search-object-v2"
+$ExpectedCudaArchitectures = "61-real;62-real;70-real;72-real;75-real;80-real;86-real;87-real;89-real;90-real;100-real;101-real;120-real;120-virtual"
+$ExpectedArchitectureKey = "sm61-sm62-sm70-sm72-sm75-sm80-sm86-sm87-sm89-sm90-sm100-sm101-sm120-ptx120"
+$ExpectedCubinArchitectures = @(61, 62, 70, 72, 75, 80, 86, 87, 89, 90, 100, 101, 120)
+$ExpectedPtxArchitectures = @(120)
 
 foreach ($Name in @(
     "CUDA_PATH",
@@ -23,6 +28,17 @@ foreach ($Name in @(
     if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($Name))) {
         throw "$Name is required"
     }
+}
+if ($env:CUDA_VERSION -ne "12.8.1" -or
+        $env:CUDA_ARCHITECTURES -cne $ExpectedCudaArchitectures -or
+        $env:CUDA_ARCHITECTURE_KEY -cne $ExpectedArchitectureKey -or
+        $SplitCompileJobs -ne "4") {
+    throw "Windows release inputs do not match the validated CUDA contract"
+}
+if ($env:FOREVERVALIDATOR_COMMIT -cnotmatch '^[0-9a-f]{40}$' -or
+        $env:FOREVERVALIDATOR_COMMIT -cne
+            $env:FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT) {
+    throw "ForeverValidator release and CUDA object commits must be one exact lowercase SHA"
 }
 
 $ValidatorMarker = Join-Path $ValidatorRoot ".release-source-commit"
@@ -56,12 +72,25 @@ function Test-CudaArchitectures([string]$Object) {
 
     $ElfOutput = (& "$env:CUDA_PATH\bin\cuobjdump.exe" --list-elf $Object 2>&1) -join "`n"
     if ($LASTEXITCODE -ne 0) { return $false }
-    foreach ($Architecture in @(50, 52, 61, 70, 75, 86, 89, 120)) {
-        if ($ElfOutput -notmatch "sm_$Architecture\.cubin") { return $false }
+    $ActualCubins = @(
+        [regex]::Matches($ElfOutput, 'sm_([0-9]+)\.cubin') |
+            ForEach-Object { [int]$_.Groups[1].Value } |
+            Sort-Object -Unique
+    )
+    if ($ActualCubins.Count -ne $ExpectedCubinArchitectures.Count -or
+            @(Compare-Object $ActualCubins $ExpectedCubinArchitectures).Count -ne 0) {
+        return $false
     }
 
     $PtxOutput = (& "$env:CUDA_PATH\bin\cuobjdump.exe" --list-ptx $Object 2>&1) -join "`n"
-    return $LASTEXITCODE -eq 0 -and $PtxOutput -match "sm_120\.ptx"
+    if ($LASTEXITCODE -ne 0) { return $false }
+    $ActualPtx = @(
+        [regex]::Matches($PtxOutput, 'sm_([0-9]+)\.ptx') |
+            ForEach-Object { [int]$_.Groups[1].Value } |
+            Sort-Object -Unique
+    )
+    return $ActualPtx.Count -eq $ExpectedPtxArchitectures.Count -and
+        @(Compare-Object $ActualPtx $ExpectedPtxArchitectures).Count -eq 0
 }
 
 function Test-CudaCache([string]$Directory) {
@@ -72,36 +101,45 @@ function Test-CudaCache([string]$Directory) {
         return $false
     }
     $Metadata = @(Get-Content $MetadataPath)
-    foreach ($Expected in @(
-        "cuda=$env:CUDA_VERSION",
-        "architectures=$env:CUDA_ARCHITECTURES",
-        "split_compile_jobs=$SplitCompileJobs",
-        "cuda_host_compatibility=allow-unsupported-compiler",
-        "validator=$env:FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT"
-    )) {
-        if ($Metadata -notcontains $Expected) { return $false }
+    if ($Metadata.Count -ne $CacheIdentity.Count) { return $false }
+    for ($Index = 0; $Index -lt $CacheIdentity.Count; ++$Index) {
+        if ($Metadata[$Index] -cne $CacheIdentity[$Index]) { return $false }
     }
     $HashPath = Join-Path $Directory "object.sha256"
     $ActualHash = (Get-FileHash -Algorithm SHA256 $Object).Hash.ToLowerInvariant()
-    if (-not (Test-Path $HashPath -PathType Leaf)) {
-        Set-Content -NoNewline -Path $HashPath -Value $ActualHash
-    }
+    if (-not (Test-Path $HashPath -PathType Leaf)) { return $false }
     return (Get-Content $HashPath -Raw).Trim().ToLowerInvariant() -eq $ActualHash
 }
 
-$CompilerIdentity = @(
-    "cache_schema=cuda-search-object-v1"
+function Test-CudaSessionLtoArtifacts([string]$ValidatorBuildDirectory) {
+    $LtoIr = Join-Path $ValidatorBuildDirectory `
+        "generated/forevervalidator_cuda_search.ltoir"
+    $LtoHeader = Join-Path $ValidatorBuildDirectory `
+        "generated/forevervalidator_cuda_search_lto_ir.h"
+    return (Test-Path $LtoIr -PathType Leaf) -and
+        (Get-Item $LtoIr).Length -ne 0 -and
+        (Test-Path $LtoHeader -PathType Leaf) -and
+        (Get-Item $LtoHeader).Length -ne 0 -and
+        (Get-Content $LtoHeader -Raw) -match
+            'ForeverValidatorCudaSearchLtoIr'
+}
+
+$ToolchainIdentity = Get-TextHash (@(
+    "cuda_host_compatibility=allow-unsupported-compiler"
+    (& clang-cl --version | Out-String).Trim()
+    $env:VCToolsVersion
+    (& nvcc --version | Out-String).Trim()
+) -join "`n")
+$CacheIdentity = @(
+    "cache_schema=$CacheSchema"
+    "toolchain=$ToolchainIdentity"
     "cuda=$env:CUDA_VERSION"
     "architectures=$env:CUDA_ARCHITECTURES"
     "architecture_key=$env:CUDA_ARCHITECTURE_KEY"
     "split_compile_jobs=$SplitCompileJobs"
-    "cuda_host_compatibility=allow-unsupported-compiler"
     "validator=$env:FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT"
-    (& clang-cl --version | Out-String)
-    $env:VCToolsVersion
-    (& nvcc --version | Out-String)
-) -join "`n"
-$SearchKey = Get-TextHash $CompilerIdentity
+)
+$SearchKey = Get-TextHash ($CacheIdentity -join "`n")
 $SearchCacheDirectory = Join-Path $env:FOREVERTAS_WINDOWS_SEARCH_CACHE $SearchKey
 $CachedSearchObject = Join-Path $SearchCacheDirectory "cuda_search_executor.cu.obj"
 
@@ -185,13 +223,8 @@ try {
         $TemporaryDirectory = "$SearchCacheDirectory.tmp.$([guid]::NewGuid().ToString('N'))"
         New-Item -ItemType Directory -Force -Path $TemporaryDirectory | Out-Null
         Copy-Item $BuiltSearchObject (Join-Path $TemporaryDirectory "cuda_search_executor.cu.obj")
-        @(
-            "cuda=$env:CUDA_VERSION"
-            "architectures=$env:CUDA_ARCHITECTURES"
-            "split_compile_jobs=$SplitCompileJobs"
-            "cuda_host_compatibility=allow-unsupported-compiler"
-            "validator=$env:FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT"
-        ) | Set-Content -Path (Join-Path $TemporaryDirectory "metadata.txt")
+        $CacheIdentity |
+            Set-Content -Path (Join-Path $TemporaryDirectory "metadata.txt")
         (Get-FileHash -Algorithm SHA256 `
             (Join-Path $TemporaryDirectory "cuda_search_executor.cu.obj")).Hash.ToLowerInvariant() |
             Set-Content -NoNewline -Path (Join-Path $TemporaryDirectory "object.sha256")
@@ -201,6 +234,10 @@ try {
 
     if (-not (Test-CudaCache $SearchCacheDirectory)) {
         throw "Cached CUDA search object failed final integrity validation"
+    }
+    $ValidatorBuildDirectory = Join-Path $BuildDirectory "_deps/forevervalidator-build"
+    if (-not (Test-CudaSessionLtoArtifacts $ValidatorBuildDirectory)) {
+        throw "CUDA session-specialization LTO artifacts are missing or empty"
     }
     & "$env:CUDA_PATH\bin\cuobjdump.exe" --list-elf $CachedSearchObject |
         Tee-Object (Join-Path $BuildDirectory "cuda-elf-images.txt")
@@ -240,7 +277,8 @@ try {
 
     [ordered]@{
         cuda = "12.8.1"
-        cubin_architectures = @(50, 52, 61, 70, 75, 86, 89, 120)
+        cubin_architectures = @(
+            61, 62, 70, 72, 75, 80, 86, 87, 89, 90, 100, 101, 120)
         ptx_architecture = 120
         split_compile_jobs = 4
         scope = "all CUDA objects and final ForeverTAS.exe"
