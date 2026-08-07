@@ -166,6 +166,10 @@ foreach(runtime_pattern IN ITEMS
 endforeach()
 require_text("${windows_portable_test}" "RuntimeMatches.Count -ne 1"
     "Windows portable CUDA runtime ambiguity check")
+require_text("${windows_portable_test}" "[switch]$RequireCuda"
+    "generic Windows portable checks keep CUDA closure opt-in")
+require_text("${windows_script}" "-Archive $Artifact.FullName -RequireCuda"
+    "Windows CUDA release enables portable CUDA runtime closure")
 require_text("${appimage_script}" "libnvrtc.so*"
     "AppImage NVRTC runtime check")
 require_text("${appimage_script}" "libnvJitLink.so*"

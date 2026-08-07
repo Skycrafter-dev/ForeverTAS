@@ -273,7 +273,7 @@ try {
     "$($Hash.Hash.ToLowerInvariant())  $($Artifact.Name)" |
         Set-Content -NoNewline -Path "$($Artifact.FullName).sha256"
     & (Join-Path $RepoRoot "packaging/windows/test-portable.ps1") `
-        -Archive $Artifact.FullName
+        -Archive $Artifact.FullName -RequireCuda
 
     [ordered]@{
         cuda = "12.8.1"
