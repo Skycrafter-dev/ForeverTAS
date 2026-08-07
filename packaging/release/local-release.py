@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shlex
 import shutil
@@ -20,6 +21,11 @@ import zipfile
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parent.parent
 DEFAULT_MANIFEST = SCRIPT_DIR / "manifest.json"
+VALID_40_HEX = re.compile(r"^[0-9a-f]{40}$")
+ARCHITECTURE_LIST = [61, 62, 70, 72, 75, 80, 86, 87, 89, 90, 100, 101, 120]
+ARCHITECTURE_PTX = 120
+ARCHITECTURE_CMAKE = "61-real;62-real;70-real;72-real;75-real;80-real;86-real;87-real;89-real;90-real;100-real;101-real;120-real;120-virtual"
+ARCHITECTURE_KEY = "sm61-sm62-sm70-sm72-sm75-sm80-sm86-sm87-sm89-sm90-sm100-sm101-sm120-ptx120"
 
 
 def run(
@@ -51,13 +57,28 @@ def load_manifest(path: Path) -> dict:
     if manifest.get("schema") != 1:
         raise SystemExit("unsupported release manifest schema")
     cuda = manifest["cuda"]
-    expected = "50-real;52-real;61-real;70-real;75-real;86-real;89-real;120-real;120-virtual"
-    if cuda["version"] != "12.8.1" or cuda["cmake_architectures"] != expected:
-        raise SystemExit("manifest changed the pinned CUDA release or architecture floor")
+    if cuda["version"] != "12.8.1":
+        raise SystemExit("manifest changed the pinned CUDA release")
+    if cuda["architectures"] != ARCHITECTURE_LIST:
+        raise SystemExit("manifest CUDA architecture list does not match the required contract")
+    if cuda["ptx_architecture"] != ARCHITECTURE_PTX:
+        raise SystemExit("manifest CUDA PTX architecture does not match the required contract")
+    if cuda["cmake_architectures"] != ARCHITECTURE_CMAKE:
+        raise SystemExit("manifest CUDA CMake architecture tuple is stale")
+    if cuda["architecture_key"] != ARCHITECTURE_KEY:
+        raise SystemExit("manifest CUDA architecture key does not match the required contract")
     if cuda["split_compile_jobs"] != 4:
         raise SystemExit("manifest changed the validated CUDA split-compile value")
-    if not cuda.get("search_object_source_commit"):
+    search_object_source_commit = cuda.get("search_object_source_commit")
+    validator_commit = manifest["sources"]["forevervalidator"].get("commit")
+    if not VALID_40_HEX.fullmatch(validator_commit or ""):
+        raise SystemExit("manifest does not contain a valid ForeverValidator commit SHA")
+    if not VALID_40_HEX.fullmatch(search_object_source_commit or ""):
         raise SystemExit("manifest has no CUDA search-object source identity")
+    if search_object_source_commit != validator_commit:
+        raise SystemExit(
+            "manifest CUDA search-object source identity must equal the "
+            "ForeverValidator pin")
     if manifest["release"]["tag"] != f"v{manifest['release']['version']}":
         raise SystemExit("release tag and version do not match")
     return manifest
@@ -100,26 +121,11 @@ def source_state(manifest: dict, validator_root: Path) -> dict:
         raise SystemExit("ForeverValidator checkout does not match the manifest commit")
     search_source = manifest["cuda"]["search_object_source_commit"]
     git("cat-file", "-e", f"{search_source}^{{commit}}", cwd=validator_root)
-    changed_since_search_source = set(filter(None, git(
-        "diff", "--name-only", search_source, state["forevervalidator"],
-        cwd=validator_root,
-    ).splitlines()))
-    output_neutral_paths = set(
-        manifest["cuda"].get("search_object_output_neutral_paths", []))
-    unexpected_paths = changed_since_search_source - output_neutral_paths
-    if unexpected_paths:
-        raise SystemExit(
-            "CUDA search-object source identity is stale; changed paths are not "
-            "declared output-neutral: " + ", ".join(sorted(unexpected_paths)))
-    stale_paths = output_neutral_paths - changed_since_search_source
-    if stale_paths:
-        raise SystemExit(
-            "CUDA search-object output-neutral declarations are stale: " +
-            ", ".join(sorted(stale_paths)))
-    validator_tag = manifest["sources"]["forevervalidator"]["tag"]
-    validator_tag_target = git("rev-parse", f"{validator_tag}^{{}}", cwd=validator_root)
-    if validator_tag_target != state["forevervalidator"]:
-        raise SystemExit("ForeverValidator tag does not point at the manifest commit")
+    optional_tag = manifest["sources"]["forevervalidator"].get("tag")
+    if optional_tag is not None:
+        validator_tag_target = git("rev-parse", f"{optional_tag}^{{}}", cwd=validator_root)
+        if validator_tag_target != state["forevervalidator"]:
+            raise SystemExit("ForeverValidator optional tag is stale")
     return state
 
 
@@ -148,7 +154,16 @@ def export_source(root: Path, commit: str, destination: Path) -> None:
             stream.extractall(destination, filter="data")
 
 
-def prepare_tree(manifest: dict, validator_root: Path, state: dict, destination: Path) -> None:
+def stage_manifest(manifest_path: Path, destination: Path) -> None:
+    target = destination / "packaging" / "release" / "manifest.json"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    selected = manifest_path.read_bytes()
+    target.write_bytes(selected)
+    if target.read_bytes() != selected:
+        raise SystemExit("failed to copy selected manifest into release source tree")
+
+
+def prepare_tree(manifest_path: Path, validator_root: Path, state: dict, destination: Path) -> None:
     if destination.exists():
         shutil.rmtree(destination)
     export_source(REPO_ROOT, state["forevertas"], destination)
@@ -163,6 +178,7 @@ def prepare_tree(manifest: dict, validator_root: Path, state: dict, destination:
     (destination / ".dependencies" / "ForeverValidator" / ".release-source-commit").write_text(
         state["forevervalidator"] + "\n", encoding="ascii"
     )
+    stage_manifest(manifest_path, destination)
 
 
 def release_assets(manifest: dict, dist: Path) -> list[Path]:
@@ -198,11 +214,11 @@ def release_notes(manifest: dict) -> str:
 
 ### CUDA compatibility
 
-The x86_64 packages contain native cubins for `sm_50`, `sm_52`, `sm_61`, `sm_70`, `sm_75`, `sm_86`, `sm_89`, and `sm_120`. On desktop NVIDIA hardware, cubins are forward-compatible within the same compute-capability major version, so the native set covers compute capabilities 5.0 and later 5.x, 6.1 and later 6.x, 7.0 and later 7.x, 8.6 and later 8.x, and 12.0 and later 12.x. In current product terms this includes supported Maxwell, Pascal except P100/GP100, Volta, Turing, Ampere RTX/A-series except A100/A30, Ada, and GeForce RTX 50 / RTX PRO Blackwell GPUs. See NVIDIA's [GPU compute-capability tables](https://developer.nvidia.com/cuda-gpus) and [binary-compatibility rules](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#cuda-binary-compatibility).
+The x86_64 packages contain native cubins for `sm_61`, `sm_62`, `sm_70`, `sm_72`, `sm_75`, `sm_80`, `sm_86`, `sm_87`, `sm_89`, `sm_90`, `sm_100`, `sm_101`, and `sm_120`. On desktop NVIDIA hardware, cubins are forward-compatible within the same compute-capability major version, so the native set covers compute capabilities 6.x, 7.x, 8.x, 9.0, 10.0, 10.1, 10.3, and 12.x. In current product terms this includes supported Pascal through Blackwell architectures that match the listed compute capabilities. See NVIDIA's [GPU compute-capability tables](https://developer.nvidia.com/cuda-gpus) and [binary-compatibility rules](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#cuda-binary-compatibility).
 
 The fatbinary also contains `compute_120` PTX. A future NVIDIA architecture above compute capability 12.x may work by driver JIT compilation, with a slower first startup while the driver cache is populated, but it was not available for hardware validation and is not guaranteed by this release.
 
-The CUDA backend definitely does not support compute capability below 5.0; compute capability 6.0 (Tesla P100 / Quadro GP100), 8.0 (A100 / A30), 9.0 (H100 / H200 / GH200), 10.0 or 10.3 (B200 / B300 / GB200 / GB300), or 11.0; non-NVIDIA GPUs; non-x86_64 systems; or systems whose NVIDIA driver cannot load CUDA 12.8 applications. Those devices have neither a compatible cubin nor a backward-compatible PTX target. CPU search remains available on supported x86_64 Linux and Windows systems.
+The CUDA backend definitely does not support compute capabilities outside the shipped native/PTX coverage; that includes 6.0 (Tesla P100 / Quadro GP100), 11.x, non-NVIDIA GPUs, non-x86_64 systems, and systems whose NVIDIA driver cannot load CUDA 12.8 applications. Those devices have neither a compatible cubin nor a backward-compatible PTX target. CPU search remains available on supported x86_64 Linux and Windows systems.
 """
 
 
@@ -274,7 +290,7 @@ def command_linux(args: argparse.Namespace, manifest: dict) -> None:
     state = source_state(manifest, validator_root)
     write_lock(args.manifest, manifest, state, Path(args.lock).resolve())
     tree = Path(args.work).resolve() / "linux-source"
-    prepare_tree(manifest, validator_root, state, tree)
+    prepare_tree(Path(args.manifest), validator_root, state, tree)
     command = [str(tree / "packaging/release/build-linux-local.sh"), str(args.manifest.resolve())]
     if args.last_resort_rebuild_cache:
         command.extend(["--last-resort-rebuild-cache",
@@ -297,7 +313,7 @@ def command_windows(args: argparse.Namespace, manifest: dict) -> None:
     state = source_state(manifest, validator_root)
     write_lock(args.manifest, manifest, state, Path(args.lock).resolve())
     local_tree = Path(args.work).resolve() / "windows-source"
-    prepare_tree(manifest, validator_root, state, local_tree)
+    prepare_tree(Path(args.manifest), validator_root, state, local_tree)
     host = manifest["toolchains"]["windows"]["host"]
     remote = "C:/src/forevertas-release"
     run(["ssh", host, f"Remove-Item -Recurse -Force '{remote}' -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force '{remote}' | Out-Null"])

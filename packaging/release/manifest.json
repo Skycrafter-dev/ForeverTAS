@@ -19,16 +19,12 @@
   },
   "cuda": {
     "version": "12.8.1",
-    "architectures": [50, 52, 61, 70, 75, 86, 89, 120],
+    "architectures": [61, 62, 70, 72, 75, 80, 86, 87, 89, 90, 100, 101, 120],
     "ptx_architecture": 120,
-    "cmake_architectures": "50-real;52-real;61-real;70-real;75-real;86-real;89-real;120-real;120-virtual",
-    "architecture_key": "sm50-sm52-sm61-sm70-sm75-sm86-sm89-sm120-ptx120",
+    "cmake_architectures": "61-real;62-real;70-real;72-real;75-real;80-real;86-real;87-real;89-real;90-real;100-real;101-real;120-real;120-virtual",
+    "architecture_key": "sm61-sm62-sm70-sm72-sm75-sm80-sm86-sm87-sm89-sm90-sm100-sm101-sm120-ptx120",
     "split_compile_jobs": 4,
-    "search_object_source_commit": "970645c5fb23b92d78069c3e2f381a3be8aa19f8",
-    "search_object_output_neutral_paths": [
-      "include/forevervalidator/experimental/physics_sandbox.h",
-      "src/validation/api/validation_api.cpp"
-    ]
+    "search_object_source_commit": "a370e6cd57e6681cda8ddc4f4ce3a9e0496e65d7"
   },
   "toolchains": {
     "linux": {
