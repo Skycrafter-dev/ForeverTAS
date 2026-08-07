@@ -291,7 +291,7 @@ def command_linux(args: argparse.Namespace, manifest: dict) -> None:
     write_lock(args.manifest, manifest, state, Path(args.lock).resolve())
     tree = Path(args.work).resolve() / "linux-source"
     prepare_tree(Path(args.manifest), validator_root, state, tree)
-    command = [str(tree / "packaging/release/build-linux-local.sh"), str(args.manifest.resolve())]
+    command = [str(tree / "packaging/release/build-linux-local.sh"), str((tree / "packaging/release/manifest.json").resolve())]
     if args.last_resort_rebuild_cache:
         command.extend(["--last-resort-rebuild-cache",
                         "--confirm-cache-recovery-exhausted"])
