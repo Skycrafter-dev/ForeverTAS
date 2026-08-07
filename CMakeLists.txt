@@ -71,7 +71,7 @@ set(FOREVERVALIDATOR_ENABLE_CUDA ${FOREVERTAS_ENABLE_CUDA} CACHE BOOL
 FetchContent_Declare(
     ForeverValidator
     GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-    GIT_TAG 6ad8e65d40bb90d624866b7078c3d109b7fec88d
+    GIT_TAG aaef4260e0aa78324f9cc44ffbdd4445a402d573
     GIT_SHALLOW FALSE)
 FetchContent_MakeAvailable(ForeverValidator)
 

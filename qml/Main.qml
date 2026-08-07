@@ -4918,6 +4918,42 @@ ApplicationWindow {
                             }
                         }
 
+                        Rectangle {
+                            objectName: "targetProgressPanel"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight:
+                                targetProgressLabel.implicitHeight + 16
+                            visible: window.controller.liveMetricsVisible
+                                     && window.controller
+                                         .targetProgressText.length > 0
+                            radius: 7
+                            color: AppTheme.surfaceRaised
+                            border.width: 1
+                            border.color: AppTheme.border
+                            Accessible.name: qsTr("Target progress")
+                            Accessible.description: targetProgressLabel.text
+
+                            Label {
+                                id: targetProgressLabel
+
+                                objectName: "targetProgressLabel"
+                                anchors.fill: parent
+                                anchors.margins: 8
+                                text: window.controller.targetProgressText
+                                color: AppTheme.text
+                                font.pixelSize: 11
+                                wrapMode: Text.WordWrap
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            HoverHandler {
+                                id: targetProgressHover
+                            }
+                            ToolTip.visible: targetProgressHover.hovered
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr("Shows accumulated completed CUDA candidates that produced a qualifying entry and their nearest sampled car-center distance to the cuboid. Distance is geometric, so it can reach zero even when another search condition rejects that tick.")
+                        }
+
                         ProgressBar {
                             Layout.fillWidth: true
                             from: 0

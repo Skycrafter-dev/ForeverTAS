@@ -5,7 +5,9 @@
 #include "mutations/input_event_formatter.h"
 #include "time_format.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <exception>
 #include <optional>
 #include <utility>
@@ -47,6 +49,17 @@ QString LastImprovementText(const SearchLiveUpdate &live) {
 }
 
 QString FormatLive(const SearchLiveUpdate &live, const QString &heading) {
+    if (!live.bestAvailable) {
+        return QStringLiteral(
+                       "%1: none yet\n"
+                       "No candidate has satisfied the selected target.\n"
+                       "Improvements: %2\n"
+                       "Last improvement: %3")
+                .arg(heading)
+                .arg(FormatCompactNumber(static_cast<double>(
+                        live.mutationImprovementCount)))
+                .arg(LastImprovementText(live));
+    }
     return QStringLiteral(
                    "%1: %2\n"
                    "%3\n"
@@ -61,23 +74,62 @@ QString FormatLive(const SearchLiveUpdate &live, const QString &heading) {
             .arg(LastImprovementText(live));
 }
 
+QString FormatTargetProgressText(const SearchLiveUpdate &live) {
+    const QString qualifying = FormatCompactNumber(
+            static_cast<double>(live.qualifyingCandidateCount));
+    const QString candidateLabel =
+            live.qualifyingCandidateCount == 1u
+            ? QStringLiteral("candidate")
+            : QStringLiteral("candidates");
+    if (live.closestTargetDistance) {
+        const double distance = *live.closestTargetDistance;
+        const QString distanceText = std::isfinite(distance)
+                ? QString::number(
+                          std::max(0.0, distance), 'f',
+                          distance < 100.0 ? 2 : 1)
+                : QStringLiteral("?");
+        if (live.qualifyingCandidateCount != 0u) {
+            return QStringLiteral(
+                           "Target triggered: %1 qualifying %2 \u2022 nearest "
+                           "sampled car center: %3 m")
+                    .arg(qualifying, candidateLabel, distanceText);
+        }
+        if (std::isfinite(distance) && distance <= 0.0) {
+            return QStringLiteral(
+                    "Cuboid reached geometrically (0.00 m away), but no "
+                    "qualifying entry trigger was recorded yet");
+        }
+        return QStringLiteral(
+                       "No qualifying entry trigger yet \u2022 nearest "
+                       "sampled car center: %1 m away")
+                .arg(distanceText);
+    }
+    return live.qualifyingCandidateCount == 0u
+            ? QStringLiteral("Waiting for the first target sample...")
+            : QStringLiteral("Target triggered: %1 qualifying %2")
+                      .arg(qualifying, candidateLabel);
+}
+
 SearchLiveUpdate ToLiveUpdate(const SearchResult &result) {
-    return {
-            result.winnerSource,
-            result.winningIterationIndex,
-            result.winningMutationCount,
-            result.bestScore,
-            result.bestEvaluationTimeMs,
-            result.bestEvaluationDescription,
-            result.bestState,
-            result.bestInputs,
-            result.iterations,
-            result.evaluatorCalls,
-            result.mutationImprovementCount,
-            result.totalMutationCount,
-            result.elapsed,
-            result.lastImprovementElapsed,
-            {}};
+    SearchLiveUpdate live;
+    live.winnerSource = result.winnerSource;
+    live.winningIterationIndex = result.winningIterationIndex;
+    live.winningMutationCount = result.winningMutationCount;
+    live.bestScore = result.bestScore;
+    live.bestEvaluationTimeMs = result.bestEvaluationTimeMs;
+    live.bestEvaluationDescription = result.bestEvaluationDescription;
+    live.bestState = result.bestState;
+    live.bestInputs = result.bestInputs;
+    live.iterations = result.iterations;
+    live.evaluatorCalls = result.evaluatorCalls;
+    live.mutationImprovementCount = result.mutationImprovementCount;
+    live.totalMutationCount = result.totalMutationCount;
+    live.elapsed = result.elapsed;
+    live.lastImprovementElapsed = result.lastImprovementElapsed;
+    live.bestAvailable = true;
+    live.qualifyingCandidateCount = result.qualifyingCandidateCount;
+    live.closestTargetDistance = result.closestTargetDistance;
+    return live;
 }
 
 QString FormatResult(const SearchResult &result) {
@@ -90,6 +142,10 @@ QString FilePathFromUtf8(const std::string &path) {
 }
 
 }  // namespace
+
+QString SearchTargetProgressText(const SearchLiveUpdate &live) {
+    return FormatTargetProgressText(live);
+}
 
 QString SearchStageStatus(SearchProgressStage stage,
                           std::string_view backendId,
@@ -292,7 +348,7 @@ void SearchWorker::run() {
             [this, publishedTrajectoryNumber](
                     const SearchLiveUpdate &live,
                     std::string_view backendId) {
-                if (live.bestTimeline.empty()) {
+                if (!live.bestAvailable || live.bestTimeline.empty()) {
                     return;
                 }
                 auto improvement = std::make_shared<SearchImprovement>();
@@ -319,9 +375,10 @@ void SearchWorker::run() {
                            publishImprovement,
                            liveMetricWindow](
                                   const SearchLiveUpdate &live) mutable {
-        if (latestInputsText.isEmpty() ||
-            latestSource != live.winnerSource ||
-            latestIteration != live.winningIterationIndex) {
+        if (live.bestAvailable &&
+            (latestInputsText.isEmpty() ||
+             latestSource != live.winnerSource ||
+             latestIteration != live.winningIterationIndex)) {
             latestInputsText = QString::fromStdString(
                     FormatInputScript(live.bestInputs));
             latestSource = live.winnerSource;
@@ -340,7 +397,12 @@ void SearchWorker::run() {
                 FormatCompactNumber(
                         static_cast<double>(live.totalMutationCount)),
                 FormatCompactNumber(static_cast<double>(
-                        live.mutationImprovementCount)));
+                        live.mutationImprovementCount)),
+                PhysicsBackendId(request_.backend) == "cuda" &&
+                        request_.evaluationTarget.id ==
+                                kVolumeEntryEvaluationId
+                        ? SearchTargetProgressText(live)
+                        : QString{});
         publishImprovement(live, PhysicsBackendId(request_.backend));
         emit bestChanged(
                 FormatLive(live, QStringLiteral("Current best")),

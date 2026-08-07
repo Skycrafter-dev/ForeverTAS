@@ -16,6 +16,7 @@ namespace forevertas::app {
 QString SearchStageStatus(SearchProgressStage stage,
                           std::string_view backendId,
                           bool useCudaSessionSpecialization = false);
+QString SearchTargetProgressText(const SearchLiveUpdate &live);
 bool TryBeginSearchIteration(
         const std::shared_ptr<std::atomic<SearchIterationPhase>> &phase);
 bool TryCancelBeforeSearchIteration(
@@ -43,7 +44,8 @@ signals:
                         const QString &elapsedText,
                         const QString &evaluationCountText,
                         const QString &mutationCountText,
-                        const QString &improvementCountText);
+                        const QString &improvementCountText,
+                        const QString &targetProgressText);
     void throughputReset();
     void cudaCalibrationActiveChanged(bool active);
     void cudaActiveBatchSizeChanged(std::uint32_t batchSize);

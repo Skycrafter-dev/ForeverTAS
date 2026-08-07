@@ -7,6 +7,7 @@
 
 #include <forevervalidator/native.h>
 #if FOREVERVALIDATOR_HAS_CUDA
+#include "simulation/backends/cuda/cuda_backend.h"
 #include "simulation/backends/cuda/cuda_session_specialization.h"
 #endif
 
@@ -186,6 +187,37 @@ public:
     }
 };
 
+class NoSampleSession final
+    : public forevertas::IterationEvaluationSession {
+public:
+    std::optional<forevertas::EvaluationSample> Observe(
+            const std::optional<PhysicsSandboxStateView> &,
+            const PhysicsSandboxStateView &) override {
+        return std::nullopt;
+    }
+};
+
+class NoSampleEvaluator final : public forevertas::IterationEvaluator {
+public:
+    forevertas::EvaluationPlan Plan(
+            std::int64_t,
+            std::int64_t,
+            std::uint32_t) const override {
+        return {10, 10};
+    }
+
+    std::unique_ptr<forevertas::IterationEvaluationSession>
+    CreateSession() const override {
+        return std::make_unique<NoSampleSession>();
+    }
+
+    bool IsBetter(
+            const forevertas::EvaluationSample &,
+            const forevertas::EvaluationSample &) const override {
+        return false;
+    }
+};
+
 template<typename T, typename Error>
 T Require(forevervalidator::DiscriminatedResult<T, Error> result,
           const char *operation) {
@@ -284,6 +316,170 @@ bool CheckAutoPromoteSemantics(
     return true;
 }
 
+bool CheckNoBestLiveReporting(
+        const char *packsDirectory,
+        const char *replayPath) {
+    PhysicsSandbox sandbox =
+            CreateEmptyInputSandbox(packsDirectory, replayPath);
+    IncrementingSteerMutator mutator;
+    NoSampleEvaluator evaluator;
+    std::vector<forevertas::SearchLiveUpdate> liveUpdates;
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 3u;
+    control.sampleBestTimeline = false;
+    control.liveChanged =
+            [&](const forevertas::SearchLiveUpdate &live) {
+                liveUpdates.push_back(live);
+            };
+
+    bool rejectedMissingBest = false;
+    try {
+        static_cast<void>(
+                forevertas::BasicBruteForceSearch(false).Run(
+                        {sandbox,
+                         forevertas::kSearchTickDurationMs,
+                         mutator,
+                         evaluator,
+                         &control}));
+    } catch (const std::runtime_error &error) {
+        rejectedMissingBest =
+                std::string(error.what()) ==
+                "no iteration satisfied the selected evaluation target";
+    }
+
+    std::uint64_t previousIterations = 0u;
+    std::uint64_t previousEvaluatorCalls = 0u;
+    std::uint64_t previousMutationCount = 0u;
+    bool invalid = liveUpdates.empty();
+    for (const forevertas::SearchLiveUpdate &live : liveUpdates) {
+        invalid |= live.bestAvailable ||
+                live.winnerSource !=
+                        forevertas::SearchWinnerSource::Baseline ||
+                live.winningIterationIndex.has_value() ||
+                live.winningMutationCount != 0u ||
+                live.bestScore != 0.0 ||
+                live.bestEvaluationTimeMs != 0.0 ||
+                !live.bestEvaluationDescription.empty() ||
+                !live.bestInputs.empty() ||
+                !live.bestTimeline.empty() ||
+                live.iterations < previousIterations ||
+                live.evaluatorCalls < previousEvaluatorCalls ||
+                live.totalMutationCount < previousMutationCount ||
+                live.mutationImprovementCount != 0u ||
+                live.lastImprovementElapsed.has_value() ||
+                live.qualifyingCandidateCount != 0u ||
+                live.closestTargetDistance.has_value();
+        previousIterations = live.iterations;
+        previousEvaluatorCalls = live.evaluatorCalls;
+        previousMutationCount = live.totalMutationCount;
+    }
+    if (!rejectedMissingBest || invalid ||
+        previousIterations != 3u ||
+        previousEvaluatorCalls != 4u ||
+        previousMutationCount != 3u) {
+        std::cerr
+                << "CPU no-best live reporting did not preserve safe fields "
+                   "and monotonic activity counters\n";
+        return false;
+    }
+    return true;
+}
+
+bool CheckNoBestRunnerReporting(
+        const char *packsDirectory,
+        const char *replayPath) {
+    const forevertas::InputScriptParseResult parsed =
+            forevertas::ParseInputScript(
+                    forevertas::ExtractReplayInputScript(
+                            packsDirectory, replayPath));
+    if (!parsed) {
+        throw std::runtime_error(*parsed.error);
+    }
+    const forevertas::ConditionCompileResult condition =
+            forevertas::CompileConditionScript("iterations < 0");
+    if (condition.error || !condition.program) {
+        throw std::runtime_error(
+                condition.error.value_or(
+                        "missing compiled no-best condition"));
+    }
+
+    const auto checkBackend =
+            [&](forevertas::PhysicsBackend backend,
+                std::uint32_t workerCount) {
+                forevertas::SearchRequest request{
+                        packsDirectory, replayPath};
+                request.backend = backend;
+                request.parallelSampleCount = workerCount;
+                request.baseInputCommands = parsed.commands;
+                request.condition = condition.program;
+
+                const std::thread::id callerThread =
+                        std::this_thread::get_id();
+                std::uint64_t previousIterations = 0u;
+                std::uint64_t previousEvaluatorCalls = 0u;
+                std::uint64_t previousMutationCount = 0u;
+                bool sawActivity = false;
+                bool invalid = false;
+                std::size_t liveUpdateCount = 0u;
+                forevertas::SearchRunControl control;
+                control.iterationLimit = 4u;
+                control.evaluationEndTimeLimitMs = 1020;
+                control.sampleBestTimeline = false;
+                control.liveChanged =
+                        [&](const forevertas::SearchLiveUpdate &live) {
+                            invalid |=
+                                    std::this_thread::get_id() !=
+                                            callerThread ||
+                                    live.bestAvailable ||
+                                    !live.bestTimeline.empty() ||
+                                    !live.bestInputs.empty() ||
+                                    !live.bestEvaluationDescription.empty() ||
+                                    live.iterations < previousIterations ||
+                                    live.evaluatorCalls <
+                                            previousEvaluatorCalls ||
+                                    live.totalMutationCount <
+                                            previousMutationCount ||
+                                    live.mutationImprovementCount != 0u ||
+                                    live.qualifyingCandidateCount != 0u ||
+                                    live.closestTargetDistance.has_value();
+                            sawActivity |= live.iterations != 0u ||
+                                    live.evaluatorCalls != 0u ||
+                                    live.totalMutationCount != 0u;
+                            previousIterations = live.iterations;
+                            previousEvaluatorCalls =
+                                    live.evaluatorCalls;
+                            previousMutationCount =
+                                    live.totalMutationCount;
+                            ++liveUpdateCount;
+                        };
+
+                bool rejectedMissingBest = false;
+                try {
+                    static_cast<void>(
+                            forevertas::RunSearch(request, &control));
+                } catch (const std::runtime_error &error) {
+                    rejectedMissingBest =
+                            std::string(error.what()) ==
+                            "no iteration satisfied the selected "
+                            "evaluation target";
+                }
+                return rejectedMissingBest &&
+                        liveUpdateCount != 0u && sawActivity && !invalid &&
+                        (backend !=
+                                 forevertas::PhysicsBackend::OptimizedCpu ||
+                         previousIterations == 4u);
+            };
+
+    if (!checkBackend(forevertas::PhysicsBackend::OptimizedCpu, 1u) ||
+        !checkBackend(forevertas::PhysicsBackend::MultiThreadedCpu, 2u)) {
+        std::cerr
+                << "search runner did not forward no-best activity without "
+                   "sampling or selecting it\n";
+        return false;
+    }
+    return true;
+}
+
 bool CheckModifierWindowClampedToHorizon(
         const char *packsDirectory,
         const char *replayPath) {
@@ -347,6 +543,15 @@ bool CheckCudaKernelModeLifecycle(
     const std::uint64_t afterSpecializedReuse =
             forevervalidator::simulation::cuda::specialization::
                     SessionModuleBuildCountForTesting();
+    const forevervalidator::CudaBackendDiagnostics cuda =
+            forevervalidator::QueryCudaBackendDiagnostics();
+    const bool expectsSpecialization = cuda.IsReady() &&
+            forevervalidator::simulation::
+                    IsCudaSessionSpecializationSupported(
+                            cuda.computeCapabilityMajor,
+                            cuda.computeCapabilityMinor);
+    const std::uint64_t expectedAfterModeSwitch =
+            before + (expectsSpecialization ? 1u : 0u);
 
     const bool sameResult =
             regular.winnerSource == specialized.winnerSource &&
@@ -358,7 +563,7 @@ bool CheckCudaKernelModeLifecycle(
                             specialized.bestInputs) &&
             specialized.bestScore == specializedAgain.bestScore;
     if (afterMapLoad != before ||
-        afterModeSwitch != before + 1u ||
+        afterModeSwitch != expectedAfterModeSwitch ||
         afterSpecializedReuse != afterModeSwitch || !sameResult) {
         std::cerr
                 << "CUDA fast mode did not skip or reuse specialization "
@@ -1724,6 +1929,8 @@ int main(int argc, char **argv) {
                     : 1;
         }
         if (!CheckAutoPromoteSemantics(argv[1], argv[2]) ||
+            !CheckNoBestLiveReporting(argv[1], argv[2]) ||
+            !CheckNoBestRunnerReporting(argv[1], argv[2]) ||
             !CheckModifierWindowClampedToHorizon(argv[1], argv[2]) ||
             !CheckCanonicalHorizonAndLateInputs(argv[1], argv[2]) ||
             !CheckPairedCanonicalFixtures(argv[1], argv[2]) ||

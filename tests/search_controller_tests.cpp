@@ -1583,6 +1583,52 @@ bool TestDescriptiveSearchStageStatuses() {
     return okay;
 }
 
+bool TestSearchTargetProgressFormatting() {
+    using forevertas::SearchLiveUpdate;
+    using forevertas::app::SearchTargetProgressText;
+
+    SearchLiveUpdate live;
+    bool okay = Check(
+            SearchTargetProgressText(live) ==
+                    QStringLiteral("Waiting for the first target sample..."),
+            "empty target activity text was misleading");
+
+    live.closestTargetDistance = 12.345;
+    okay &= Check(
+            SearchTargetProgressText(live) ==
+                    QStringLiteral(
+                            "No qualifying entry trigger yet \u2022 nearest "
+                            "sampled car center: 12.35 m away"),
+            "cuboid miss distance was not formatted precisely");
+
+    live.closestTargetDistance = 0.0;
+    okay &= Check(
+            SearchTargetProgressText(live) ==
+                    QStringLiteral(
+                            "Cuboid reached geometrically (0.00 m away), "
+                            "but no qualifying entry trigger was recorded "
+                            "yet"),
+            "zero geometric distance did not distinguish geometry from "
+            "a qualifying trigger");
+
+    live.qualifyingCandidateCount = 1u;
+    okay &= Check(
+            SearchTargetProgressText(live) ==
+                    QStringLiteral(
+                            "Target triggered: 1 qualifying candidate "
+                            "\u2022 nearest sampled car center: 0.00 m"),
+            "singular cuboid hit progress was not formatted correctly");
+
+    live.qualifyingCandidateCount = 3u;
+    okay &= Check(
+            SearchTargetProgressText(live) ==
+                    QStringLiteral(
+                            "Target triggered: 3 qualifying candidates "
+                            "\u2022 nearest sampled car center: 0.00 m"),
+            "cuboid hit progress was not formatted correctly");
+    return okay;
+}
+
 bool TestIterationBoundaryArbitration() {
     using forevertas::SearchIterationPhase;
     using forevertas::app::TryBeginSearchIteration;
@@ -1894,6 +1940,7 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
                                 !controller.evaluationCountText().isEmpty() &&
                                 !controller.mutationCountText().isEmpty() &&
                                 !controller.improvementCountText().isEmpty() &&
+                                controller.targetProgressText().isEmpty() &&
                                 controller.resultText().contains(
                                         QStringLiteral("Last improvement:")) &&
                                 !controller.resultText()
@@ -2002,6 +2049,7 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
                           !controller.evaluationCountText().isEmpty() &&
                           !controller.mutationCountText().isEmpty() &&
                           !controller.improvementCountText().isEmpty() &&
+                          controller.targetProgressText().isEmpty() &&
                           !controller.resultText().isEmpty() &&
                           !controller.bestInputsText().isEmpty(),
                   "completed search did not preserve the final best display");
@@ -2086,6 +2134,7 @@ int main(int argc, char **argv) {
             TestPoseTargets() &&
             TestAutomaticPacksDetection() &&
             TestDescriptiveSearchStageStatuses() &&
+            TestSearchTargetProgressFormatting() &&
             TestIterationBoundaryArbitration() &&
             TestUserTimelineConfigurationBoundary() &&
             TestRegistryAndValidation(packsDirectory.path(), replayPath) &&

@@ -1278,6 +1278,12 @@ int main(int argc, char **argv) {
                     QObject *const improvementsMetricValue =
                             root->findChild<QObject *>(QStringLiteral(
                                     "improvementsMetricValue"));
+                    auto *const targetProgressPanel = qobject_cast<QQuickItem *>(
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "targetProgressPanel")));
+                    QObject *const targetProgressLabel =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "targetProgressLabel"));
                     const bool keyboardStepping =
                             stepBackward != nullptr &&
                             stepForward != nullptr &&
@@ -2305,8 +2311,11 @@ int main(int argc, char **argv) {
                             evaluationsMetricValue != nullptr &&
                             mutationsMetricValue != nullptr &&
                             improvementsMetricValue != nullptr &&
+                            targetProgressPanel != nullptr &&
+                            targetProgressLabel != nullptr &&
                             !searchMetricsRow->isVisible() &&
                             !searchActivityRow->isVisible() &&
+                            !targetProgressPanel->isVisible() &&
                             std::abs(iterationsMetricCard->height() -
                                      throughputMetricCard->height()) < 0.1 &&
                             std::abs(throughputMetricCard->height() -
@@ -2322,6 +2331,8 @@ int main(int argc, char **argv) {
                             mutationsMetricValue->property("text")
                                     .toString().isEmpty() &&
                             improvementsMetricValue->property("text")
+                                    .toString().isEmpty() &&
+                            targetProgressLabel->property("text")
                                     .toString().isEmpty();
                     const bool removedSectionDescriptions =
                             !ContainsText(

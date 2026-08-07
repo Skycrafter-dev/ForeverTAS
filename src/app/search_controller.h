@@ -129,6 +129,8 @@ class SearchController final : public QObject {
                        metricsChanged)
     Q_PROPERTY(QString improvementCountText READ improvementCountText NOTIFY
                        metricsChanged)
+    Q_PROPERTY(QString targetProgressText READ targetProgressText NOTIFY
+                       metricsChanged)
     Q_PROPERTY(QString resultText READ resultText NOTIFY resultChanged)
     Q_PROPERTY(QString bestInputsText READ bestInputsText NOTIFY resultChanged)
 
@@ -188,6 +190,7 @@ public:
     QString evaluationCountText() const;
     QString mutationCountText() const;
     QString improvementCountText() const;
+    QString targetProgressText() const;
     QString resultText() const;
     QString bestInputsText() const;
 
@@ -295,6 +298,7 @@ private:
                         const QString &evaluationCountText,
                         const QString &mutationCountText,
                         const QString &improvementCountText,
+                        const QString &targetProgressText,
                         bool visible);
     void setCudaActiveCalibrationBatchSampleCount(const QString &value);
     void setCudaActiveBatchSampleCount(const QString &value);
@@ -358,6 +362,7 @@ private:
     QString evaluationCountText_;
     QString mutationCountText_;
     QString improvementCountText_;
+    QString targetProgressText_;
     QString resultText_;
     QString bestInputsText_;
     bool valid_ = false;

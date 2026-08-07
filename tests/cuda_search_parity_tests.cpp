@@ -96,7 +96,9 @@ SearchResult Run(const char *packs,
                                  kDefaultCudaCalibrationStartSampleCount,
                  std::vector<std::uint32_t> *capacityUpdates = nullptr,
                  std::vector<std::pair<std::uint64_t, std::uint32_t>>
-                         *batchExecutions = nullptr) {
+                         *batchExecutions = nullptr,
+                 std::vector<forevertas::SearchLiveUpdate>
+                         *liveUpdates = nullptr) {
     SearchRequest request{packs, replay};
     request.baseInputCommands = ReplayInputCommands(packs, replay);
     request.backend = backend;
@@ -150,6 +152,14 @@ SearchResult Run(const char *packs,
             ++*winnerResolutionCount;
         }
     };
+    if (liveUpdates != nullptr) {
+        control.sampleImprovementTimelines = false;
+        control.liveChanged =
+                [liveUpdates](
+                        const forevertas::SearchLiveUpdate &live) {
+                    liveUpdates->push_back(live);
+                };
+    }
     bool calibrationFinished = false;
     control.progressChanged =
             [calibrationCompleted, &calibrationFinished](
@@ -246,6 +256,161 @@ OptionConfiguration DefaultEvaluator(const std::string &id) {
                 "missing evaluator registration: " + id);
     }
     return {registration->id, registration->defaultSettings};
+}
+
+bool CheckCudaTargetProgressPropagation(
+        const char *packs,
+        const char *replay,
+        const forevertas::SearchTimelineFrame &targetFrame) {
+    const auto decimal = [](double value) {
+        std::ostringstream stream;
+        stream << std::setprecision(17) << value;
+        return stream.str();
+    };
+    OptionConfiguration modifier = DefaultModifier(
+            forevertas::kInputInsertionModifierId);
+    modifier.settings["minTimeMs"] = "1000";
+    modifier.settings["maxTimeMs"] = "1000";
+    modifier.settings["steerEnabled"] = "true";
+    modifier.settings["steerMode"] = "offset";
+    modifier.settings["steerOffsetMin"] = "0.0001";
+    modifier.settings["steerOffsetMax"] = "0.0001";
+    modifier.settings["steerMinCount"] = "1";
+    modifier.settings["steerMaxCount"] = "1";
+    modifier.settings["steerMaxHoldMs"] = "0";
+    modifier.settings["accelerateEnabled"] = "false";
+    modifier.settings["brakeEnabled"] = "false";
+
+    OptionConfiguration hit = DefaultEvaluator(
+            forevertas::kVolumeEntryEvaluationId);
+    hit.settings["centerX"] = decimal(targetFrame.positionX);
+    hit.settings["centerY"] = decimal(targetFrame.positionY);
+    hit.settings["centerZ"] = decimal(targetFrame.positionZ);
+    hit.settings["sizeX"] = "0.1";
+    hit.settings["sizeY"] = "0.1";
+    hit.settings["sizeZ"] = "0.1";
+
+    std::vector<forevertas::SearchLiveUpdate> hitLive;
+    const SearchResult hitResult = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Cuda,
+            2u,
+            5u,
+            {modifier},
+            hit,
+            false,
+            nullptr,
+            false,
+            1040,
+            nullptr,
+            false,
+            true,
+            false,
+            forevertas::kDefaultSimulationHorizonMs,
+            std::string{},
+            nullptr,
+            forevertas::kDefaultCudaCalibrationStartSampleCount,
+            nullptr,
+            nullptr,
+            &hitLive);
+    std::uint64_t previousQualifyingCount = 0u;
+    bool hitLiveInvalid = hitLive.empty();
+    for (const forevertas::SearchLiveUpdate &live : hitLive) {
+        hitLiveInvalid |= !live.bestAvailable ||
+                live.qualifyingCandidateCount <
+                        previousQualifyingCount ||
+                !live.closestTargetDistance ||
+                *live.closestTargetDistance != 0.0;
+        previousQualifyingCount =
+                live.qualifyingCandidateCount;
+    }
+    constexpr std::uint64_t expectedQualifyingCount = 6u;
+    if (hitLiveInvalid ||
+        hitResult.qualifyingCandidateCount !=
+                expectedQualifyingCount ||
+        !hitResult.closestTargetDistance ||
+        *hitResult.closestTargetDistance != 0.0 ||
+        hitLive.back().iterations != 5u ||
+        hitLive.back().qualifyingCandidateCount !=
+                hitResult.qualifyingCandidateCount ||
+        hitLive.back().closestTargetDistance !=
+                hitResult.closestTargetDistance) {
+        std::cerr
+                << "CUDA hit progress did not accumulate baseline and "
+                   "mutation batches\n";
+        return false;
+    }
+
+    OptionConfiguration miss = hit;
+    miss.settings["centerX"] = decimal(
+            static_cast<double>(targetFrame.positionX) + 1000000.0);
+    miss.settings["centerY"] = decimal(
+            static_cast<double>(targetFrame.positionY) + 1000000.0);
+    miss.settings["centerZ"] = decimal(
+            static_cast<double>(targetFrame.positionZ) + 1000000.0);
+    miss.settings["sizeX"] = "0.01";
+    miss.settings["sizeY"] = "0.01";
+    miss.settings["sizeZ"] = "0.01";
+
+    std::vector<forevertas::SearchLiveUpdate> missLive;
+    bool rejectedMissingBest = false;
+    try {
+        static_cast<void>(Run(
+                packs,
+                replay,
+                forevertas::PhysicsBackend::Cuda,
+                2u,
+                5u,
+                {modifier},
+                miss,
+                false,
+                nullptr,
+                false,
+                1040,
+                nullptr,
+                false,
+                true,
+                false,
+                forevertas::kDefaultSimulationHorizonMs,
+                std::string{},
+                nullptr,
+                forevertas::kDefaultCudaCalibrationStartSampleCount,
+                nullptr,
+                nullptr,
+                &missLive));
+    } catch (const std::runtime_error &error) {
+        rejectedMissingBest =
+                std::string(error.what()) ==
+                "no iteration satisfied the selected evaluation target";
+    }
+
+    previousQualifyingCount = 0u;
+    std::optional<double> previousClosest;
+    bool missLiveInvalid = missLive.empty();
+    for (const forevertas::SearchLiveUpdate &live : missLive) {
+        missLiveInvalid |= live.bestAvailable ||
+                live.qualifyingCandidateCount <
+                        previousQualifyingCount ||
+                live.qualifyingCandidateCount != 0u ||
+                !live.closestTargetDistance ||
+                !std::isfinite(*live.closestTargetDistance) ||
+                *live.closestTargetDistance <= 0.0 ||
+                (previousClosest &&
+                 *live.closestTargetDistance > *previousClosest) ||
+                !live.bestTimeline.empty();
+        previousQualifyingCount =
+                live.qualifyingCandidateCount;
+        previousClosest = live.closestTargetDistance;
+    }
+    if (!rejectedMissingBest || missLiveInvalid ||
+        missLive.back().iterations != 5u) {
+        std::cerr
+                << "CUDA miss progress did not publish no-best counters "
+                   "and closest distance\n";
+        return false;
+    }
+    return true;
 }
 
 bool CheckParity(const char *packs,
@@ -1157,6 +1322,8 @@ int main(int argc, char **argv) {
         }
         const forevertas::SearchTimelineFrame &volumeTarget =
                 *volumeTargetPosition;
+        okay &= CheckCudaTargetProgressPropagation(
+                argv[1], argv[2], volumeTarget);
         const auto decimal = [](float value) {
             std::ostringstream stream;
             stream << std::setprecision(17)

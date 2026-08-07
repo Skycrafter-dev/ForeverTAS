@@ -265,6 +265,9 @@ public:
             const AsyncImprovementTimelineSampler &) = delete;
 
     void Submit(const SearchLiveUpdate &live) {
+        if (!live.bestAvailable) {
+            return;
+        }
         std::exception_ptr failure;
         {
             std::lock_guard<std::mutex> guard(mutex_);
@@ -772,10 +775,12 @@ SearchResult RunLoadedSearch(
                 [&, downstreamLiveChanged](
                         const SearchLiveUpdate &live) {
                     const bool initialBaseline =
+                            live.bestAvailable &&
                             live.winnerSource ==
                                     SearchWinnerSource::Baseline &&
                             !sampledBaseline;
                     const bool improvedMutation =
+                            live.bestAvailable &&
                             live.winnerSource ==
                                     SearchWinnerSource::Mutation &&
                             live.mutationImprovementCount >
@@ -1133,6 +1138,7 @@ SearchResult RunMultiThreadedCpuSearch(
                                 std::lock_guard<std::mutex> guard(
                                         stateMutex);
                                 if (autoPromoteBest &&
+                                    live.bestAvailable &&
                                     live.winnerSource ==
                                             SearchWinnerSource::Mutation &&
                                     (!promotedEvaluation ||
@@ -1260,27 +1266,41 @@ SearchResult RunMultiThreadedCpuSearch(
             std::uint64_t iterations = 0u;
             std::uint64_t evaluatorCalls = 0u;
             std::uint64_t totalMutationCount = 0u;
+            std::uint64_t qualifyingCandidateCount = 0u;
+            std::optional<double> closestTargetDistance;
+            bool activityAvailable = false;
             for (const auto &live : liveUpdates) {
                 if (!live) {
                     continue;
                 }
+                activityAvailable = true;
                 iterations += live->iterations;
                 evaluatorCalls += live->evaluatorCalls;
                 totalMutationCount += live->totalMutationCount;
-                if (!candidate ||
-                    preferShared(
-                            live->bestScore,
-                            live->bestEvaluationTimeMs,
-                            live->winnerSource,
-                            live->winningIterationIndex,
-                            candidate->bestScore,
-                            candidate->bestEvaluationTimeMs,
-                            candidate->winnerSource,
-                            candidate->winningIterationIndex)) {
+                qualifyingCandidateCount +=
+                        live->qualifyingCandidateCount;
+                if (live->closestTargetDistance &&
+                    (!closestTargetDistance ||
+                     *live->closestTargetDistance <
+                             *closestTargetDistance)) {
+                    closestTargetDistance =
+                            live->closestTargetDistance;
+                }
+                if (live->bestAvailable &&
+                    (!candidate ||
+                     preferShared(
+                             live->bestScore,
+                             live->bestEvaluationTimeMs,
+                             live->winnerSource,
+                             live->winningIterationIndex,
+                             candidate->bestScore,
+                             candidate->bestEvaluationTimeMs,
+                             candidate->winnerSource,
+                             candidate->winningIterationIndex))) {
                     candidate = live;
                 }
             }
-            if (!candidate) {
+            if (!activityAvailable) {
                 continue;
             }
             if (!searchingReported) {
@@ -1293,22 +1313,23 @@ SearchResult RunMultiThreadedCpuSearch(
             }
 
             bool improved = false;
-            const bool strictlyBetter = aggregateBest &&
+            const bool strictlyBetter = candidate && aggregateBest &&
                     betterShared(
-                        candidate->bestScore,
-                        candidate->bestEvaluationTimeMs,
-                        aggregateBest->bestScore,
-                        aggregateBest->bestEvaluationTimeMs);
-            if (!aggregateBest ||
-                preferShared(
-                        candidate->bestScore,
-                        candidate->bestEvaluationTimeMs,
-                        candidate->winnerSource,
-                        candidate->winningIterationIndex,
-                        aggregateBest->bestScore,
-                        aggregateBest->bestEvaluationTimeMs,
-                        aggregateBest->winnerSource,
-                        aggregateBest->winningIterationIndex)) {
+                            candidate->bestScore,
+                            candidate->bestEvaluationTimeMs,
+                            aggregateBest->bestScore,
+                            aggregateBest->bestEvaluationTimeMs);
+            if (candidate &&
+                (!aggregateBest ||
+                 preferShared(
+                         candidate->bestScore,
+                         candidate->bestEvaluationTimeMs,
+                         candidate->winnerSource,
+                         candidate->winningIterationIndex,
+                         aggregateBest->bestScore,
+                         aggregateBest->bestEvaluationTimeMs,
+                         aggregateBest->winnerSource,
+                         aggregateBest->winningIterationIndex))) {
                 improved = candidate->winnerSource ==
                                 SearchWinnerSource::Mutation &&
                         (!aggregateBest || strictlyBetter);
@@ -1319,10 +1340,14 @@ SearchResult RunMultiThreadedCpuSearch(
                             std::chrono::steady_clock::now() - started;
                 }
             }
-            if (control != nullptr && control->liveChanged &&
-                aggregateBest) {
-                SearchLiveUpdate aggregate = *aggregateBest;
+            if (control != nullptr && control->liveChanged) {
+                SearchLiveUpdate aggregate;
+                if (aggregateBest) {
+                    aggregate = *aggregateBest;
+                }
+                aggregate.bestAvailable = aggregateBest.has_value();
                 if (improved &&
+                    aggregate.bestAvailable &&
                     aggregate.winnerSource == SearchWinnerSource::Mutation) {
                     if (!timelineSampler) {
                         timelineSampler =
@@ -1344,6 +1369,10 @@ SearchResult RunMultiThreadedCpuSearch(
                 aggregate.mutationImprovementCount =
                         aggregateImprovementCount;
                 aggregate.totalMutationCount = totalMutationCount;
+                aggregate.qualifyingCandidateCount =
+                        qualifyingCandidateCount;
+                aggregate.closestTargetDistance =
+                        closestTargetDistance;
                 aggregate.elapsed =
                         std::chrono::steady_clock::now() - started;
                 aggregate.lastImprovementElapsed =
@@ -1387,6 +1416,8 @@ SearchResult RunMultiThreadedCpuSearch(
     std::uint64_t iterations = 0u;
     std::uint64_t evaluatorCalls = 0u;
     std::uint64_t totalMutationCount = 0u;
+    std::uint64_t qualifyingCandidateCount = 0u;
+    std::optional<double> closestTargetDistance;
     for (std::size_t index = 0u; index < states.size(); ++index) {
         if (!states[index].result) {
             throw std::runtime_error(
@@ -1396,6 +1427,15 @@ SearchResult RunMultiThreadedCpuSearch(
         iterations += result.iterations;
         evaluatorCalls += result.evaluatorCalls;
         totalMutationCount += result.totalMutationCount;
+        qualifyingCandidateCount +=
+                result.qualifyingCandidateCount;
+        if (result.closestTargetDistance &&
+            (!closestTargetDistance ||
+             *result.closestTargetDistance <
+                     *closestTargetDistance)) {
+            closestTargetDistance =
+                    result.closestTargetDistance;
+        }
         if (!bestWorker ||
             preferShared(
                     result.bestScore,
@@ -1431,6 +1471,9 @@ SearchResult RunMultiThreadedCpuSearch(
     result.mutationImprovementCount =
             aggregateImprovementCount;
     result.totalMutationCount = totalMutationCount;
+    result.qualifyingCandidateCount =
+            qualifyingCandidateCount;
+    result.closestTargetDistance = closestTargetDistance;
     result.elapsed = std::chrono::steady_clock::now() - started;
     result.lastImprovementElapsed = lastImprovementElapsed;
 

@@ -101,6 +101,9 @@ struct SearchLiveUpdate {
     std::optional<std::chrono::steady_clock::duration>
             lastImprovementElapsed;
     std::vector<SearchTimelineFrame> bestTimeline;
+    bool bestAvailable = false;
+    std::uint64_t qualifyingCandidateCount = 0u;
+    std::optional<double> closestTargetDistance;
 };
 
 struct SearchRunControl {
@@ -182,6 +185,8 @@ struct SearchResult {
     std::optional<std::chrono::steady_clock::duration>
             lastImprovementElapsed;
     forevervalidator::experimental::PhysicsSandboxState bestSnapshot;
+    std::uint64_t qualifyingCandidateCount = 0u;
+    std::optional<double> closestTargetDistance;
 };
 
 class SearchAlgorithm {

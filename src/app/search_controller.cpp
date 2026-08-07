@@ -219,7 +219,7 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
         setLiveMetrics(iterationCountText_, throughputText_,
                        SearchElapsedText(*searchStarted_),
                        evaluationCountText_, mutationCountText_,
-                       improvementCountText_, true);
+                       improvementCountText_, targetProgressText_, true);
     });
     cudaParallelSampleCount_ = StoredValue(
             kCudaParallelSampleCountKey,
@@ -526,6 +526,10 @@ QString SearchController::mutationCountText() const {
 
 QString SearchController::improvementCountText() const {
     return improvementCountText_;
+}
+
+QString SearchController::targetProgressText() const {
+    return targetProgressText_;
 }
 
 QString SearchController::resultText() const {
@@ -1067,6 +1071,10 @@ void SearchController::startSearch() {
     setBestInputsText({});
     const bool cudaSearch =
             PhysicsBackendId(validation.request->backend) == "cuda";
+    const bool reportsCudaTargetDistance =
+            cudaSearch &&
+            validation.request->evaluationTarget.id ==
+                    kVolumeEntryEvaluationId;
     setLiveMetrics(
             cudaSearch ? QStringLiteral("0") : QString{},
             {},
@@ -1074,6 +1082,9 @@ void SearchController::startSearch() {
             cudaSearch ? QStringLiteral("0") : QString{},
             cudaSearch ? QStringLiteral("0") : QString{},
             cudaSearch ? QStringLiteral("0") : QString{},
+            reportsCudaTargetDistance
+                    ? QStringLiteral("Waiting for the first target sample...")
+                    : QString{},
             cudaSearch);
     setCudaActiveBatchSampleCount(
             cudaSearch
@@ -1133,7 +1144,8 @@ void SearchController::startSearch() {
                    const QString &elapsedText,
                    const QString &evaluationCountText,
                    const QString &mutationCountText,
-                   const QString &improvementCountText) {
+                   const QString &improvementCountText,
+                   const QString &targetProgressText) {
                 const QString displayedElapsed =
                         PhysicsBackendId(simulationBackend_) == "cuda" &&
                                 searchStarted_
@@ -1145,6 +1157,7 @@ void SearchController::startSearch() {
                                evaluationCountText,
                                mutationCountText,
                                improvementCountText,
+                               targetProgressText,
                                true);
             });
     connect(worker,
@@ -1154,6 +1167,7 @@ void SearchController::startSearch() {
                 setLiveMetrics(iterationCountText_, {}, elapsedText_,
                                evaluationCountText_, mutationCountText_,
                                improvementCountText_,
+                               targetProgressText_,
                                liveMetricsVisible_);
             });
     connect(worker,
@@ -1228,6 +1242,7 @@ void SearchController::startSearch() {
                                SearchElapsedText(*searchStarted_),
                                evaluationCountText_, mutationCountText_,
                                improvementCountText_,
+                               targetProgressText_,
                                true);
             }
             searchElapsedUpdateTimer_->stop();
@@ -1496,12 +1511,14 @@ void SearchController::setLiveMetrics(
         const QString &evaluationCountText,
         const QString &mutationCountText,
         const QString &improvementCountText,
+        const QString &targetProgressText,
         bool visible) {
     if (iterationCountText_ == iterationCountText &&
         throughputText_ == throughputText && elapsedText_ == elapsedText &&
         evaluationCountText_ == evaluationCountText &&
         mutationCountText_ == mutationCountText &&
         improvementCountText_ == improvementCountText &&
+        targetProgressText_ == targetProgressText &&
         liveMetricsVisible_ == visible) {
         return;
     }
@@ -1511,6 +1528,7 @@ void SearchController::setLiveMetrics(
     evaluationCountText_ = evaluationCountText;
     mutationCountText_ = mutationCountText;
     improvementCountText_ = improvementCountText;
+    targetProgressText_ = targetProgressText;
     liveMetricsVisible_ = visible;
     emit metricsChanged();
 }
