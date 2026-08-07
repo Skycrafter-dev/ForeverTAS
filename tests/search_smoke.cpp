@@ -11,6 +11,7 @@
 #include "simulation/backends/cuda/cuda_session_specialization.h"
 #endif
 
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <filesystem>
@@ -82,6 +83,40 @@ public:
 private:
     std::ostringstream output_;
     std::streambuf *previous_;
+};
+
+class WorkerReadiness final {
+public:
+    explicit WorkerReadiness(std::thread::id callerThread)
+        : callerThread_(callerThread) {}
+
+    void ObserveCurrentThread() {
+        const std::thread::id current = std::this_thread::get_id();
+        if (current == callerThread_) {
+            return;
+        }
+        std::lock_guard<std::mutex> guard(mutex_);
+        if (current == first_ || current == second_) {
+            return;
+        }
+        if (first_ == std::thread::id{}) {
+            first_ = current;
+        } else if (second_ == std::thread::id{}) {
+            second_ = current;
+        }
+    }
+
+    std::size_t Count() const {
+        std::lock_guard<std::mutex> guard(mutex_);
+        return (first_ == std::thread::id{} ? 0u : 1u) +
+                (second_ == std::thread::id{} ? 0u : 1u);
+    }
+
+private:
+    const std::thread::id callerThread_;
+    mutable std::mutex mutex_;
+    std::thread::id first_;
+    std::thread::id second_;
 };
 
 class IncrementingSteerMutator final : public forevertas::InputMutator {
@@ -999,6 +1034,94 @@ bool CheckMultiThreadedCpuBackend(
                 << "multi-threaded CPU ignored startup cancellation\n";
         return false;
     } catch (const forevertas::SearchCancelled &) {
+    }
+
+    constexpr std::string_view mixedFailureSentinel =
+            "expected worker failure before cancellation";
+    std::atomic_bool mixedFailureTriggered{false};
+    WorkerReadiness mixedFailureWorkers(callerThread);
+    forevertas::SearchRunControl mixedFailureControl = serialControl;
+    mixedFailureControl.iterationLimit.reset();
+    mixedFailureControl.cancellationRequested = [&]() {
+        mixedFailureWorkers.ObserveCurrentThread();
+        return std::this_thread::get_id() == callerThread &&
+                mixedFailureTriggered.load(std::memory_order_relaxed);
+    };
+    mixedFailureControl.beginIteration = [&]() -> bool {
+        if (mixedFailureWorkers.Count() != 2u) {
+            std::this_thread::yield();
+            return true;
+        }
+        if (!mixedFailureTriggered.exchange(
+                    true, std::memory_order_relaxed)) {
+            throw std::runtime_error(std::string(mixedFailureSentinel));
+        }
+        return true;
+    };
+    try {
+        static_cast<void>(
+                forevertas::RunSearch(
+                        parallelRequest, &mixedFailureControl));
+        std::cerr
+                << "multi-threaded CPU swallowed a worker failure mixed "
+                   "with sibling cancellations\n";
+        return false;
+    } catch (const std::runtime_error &error) {
+        if (error.what() != mixedFailureSentinel) {
+            throw;
+        }
+    } catch (const forevertas::SearchCancelled &) {
+        std::cerr
+                << "multi-threaded CPU let cancellation mask a worker "
+                   "failure\n";
+        return false;
+    }
+    // With both workers active and no normal stop or iteration limit, the
+    // sentinel can return only after its sibling consumes internal
+    // cancellation and joins.
+    if (mixedFailureWorkers.Count() != 2u) {
+        std::cerr
+                << "multi-threaded CPU mixed-failure test did not start "
+                   "both workers\n";
+        return false;
+    }
+
+    WorkerReadiness afterStartupCancellationWorkers(callerThread);
+    std::atomic_uint32_t afterStartupCancellationAttempts{0u};
+    forevertas::SearchRunControl afterStartupCancelledControl =
+            serialControl;
+    afterStartupCancelledControl.iterationLimit.reset();
+    afterStartupCancelledControl.cancellationRequested = [&]() {
+        afterStartupCancellationWorkers.ObserveCurrentThread();
+        return false;
+    };
+    afterStartupCancelledControl.beginIteration = [&]() {
+        if (afterStartupCancellationWorkers.Count() != 2u) {
+            std::this_thread::yield();
+            return true;
+        }
+        afterStartupCancellationAttempts.fetch_add(
+                1u, std::memory_order_relaxed);
+        return false;
+    };
+    try {
+        static_cast<void>(
+                forevertas::RunSearch(
+                        parallelRequest,
+                        &afterStartupCancelledControl));
+        std::cerr
+                << "multi-threaded CPU ignored cancellation after worker "
+                   "startup\n";
+        return false;
+    } catch (const forevertas::SearchCancelled &) {
+        if (afterStartupCancellationWorkers.Count() != 2u ||
+            afterStartupCancellationAttempts.load(
+                    std::memory_order_relaxed) == 0u) {
+            std::cerr
+                    << "multi-threaded CPU cancelled before both workers "
+                       "started\n";
+            return false;
+        }
     }
 
     forevertas::SearchRunControl throwingCallbackControl =

@@ -1475,7 +1475,6 @@ SearchResult RunMultiThreadedCpuSearch(
     for (std::thread &worker : workers) {
         worker.join();
     }
-    CheckCancellation(control);
 
     for (const CpuWorkerState &state : states) {
         if (!state.failure) {
@@ -1487,6 +1486,7 @@ SearchResult RunMultiThreadedCpuSearch(
             continue;
         }
     }
+    CheckCancellation(control);
     for (const CpuWorkerState &state : states) {
         if (state.failure) {
             std::rethrow_exception(state.failure);
