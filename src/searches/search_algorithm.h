@@ -106,6 +106,13 @@ struct SearchLiveUpdate {
     std::optional<double> closestTargetDistance;
 };
 
+struct CudaWinnerResolutionMetrics {
+    std::uint32_t winnerTick = 0u;
+    std::uint32_t branchTick = 0u;
+    std::uint32_t referenceTicksAdvanced = 0u;
+    bool reusedBranchPrefix = false;
+};
+
 struct SearchRunControl {
     std::function<bool()> stopRequested;
     std::function<bool()> cancellationRequested;
@@ -119,6 +126,11 @@ struct SearchRunControl {
     std::function<void(std::uint64_t, std::uint32_t)>
             cudaBatchExecuted;
     std::function<void()> cudaWinnerResolved;
+    // Reports authoritative reference work for each CUDA-winner resolution.
+    // The first resolution constructs the immutable branch prefix; later
+    // resolutions only simulate the mutable suffix.
+    std::function<void(const CudaWinnerResolutionMetrics &)>
+            cudaWinnerResolutionMeasured;
     std::function<std::optional<std::vector<SandboxInputEvent>>()>
             promotedBaselineInputs;
     std::optional<std::uint64_t> iterationLimit;
@@ -128,6 +140,9 @@ struct SearchRunControl {
     bool sampleImprovementTimelines = true;
     bool sampleBestTimeline = true;
     bool reuseLoadedSandbox = false;
+    // Test/diagnostic escape hatch that recreates the former tick-zero CUDA
+    // winner resolver when false. Production callers should retain true.
+    bool cacheCudaWinnerReferenceBranchPrefix = true;
 };
 
 class SearchCancelled final : public std::exception {
@@ -141,6 +156,8 @@ struct SearchExecutionContext {
     struct ResolvedCudaWinner {
         forevervalidator::experimental::PhysicsSandboxStateView view;
         forevervalidator::experimental::PhysicsSandboxState snapshot;
+        std::uint32_t referenceTicksAdvanced = 0u;
+        bool reusedBranchPrefix = false;
     };
 
     forevervalidator::experimental::PhysicsSandbox &sandbox;
@@ -160,6 +177,7 @@ struct SearchExecutionContext {
     std::function<ResolvedCudaWinner(
             const std::vector<forevervalidator::experimental::
                                       PhysicsSandboxInputEvent> &,
+            std::uint32_t,
             std::uint32_t)>
             resolveCudaWinner = {};
     std::uint32_t simulationHorizonMs = 6000u;

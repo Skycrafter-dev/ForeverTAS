@@ -386,10 +386,14 @@ public:
     SearchExecutionContext::ResolvedCudaWinner Resolve(
             const std::vector<forevervalidator::experimental::
                                       PhysicsSandboxInputEvent> &inputs,
-            std::uint32_t tick) {
+            std::uint32_t tick,
+            std::uint32_t branchTick,
+            bool cacheBranchPrefix) {
         Task task;
         task.inputs = inputs;
         task.tick = tick;
+        task.branchTick = branchTick;
+        task.cacheBranchPrefix = cacheBranchPrefix;
         std::future<SearchExecutionContext::ResolvedCudaWinner> future =
                 task.result.get_future();
         {
@@ -410,11 +414,16 @@ private:
                             PhysicsSandboxInputEvent>
                 inputs;
         std::uint32_t tick = 0u;
+        std::uint32_t branchTick = 0u;
+        bool cacheBranchPrefix = true;
         std::promise<SearchExecutionContext::ResolvedCudaWinner> result;
     };
 
     void Run() noexcept {
         std::optional<TimelineSamplingRuntime> runtime;
+        std::optional<forevervalidator::experimental::PhysicsSandboxState>
+                branchState;
+        std::optional<std::uint32_t> cachedBranchTick;
         for (;;) {
             std::optional<Task> task;
             {
@@ -437,21 +446,68 @@ private:
                     throw std::out_of_range(
                             "CUDA winner tick exceeds the Simulation horizon");
                 }
-                Require(runtime->sandbox.RestoreState(runtime->initialState),
-                        "restoring reference winner worker");
-                Require(runtime->sandbox.ReplaceInputs(task->inputs),
-                        "replacing reference winner inputs");
+                if (task->branchTick > task->tick ||
+                    task->branchTick > runtime->finalTickCount) {
+                    throw std::out_of_range(
+                            "CUDA winner branch tick exceeds the winner tick");
+                }
+                if (task->cacheBranchPrefix && cachedBranchTick &&
+                    *cachedBranchTick != task->branchTick) {
+                    throw std::runtime_error(
+                            "CUDA winner branch tick changed during a search");
+                }
+
+                std::uint32_t referenceTicksAdvanced = 0u;
+                const bool reusedBranchPrefix =
+                        task->cacheBranchPrefix && branchState.has_value();
+                if (!task->cacheBranchPrefix) {
+                    Require(runtime->sandbox.RestoreState(
+                                    runtime->initialState),
+                            "restoring uncached reference winner worker");
+                    Require(runtime->sandbox.ReplaceInputs(task->inputs),
+                            "replacing uncached reference winner inputs");
+                } else if (!branchState) {
+                    Require(runtime->sandbox.RestoreState(
+                                    runtime->initialState),
+                            "restoring reference winner worker");
+                    Require(runtime->sandbox.ReplaceInputs(task->inputs),
+                            "replacing reference winner inputs");
+                    if (task->branchTick != 0u) {
+                        Require(runtime->sandbox.AdvanceTicks(
+                                        task->branchTick),
+                                "simulating reference winner branch prefix");
+                    }
+                    referenceTicksAdvanced = task->branchTick;
+                    branchState = Require(
+                            runtime->sandbox.CaptureState(),
+                            "capturing reference winner branch prefix");
+                    cachedBranchTick = task->branchTick;
+                } else {
+                    Require(runtime->sandbox.RestoreState(*branchState),
+                            "restoring reference winner branch prefix");
+                    Require(runtime->sandbox.ReplaceInputs(task->inputs),
+                            "replacing reference winner inputs");
+                }
+
+                const std::uint32_t suffixTicks = task->cacheBranchPrefix
+                        ? task->tick - task->branchTick
+                        : task->tick;
                 forevervalidator::experimental::PhysicsSandboxStateView view =
-                        task->tick == 0u
+                        suffixTicks == 0u
                         ? Require(runtime->sandbox.ReadState(),
                                   "reading reference winner state")
-                        : Require(runtime->sandbox.AdvanceTicks(task->tick),
-                                  "simulating reference winner");
+                        : Require(runtime->sandbox.AdvanceTicks(suffixTicks),
+                                  "simulating reference winner suffix");
+                referenceTicksAdvanced += suffixTicks;
                 forevervalidator::experimental::PhysicsSandboxState snapshot =
                         Require(
                                 runtime->sandbox.CaptureState(),
                                 "capturing reference winner state");
-                task->result.set_value({view, std::move(snapshot)});
+                task->result.set_value(
+                        {view,
+                         std::move(snapshot),
+                         referenceTicksAdvanced,
+                         reusedBranchPrefix});
             } catch (...) {
                 task->result.set_exception(std::current_exception());
             }
@@ -852,18 +908,43 @@ SearchResult RunLoadedSearch(
                                       const std::vector<
                                               PhysicsSandboxInputEvent>
                                               &inputs,
-                                      std::uint32_t tick) {
+                                      std::uint32_t tick,
+                                      std::uint32_t branchTick) {
                                   if (control != nullptr &&
                                       control->cudaWinnerResolved) {
                                       control->cudaWinnerResolved();
                                   }
-                                  return worker->Resolve(inputs, tick);
+                                  SearchExecutionContext::ResolvedCudaWinner
+                                          resolved = worker->Resolve(
+                                                  inputs,
+                                                  tick,
+                                                  control == nullptr ||
+                                                          control->
+                                                                  cacheCudaWinnerReferenceBranchPrefix
+                                                  ? branchTick
+                                                  : 0u,
+                                                  control == nullptr ||
+                                                          control->
+                                                                  cacheCudaWinnerReferenceBranchPrefix);
+                                  if (control != nullptr &&
+                                      control->cudaWinnerResolutionMeasured) {
+                                      control->cudaWinnerResolutionMeasured({
+                                              tick,
+                                              control->
+                                                              cacheCudaWinnerReferenceBranchPrefix
+                                                      ? branchTick
+                                                      : 0u,
+                                              resolved.referenceTicksAdvanced,
+                                              resolved.reusedBranchPrefix});
+                                  }
+                                  return resolved;
                               }
                             : std::function<SearchExecutionContext::
                                       ResolvedCudaWinner(
                                               const std::vector<
                                                       PhysicsSandboxInputEvent>
                                                       &,
+                                              std::uint32_t,
                                               std::uint32_t)>{},
 #else
                     {},

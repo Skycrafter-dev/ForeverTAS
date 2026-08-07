@@ -636,7 +636,11 @@ SearchResult RunCudaBasicBruteForce(
                     SearchExecutionContext::ResolvedCudaWinner resolved =
                             context.resolveCudaWinner(
                                     batch.bestInputs,
-                                    static_cast<std::uint32_t>(absoluteTick));
+                                    static_cast<std::uint32_t>(absoluteTick),
+                                    static_cast<std::uint32_t>(
+                                            (earliestMutationTimeMs -
+                                             context.tickDurationMs) /
+                                            context.tickDurationMs));
                     best.view = resolved.view;
                     best.snapshot = std::move(resolved.snapshot);
                     if (std::holds_alternative<

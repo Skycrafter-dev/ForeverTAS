@@ -754,6 +754,17 @@ if(BUILD_TESTING)
                 RESOURCE_LOCK cuda
                 RUN_SERIAL TRUE
                 TIMEOUT 300)
+            add_test(NAME forevertas-cuda-winner-cache-parity
+                     COMMAND forevertas-cuda-search-parity
+                         --winner-cache-only
+                         "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                         "${FOREVERTAS_TEST_REPLAY}")
+            set_tests_properties(
+                forevertas-cuda-winner-cache-parity PROPERTIES
+                LABELS "cuda;parity;winner-cache;stadium"
+                RESOURCE_LOCK cuda
+                RUN_SERIAL TRUE
+                TIMEOUT 240)
             add_test(NAME forevertas-cuda-calibration
                      COMMAND forevertas-cuda-search-parity
                          --calibration-only

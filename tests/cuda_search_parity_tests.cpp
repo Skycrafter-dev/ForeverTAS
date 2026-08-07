@@ -1,4 +1,5 @@
 #include "conditions/condition_program.h"
+#include "input_timeline_time.h"
 #include "mutations/input_event_utils.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/replay_input_script.h"
@@ -71,6 +72,48 @@ bool SameInputs(
     return true;
 }
 
+bool SameVector(const forevervalidator::Vector3 &left,
+                const forevervalidator::Vector3 &right) {
+    return left.x == right.x && left.y == right.y && left.z == right.z;
+}
+
+bool SameCarState(
+        const forevervalidator::experimental::PhysicsSandboxCarState &left,
+        const forevervalidator::experimental::PhysicsSandboxCarState &right) {
+    return left.rotationX == right.rotationX &&
+            left.rotationY == right.rotationY &&
+            left.rotationZ == right.rotationZ &&
+            left.rotationW == right.rotationW &&
+            SameVector(left.position, right.position) &&
+            SameVector(left.linearSpeed, right.linearSpeed) &&
+            SameVector(left.angularSpeed, right.angularSpeed) &&
+            SameVector(left.force, right.force) &&
+            SameVector(left.torque, right.torque);
+}
+
+bool SameStateView(
+        const forevervalidator::experimental::PhysicsSandboxStateView &left,
+        const forevervalidator::experimental::PhysicsSandboxStateView &right) {
+    return left.tick == right.tick && left.timeMs == right.timeMs &&
+            left.durationMs == right.durationMs &&
+            left.mapEnvironment == right.mapEnvironment &&
+            left.vehicleModel == right.vehicleModel &&
+            left.playMode == right.playMode &&
+            SameCarState(left.car, right.car) &&
+            left.accelerate == right.accelerate &&
+            left.brake == right.brake &&
+            left.steering == right.steering &&
+            left.checkpointsCollected == right.checkpointsCollected &&
+            left.checkpointsTotal == right.checkpointsTotal &&
+            left.completedLaps == right.completedLaps &&
+            left.totalLaps == right.totalLaps &&
+            left.raceCompleted == right.raceCompleted &&
+            left.finishTimeMs == right.finishTimeMs &&
+            left.finishTime == right.finishTime &&
+            left.respawnCount == right.respawnCount &&
+            left.stuntsScore == right.stuntsScore;
+}
+
 SearchResult Run(const char *packs,
                  const char *replay,
                  forevertas::PhysicsBackend backend,
@@ -88,7 +131,7 @@ SearchResult Run(const char *packs,
                  bool useSessionSpecialization = true,
                  bool autoPromoteBest = false,
                  std::uint32_t simulationHorizonMs =
-                         forevertas::kDefaultSimulationHorizonMs,
+                          forevertas::kDefaultSimulationHorizonMs,
                  const std::string &conditionScript = {},
                  std::uint64_t *winnerResolutionCount = nullptr,
                  std::uint32_t calibrationStartBatchSize =
@@ -98,7 +141,10 @@ SearchResult Run(const char *packs,
                  std::vector<std::pair<std::uint64_t, std::uint32_t>>
                          *batchExecutions = nullptr,
                  std::vector<forevertas::SearchLiveUpdate>
-                         *liveUpdates = nullptr) {
+                         *liveUpdates = nullptr,
+                 std::vector<forevertas::CudaWinnerResolutionMetrics>
+                         *winnerResolutionMetrics = nullptr,
+                 bool cacheWinnerReferenceBranchPrefix = true) {
     SearchRequest request{packs, replay};
     request.baseInputCommands = ReplayInputCommands(packs, replay);
     request.backend = backend;
@@ -123,6 +169,8 @@ SearchResult Run(const char *packs,
     control.sampleBestTimeline = sampleBestTimeline;
     control.evaluationEndTimeLimitMs = evaluationEndTimeLimitMs;
     control.reuseLoadedSandbox = true;
+    control.cacheCudaWinnerReferenceBranchPrefix =
+            cacheWinnerReferenceBranchPrefix;
     control.cudaBatchSizeChanged =
             [calibrationUpdates](std::uint32_t value) {
                 if (calibrationUpdates != nullptr &&
@@ -152,6 +200,13 @@ SearchResult Run(const char *packs,
             ++*winnerResolutionCount;
         }
     };
+    control.cudaWinnerResolutionMeasured =
+            [winnerResolutionMetrics](
+                    const forevertas::CudaWinnerResolutionMetrics &metrics) {
+                if (winnerResolutionMetrics != nullptr) {
+                    winnerResolutionMetrics->push_back(metrics);
+                }
+            };
     if (liveUpdates != nullptr) {
         control.sampleImprovementTimelines = false;
         control.liveChanged =
@@ -481,6 +536,214 @@ bool CheckParity(const char *packs,
     }
     return SameAuthoritativeResult(authoritative, cuda, label) &&
             (!requireMutationWinner || mutationWinner);
+}
+
+bool CheckWinnerReferenceBranchCache(
+        const char *packs,
+        const char *replay,
+        const std::string &label,
+        const std::vector<OptionConfiguration> &modifiers,
+        const OptionConfiguration &evaluator,
+        bool requireRepeatedResolution = true) {
+    constexpr std::uint64_t iterations = 64u;
+    if (modifiers.empty()) {
+        throw std::runtime_error(
+                "winner-cache coverage requires at least one modifier");
+    }
+    std::int64_t userMutationTimeMs =
+            std::numeric_limits<std::int64_t>::max();
+    for (const OptionConfiguration &modifier : modifiers) {
+        userMutationTimeMs = std::min(
+                userMutationTimeMs,
+                std::stoll(modifier.settings.at("minTimeMs")));
+    }
+    if (userMutationTimeMs < 0 ||
+        userMutationTimeMs % forevertas::kSearchTickDurationMs != 0) {
+        throw std::runtime_error(
+                "winner-cache mutation boundary is not tick-aligned");
+    }
+    const std::optional<std::int64_t> simulationMutationTimeMs =
+            forevertas::SimulationTimelineTimeFromUserTime(
+                    userMutationTimeMs,
+                    forevertas::kSearchTickDurationMs);
+    if (!simulationMutationTimeMs ||
+        *simulationMutationTimeMs < forevertas::kSearchTickDurationMs) {
+        throw std::runtime_error(
+                "winner-cache mutation boundary could not be translated");
+    }
+    const std::uint32_t branchTick = static_cast<std::uint32_t>(
+            (*simulationMutationTimeMs -
+             forevertas::kSearchTickDurationMs) /
+            forevertas::kSearchTickDurationMs);
+    std::uint64_t uncachedResolutionCount = 0u;
+    std::vector<forevertas::CudaWinnerResolutionMetrics> uncachedMetrics;
+    const SearchResult uncached = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Cuda,
+            1u,
+            iterations,
+            modifiers,
+            evaluator,
+            false,
+            nullptr,
+            false,
+            std::nullopt,
+            nullptr,
+            false,
+            false,
+            true,
+            forevertas::kDefaultSimulationHorizonMs,
+            {},
+            &uncachedResolutionCount,
+            forevertas::kDefaultCudaCalibrationStartSampleCount,
+            nullptr,
+            nullptr,
+            nullptr,
+            &uncachedMetrics,
+            false);
+    std::uint64_t resolutionCount = 0u;
+    std::vector<forevertas::CudaWinnerResolutionMetrics> metrics;
+    const SearchResult cuda = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Cuda,
+            1u,
+            iterations,
+            modifiers,
+            evaluator,
+            false,
+            nullptr,
+            false,
+            std::nullopt,
+            nullptr,
+            false,
+            false,
+            true,
+            forevertas::kDefaultSimulationHorizonMs,
+            {},
+            &resolutionCount,
+            forevertas::kDefaultCudaCalibrationStartSampleCount,
+            nullptr,
+            nullptr,
+            nullptr,
+            &metrics);
+    const SearchResult reference = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Reference,
+            1u,
+            iterations,
+            modifiers,
+            evaluator,
+            false,
+            nullptr,
+            false,
+            std::nullopt,
+            nullptr,
+            false,
+            true,
+            true);
+
+    const std::size_t minimumResolutionCount =
+            requireRepeatedResolution ? 2u : 1u;
+    bool metricsValid = resolutionCount == metrics.size() &&
+            resolutionCount >= minimumResolutionCount &&
+            uncachedResolutionCount == uncachedMetrics.size() &&
+            uncachedResolutionCount >= minimumResolutionCount &&
+            uncachedMetrics.size() == metrics.size();
+    std::uint64_t fullReplayTicks = 0u;
+    for (std::size_t index = 0u; index < uncachedMetrics.size(); ++index) {
+        const auto &sample = uncachedMetrics[index];
+        fullReplayTicks += sample.referenceTicksAdvanced;
+        metricsValid &= sample.branchTick == 0u &&
+                !sample.reusedBranchPrefix &&
+                sample.referenceTicksAdvanced == sample.winnerTick &&
+                index < metrics.size() &&
+                sample.winnerTick == metrics[index].winnerTick;
+    }
+    std::uint64_t actualTicks = 0u;
+    for (std::size_t index = 0u; index < metrics.size(); ++index) {
+        const auto &sample = metrics[index];
+        actualTicks += sample.referenceTicksAdvanced;
+        metricsValid &= sample.branchTick == branchTick &&
+                sample.winnerTick >= sample.branchTick &&
+                sample.reusedBranchPrefix == (index != 0u) &&
+                sample.referenceTicksAdvanced ==
+                        (index == 0u
+                                 ? sample.winnerTick
+                                 : sample.winnerTick - sample.branchTick);
+    }
+    metricsValid &= (branchTick == 0u || metrics.size() < 2u
+                    ? actualTicks == fullReplayTicks
+                    : actualTicks < fullReplayTicks);
+
+    const bool inputsValid =
+            SameInputs(uncached.bestInputs, cuda.bestInputs);
+    const bool resultMetadataValid =
+            uncached.winnerSource == cuda.winnerSource &&
+            uncached.winningIterationIndex == cuda.winningIterationIndex &&
+            uncached.winningMutationCount == cuda.winningMutationCount &&
+            uncached.bestScore == cuda.bestScore &&
+            uncached.bestEvaluationTimeMs == cuda.bestEvaluationTimeMs &&
+            uncached.bestEvaluationDescription ==
+                    cuda.bestEvaluationDescription &&
+            uncached.iterations == cuda.iterations &&
+            uncached.evaluatorCalls == cuda.evaluatorCalls &&
+            uncached.mutationImprovementCount ==
+                    cuda.mutationImprovementCount &&
+            uncached.totalMutationCount == cuda.totalMutationCount &&
+            uncached.qualifyingCandidateCount ==
+                    cuda.qualifyingCandidateCount &&
+            uncached.closestTargetDistance == cuda.closestTargetDistance;
+    const bool stateValid =
+            SameStateView(cuda.bestState, cuda.bestSnapshot.View()) &&
+            SameStateView(
+                    uncached.bestState, uncached.bestSnapshot.View()) &&
+            SameStateView(
+                    reference.bestState, reference.bestSnapshot.View()) &&
+            SameStateView(uncached.bestState, cuda.bestState) &&
+            SameStateView(reference.bestState, cuda.bestState);
+    if (!metricsValid || !inputsValid || !resultMetadataValid ||
+        !stateValid) {
+        std::cerr
+                << label
+                << " CUDA reference winner branch cache failed: resolutions="
+                << resolutionCount << " metrics=" << metrics.size()
+                << " full_ticks=" << fullReplayTicks
+                << " actual_ticks=" << actualTicks
+                << " expected_branch=" << branchTick
+                << " inputs=" << inputsValid
+                << " result_metadata=" << resultMetadataValid
+                << " state=" << stateValid << '\n';
+        for (std::size_t index = 0u; index < metrics.size(); ++index) {
+            const auto &sample = metrics[index];
+            std::cerr << "  cached resolution " << index
+                      << "=(winner=" << sample.winnerTick
+                      << ",branch=" << sample.branchTick
+                      << ",advanced=" << sample.referenceTicksAdvanced
+                      << ",reused=" << sample.reusedBranchPrefix
+                      << ")\n";
+        }
+    }
+    const double uncachedSeconds = std::chrono::duration<double>(
+            uncached.elapsed).count();
+    const double cachedSeconds = std::chrono::duration<double>(
+            cuda.elapsed).count();
+    std::cout << label << " CUDA winner resolver reference ticks="
+              << fullReplayTicks << "->" << actualTicks
+              << " elapsed_seconds=" << uncachedSeconds << "->"
+              << cachedSeconds << '\n';
+    return metricsValid && inputsValid && resultMetadataValid &&
+            stateValid &&
+            SameAuthoritativeResult(
+                    uncached,
+                    cuda,
+                    label + " uncached/cached CUDA winner") &&
+            SameAuthoritativeResult(
+                    reference,
+                    cuda,
+                    label + " CUDA winner branch cache");
 }
 
 bool CheckCudaKernelModeParity(
@@ -822,7 +1085,17 @@ bool CheckPreciseFinishParity(const char *packs, const char *replay) {
         promotionProbe.mutationImprovementCount == 0u ||
         !promotionProbe.winningIterationIndex) {
         std::cerr << "precise finish CUDA did not exercise auto-promotion "
-                     "and its seeded follow-up batch\n";
+                     "and its seeded follow-up batch; iterations="
+                  << promotionProbe.iterations
+                  << " improvements="
+                  << promotionProbe.mutationImprovementCount
+                  << " winning_iteration=";
+        if (promotionProbe.winningIterationIndex) {
+            std::cerr << *promotionProbe.winningIterationIndex;
+        } else {
+            std::cerr << "none";
+        }
+        std::cerr << '\n';
         return false;
     }
     const auto exactFinishResult =
@@ -1181,6 +1454,153 @@ bool DiagnoseMismatchMutation(const char *packs,
     return okay;
 }
 
+bool CheckWinnerReferenceBranchCache(const char *packs,
+                                     const char *replay) {
+    OptionConfiguration random = DefaultModifier(
+            forevertas::kRandomSteeringModifierId);
+    random.settings["minTimeMs"] = "4000";
+    random.settings["maxTimeMs"] = "5990";
+    const SearchResult baseline = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Reference,
+            1u,
+            0u,
+            {random},
+            DefaultEvaluator(forevertas::kVelocityEvaluationId),
+            false,
+            nullptr,
+            true);
+    if (baseline.bestTimeline.size() <= 500u) {
+        throw std::runtime_error(
+                "baseline sampling did not reach the winner-cache target");
+    }
+    const forevertas::SearchTimelineFrame &target =
+            baseline.bestTimeline[500u];
+    const forevertas::SearchTimelineFrame &previous =
+            baseline.bestTimeline[499u];
+    const double tangentX = target.positionX - previous.positionX;
+    const double tangentZ = target.positionZ - previous.positionZ;
+    const double tangentLength = std::hypot(tangentX, tangentZ);
+    const double lateralX = tangentLength == 0.0
+            ? 20.0
+            : -20.0 * tangentZ / tangentLength;
+    const double lateralZ = tangentLength == 0.0
+            ? 0.0
+            : 20.0 * tangentX / tangentLength;
+    const auto decimal = [](double value) {
+        std::ostringstream stream;
+        stream << std::setprecision(17) << value;
+        return stream.str();
+    };
+    OptionConfiguration offLinePoint = DefaultEvaluator(
+            forevertas::kPointTargetEvaluationId);
+    offLinePoint.settings["minTimeMs"] = "4000";
+    offLinePoint.settings["maxTimeMs"] = "6000";
+    offLinePoint.settings["x"] = decimal(target.positionX + lateralX);
+    offLinePoint.settings["y"] = decimal(target.positionY);
+    offLinePoint.settings["z"] = decimal(target.positionZ + lateralZ);
+
+    OptionConfiguration firstTickInsertion = DefaultModifier(
+            forevertas::kInputInsertionModifierId);
+    firstTickInsertion.settings["minTimeMs"] = "0";
+    firstTickInsertion.settings["maxTimeMs"] = "0";
+    firstTickInsertion.settings["steerEnabled"] = "true";
+    firstTickInsertion.settings["steerMode"] = "absolute";
+    firstTickInsertion.settings["steerAbsoluteMin"] = "-1";
+    firstTickInsertion.settings["steerAbsoluteMax"] = "1";
+    firstTickInsertion.settings["steerMinCount"] = "1";
+    firstTickInsertion.settings["steerMaxCount"] = "1";
+    firstTickInsertion.settings["steerMaxHoldMs"] = "0";
+    firstTickInsertion.settings["accelerateEnabled"] = "false";
+    firstTickInsertion.settings["brakeEnabled"] = "false";
+
+    OptionConfiguration insertion = DefaultModifier(
+            forevertas::kInputInsertionModifierId);
+    insertion.settings["minTimeMs"] = "4000";
+    insertion.settings["maxTimeMs"] = "5990";
+    insertion.settings["steerEnabled"] = "true";
+    insertion.settings["steerMode"] = "offset";
+    insertion.settings["steerOffsetMin"] = "-0.5";
+    insertion.settings["steerOffsetMax"] = "0.5";
+    insertion.settings["steerMinCount"] = "1";
+    insertion.settings["steerMaxCount"] = "3";
+    insertion.settings["steerMaxHoldMs"] = "200";
+    insertion.settings["accelerateEnabled"] = "false";
+    insertion.settings["brakeEnabled"] = "false";
+
+    OptionConfiguration deletion = DefaultModifier(
+            forevertas::kInputDeletionModifierId);
+    deletion.settings["minTimeMs"] = "4000";
+    deletion.settings["maxTimeMs"] = "5990";
+    deletion.settings["steerEnabled"] = "true";
+    deletion.settings["steerMaxCount"] = "3";
+    deletion.settings["accelerateEnabled"] = "false";
+    deletion.settings["brakeEnabled"] = "false";
+
+    OptionConfiguration existing = DefaultModifier(
+            forevertas::kExistingEventPerturbationModifierId);
+    existing.settings["minTimeMs"] = "4000";
+    existing.settings["maxTimeMs"] = "5990";
+
+    OptionConfiguration smooth = DefaultModifier(
+            forevertas::kSmoothSteeringModifierId);
+    smooth.settings["minTimeMs"] = "4000";
+    smooth.settings["maxTimeMs"] = "5990";
+    smooth.settings["deformationCount"] = "3";
+    smooth.settings["radiusMs"] = "200";
+    smooth.settings["amplitudeMin"] = "-0.5";
+    smooth.settings["amplitudeMax"] = "0.5";
+
+    OptionConfiguration laterSmooth = smooth;
+    laterSmooth.settings["minTimeMs"] = "4500";
+
+    bool okay = CheckWinnerReferenceBranchCache(
+            packs,
+            replay,
+            "random steering",
+            {random},
+            offLinePoint);
+    okay &= CheckWinnerReferenceBranchCache(
+            packs,
+            replay,
+            "first-tick insertion",
+            {firstTickInsertion},
+            offLinePoint,
+            false);
+    okay &= CheckWinnerReferenceBranchCache(
+            packs,
+            replay,
+            "input insertion",
+            {insertion},
+            offLinePoint);
+    okay &= CheckWinnerReferenceBranchCache(
+            packs,
+            replay,
+            "input deletion",
+            {deletion},
+            offLinePoint);
+    okay &= CheckWinnerReferenceBranchCache(
+            packs,
+            replay,
+            "existing-event perturbation",
+            {existing},
+            offLinePoint);
+    okay &= CheckWinnerReferenceBranchCache(
+            packs,
+            replay,
+            "smooth steering",
+            {smooth},
+            offLinePoint);
+    okay &= CheckWinnerReferenceBranchCache(
+            packs,
+            replay,
+            "multi-modifier earliest boundary",
+            {insertion, laterSmooth},
+            offLinePoint);
+    return okay;
+}
+
 }  // namespace
 
 int main(int argc, char **argv) {
@@ -1196,15 +1616,21 @@ int main(int argc, char **argv) {
     const bool preciseFinishOnly =
             argc == 4 &&
             std::string(argv[1]) == "--precise-finish-only";
+    const bool winnerCacheOnly =
+            argc == 4 &&
+            std::string(argv[1]) == "--winner-cache-only";
     if ((!scriptParity && !mutationParity && !mutationBackend &&
          !calibrationOnly &&
          !preciseFinishOnly &&
+         !winnerCacheOnly &&
          argc != 3) ||
-        ((calibrationOnly || preciseFinishOnly) && argc != 4)) {
+        ((calibrationOnly || preciseFinishOnly || winnerCacheOnly) &&
+         argc != 4)) {
         std::cerr << "expected Packs directory and replay path\n";
         return 2;
     }
-    const bool focusedMode = calibrationOnly || preciseFinishOnly;
+    const bool focusedMode = calibrationOnly || preciseFinishOnly ||
+            winnerCacheOnly;
     const char *const packs = argv[focusedMode ? 2 : 1];
     const char *const replay = argv[focusedMode ? 3 : 2];
     try {
@@ -1228,6 +1654,9 @@ int main(int argc, char **argv) {
         }
         if (preciseFinishOnly) {
             return CheckPreciseFinishParity(packs, replay) ? 0 : 1;
+        }
+        if (winnerCacheOnly) {
+            return CheckWinnerReferenceBranchCache(packs, replay) ? 0 : 1;
         }
         bool okay = CheckCudaKernelModeParity(packs, replay);
         okay &= CheckUnchangedIncumbentIsNotReconstructed(packs, replay);
@@ -1366,15 +1795,15 @@ int main(int argc, char **argv) {
         offLinePoint.settings["z"] =
                 decimal(static_cast<float>(
                         steeringTarget.positionZ + lateralZ));
-        okay &= CheckParity(
+        OptionConfiguration winnerRandom = random;
+        winnerRandom.settings["minTimeMs"] = "4000";
+        winnerRandom.settings["maxTimeMs"] = "5990";
+        okay &= CheckWinnerReferenceBranchCache(
                 argv[1],
                 argv[2],
-                "random-steering winning candidate",
-                32u,
-                64u,
-                {random},
-                offLinePoint,
-                false);
+                "random steering",
+                {winnerRandom},
+                offLinePoint);
         okay &= CheckParity(
                 argv[1],
                 argv[2],
