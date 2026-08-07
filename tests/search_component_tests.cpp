@@ -12,6 +12,7 @@
 #include "searches/cuda_search_configuration.h"
 #include "searches/option_settings_utils.h"
 #include "searches/search_runner.h"
+#include "searches/search_log_utils.h"
 #include "time_format.h"
 
 #include <algorithm>
@@ -1522,6 +1523,16 @@ bool TestLocaleIndependentFloatingPointSettings() {
     return okay;
 }
 
+bool TestStructuredSearchLogEscaping() {
+    const std::string input =
+            "schema=2 \\\"broken\\\"\nforged=value\r\t" +
+            std::string(1u, '\x01');
+    return Check(
+            forevertas::detail::EscapeStructuredLogValue(input) ==
+                    "schema=2 \\\\\\\"broken\\\\\\\"\\nforged=value\\r\\t\\x01",
+            "structured search log value was not escaped safely");
+}
+
 bool TestSearchControl() {
     const OptionSettings defaults =
             forevertas::DefaultBasicBruteForceOptionSettings();
@@ -2141,6 +2152,7 @@ int main() {
             TestAllModifierAnalogInvariants() &&
             TestRegistries() &&
             TestLocaleIndependentFloatingPointSettings() &&
+            TestStructuredSearchLogEscaping() &&
             TestSearchControl() &&
             TestRollingThroughput() &&
             TestCudaBatchCalibrationStrategy() &&

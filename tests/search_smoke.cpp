@@ -13,11 +13,15 @@
 #include <chrono>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
+#include <limits>
 #include <mutex>
+#include <sstream>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
+#include <vector>
 
 namespace {
 
@@ -25,6 +29,59 @@ using forevervalidator::experimental::PhysicsSandbox;
 using forevervalidator::experimental::PhysicsSandboxInputEvent;
 using forevervalidator::experimental::PhysicsSandboxInputValueKind;
 using forevervalidator::experimental::PhysicsSandboxStateView;
+
+class ScopedTemporaryDirectory final {
+public:
+    ScopedTemporaryDirectory() {
+        namespace fs = std::filesystem;
+        const std::string stem =
+                "forevertas-search-cache-" +
+                std::to_string(
+                        std::chrono::steady_clock::now()
+                                .time_since_epoch()
+                                .count()) +
+                "-";
+        for (std::uint32_t attempt = 0u; attempt < 100u; ++attempt) {
+            std::error_code error;
+            const fs::path candidate = fs::temp_directory_path() /
+                    fs::u8path(stem + std::to_string(attempt));
+            if (fs::create_directory(candidate, error)) {
+                path_ = candidate;
+                return;
+            }
+            if (error && error != std::errc::file_exists) {
+                throw std::runtime_error(
+                        "could not create temporary cache test directory: " +
+                        error.message());
+            }
+        }
+        throw std::runtime_error(
+                "could not reserve a unique cache test directory");
+    }
+
+    ~ScopedTemporaryDirectory() {
+        std::error_code ignored;
+        std::filesystem::remove_all(path_, ignored);
+    }
+
+    const std::filesystem::path &Path() const { return path_; }
+
+private:
+    std::filesystem::path path_;
+};
+
+class ScopedClogCapture final {
+public:
+    ScopedClogCapture() : previous_(std::clog.rdbuf(output_.rdbuf())) {}
+
+    ~ScopedClogCapture() { std::clog.rdbuf(previous_); }
+
+    std::string Text() const { return output_.str(); }
+
+private:
+    std::ostringstream output_;
+    std::streambuf *previous_;
+};
 
 class IncrementingSteerMutator final : public forevertas::InputMutator {
 public:
@@ -804,6 +861,177 @@ bool CheckCachedScriptIsolation(const char *packsDirectory,
     return true;
 }
 
+bool CheckCachedReplaySourceIdentity(const char *packsDirectory,
+                                     const char *replayPath) {
+    namespace fs = std::filesystem;
+    ScopedTemporaryDirectory temporary;
+    const fs::path replayCopy =
+            temporary.Path() / "source-identity.Replay.Gbx";
+    std::error_code error;
+    fs::copy_file(
+            fs::u8path(replayPath),
+            replayCopy,
+            fs::copy_options::none,
+            error);
+    if (error) {
+        throw std::runtime_error(
+                "could not copy replay for cache identity test: " +
+                error.message());
+    }
+
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 0u;
+    control.reuseLoadedSandbox = true;
+    control.sampleBestTimeline = false;
+    forevertas::SearchRequest request{
+            packsDirectory, replayCopy.u8string()};
+    static_cast<void>(forevertas::RunSearch(request, &control));
+
+    const std::uintmax_t length = fs::file_size(replayCopy, error);
+    if (error || length == 0u ||
+        length > std::numeric_limits<std::size_t>::max()) {
+        throw std::runtime_error(
+                "cache identity replay fixture has an invalid length");
+    }
+    const fs::file_time_type originalTimestamp =
+            fs::last_write_time(replayCopy, error);
+    if (error) {
+        throw std::runtime_error(
+                "could not read cache identity replay timestamp: " +
+                error.message());
+    }
+    {
+        std::ofstream stream(
+                replayCopy, std::ios::binary | std::ios::trunc);
+        const std::vector<char> replacement(
+                static_cast<std::size_t>(length), '\0');
+        if (!stream ||
+            !stream.write(
+                    replacement.data(),
+                    static_cast<std::streamsize>(replacement.size()))) {
+            throw std::runtime_error(
+                    "could not replace cache identity replay fixture");
+        }
+    }
+    fs::last_write_time(replayCopy, originalTimestamp, error);
+    if (error) {
+        throw std::runtime_error(
+                "could not preserve cache identity replay timestamp: " +
+                error.message());
+    }
+
+    ScopedClogCapture logs;
+    try {
+        static_cast<void>(forevertas::RunSearch(request, &control));
+        std::cerr << "cached search reused a replay replaced in place\n";
+        return false;
+    } catch (const std::runtime_error &) {
+    }
+    const std::string text = logs.Text();
+    if (text.find("reason=source_identity_changed replay_changed=1 "
+                  "packs_changed=0") == std::string::npos) {
+        std::cerr << "cached replay replacement did not report source "
+                     "identity invalidation\n";
+        return false;
+    }
+    return true;
+}
+
+bool CheckCachedPackSourceIdentity(const char *packsDirectory,
+                                   const char *replayPath) {
+    namespace fs = std::filesystem;
+    ScopedTemporaryDirectory temporary;
+    const fs::path sourceRoot = fs::u8path(packsDirectory);
+    std::error_code error;
+    for (const char *identifier : {"packlist.dat", "Stadium.pak"}) {
+        fs::copy_file(
+                sourceRoot / fs::u8path(identifier),
+                temporary.Path() / fs::u8path(identifier),
+                fs::copy_options::none,
+                error);
+        if (error) {
+            throw std::runtime_error(
+                    std::string("could not copy ") + identifier +
+                    " for cache identity test: " + error.message());
+        }
+    }
+    for (const char *identifier : {"Game.pak", "Resource.pak"}) {
+        std::ofstream stream(
+                temporary.Path() / fs::u8path(identifier),
+                std::ios::binary);
+        stream << "unrelated";
+        if (!stream) {
+            throw std::runtime_error(
+                    std::string("could not create unrelated cache test ") +
+                    identifier);
+        }
+    }
+
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 0u;
+    control.reuseLoadedSandbox = true;
+    control.sampleBestTimeline = false;
+    forevertas::SearchRequest request{
+            temporary.Path().u8string(), replayPath};
+    static_cast<void>(forevertas::RunSearch(request, &control));
+
+    const fs::path relevantPack = temporary.Path() / "Stadium.pak";
+    const fs::file_time_type relevantPackTimestamp =
+            fs::last_write_time(relevantPack, error);
+    if (error) {
+        throw std::runtime_error(
+                "could not read copied Stadium pack timestamp: " +
+                error.message());
+    }
+    fs::last_write_time(
+            relevantPack,
+            relevantPackTimestamp + std::chrono::seconds(2),
+            error);
+    if (error) {
+        throw std::runtime_error(
+                "could not change copied Stadium pack timestamp: " +
+                error.message());
+    }
+    {
+        ScopedClogCapture logs;
+        static_cast<void>(forevertas::RunSearch(request, &control));
+        if (logs.Text().find(
+                    "reason=source_identity_changed replay_changed=0 "
+                    "packs_changed=1") == std::string::npos) {
+            std::cerr << "cached search ignored relevant Pack metadata "
+                         "change\n";
+            return false;
+        }
+    }
+
+    for (const char *identifier : {"Game.pak", "Resource.pak"}) {
+        const fs::path unrelated =
+                temporary.Path() / fs::u8path(identifier);
+        const fs::file_time_type timestamp =
+                fs::last_write_time(unrelated, error);
+        if (error) {
+            throw std::runtime_error(
+                    std::string("could not read unrelated ") + identifier +
+                    " timestamp: " + error.message());
+        }
+        fs::last_write_time(
+                unrelated, timestamp + std::chrono::seconds(2), error);
+        if (error) {
+            throw std::runtime_error(
+                    std::string("could not change unrelated ") + identifier +
+                    " timestamp: " + error.message());
+        }
+    }
+    ScopedClogCapture logs;
+    static_cast<void>(forevertas::RunSearch(request, &control));
+    if (logs.Text().find("reason=source_identity_changed") !=
+        std::string::npos) {
+        std::cerr << "unrelated Pack files invalidated cached search\n";
+        return false;
+    }
+    return true;
+}
+
 bool CheckCachedHorizonIsolation(const char *packsDirectory,
                                  const char *replayPath) {
     forevertas::SearchRequest request{packsDirectory, replayPath};
@@ -1506,6 +1734,8 @@ int main(int argc, char **argv) {
             !CheckCudaAutoPromoteAcrossBatches(argv[1], argv[2]) ||
 #endif
             !CheckCachedScriptIsolation(argv[1], argv[2]) ||
+            !CheckCachedReplaySourceIdentity(argv[1], argv[2]) ||
+            !CheckCachedPackSourceIdentity(argv[1], argv[2]) ||
             !CheckCachedHorizonIsolation(argv[1], argv[2]) ||
             !CheckKeyboardSteeringBaseline(argv[1], argv[2]) ||
             !CheckKeyboardSteeringPhysicsParity(argv[1], argv[2]) ||

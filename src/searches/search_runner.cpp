@@ -7,16 +7,21 @@
 #include "searches/algorithm_registry.h"
 #include "searches/cuda_search_configuration.h"
 #include "searches/option_settings_utils.h"
+#include "searches/search_log_utils.h"
 
 #include <forevervalidator/experimental/physics_sandbox.h>
 #include <forevervalidator/native.h>
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
 #include <exception>
+#include <filesystem>
+#include <fstream>
 #include <future>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
@@ -472,7 +477,133 @@ struct CachedSearchSandbox {
     std::vector<
             forevervalidator::experimental::PhysicsSandboxInputEvent>
             initialInputs;
+    struct InstalledPackFileIdentity {
+        std::string identifier;
+        std::string canonicalPath;
+        bool exists = false;
+        std::uintmax_t size = 0u;
+        std::filesystem::file_time_type modified;
+        forevervalidator::AssetBytes content;
+    };
+    struct InstalledPacksIdentity {
+        std::string canonicalRoot;
+        std::array<InstalledPackFileIdentity, 8u> files;
+    };
+    std::optional<InstalledPacksIdentity> installedPacksIdentity;
 };
+
+bool SameInstalledPackFileIdentity(
+        const CachedSearchSandbox::InstalledPackFileIdentity &lhs,
+        const CachedSearchSandbox::InstalledPackFileIdentity &rhs) {
+    return lhs.identifier == rhs.identifier &&
+            lhs.canonicalPath == rhs.canonicalPath &&
+            lhs.exists == rhs.exists && lhs.size == rhs.size &&
+            lhs.modified == rhs.modified && lhs.content == rhs.content;
+}
+
+bool SameInstalledPacksIdentity(
+        const CachedSearchSandbox::InstalledPacksIdentity &lhs,
+        const CachedSearchSandbox::InstalledPacksIdentity &rhs) {
+    if (lhs.canonicalRoot != rhs.canonicalRoot) {
+        return false;
+    }
+    for (std::size_t index = 0u; index < lhs.files.size(); ++index) {
+        if (!SameInstalledPackFileIdentity(
+                    lhs.files[index], rhs.files[index])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+CachedSearchSandbox::InstalledPacksIdentity CaptureInstalledPacksIdentity(
+        const std::string &packDirectory) {
+    namespace fs = std::filesystem;
+    static constexpr std::array<const char *, 8u> kIdentifiers{
+            "packlist.dat",
+            "Alpine.pak",
+            "Speed.pak",
+            "Rally.pak",
+            "Island.pak",
+            "Coast.pak",
+            "Bay.pak",
+            "Stadium.pak"};
+
+    std::error_code error;
+    const fs::path root = fs::canonical(fs::u8path(packDirectory), error);
+    if (error || !fs::is_directory(root, error) || error) {
+        throw std::runtime_error(
+                "fingerprinting cached pack directory failed: " +
+                packDirectory);
+    }
+
+    CachedSearchSandbox::InstalledPacksIdentity identity;
+    identity.canonicalRoot = root.u8string();
+    for (std::size_t index = 0u; index < kIdentifiers.size(); ++index) {
+        auto &file = identity.files[index];
+        file.identifier = kIdentifiers[index];
+        const fs::path requested = root / fs::u8path(kIdentifiers[index]);
+        error.clear();
+        file.exists = fs::exists(requested, error);
+        if (error) {
+            throw std::runtime_error(
+                    "fingerprinting cached pack asset failed: " +
+                    file.identifier);
+        }
+        if (!file.exists) {
+            continue;
+        }
+        const fs::path actual = fs::canonical(requested, error);
+        if (error || !fs::is_regular_file(actual, error) || error) {
+            throw std::runtime_error(
+                    "fingerprinting cached pack asset failed: " +
+                    file.identifier);
+        }
+        file.canonicalPath = actual.u8string();
+        file.size = fs::file_size(actual, error);
+        if (error) {
+            throw std::runtime_error(
+                    "fingerprinting cached pack asset size failed: " +
+                    file.identifier);
+        }
+        file.modified = fs::last_write_time(actual, error);
+        if (error) {
+            throw std::runtime_error(
+                    "fingerprinting cached pack asset timestamp failed: " +
+                    file.identifier);
+        }
+        // Installed archives can be multiple gigabytes, so cache hits use
+        // canonical path, size, and high-resolution mtime rather than reading
+        // every .pak again. packlist.dat is small enough to compare exactly.
+        if (file.identifier == "packlist.dat") {
+            std::ifstream stream(actual, std::ios::binary | std::ios::ate);
+            if (!stream) {
+                throw std::runtime_error(
+                        "fingerprinting cached packlist failed: could not "
+                        "open packlist.dat");
+            }
+            const std::streamoff length = stream.tellg();
+            if (length < 0 || static_cast<std::uintmax_t>(length) !=
+                                       file.size ||
+                file.size > std::numeric_limits<std::size_t>::max()) {
+                throw std::runtime_error(
+                        "fingerprinting cached packlist failed: invalid "
+                        "packlist.dat length");
+            }
+            stream.seekg(0, std::ios::beg);
+            file.content.resize(static_cast<std::size_t>(file.size));
+            if (!file.content.empty() &&
+                !stream.read(
+                        reinterpret_cast<char *>(file.content.data()),
+                        length)) {
+                throw std::runtime_error(
+                        "fingerprinting cached packlist failed: could not "
+                        "read complete packlist.dat");
+            }
+        }
+    }
+    return identity;
+}
 
 std::shared_ptr<CachedSearchSandbox> CachedSandboxFor(
         const SearchRequest &request) {
@@ -495,6 +626,67 @@ std::shared_ptr<CachedSearchSandbox> CachedSandboxFor(
         entry = std::make_shared<CachedSearchSandbox>();
     }
     return entry;
+}
+
+void ClearCachedSandbox(CachedSearchSandbox &cached) {
+    cached.sandbox.reset();
+    cached.initialState.reset();
+    cached.replay.clear();
+    cached.initialInputs.clear();
+    cached.installedPacksIdentity.reset();
+}
+
+void InitializeCachedSandbox(
+        CachedSearchSandbox &cached,
+        const SearchRequest &request,
+        const forevervalidator::ReplayIdentity &identity,
+        const forevervalidator::experimental::PhysicsSandboxOptions &options,
+        forevervalidator::AssetBytes replay,
+        CachedSearchSandbox::InstalledPacksIdentity installedPacksIdentity,
+        const SearchRunControl *control) {
+    using namespace forevervalidator;
+    using namespace forevervalidator::experimental;
+
+    AssetSource source = Require(
+            OpenInstalledPackDirectory(request.packDirectory),
+            "opening cached pack directory");
+    ReportProgress(
+            control,
+            SearchProgressStage::CreatingSimulation,
+            0u,
+            0u);
+    PhysicsSandbox sandbox = Require(
+            CreatePhysicsSandbox(std::move(source), options),
+            "creating cached sandbox");
+    ReportProgress(
+            control, SearchProgressStage::LoadingScenario, 0u, 0u);
+    Require(
+            sandbox.LoadScenario(
+                    {replay.data(), replay.size()}, identity),
+            "loading scenario into cached sandbox");
+    PhysicsSandboxState initialState = Require(
+            sandbox.CaptureState(),
+            "capturing cached initial state");
+    std::vector<PhysicsSandboxInputEvent> initialInputs = Require(
+            sandbox.ReadInputs(),
+            "reading cached initial inputs");
+    CachedSearchSandbox::InstalledPacksIdentity confirmedPacksIdentity =
+            CaptureInstalledPacksIdentity(request.packDirectory);
+    if (!SameInstalledPacksIdentity(
+                installedPacksIdentity, confirmedPacksIdentity)) {
+        throw std::runtime_error(
+                "initializing cached sandbox failed: installed Packs "
+                "changed while loading the scenario");
+    }
+
+    // The sandbox optional is the readiness sentinel. Commit it last so a
+    // failed load or capture cannot leave a partially initialized cache hit.
+    cached.replay = std::move(replay);
+    cached.initialState.emplace(std::move(initialState));
+    cached.initialInputs = std::move(initialInputs);
+    cached.installedPacksIdentity.emplace(
+            std::move(confirmedPacksIdentity));
+    cached.sandbox.emplace(std::move(sandbox));
 }
 
 SearchResult RunLoadedSearch(
@@ -1369,52 +1561,87 @@ SearchResult RunSearch(const SearchRequest &request,
                 CachedSandboxFor(request);
         std::lock_guard<std::mutex> guard(cached->lock);
         CheckCancellation(control);
-        if (!cached->sandbox) {
-            ReportProgress(
-                    control,
-                    SearchProgressStage::OpeningPacksDirectory,
-                    0u,
-                    0u);
-            AssetSource source = Require(
-                    OpenInstalledPackDirectory(request.packDirectory),
-                    "opening cached pack directory");
-            ReportProgress(
-                    control, SearchProgressStage::ReadingScenario, 0u, 0u);
-            cached->replay = Require(
-                    ReadReplayFileUtf8(request.replayPath, identity),
-                    "reading cached replay");
-            ReportProgress(
-                    control,
-                    SearchProgressStage::CreatingSimulation,
-                    0u,
-                    0u);
-            cached->sandbox.emplace(Require(
-                    CreatePhysicsSandbox(std::move(source), options),
-                    "creating cached sandbox"));
-            ReportProgress(
-                    control, SearchProgressStage::LoadingScenario, 0u, 0u);
-            Require(
-                    cached->sandbox->LoadScenario(
-                            {cached->replay.data(),
-                             cached->replay.size()},
-                            identity),
-                    "loading scenario into cached sandbox");
-            cached->initialState = Require(
-                    cached->sandbox->CaptureState(),
-                    "capturing cached initial state");
-            cached->initialInputs = Require(
-                    cached->sandbox->ReadInputs(),
-                    "reading cached initial inputs");
+        ReportProgress(
+                control,
+                SearchProgressStage::OpeningPacksDirectory,
+                0u,
+                0u);
+        CachedSearchSandbox::InstalledPacksIdentity installedPacksIdentity =
+                CaptureInstalledPacksIdentity(request.packDirectory);
+        CheckCancellation(control);
+        ReportProgress(
+                control, SearchProgressStage::ReadingScenario, 0u, 0u);
+        AssetBytes replay = Require(
+                ReadReplayFileUtf8(request.replayPath, identity),
+                "reading cached replay");
+        CheckCancellation(control);
+        const bool completeCacheEntry = cached->sandbox.has_value() &&
+                cached->initialState.has_value() &&
+                cached->installedPacksIdentity.has_value();
+        if (completeCacheEntry) {
+            const bool replayChanged = cached->replay != replay;
+            const bool installedPacksChanged = !SameInstalledPacksIdentity(
+                    *cached->installedPacksIdentity,
+                    installedPacksIdentity);
+            if (replayChanged || installedPacksChanged) {
+                std::clog
+                        << "forevertas_sandbox_cache_recovery "
+                           "action=rebuild reason=source_identity_changed "
+                           "replay_changed="
+                        << (replayChanged ? 1 : 0)
+                        << " packs_changed="
+                        << (installedPacksChanged ? 1 : 0) << '\n';
+                ClearCachedSandbox(*cached);
+            }
+        }
+        if (!cached->sandbox || !cached->initialState) {
+            if (cached->sandbox || cached->initialState ||
+                !cached->replay.empty() || !cached->initialInputs.empty() ||
+                cached->installedPacksIdentity.has_value()) {
+                std::clog
+                        << "forevertas_sandbox_cache_recovery "
+                           "action=rebuild reason=partial_cache_entry\n";
+                ClearCachedSandbox(*cached);
+            }
+            InitializeCachedSandbox(
+                    *cached,
+                    request,
+                    identity,
+                    options,
+                    std::move(replay),
+                    std::move(installedPacksIdentity),
+                    control);
         } else {
             ReportProgress(
                     control,
                     SearchProgressStage::RestoringSimulation,
                     0u,
                     0u);
-            Require(
-                    cached->sandbox->RestoreState(
-                            *cached->initialState),
-                    "restoring cached initial state");
+            auto restored = cached->sandbox->RestoreState(
+                    *cached->initialState);
+            if (!restored &&
+                restored.Error().code ==
+                        PhysicsSandboxErrorCode::IncompatibleState) {
+                std::clog
+                        << "forevertas_sandbox_cache_recovery "
+                           "action=rebuild diagnostic=\""
+                        << detail::EscapeStructuredLogValue(
+                                   restored.Error().diagnostic)
+                        << "\"\n";
+                ClearCachedSandbox(*cached);
+                InitializeCachedSandbox(
+                        *cached,
+                        request,
+                        identity,
+                        options,
+                        std::move(replay),
+                        std::move(installedPacksIdentity),
+                        control);
+            } else {
+                Require(
+                        std::move(restored),
+                        "restoring cached initial state");
+            }
             Require(
                     cached->sandbox->ReplaceInputs(
                             cached->initialInputs),
