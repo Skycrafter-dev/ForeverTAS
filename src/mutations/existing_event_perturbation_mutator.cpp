@@ -81,7 +81,8 @@ public:
 
         std::mt19937 random = ModifierRandom(
                 settings_.window.seed, request.iterationIndex, request.passIndex);
-        std::shuffle(eligibleIndices.begin(), eligibleIndices.end(), random);
+        ShuffleModifierValues(
+                eligibleIndices.begin(), eligibleIndices.end(), random);
         const std::uint32_t requested = RandomInteger(
                 random, settings_.minimumCount, settings_.maximumCount);
         const std::size_t count = std::min<std::size_t>(

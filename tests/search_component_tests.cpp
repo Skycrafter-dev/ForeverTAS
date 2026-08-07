@@ -4,6 +4,7 @@
 #include "mutations/composite_input_mutator.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/input_event_utils.h"
+#include "mutations/modifier_utils.h"
 #include "replay_file_io.h"
 #include "searches/algorithm_registry.h"
 #include "searches/basic_brute_force_search.h"
@@ -720,6 +721,45 @@ bool TestModifierDeterminism() {
                           forevertas::SameInputEvent(first.inputs.back(),
                                                      baseline.back()),
                   "modifier changed events outside its window");
+    return okay;
+}
+
+bool TestModifierRandomGoldenSequence() {
+    std::mt19937 unsignedRandom(5489u);
+    std::array<std::uint32_t, 8u> unsignedValues{};
+    for (std::uint32_t &value : unsignedValues) {
+        value = forevertas::RandomInteger<std::uint32_t>(
+                unsignedRandom, 0u, 9u);
+    }
+    bool okay = Check(
+            unsignedValues ==
+                    std::array<std::uint32_t, 8u>{8u, 1u, 9u, 8u,
+                                                  1u, 9u, 9u, 2u},
+            "modifier integer sampling changed its golden sequence");
+
+    std::mt19937 signedRandom(5489u);
+    std::array<std::int32_t, 8u> signedValues{};
+    for (std::int32_t &value : signedValues) {
+        value = forevertas::RandomInteger<std::int32_t>(
+                signedRandom, -5, 5);
+    }
+    okay &= Check(
+            signedValues ==
+                    std::array<std::int32_t, 8u>{3, -4, 4, 4,
+                                                 -4, 5, 5, -3},
+            "signed modifier integer sampling changed its golden sequence");
+
+    std::mt19937 shuffleRandom(5489u);
+    std::array<std::uint32_t, 10u> shuffled{
+            0u, 1u, 2u, 3u, 4u, 5u, 6u, 7u, 8u, 9u};
+    forevertas::ShuffleModifierValues(
+            shuffled.begin(), shuffled.end(), shuffleRandom);
+    okay &= Check(
+            shuffled ==
+                    std::array<std::uint32_t, 10u>{
+                            2u, 9u, 0u, 5u, 4u,
+                            6u, 7u, 1u, 3u, 8u},
+            "modifier shuffle changed its golden sequence");
     return okay;
 }
 
@@ -2139,6 +2179,7 @@ int main() {
             TestEvaluationTargets() &&
             TestModifierComposition() &&
             TestModifierDeterminism() &&
+            TestModifierRandomGoldenSequence() &&
             TestExistingEventWindowPatchParity() &&
             TestAllModifierWindowPatchParity() &&
             TestEveryOrderedModifierPairWindowPatchParity() &&
