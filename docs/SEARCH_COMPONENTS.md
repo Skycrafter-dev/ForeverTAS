@@ -310,16 +310,30 @@ while allowing repeated instances of the same modifier to remain independent.
 
 ### Conditions
 
-`search/conditionScript` is an optional persisted tick-eligibility program.
-Every non-empty line is a comparison and all lines are ANDed. The language
+`search/conditionScript` is an optional persisted tick-eligibility program,
+with `search/conditionGateMode` selecting AND or OR combination. Every enabled
+line is a comparison; lines prefixed with `//` are disabled. The language
 matches BfV2 condition scripts: scalar and vector current/previous car state,
 wheel contact/sliding/surface values, search timestamps and iteration count,
 `+ - * /`, `> < >= <= =`, grouping, `kmh`, `deg`, `distance`, `time_since`,
 and `variable`/`var`. The active point target is available as the vector
 `bf_target_point`.
 
+The complete user-facing grammar, object/alias list, builder controls, horizon
+semantics, and Point Target examples live in
+[Condition Language Reference](CONDITIONS.md). The shared C++ catalogue is the
+source for both that language implementation and context-aware completion. A
+single lexer and recoverable AST also own incomplete member and argument sites;
+the UI accepts revision-checked, whole-document completion edits so source and
+cursor updates cannot race.
+Condition and base-input scripts can be stored in separate custom-named `.txt`
+libraries through the shared `ScriptFileStore`; atomic writes prevent partial
+files and an existing name is never replaced without confirmation.
+
 The parser emits one bounded postfix program used by both host and CUDA
-interpreters. The search checks that program immediately before calling the
+interpreters. AND uses the native logical opcode; OR reduces boolean gate
+results with addition and a final greater-than-zero comparison, keeping the
+same CUDA ABI. The search checks that program immediately before calling the
 target session. A false condition therefore removes only that tick from
 evaluation; it does not stop simulation or reset target state. A run with at
 least one eligible target sample always outranks a baseline with none, while

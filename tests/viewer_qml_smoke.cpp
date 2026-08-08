@@ -1177,6 +1177,14 @@ int main(int argc, char **argv) {
                     QObject *const baseInputScriptScrollView =
                             root->findChild<QObject *>(QStringLiteral(
                                     "baseInputScriptScrollView"));
+                    auto *const baseInputScriptLibraryActions =
+                            qobject_cast<QQuickItem *>(
+                                    root->findChild<QObject *>(QStringLiteral(
+                                            "baseInputScriptLibraryActions")));
+                    auto *const baseInputScriptCaptureActions =
+                            qobject_cast<QQuickItem *>(
+                                    root->findChild<QObject *>(QStringLiteral(
+                                            "baseInputScriptCaptureActions")));
                     QObject *const baseInputScriptTextArea =
                             root->findChild<QObject *>(QStringLiteral(
                                     "baseInputScriptTextArea"));
@@ -1192,6 +1200,21 @@ int main(int argc, char **argv) {
                     QObject *const copyCurrentRaceInputsButton =
                             root->findChild<QObject *>(QStringLiteral(
                                     "copyCurrentRaceInputsButton"));
+                    auto *const copyCurrentRaceInputsItem =
+                            qobject_cast<QQuickItem *>(
+                                    copyCurrentRaceInputsButton);
+                    QObject *const baseInputScriptSaveButton =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "baseInputScriptSaveButton"));
+                    QObject *const baseInputScriptLoadButton =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "baseInputScriptLoadButton"));
+                    QObject *const inputScriptLibraryDialog =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "inputScriptLibraryDialog"));
+                    auto *const baseInputScriptScrollItem =
+                            qobject_cast<QQuickItem *>(
+                                    baseInputScriptScrollView);
                     QObject *const loadMapButton =
                             root->findChild<QObject *>(
                                     QStringLiteral("loadMapButton"));
@@ -2172,11 +2195,60 @@ int main(int argc, char **argv) {
                             replayPathField != nullptr &&
                             browseReplayButton != nullptr &&
                             baseInputScriptScrollView != nullptr &&
+                            baseInputScriptLibraryActions != nullptr &&
+                            baseInputScriptCaptureActions != nullptr &&
                             baseInputScriptTextArea != nullptr &&
                             baseInputScriptErrorLabel != nullptr &&
                             saveBaseInputScriptShortcut != nullptr &&
                             undoBaseInputScriptShortcut != nullptr &&
                             copyCurrentRaceInputsButton != nullptr &&
+                            baseInputScriptSaveButton != nullptr &&
+                            baseInputScriptLoadButton != nullptr &&
+                            inputScriptLibraryDialog != nullptr &&
+                            baseInputScriptSaveButton->property("text")
+                                            .toString() ==
+                                    QStringLiteral("Save file") &&
+                            baseInputScriptLoadButton->property("text")
+                                            .toString() ==
+                                    QStringLiteral("Load file") &&
+                            baseInputScriptSaveButton->property("width")
+                                            .toReal() >= 100.0 &&
+                            baseInputScriptLoadButton->property("width")
+                                            .toReal() >= 100.0 &&
+                            std::abs(
+                                    baseInputScriptSaveButton
+                                                    ->property("width")
+                                                    .toReal() -
+                                    baseInputScriptLoadButton
+                                                    ->property("width")
+                                                    .toReal()) <= 1.0 &&
+                            !baseInputScriptSaveButton
+                                     ->property("highlighted").toBool() &&
+                            baseInputScriptLoadButton
+                                    ->property("highlighted").toBool() &&
+                            baseInputScriptLoadButton->property("x").toReal() <
+                                    baseInputScriptSaveButton
+                                            ->property("x").toReal() &&
+                            baseInputScriptScrollItem != nullptr &&
+                            baseInputScriptLibraryActions
+                                            ->mapToScene(QPointF{})
+                                            .y() -
+                                    (baseInputScriptScrollItem
+                                                     ->mapToScene(QPointF{})
+                                                     .y() +
+                                     baseInputScriptScrollItem->height()) >=
+                                    11.5 &&
+                            copyCurrentRaceInputsItem != nullptr &&
+                            copyCurrentRaceInputsItem->parentItem() ==
+                                    baseInputScriptCaptureActions &&
+                            baseInputScriptScrollItem
+                                            ->mapToScene(QPointF{})
+                                            .y() -
+                                    (baseInputScriptCaptureActions
+                                                     ->mapToScene(QPointF{})
+                                                     .y() +
+                                     baseInputScriptCaptureActions->height()) >=
+                                    7.5 &&
                             copyCurrentRaceInputsButton
                                      ->property("enabled").toBool() &&
                             root->findChild<QObject *>(

@@ -31,6 +31,7 @@ constexpr char kBaseInputScriptKey[] = "inputs/baseScript";
 constexpr char kSimulationBackendKey[] = "selection/simulationBackend";
 constexpr char kSimulationHorizonKey[] = "search/simulationHorizonMs";
 constexpr char kConditionScriptKey[] = "search/conditionScript";
+constexpr char kConditionGateModeKey[] = "search/conditionGateMode";
 constexpr char kCpuWorkerCountKey[] = "backends/cpu/workerCount";
 constexpr char kCudaParallelSampleCountKey[] =
         "backends/cuda/parallelSampleCount";
@@ -145,6 +146,8 @@ QString BackendId(PhysicsBackend backend) {
 
 SearchController::SearchController(QObject *parent)
     : QObject(parent),
+      conditionEditor_(this),
+      scriptFileStore_(this),
       cuboidTargets_(configuration_.evaluationTargetSettingsFor(
               QString::fromLatin1(kVolumeEntryEvaluationId))),
       customVolumeTargets_(configuration_.evaluationTargetSettingsFor(
@@ -157,6 +160,8 @@ SearchController::SearchController(QObject *parent)
 SearchController::SearchController(const QStringList &packsSearchPatterns,
                                    QObject *parent)
     : QObject(parent),
+      conditionEditor_(this),
+      scriptFileStore_(this),
       cuboidTargets_(configuration_.evaluationTargetSettingsFor(
               QString::fromLatin1(kVolumeEntryEvaluationId))),
       customVolumeTargets_(configuration_.evaluationTargetSettingsFor(
@@ -207,6 +212,15 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             kSimulationHorizonKey,
             QString::number(kDefaultSimulationHorizonMs));
     conditionScript_ = StoredValue(kConditionScriptKey, {});
+    conditionGateMode_ =
+            StoredValue(kConditionGateModeKey, QStringLiteral("and"))
+                                    .compare(QStringLiteral("or"),
+                                             Qt::CaseInsensitive) == 0
+                    ? QStringLiteral("or")
+                    : QStringLiteral("and");
+    conditionEditor_.setSource(conditionScript_);
+    conditionEditor_.setGateMode(conditionGateMode_);
+    conditionEditor_.setEvaluationTargetId(configuration_.evaluationTargetId());
     if (!QSettings().contains(QLatin1String(kSimulationHorizonKey))) {
         QSettings().setValue(
                 QLatin1String(kSimulationHorizonKey),
@@ -358,6 +372,18 @@ QString SearchController::simulationHorizonMs() const {
 
 QString SearchController::conditionScript() const {
     return conditionScript_;
+}
+
+QString SearchController::conditionGateMode() const {
+    return conditionGateMode_;
+}
+
+ConditionEditorModel *SearchController::conditionEditor() {
+    return &conditionEditor_;
+}
+
+ScriptFileStore *SearchController::scriptFileStore() {
+    return &scriptFileStore_;
 }
 
 QString SearchController::cpuWorkerCount() const {
@@ -573,8 +599,23 @@ void SearchController::setConditionScript(const QString &value) {
         return;
     }
     conditionScript_ = value;
+    conditionEditor_.setSource(value);
     persist(kConditionScriptKey, value);
     emit conditionScriptChanged();
+    refreshValidation();
+}
+
+void SearchController::setConditionGateMode(const QString &value) {
+    const QString normalized =
+            value.compare(QStringLiteral("or"), Qt::CaseInsensitive) == 0
+                    ? QStringLiteral("or")
+                    : QStringLiteral("and");
+    if (conditionGateMode_ == normalized)
+        return;
+    conditionGateMode_ = normalized;
+    conditionEditor_.setGateMode(normalized);
+    persist(kConditionGateModeKey, normalized);
+    emit conditionGateModeChanged();
     refreshValidation();
 }
 
@@ -651,6 +692,7 @@ void SearchController::setDarkMode(bool value) {
 
 void SearchController::setEvaluationTargetId(const QString &value) {
     if (!configuration_.setEvaluationTargetId(value)) return;
+    conditionEditor_.setEvaluationTargetId(value);
     emit evaluationTargetIdChanged();
     emit evaluationTargetSettingsChanged();
     synchronizeSelectedCuboid();
@@ -1194,7 +1236,10 @@ SearchController::ValidationResult SearchController::validate() const {
         }
     }
     ConditionCompileResult condition = CompileConditionScript(
-            conditionScript_.toStdString(), conditionVariables);
+            conditionScript_.toStdString(), conditionVariables,
+            conditionGateMode_ == QStringLiteral("or")
+                    ? ConditionGateMode::Any
+                    : ConditionGateMode::All);
     if (condition.error) {
         return {{}, QString::fromStdString(*condition.error)};
     }

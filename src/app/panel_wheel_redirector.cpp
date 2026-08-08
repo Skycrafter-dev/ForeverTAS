@@ -93,7 +93,8 @@ void PanelWheelRedirector::itemChange(ItemChange change,
 
 bool PanelWheelRedirector::eventFilter(QObject *watched, QEvent *event) {
     if (watched != filteredWindow_ || event->type() != QEvent::Wheel ||
-        !isVisible() || flickable_ == nullptr || filteredWindow_ == nullptr) {
+        !isVisible() || !isEnabled() || flickable_ == nullptr ||
+        filteredWindow_ == nullptr) {
         return false;
     }
 

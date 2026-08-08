@@ -375,6 +375,8 @@ ApplicationWindow {
         enabled: window.viewer.runCount > 0
                  && !window.viewer.manualDriving
                  && !viewport.freeCamera
+                 && !conditionBuilder.editorActive
+                 && !conditionBuilder.overlayOpen
                  && !(window.viewer.takeOverOnInput
                       && window.viewer.playing)
         onActivated: window.stepViewerTick(-1)
@@ -388,6 +390,8 @@ ApplicationWindow {
         enabled: window.viewer.runCount > 0
                  && !window.viewer.manualDriving
                  && !viewport.freeCamera
+                 && !conditionBuilder.editorActive
+                 && !conditionBuilder.overlayOpen
                  && !(window.viewer.takeOverOnInput
                       && window.viewer.playing)
         onActivated: window.stepViewerTick(1)
@@ -3790,6 +3794,7 @@ ApplicationWindow {
                     parent: settingsScroll.parent
                     anchors.fill: parent
                     flickable: settingsScroll.contentItem
+                    enabled: !conditionBuilder.overlayOpen
                 }
 
                 ColumnLayout {
@@ -3997,6 +4002,7 @@ ApplicationWindow {
                         title: qsTr("Base input script")
 
                         RowLayout {
+                            objectName: "baseInputScriptCaptureActions"
                             Layout.fillWidth: true
                             spacing: 8
 
@@ -4078,6 +4084,55 @@ ApplicationWindow {
                             color: AppTheme.error
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11
+                        }
+
+                        RowLayout {
+                            objectName: "baseInputScriptLibraryActions"
+                            Layout.fillWidth: true
+                            Layout.topMargin: 4
+                            spacing: 8
+
+                            ThemedButton {
+                                objectName: "baseInputScriptLoadButton"
+                                Layout.fillWidth: true
+                                text: qsTr("Load file")
+                                highlighted: true
+                                enabled: !window.controller.running
+                                         && !window.controller.extractingReplayInputs
+                                Accessible.description: qsTr(
+                                    "Load a saved base input script.")
+                                onClicked: inputScriptLibraryDialog.openForLoad()
+                            }
+
+                            ThemedButton {
+                                objectName: "baseInputScriptSaveButton"
+                                Layout.fillWidth: true
+                                text: qsTr("Save file")
+                                enabled: !window.controller.running
+                                         && !window.controller.extractingReplayInputs
+                                Accessible.description: qsTr(
+                                    "Save the base input script as a named text file.")
+                                onClicked: {
+                                    window.commitBaseInputScript()
+                                    inputScriptLibraryDialog.openForSave(
+                                        baseInputScriptArea.text)
+                                }
+                            }
+                        }
+
+                        ScriptLibraryDialog {
+                            id: inputScriptLibraryDialog
+
+                            objectName: "inputScriptLibraryDialog"
+                            parent: Overlay.overlay
+                            store: window.controller.scriptFileStore
+                            scriptKind: "inputs"
+                            onScriptLoaded: function(text) {
+                                baseInputScriptArea.text = text
+                                window.controller.baseInputScript = text
+                                baseInputScriptArea.cursorPosition = text.length
+                                baseInputScriptArea.forceActiveFocus()
+                            }
                         }
                     }
 
@@ -4302,44 +4357,17 @@ ApplicationWindow {
                         Layout.rightMargin: 20
                         title: qsTr("Conditions")
 
-                        ScrollView {
-                            id: conditionScriptScroll
-                            objectName: "conditionScriptScrollView"
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 110
-                            clip: true
-                            ScrollBar.horizontal.policy: ScrollBar.AsNeeded
-                            ScrollBar.vertical.policy: ScrollBar.AsNeeded
-
-                            TextArea {
-                                id: conditionScriptArea
-                                objectName: "conditionScriptTextArea"
-                                width: Math.max(
-                                    conditionScriptScroll.availableWidth,
-                                    contentWidth + leftPadding + rightPadding)
-                                text: window.controller.conditionScript
-                                enabled: !window.controller.running
-                                selectByMouse: true
-                                wrapMode: TextEdit.NoWrap
-                                textFormat: TextEdit.PlainText
-                                font.family: "monospace"
-                                font.pixelSize: 12
-                                color: enabled ? AppTheme.text
-                                               : AppTheme.disabledText
-                                placeholderText: qsTr("kmh(car.speed) >= 200")
-                                onTextChanged: {
-                                    if (window.controller.conditionScript !== text)
-                                        window.controller.conditionScript = text
-                                }
-                                background: Rectangle {
-                                    color: enabled ? AppTheme.surface
-                                                   : AppTheme.disabledSurface
-                                    border.width: 1
-                                    border.color: conditionScriptArea.activeFocus
-                                                  ? AppTheme.focus
-                                                  : AppTheme.border
-                                    radius: 6
-                                }
+                        ConditionBuilder {
+                            id: conditionBuilder
+                            controller: window.controller
+                            assistance: window.controller.conditionEditor
+                            onScriptEdited: function(text) {
+                                if (window.controller.conditionScript !== text)
+                                    window.controller.conditionScript = text
+                            }
+                            onGateModeEdited: function(mode) {
+                                if (window.controller.conditionGateMode !== mode)
+                                    window.controller.conditionGateMode = mode
                             }
                         }
                     }

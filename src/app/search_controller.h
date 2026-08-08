@@ -1,11 +1,13 @@
 #ifndef FOREVERTAS_APP_SEARCH_CONTROLLER_H
 #define FOREVERTAS_APP_SEARCH_CONTROLLER_H
 
+#include "app/condition_editor_model.h"
 #include "app/search_configuration_model.h"
 #include "app/search_completion.h"
 #include "app/cuboid_target_model.h"
 #include "app/custom_volume_target_model.h"
 #include "app/pose_target_model.h"
+#include "app/script_file_store.h"
 
 #include <QObject>
 #include <QString>
@@ -52,6 +54,12 @@ class SearchController final : public QObject {
                        setSimulationHorizonMs NOTIFY simulationHorizonMsChanged)
     Q_PROPERTY(QString conditionScript READ conditionScript WRITE
                        setConditionScript NOTIFY conditionScriptChanged)
+    Q_PROPERTY(QString conditionGateMode READ conditionGateMode WRITE
+                       setConditionGateMode NOTIFY conditionGateModeChanged)
+    Q_PROPERTY(forevertas::app::ConditionEditorModel *conditionEditor READ
+                       conditionEditor CONSTANT)
+    Q_PROPERTY(forevertas::app::ScriptFileStore *scriptFileStore READ
+                       scriptFileStore CONSTANT)
     Q_PROPERTY(QString cpuWorkerCount READ cpuWorkerCount WRITE
                        setCpuWorkerCount NOTIFY cpuWorkerCountChanged)
     Q_PROPERTY(QString cudaParallelSampleCount READ cudaParallelSampleCount WRITE
@@ -134,6 +142,9 @@ public:
     QString simulationBackendId() const;
     QString simulationHorizonMs() const;
     QString conditionScript() const;
+    QString conditionGateMode() const;
+    ConditionEditorModel *conditionEditor();
+    ScriptFileStore *scriptFileStore();
     QString cpuWorkerCount() const;
     QString cudaParallelSampleCount() const;
     bool cudaCalibrationEnabled() const;
@@ -175,6 +186,7 @@ public slots:
     void setSimulationBackendId(const QString &value);
     void setSimulationHorizonMs(const QString &value);
     void setConditionScript(const QString &value);
+    void setConditionGateMode(const QString &value);
     void setCpuWorkerCount(const QString &value);
     void setCudaParallelSampleCount(const QString &value);
     void setCudaCalibrationEnabled(bool value);
@@ -220,6 +232,7 @@ signals:
     void simulationBackendIdChanged();
     void simulationHorizonMsChanged();
     void conditionScriptChanged();
+    void conditionGateModeChanged();
     void cpuWorkerCountChanged();
     void cudaParallelSampleCountChanged();
     void cudaCalibrationEnabledChanged();
@@ -301,6 +314,9 @@ private:
     QString simulationHorizonMs_ = QString::number(
             kDefaultSimulationHorizonMs);
     QString conditionScript_;
+    QString conditionGateMode_ = QStringLiteral("and");
+    ConditionEditorModel conditionEditor_;
+    ScriptFileStore scriptFileStore_;
     QString cpuWorkerCount_ = QString::number(DefaultCpuWorkerCount());
     QString cudaParallelSampleCount_ = QString::number(
             kDefaultCudaParallelSampleCount);

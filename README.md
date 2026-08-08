@@ -70,6 +70,11 @@ randomized and persisted on each Start by default; disabling that option
 preserves the entered seeds for reproducible reruns. Search, map loading,
 validation, and physics
 stay in C++; QML presents the controls and Race Viewer.
+The base-input and Conditions editors also provide **Save file** and **Load file**
+libraries for reusable, custom-named `.txt` scripts; the two libraries are
+kept separate and replacing an existing name requires confirmation.
+Condition symbols expose parser-backed definition/type hovers, and recognized
+function calls auto-pair parentheses while keeping the cursor inside.
 
 The search runs indefinitely on a worker thread after Start is pressed. Each
 iteration applies the configured modifier passes in order, preserves the
@@ -91,9 +96,15 @@ reconstruction. Viewable input-backed runs keep physics snapshots at one-second
 intervals, so edits and Simulation-horizon changes resume from the latest valid
 snapshot rather than replaying the whole run from zero.
 The optional Conditions script filters which simulated ticks are eligible for
-the selected evaluation target. Each non-empty line is an ANDed comparison;
+the selected evaluation target. Each enabled line is a comparison, combined
+with the selected AND/OR mode; line numbers toggle individual gates;
 it supports the BfV2 car, previous-car, wheel, and search-state variables,
 arithmetic, `kmh`, `deg`, `distance`, `time_since`, and external target values.
+The built-in Tick Gates editor provides one-level-at-a-time hierarchical
+completion, IDE-style type badges, signature help, and red line diagnostics.
+See the complete
+[condition language reference](docs/CONDITIONS.md) for every object, alias,
+function, and Point Target example.
 If the baseline never satisfies the script, its evaluation is intentionally
 empty and the first satisfying mutation outranks it regardless of target
 score. Conditions never change simulation, inputs, or the target's ranking

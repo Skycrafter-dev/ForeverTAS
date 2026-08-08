@@ -118,6 +118,12 @@ add_library(forevertas_core STATIC
     src/mutations/smooth_steering_mutator.h
     src/conditions/condition_program.cpp
     src/conditions/condition_program.h
+    src/conditions/condition_syntax.cpp
+    src/conditions/condition_syntax.h
+    src/conditions/condition_ast_compiler.cpp
+    src/conditions/condition_ast_compiler.h
+    src/conditions/condition_language_catalog.cpp
+    src/conditions/condition_language_catalog.h
     src/searches/algorithm_registry.cpp
     src/searches/algorithm_registry.h
     src/searches/option_configuration.h
@@ -140,6 +146,12 @@ target_link_libraries(forevertas_core PUBLIC
     ForeverValidator::native)
 
 add_library(forevertas_gui STATIC
+    src/app/condition_editor_model.cpp
+    src/app/condition_editor_model.h
+    src/app/condition_syntax_highlighter.cpp
+    src/app/condition_syntax_highlighter.h
+    src/app/script_file_store.cpp
+    src/app/script_file_store.h
     src/app/compact_number_format.cpp
     src/app/compact_number_format.h
     src/app/system_file_dialog.cpp
@@ -343,6 +355,10 @@ qt_add_qml_module(forevertas
     VERSION 1.0
     QML_FILES
         qml/AppTheme.qml
+        qml/ConditionBuilder.qml
+        qml/ConditionCompletionPopup.qml
+        qml/ConditionSymbolHover.qml
+        qml/ScriptLibraryDialog.qml
         qml/Main.qml
         qml/SimulationDebuggerPanel.qml
         qml/SliderValueField.qml
@@ -424,6 +440,7 @@ install(TARGETS forevertas-simulation-debug-worker
 if(WIN32)
     set(forevertas_deploy_options NO_TRANSLATIONS)
     list(APPEND forevertas_deploy_options NO_COMPILER_RUNTIME)
+    list(APPEND forevertas_deploy_options DEPLOY_TOOL_OPTIONS --include-plugins qoffscreen)
     qt_generate_deploy_qml_app_script(
         TARGET forevertas
         OUTPUT_SCRIPT forevertas_deploy_script
@@ -610,6 +627,70 @@ if(FOREVERTAS_WARNING_OPTIONS)
 endif()
 
 if(BUILD_TESTING)
+    add_executable(forevertas-condition-language-tests
+        tests/condition_language_tests.cpp
+        src/conditions/condition_program.cpp
+        src/conditions/condition_program.h
+        src/conditions/condition_syntax.cpp
+        src/conditions/condition_syntax.h
+        src/conditions/condition_ast_compiler.cpp
+        src/conditions/condition_ast_compiler.h
+        src/conditions/condition_language_catalog.cpp
+        src/conditions/condition_language_catalog.h)
+    target_include_directories(forevertas-condition-language-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${ForeverValidator_SOURCE_DIR}/include)
+
+    add_executable(forevertas-condition-editor-tests
+        tests/condition_editor_model_tests.cpp
+        src/app/condition_editor_model.cpp
+        src/app/condition_editor_model.h
+        src/app/condition_syntax_highlighter.cpp
+        src/app/condition_syntax_highlighter.h
+        src/app/script_file_store.cpp
+        src/app/script_file_store.h
+        src/conditions/condition_program.cpp
+        src/conditions/condition_program.h
+        src/conditions/condition_syntax.cpp
+        src/conditions/condition_syntax.h
+        src/conditions/condition_ast_compiler.cpp
+        src/conditions/condition_ast_compiler.h
+        src/conditions/condition_language_catalog.cpp
+        src/conditions/condition_language_catalog.h)
+    target_include_directories(forevertas-condition-editor-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${ForeverValidator_SOURCE_DIR}/include)
+    target_link_libraries(forevertas-condition-editor-tests PRIVATE
+        Qt6::Core
+        Qt6::Gui
+        Qt6::Quick)
+
+    add_executable(forevertas-condition-builder-qml-tests
+        tests/condition_builder_qml_tests.cpp
+        src/app/condition_editor_model.cpp
+        src/app/condition_editor_model.h
+        src/app/condition_syntax_highlighter.cpp
+        src/app/condition_syntax_highlighter.h
+        src/conditions/condition_program.cpp
+        src/conditions/condition_program.h
+        src/conditions/condition_syntax.cpp
+        src/conditions/condition_syntax.h
+        src/conditions/condition_ast_compiler.cpp
+        src/conditions/condition_ast_compiler.h
+        src/conditions/condition_language_catalog.cpp
+        src/conditions/condition_language_catalog.h)
+    target_include_directories(forevertas-condition-builder-qml-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+        ${ForeverValidator_SOURCE_DIR}/include)
+    target_compile_definitions(forevertas-condition-builder-qml-tests PRIVATE
+        FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(forevertas-condition-builder-qml-tests PRIVATE
+        Qt6::Gui
+        Qt6::Qml
+        Qt6::Quick
+        Qt6::QuickControls2
+        Qt6::Test)
+
     add_executable(forevertas-strategy-tests
         tests/search_component_tests.cpp)
     target_link_libraries(forevertas-strategy-tests PRIVATE forevertas_core)
@@ -640,6 +721,12 @@ if(BUILD_TESTING)
         Qt6::QuickControls2)
 
     if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-condition-language-tests PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
+        target_compile_options(forevertas-condition-editor-tests PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
+        target_compile_options(forevertas-condition-builder-qml-tests PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-strategy-tests PRIVATE
             ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-controller-tests PRIVATE
@@ -650,6 +737,12 @@ if(BUILD_TESTING)
             ${FOREVERTAS_WARNING_OPTIONS})
     endif()
 
+    add_test(NAME forevertas-condition-language
+             COMMAND forevertas-condition-language-tests)
+    add_test(NAME forevertas-condition-editor
+             COMMAND forevertas-condition-editor-tests)
+    add_test(NAME forevertas-condition-builder-qml
+             COMMAND forevertas-condition-builder-qml-tests)
     add_test(NAME forevertas-strategies
              COMMAND forevertas-strategy-tests)
     add_test(NAME forevertas-no-replay-duration-control
