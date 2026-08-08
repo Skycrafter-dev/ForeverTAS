@@ -209,7 +209,28 @@ ApplicationWindow {
                     Q_ARG(QVariant, QVariant(QStringLiteral("enum"))));
     okay &= Check(resolvedEnumIcon &&
                           enumIcon.toString() == QStringLiteral("E"),
-                  "enum completion lost its compact type icon");
+                  "enum family lost its compact type icon");
+    QVariant enumMemberIcon;
+    const bool resolvedEnumMemberIcon = completion != nullptr &&
+            QMetaObject::invokeMethod(
+                    completion,
+                    "iconLetter",
+                    Q_RETURN_ARG(QVariant, enumMemberIcon),
+                    Q_ARG(QVariant,
+                          QVariant(QStringLiteral("enum-member"))));
+    okay &= Check(resolvedEnumMemberIcon &&
+                          enumMemberIcon.toString() == QStringLiteral("V"),
+                  "enum value lost its distinct type icon");
+    QVariant keywordIcon;
+    const bool resolvedKeywordIcon = completion != nullptr &&
+            QMetaObject::invokeMethod(
+                    completion,
+                    "iconLetter",
+                    Q_RETURN_ARG(QVariant, keywordIcon),
+                    Q_ARG(QVariant, QVariant(QStringLiteral("keyword"))));
+    okay &= Check(resolvedKeywordIcon &&
+                          keywordIcon.toString() == QStringLiteral("K"),
+                  "boolean keyword lost its distinct type icon");
     okay &= Check(gateModeLabel != nullptr &&
                           gateModeLabel->property("text").toString() ==
                                   QStringLiteral("Combine enabled gates") &&
@@ -509,7 +530,12 @@ ApplicationWindow {
                                         .toMap()
                                         .value(QStringLiteral("kind"))
                                         .toString() ==
-                                QStringLiteral("object"),
+                                QStringLiteral("enum") &&
+                        enumRoots.front()
+                                        .toMap()
+                                        .value(QStringLiteral("category"))
+                                        .toString() ==
+                                QStringLiteral("enum family"),
                 "surface comparison did not offer its typed enum namespace");
         const bool expandedSurface = QMetaObject::invokeMethod(
                 builder, "applyCompletion", Q_ARG(QVariant, QVariant(0)));
@@ -533,19 +559,24 @@ ApplicationWindow {
                                         .toMap()
                                         .value(QStringLiteral("symbol"))
                                         .toString() ==
-                                QStringLiteral("surface.ice") &&
+                                QStringLiteral("surface.ICE") &&
                         iceMatches.front()
                                         .toMap()
                                         .value(QStringLiteral("kind"))
                                         .toString() ==
-                                QStringLiteral("enum") &&
+                                QStringLiteral("enum-member") &&
+                        iceMatches.front()
+                                        .toMap()
+                                        .value(QStringLiteral("label"))
+                                        .toString() ==
+                                QStringLiteral("ICE") &&
                         iceMatches.front()
                                         .toMap()
                                         .value(QStringLiteral("value"))
                                         .toDouble() == 3.0 &&
                         enumGlyph != nullptr &&
                         enumGlyph->property("text").toString() ==
-                                QStringLiteral("E"),
+                                QStringLiteral("V"),
                 "surface values were not filtered or rendered as enums");
         CaptureIfRequested(window, "FOREVERTAS_CONDITION_ENUM_CAPTURE");
         QMetaObject::invokeMethod(completion, "close");

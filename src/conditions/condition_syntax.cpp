@@ -202,6 +202,12 @@ public:
             right = Node(ConditionSyntaxKind::Missing, Current().range);
         } else {
             Advance();
+            if (comparison == ConditionComparisonOperator::Equal &&
+                Current().kind == TokenKind::Equal) {
+                SetError({comparator.range.begin, Current().range.end},
+                         "use '=' for equality; '==' is not supported");
+                Advance();
+            }
             right = ParseExpression();
         }
 

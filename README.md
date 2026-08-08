@@ -75,8 +75,8 @@ libraries for reusable, custom-named `.txt` scripts; the two libraries are
 kept separate and replacing an existing name requires confirmation.
 Condition symbols expose parser-backed definition/type hovers, and recognized
 function calls auto-pair parentheses while keeping the cursor inside.
-Surface, turbo, boolean, and gear comparisons offer named constants instead of
-requiring raw runtime IDs.
+Surface, turbo, boolean, and gear comparisons offer named constants on their
+right-hand side instead of requiring raw runtime IDs.
 
 The search runs indefinitely on a worker thread after Start is pressed. Each
 iteration applies the configured modifier passes in order, preserves the

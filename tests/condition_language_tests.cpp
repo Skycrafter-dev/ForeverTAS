@@ -48,6 +48,19 @@ std::string CompileLineForFunction(
     return {};
 }
 
+std::string CompileLineForConstant(
+        const forevertas::ConditionLanguageConstant &constant,
+        std::string_view spelling) {
+    std::string left;
+    if (constant.enumNamespace == "boolean") left = "car.freewheel";
+    else if (constant.enumNamespace == "gear") left = "car.gear";
+    else if (constant.enumNamespace == "turbo") left = "car.turbo_type";
+    else if (constant.enumNamespace == "surface") {
+        left = "car.wheels.frontleft.surface";
+    }
+    return left + " = " + std::string(spelling);
+}
+
 bool TestCatalogueCompiles() {
     const forevertas::ConditionVariables variables{{
             "bf_target_point", {1.0, 2.0, 3.0, true}}};
@@ -84,8 +97,7 @@ bool TestCatalogueCompiles() {
                       "catalogue constant is missing typed metadata");
         for (const std::string_view alias : constant.aliases) {
             const auto result = forevertas::CompileConditionScript(
-                    std::string(alias) + " = " +
-                    std::to_string(constant.value), variables);
+                    CompileLineForConstant(constant, alias), variables);
             if (result.error) std::cerr << *result.error << '\n';
             okay &= Check(result.program.has_value() && !result.error,
                           "catalogue constant alias did not compile");
@@ -133,6 +145,11 @@ bool TestCatalogueCompiles() {
     okay &= Check(caseInsensitive.program.has_value() &&
                           !caseInsensitive.error,
                   "condition names stopped being case insensitive");
+    const auto lowercaseCompatibility = forevertas::CompileConditionScript(
+            "car.wheels.frontleft.surface = surface.ice", variables);
+    okay &= Check(lowercaseCompatibility.program.has_value() &&
+                          !lowercaseCompatibility.error,
+                  "lowercase enum scripts stopped being compatible");
     return okay;
 }
 
@@ -190,6 +207,31 @@ bool TestStructuredDiagnostics() {
     okay &= Check(!empty.program && !empty.error &&
                           empty.diagnostics.empty(),
                   "blank script should make every tick eligible");
+
+    const auto doubleEquals = forevertas::CompileConditionScript(
+            "car.speed == 0");
+    okay &= Check(!doubleEquals.program && doubleEquals.error &&
+                          !doubleEquals.diagnostics.empty() &&
+                          doubleEquals.diagnostics.front().message.find(
+                                  "use '=' for equality") !=
+                                  std::string::npos,
+                  "C-style == unexpectedly became part of the DSL");
+    const auto constantOnLeft = forevertas::CompileConditionScript(
+            "gear.REVERSE = true");
+    okay &= Check(
+            !constantOnLeft.program && constantOnLeft.error &&
+                    !constantOnLeft.diagnostics.empty() &&
+                    constantOnLeft.diagnostics.front().message.find(
+                            "right side") != std::string::npos,
+            "an enum constant was accepted on the comparison left side");
+    const auto mismatchedConstant = forevertas::CompileConditionScript(
+            "car.gear = true");
+    okay &= Check(
+            !mismatchedConstant.program && mismatchedConstant.error &&
+                    !mismatchedConstant.diagnostics.empty() &&
+                    mismatchedConstant.diagnostics.front().message.find(
+                            "expected gear") != std::string::npos,
+            "a boolean keyword was accepted for a gear field");
     return okay;
 }
 
@@ -239,10 +281,10 @@ bool TestGateModesAndDisabledLines() {
     okay &= Check(!allDisabled.program && !allDisabled.error,
                   "a script with only disabled gates was not empty");
     const auto enumConstants = forevertas::CompileConditionScript(
-            "car.wheels.frontleft.surface = surface.concrete\n"
-            "car.turbo_type = turbo.inactive\n"
+            "car.wheels.frontleft.surface = surface.CONCRETE\n"
+            "car.turbo_type = turbo.INACTIVE\n"
             "car.freewheel = false\n"
-            "car.gear = gear.neutral");
+            "car.gear = gear.NEUTRAL");
     okay &= Check(
             enumConstants.program &&
                     enumConstants.program->Evaluate(state, state, context),
@@ -306,6 +348,10 @@ bool TestParserOwnedCursorContexts() {
                           surfaceValue->expected ==
                                   forevertas::ConditionLanguageValueType::Scalar,
                   "AST did not infer the surface enum on the comparison RHS");
+    const auto enumOnLeft =
+            forevertas::AnalyzeConditionCursor("surface.", 8u);
+    okay &= Check(enumOnLeft && enumOnLeft->enumNamespace.empty(),
+                  "AST exposed an enum family on the comparison left side");
 
     const std::string emptyFunction = "kmh()";
     const auto emptyFunctionArgument = forevertas::AnalyzeConditionCursor(

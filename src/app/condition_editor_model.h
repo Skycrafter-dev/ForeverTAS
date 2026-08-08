@@ -91,6 +91,7 @@ private:
     QVariantMap constantMap(std::size_t index) const;
     QVariantMap functionMap(std::size_t index) const;
     QVariantMap objectMap(const QString &path) const;
+    QVariantMap enumMap(const QString &path) const;
 
     QString source_;
     int cursorPosition_ = 0;

@@ -120,20 +120,34 @@ bool TestAnalysis() {
                                     .toInt() == 3,
             "function hover documentation lost its signature, type, or range");
     model.setSource(QStringLiteral(
-            "car.wheels.frontleft.surface = surface.ice"));
-    const int icePosition = model.source().indexOf(QStringLiteral("ice"));
+            "car.wheels.frontleft.surface = surface.ICE"));
+    const int icePosition = model.source().indexOf(QStringLiteral("ICE"));
     const QVariantMap constantDocumentation =
             model.documentationAt(icePosition + 1);
+    const int surfaceFamilyPosition =
+            model.source().lastIndexOf(QStringLiteral("surface."));
+    const QVariantMap enumFamilyDocumentation =
+            model.documentationAt(surfaceFamilyPosition + 1);
     okay &= Check(
             constantDocumentation.value(QStringLiteral("symbol")).toString() ==
-                            QStringLiteral("surface.ice") &&
+                            QStringLiteral("surface.ICE") &&
                     constantDocumentation.value(QStringLiteral("kind"))
-                                    .toString() == QStringLiteral("enum") &&
+                                    .toString() ==
+                            QStringLiteral("enum-member") &&
                     constantDocumentation.value(QStringLiteral("type"))
                                     .toString() == QStringLiteral("surface") &&
                     constantDocumentation.value(QStringLiteral("value"))
                                     .toDouble() == 3.0,
             "enum hover lost its definition, type, or numeric value");
+    okay &= Check(
+            enumFamilyDocumentation.value(QStringLiteral("symbol"))
+                            .toString() == QStringLiteral("surface") &&
+                    enumFamilyDocumentation.value(QStringLiteral("kind"))
+                                    .toString() == QStringLiteral("enum") &&
+                    enumFamilyDocumentation.value(QStringLiteral("category"))
+                                    .toString() ==
+                            QStringLiteral("enum family"),
+            "enum-family hover was indistinguishable from an object");
     return okay;
 }
 
@@ -150,6 +164,9 @@ bool TestCompletionAndHints() {
                             QStringLiteral("car.") &&
                     FindBySymbol(model.completions(),
                                  QStringLiteral("car.speed"))
+                            .isEmpty() &&
+                    FindBySymbol(model.completions(),
+                                 QStringLiteral("surface"))
                             .isEmpty(),
             "root completion did not collapse car fields into car");
 
@@ -242,6 +259,10 @@ bool TestCompletionAndHints() {
             model.completions().size() == 1 &&
                     surfaceObject.value(QStringLiteral("isContainer"))
                             .toBool() &&
+                    surfaceObject.value(QStringLiteral("kind")).toString() ==
+                            QStringLiteral("enum") &&
+                    surfaceObject.value(QStringLiteral("category")).toString() ==
+                            QStringLiteral("enum family") &&
                     model.completionContext()
                                     .value(QStringLiteral("enumNamespace"))
                                     .toString() == QStringLiteral("surface"),
@@ -250,29 +271,45 @@ bool TestCompletionAndHints() {
             surfaceObject.value(QStringLiteral("completionId")).toString(),
             surfaceObject.value(QStringLiteral("revision")).toULongLong());
     const QVariantMap ice = FindBySymbol(
-            model.completions(), QStringLiteral("surface.ice"));
+            model.completions(), QStringLiteral("surface.ICE"));
     okay &= Check(
             expandedSurface.value(QStringLiteral("accepted")).toBool() &&
                     expandedSurface.value(QStringLiteral("source")).toString() ==
                             surfaceComparison + QStringLiteral("surface.") &&
                     model.completions().size() == 31 &&
                     ice.value(QStringLiteral("kind")).toString() ==
-                            QStringLiteral("enum") &&
+                            QStringLiteral("enum-member") &&
+                    ice.value(QStringLiteral("category")).toString() ==
+                            QStringLiteral("enum value") &&
                     ice.value(QStringLiteral("value")).toDouble() == 3.0 &&
                     ice.value(QStringLiteral("insertText")).toString() ==
-                            QStringLiteral("ice"),
+                            QStringLiteral("ICE"),
             "surface enum did not expand to its 31 direct values");
 
     const QString booleanComparison =
             QStringLiteral("car.freewheel = ");
     model.updateDocumentState(booleanComparison, booleanComparison.size());
+    const QVariantMap trueKeyword =
+            FindBySymbol(model.completions(), QStringLiteral("true"));
     okay &= Check(
             model.completions().size() == 2 &&
-                    !FindBySymbol(model.completions(), QStringLiteral("true"))
-                             .isEmpty() &&
+                    trueKeyword.value(QStringLiteral("kind")).toString() ==
+                            QStringLiteral("keyword") &&
                     !FindBySymbol(model.completions(), QStringLiteral("false"))
                              .isEmpty(),
             "boolean comparison did not offer true and false constants");
+
+    const QString untypedComparison = QStringLiteral("iterations = ");
+    model.updateDocumentState(untypedComparison, untypedComparison.size());
+    okay &= Check(
+            FindBySymbol(model.completions(), QStringLiteral("surface"))
+                            .isEmpty() &&
+                    FindBySymbol(model.completions(), QStringLiteral("true"))
+                            .isEmpty(),
+            "constants escaped their typed right-hand-side context");
+    model.updateDocumentState(QStringLiteral("surface."), 8);
+    okay &= Check(model.completions().isEmpty(),
+                  "enum values were offered on the comparison left side");
 
     model.setSource(QStringLiteral("km"));
     model.setCursorPosition(2);
@@ -397,7 +434,7 @@ bool TestCatalogueAvailability() {
     const QVariantMap kmh =
             FindBySymbol(model.catalogue(), QStringLiteral("kmh"));
     const QVariantMap ice =
-            FindBySymbol(model.catalogue(), QStringLiteral("surface.ice"));
+            FindBySymbol(model.catalogue(), QStringLiteral("surface.ICE"));
     QVariantMap target =
             FindBySymbol(model.catalogue(), QStringLiteral("bf_target_point"));
     QVariantMap variableFunction =
@@ -410,7 +447,7 @@ bool TestCatalogueAvailability() {
                     kmh.value(QStringLiteral("signature")).toString() ==
                             QStringLiteral("kmh(number)") &&
                     ice.value(QStringLiteral("kind")).toString() ==
-                            QStringLiteral("enum") &&
+                            QStringLiteral("enum-member") &&
                     ice.value(QStringLiteral("type")).toString() ==
                             QStringLiteral("surface") &&
                     ice.value(QStringLiteral("value")).toDouble() == 3.0,
@@ -470,7 +507,7 @@ bool TestHighlighting() {
     const QColor error(QStringLiteral("#ee3344"));
     highlighter.setPalette(symbol, previous, function, number, op, error);
     const QString source = QStringLiteral(
-            "car.prev.speed + kmh(car.speed) >= surface.ice");
+            "car.prev.speed + kmh(car.speed) >= surface.ICE");
     document.setPlainText(source);
     highlighter.setDiagnostics({{0, 0, 3}});
     highlighter.rehighlight();
@@ -484,7 +521,7 @@ bool TestHighlighting() {
     const QTextCharFormat operatorFormat =
             FormatAt(block, source.indexOf(QStringLiteral(">=")));
     const QTextCharFormat numberFormat =
-            FormatAt(block, source.indexOf(QStringLiteral("surface.ice")));
+            FormatAt(block, source.indexOf(QStringLiteral("surface.ICE")));
     bool okay = Check(
             previousFormat.foreground().color() == previous &&
                     previousFormat.underlineStyle() ==

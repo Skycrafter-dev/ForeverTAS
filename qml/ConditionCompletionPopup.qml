@@ -33,6 +33,10 @@ Popup {
             return "\u0192"
         if (kind === "enum")
             return "E"
+        if (kind === "enum-member")
+            return "V"
+        if (kind === "keyword")
+            return "K"
         if (kind === "vector")
             return "\u2192"
         if (kind === "number")
@@ -40,10 +44,19 @@ Popup {
         return "\u2022"
     }
 
+    function kindLabel(kind) {
+        if (kind === "enum-member")
+            return qsTr("value")
+        if (kind === "keyword")
+            return qsTr("keyword")
+        return kind || ""
+    }
+
     function iconColor(kind) {
         if (kind === "object")
             return AppTheme.success
-        if (kind === "function")
+        if (kind === "function" || kind === "enum"
+                || kind === "keyword")
             return AppTheme.info
         if (kind === "vector")
             return AppTheme.accent
@@ -53,7 +66,8 @@ Popup {
     function iconSurface(kind) {
         if (kind === "object")
             return AppTheme.successSoft
-        if (kind === "function")
+        if (kind === "function" || kind === "enum"
+                || kind === "keyword")
             return AppTheme.infoSoft
         if (kind === "vector")
             return AppTheme.accentSoft
@@ -194,7 +208,7 @@ Popup {
                     }
                     Accessible.name: modelData.label
                     Accessible.description:
-                        (modelData.kind || "") + ". "
+                        root.kindLabel(modelData.kind) + ". "
                         + (modelData.description || "")
 
                     HoverHandler {
@@ -248,7 +262,8 @@ Popup {
 
                         Label {
                             Layout.maximumWidth: 48
-                            text: suggestionDelegate.modelData.kind || ""
+                            text: root.kindLabel(
+                                      suggestionDelegate.modelData.kind)
                             color: AppTheme.textFaint
                             font.pixelSize: 9
                             horizontalAlignment: Text.AlignRight
@@ -357,7 +372,7 @@ Popup {
                     Label {
                         Layout.fillWidth: true
                         text: root.currentSuggestion.kind
-                              ? root.currentSuggestion.kind
+                              ? root.kindLabel(root.currentSuggestion.kind)
                                 + (root.currentSuggestion.unit
                                    ? " \u00b7 "
                                      + root.currentSuggestion.unit : "")

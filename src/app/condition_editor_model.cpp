@@ -95,6 +95,23 @@ QString ObjectDescription(const QString &path) {
             "browse its direct fields.");
 }
 
+QString ConstantDisplayName(const ConditionLanguageConstant &constant) {
+    const QString canonical = FromView(constant.canonicalName);
+    if (constant.enumNamespace == "boolean") return canonical;
+    const qsizetype separator = canonical.lastIndexOf(QLatin1Char('.'));
+    if (separator < 0) return canonical.toUpper();
+    return canonical.left(separator + 1) +
+            canonical.mid(separator + 1).toUpper();
+}
+
+QString ConstantDisplayExample(const ConditionLanguageConstant &constant) {
+    QString example = FromView(constant.example);
+    example.replace(FromView(constant.canonicalName),
+                    ConstantDisplayName(constant),
+                    Qt::CaseInsensitive);
+    return example;
+}
+
 int MatchScore(const QString &query, const QStringList &values) {
     if (query.isEmpty()) return 0;
     const QString folded = query.toCaseFolded();
@@ -583,9 +600,10 @@ QVariantMap ConditionEditorModel::documentationAt(int position) const {
                 return FromView(constant.canonicalName)
                         .startsWith(objectPrefix);
             });
-    if (hasSymbolChildren || hasConstantChildren) {
-        return located(objectMap(objectPath));
+    if (hasConstantChildren && !hasSymbolChildren) {
+        return located(enumMap(objectPath));
     }
+    if (hasSymbolChildren) return located(objectMap(objectPath));
     return {};
 }
 
@@ -652,21 +670,26 @@ QVariantMap ConditionEditorModel::constantMap(std::size_t index) const {
             GetConditionConstants().at(index);
     const QString value = QString::number(constant.value, 'g', 15);
     const QString enumType = FromView(constant.enumNamespace);
-    return {{QStringLiteral("category"), QStringLiteral("constant")},
+    const bool keyword = constant.enumNamespace == "boolean";
+    return {{QStringLiteral("category"),
+             keyword ? QStringLiteral("keyword")
+                     : QStringLiteral("enum value")},
             {QStringLiteral("label"), FromView(constant.friendlyName)},
-            {QStringLiteral("symbol"), FromView(constant.canonicalName)},
-            {QStringLiteral("kind"), QStringLiteral("enum")},
+            {QStringLiteral("symbol"), ConstantDisplayName(constant)},
+            {QStringLiteral("kind"),
+             keyword ? QStringLiteral("keyword")
+                     : QStringLiteral("enum-member")},
             {QStringLiteral("type"), enumType},
             {QStringLiteral("unit"), tr("value %1").arg(value)},
             {QStringLiteral("detail"),
-             tr("%1 enum · value %2").arg(enumType, value)},
+             keyword ? tr("boolean keyword · value %1").arg(value)
+                     : tr("%1 enum value · %2").arg(enumType, value)},
             {QStringLiteral("description"),
              FromView(constant.documentation)},
             {QStringLiteral("aliases"),
              AliasList(constant.aliases, constant.canonicalName)},
-            {QStringLiteral("example"), FromView(constant.example)},
-            {QStringLiteral("insertText"),
-             FromView(constant.canonicalName)},
+            {QStringLiteral("example"), ConstantDisplayExample(constant)},
+            {QStringLiteral("insertText"), ConstantDisplayName(constant)},
             {QStringLiteral("value"), constant.value},
             {QStringLiteral("available"), true},
             {QStringLiteral("unavailableReason"), QString{}}};
@@ -709,6 +732,32 @@ QVariantMap ConditionEditorModel::objectMap(const QString &path) const {
             {QStringLiteral("type"), QStringLiteral("namespace")},
             {QStringLiteral("unit"), QString{}},
             {QStringLiteral("detail"), tr("object · direct members")},
+            {QStringLiteral("description"), ObjectDescription(path)},
+            {QStringLiteral("aliases"), QStringList{}},
+            {QStringLiteral("example"), QString{}},
+            {QStringLiteral("available"), true},
+            {QStringLiteral("unavailableReason"), QString{}},
+            {QStringLiteral("isContainer"), true}};
+}
+
+QVariantMap ConditionEditorModel::enumMap(const QString &path) const {
+    const qsizetype separator = path.lastIndexOf(QLatin1Char('.'));
+    const QString label = separator < 0 ? path : path.mid(separator + 1);
+    const std::vector<ConditionLanguageConstant> &constants =
+            GetConditionConstants();
+    const qsizetype valueCount = static_cast<qsizetype>(std::count_if(
+            constants.begin(), constants.end(),
+            [&path](const ConditionLanguageConstant &constant) {
+                return FromView(constant.enumNamespace) == path;
+            }));
+    return {{QStringLiteral("category"), QStringLiteral("enum family")},
+            {QStringLiteral("label"), label},
+            {QStringLiteral("symbol"), path},
+            {QStringLiteral("kind"), QStringLiteral("enum")},
+            {QStringLiteral("type"), QStringLiteral("enum family")},
+            {QStringLiteral("unit"), QString{}},
+            {QStringLiteral("detail"),
+             tr("enum family · %1 values").arg(valueCount)},
             {QStringLiteral("description"), ObjectDescription(path)},
             {QStringLiteral("aliases"), QStringList{}},
             {QStringLiteral("example"), QString{}},
@@ -1022,14 +1071,12 @@ void ConditionEditorModel::updateAssistance() {
                          child.size());
         }
 
-        if (!vectorArgument) {
+        if (!vectorArgument && !expectedEnum.isEmpty()) {
             for (std::size_t index = 0; index < constants.size(); ++index) {
                 const ConditionLanguageConstant &constant = constants[index];
                 const QString enumNamespace =
                         FromView(constant.enumNamespace);
-                if (contextualEnumPath && enumNamespace != expectedEnum) {
-                    continue;
-                }
+                if (enumNamespace != expectedEnum) continue;
                 const QString canonical =
                         FromView(constant.canonicalName);
                 if (!canonical.startsWith(parentPrefix)) continue;
@@ -1045,7 +1092,7 @@ void ConditionEditorModel::updateAssistance() {
                     if (addedObjects.contains(childPath)) continue;
                     addedObjects.insert(childPath);
                     const QString insertion = child + QLatin1Char('.');
-                    addCandidate(objectMap(childPath),
+                    addCandidate(enumMap(childPath),
                                  QStringLiteral("object:") + childPath,
                                  child,
                                  {child},
@@ -1055,6 +1102,10 @@ void ConditionEditorModel::updateAssistance() {
                 }
 
                 QVariantMap value = constantMap(index);
+                const QString displayChild = enumNamespace ==
+                                QStringLiteral("boolean")
+                        ? child
+                        : child.toUpper();
                 QStringList names{child};
                 if (!memberSite) {
                     names.push_back(canonical);
@@ -1075,10 +1126,10 @@ void ConditionEditorModel::updateAssistance() {
                 }
                 addCandidate(std::move(value),
                              QStringLiteral("constant:") + canonical,
-                             child,
+                             displayChild,
                              names,
-                             child,
-                             child.size());
+                             displayChild,
+                             displayChild.size());
             }
         }
 

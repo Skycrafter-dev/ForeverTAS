@@ -31,6 +31,9 @@ public:
             root.children.size() != 2u) {
             return Fail(root.range, "expected comparison");
         }
+        if (!ValidateConstants(*root.children[0], *root.children[1])) {
+            return false;
+        }
         if (!EmitExpression(*root.children[0],
                             ConditionLanguageValueType::Scalar) ||
             !EmitExpression(*root.children[1],
@@ -60,6 +63,77 @@ public:
     }
 
 private:
+    const ConditionSyntaxNode *FirstConstant(
+            const ConditionSyntaxNode &node) const {
+        if ((node.kind == ConditionSyntaxKind::Name ||
+             node.kind == ConditionSyntaxKind::Member) &&
+            FindConditionConstant(ConditionSyntaxName(node)) != nullptr) {
+            return &node;
+        }
+        for (const auto &child : node.children) {
+            if (const ConditionSyntaxNode *const constant =
+                        FirstConstant(*child)) {
+                return constant;
+            }
+        }
+        return nullptr;
+    }
+
+    const ConditionSyntaxNode &Ungroup(const ConditionSyntaxNode &node) const {
+        if (node.kind == ConditionSyntaxKind::Group &&
+            node.children.size() == 1u) {
+            return Ungroup(*node.children.front());
+        }
+        return node;
+    }
+
+    bool ValidateRightConstants(const ConditionSyntaxNode &node,
+                                std::string_view expectedEnum) {
+        if (node.kind == ConditionSyntaxKind::Name ||
+            node.kind == ConditionSyntaxKind::Member) {
+            const std::string spelling = ConditionSyntaxName(node);
+            if (const ConditionLanguageConstant *const constant =
+                        FindConditionConstant(spelling)) {
+                if (expectedEnum.empty()) {
+                    return Fail(node.range,
+                                "constant '" + spelling +
+                                        "' requires a matching typed field "
+                                        "on the left");
+                }
+                if (constant->enumNamespace != expectedEnum) {
+                    return Fail(node.range,
+                                "expected " + std::string(expectedEnum) +
+                                        " value, got " +
+                                        std::string(constant->enumNamespace));
+                }
+            }
+        }
+        for (const auto &child : node.children) {
+            if (!ValidateRightConstants(*child, expectedEnum)) return false;
+        }
+        return true;
+    }
+
+    bool ValidateConstants(const ConditionSyntaxNode &left,
+                           const ConditionSyntaxNode &right) {
+        if (const ConditionSyntaxNode *const constant = FirstConstant(left)) {
+            return Fail(constant->range,
+                        "constants can only be used on the right side of a "
+                        "comparison");
+        }
+
+        std::string_view expectedEnum;
+        const ConditionSyntaxNode &field = Ungroup(left);
+        if (field.kind == ConditionSyntaxKind::Name ||
+            field.kind == ConditionSyntaxKind::Member) {
+            if (const ConditionLanguageSymbol *const symbol =
+                        FindConditionSymbol(ConditionSyntaxName(field))) {
+                expectedEnum = symbol->enumNamespace;
+            }
+        }
+        return ValidateRightConstants(right, expectedEnum);
+    }
+
     bool EmitExpression(const ConditionSyntaxNode &node,
                         ConditionLanguageValueType expected) {
         switch (node.kind) {
