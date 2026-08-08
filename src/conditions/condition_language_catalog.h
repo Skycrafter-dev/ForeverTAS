@@ -47,6 +47,17 @@ struct ConditionLanguageSymbol final {
     forevervalidator::experimental::PhysicsSandboxCudaConditionValue sourceValue =
             forevervalidator::experimental::PhysicsSandboxCudaConditionValue::CurrentTime;
     std::uint32_t sourceComponent = 0u;
+    std::string_view enumNamespace;
+};
+
+struct ConditionLanguageConstant final {
+    std::string_view canonicalName;
+    std::vector<std::string_view> aliases;
+    std::string_view friendlyName;
+    std::string_view enumNamespace;
+    std::string_view documentation;
+    std::string_view example;
+    double value = 0.0;
 };
 
 struct ConditionLanguageFunction final {
@@ -73,8 +84,10 @@ struct ConditionLanguageSymbolResolution final {
 };
 
 const ConditionLanguageSymbol *FindConditionSymbol(std::string_view name);
+const ConditionLanguageConstant *FindConditionConstant(std::string_view name);
 const ConditionLanguageFunction *FindConditionFunction(std::string_view name);
 const std::vector<ConditionLanguageSymbol> &GetConditionSymbols();
+const std::vector<ConditionLanguageConstant> &GetConditionConstants();
 const std::vector<ConditionLanguageFunction> &GetConditionFunctions();
 std::optional<ConditionLanguageSymbolResolution> ResolveConditionSymbol(
         std::string_view name);

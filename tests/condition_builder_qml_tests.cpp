@@ -200,6 +200,16 @@ ApplicationWindow {
     okay &= Check(symbolHoverTimer != nullptr &&
                           symbolHoverTimer->property("interval").toInt() == 350,
                   "symbol hover lost its IDE-style delay");
+    QVariant enumIcon;
+    const bool resolvedEnumIcon = completion != nullptr &&
+            QMetaObject::invokeMethod(
+                    completion,
+                    "iconLetter",
+                    Q_RETURN_ARG(QVariant, enumIcon),
+                    Q_ARG(QVariant, QVariant(QStringLiteral("enum"))));
+    okay &= Check(resolvedEnumIcon &&
+                          enumIcon.toString() == QStringLiteral("E"),
+                  "enum completion lost its compact type icon");
     okay &= Check(gateModeLabel != nullptr &&
                           gateModeLabel->property("text").toString() ==
                                   QStringLiteral("Combine enabled gates") &&
@@ -475,6 +485,69 @@ ApplicationWindow {
                         !completionNoMatches->property("visible").toBool() &&
                         !completionNoMatchesHint->property("visible").toBool(),
                 "deleting a mistyped member did not restore suggestions");
+        QMetaObject::invokeMethod(completion, "close");
+        processDeferred();
+
+        const QString surfaceComparison =
+                QStringLiteral("car.wheels.frontleft.surface = ");
+        textItem->setProperty("text", surfaceComparison);
+        textItem->setProperty("cursorPosition", surfaceComparison.size());
+        textItem->forceActiveFocus();
+        processDeferred();
+        QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+        processDeferred();
+        const QVariantList enumRoots = assistance.completions();
+        okay &= Check(
+                completion->property("visible").toBool() &&
+                        enumRoots.size() == 1 &&
+                        enumRoots.front()
+                                        .toMap()
+                                        .value(QStringLiteral("symbol"))
+                                        .toString() ==
+                                QStringLiteral("surface") &&
+                        enumRoots.front()
+                                        .toMap()
+                                        .value(QStringLiteral("kind"))
+                                        .toString() ==
+                                QStringLiteral("object"),
+                "surface comparison did not offer its typed enum namespace");
+        const bool expandedSurface = QMetaObject::invokeMethod(
+                builder, "applyCompletion", Q_ARG(QVariant, QVariant(0)));
+        processDeferred();
+        okay &= Check(
+                expandedSurface &&
+                        textItem->property("text").toString() ==
+                                surfaceComparison + QStringLiteral("surface.") &&
+                        assistance.completions().size() == 31 &&
+                        completion->property("visible").toBool(),
+                "selecting the surface namespace did not expose its values");
+        QTest::keyClick(window, Qt::Key_I);
+        processDeferred();
+        const QVariantList iceMatches = assistance.completions();
+        QQuickItem *const enumGlyph = FindVisualItem(
+                window->contentItem(),
+                QStringLiteral("conditionCompletionTypeGlyph_0"));
+        okay &= Check(
+                iceMatches.size() == 1 &&
+                        iceMatches.front()
+                                        .toMap()
+                                        .value(QStringLiteral("symbol"))
+                                        .toString() ==
+                                QStringLiteral("surface.ice") &&
+                        iceMatches.front()
+                                        .toMap()
+                                        .value(QStringLiteral("kind"))
+                                        .toString() ==
+                                QStringLiteral("enum") &&
+                        iceMatches.front()
+                                        .toMap()
+                                        .value(QStringLiteral("value"))
+                                        .toDouble() == 3.0 &&
+                        enumGlyph != nullptr &&
+                        enumGlyph->property("text").toString() ==
+                                QStringLiteral("E"),
+                "surface values were not filtered or rendered as enums");
+        CaptureIfRequested(window, "FOREVERTAS_CONDITION_ENUM_CAPTURE");
         QMetaObject::invokeMethod(completion, "close");
         processDeferred();
 

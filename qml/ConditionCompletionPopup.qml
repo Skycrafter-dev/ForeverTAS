@@ -31,6 +31,8 @@ Popup {
             return "{}"
         if (kind === "function")
             return "\u0192"
+        if (kind === "enum")
+            return "E"
         if (kind === "vector")
             return "\u2192"
         if (kind === "number")

@@ -101,6 +101,18 @@ private:
     bool EmitSymbol(const ConditionSyntaxNode &node,
                     ConditionLanguageValueType expected) {
         const std::string spelling = ConditionSyntaxName(node);
+        if (const ConditionLanguageConstant *const constant =
+                    FindConditionConstant(spelling)) {
+            if (expected == ConditionLanguageValueType::Vector ||
+                expected == ConditionLanguageValueType::ExternalName) {
+                return Fail(node.range, "expected vector expression");
+            }
+            output_->push_back(
+                    {PhysicsSandboxCudaConditionOpcode::Constant,
+                     {},
+                     constant->value});
+            return true;
+        }
         const auto resolution = ResolveConditionSymbol(spelling);
         if (!resolution) {
             return Fail(node.range,

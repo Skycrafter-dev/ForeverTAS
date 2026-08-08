@@ -463,6 +463,7 @@ bool FindCursorContext(const ConditionSyntaxNode &node,
                        std::string_view source,
                        std::size_t cursor,
                        ConditionLanguageValueType expected,
+                       std::string_view enumNamespace,
                        const ConditionLanguageFunction *function,
                        std::size_t argumentIndex,
                        ConditionCursorContext *context) {
@@ -477,6 +478,7 @@ bool FindCursorContext(const ConditionSyntaxNode &node,
                                   source,
                                   cursor,
                                   ParameterType(called, index),
+                                  {},
                                   called,
                                   index,
                                   context)) {
@@ -500,6 +502,7 @@ bool FindCursorContext(const ConditionSyntaxNode &node,
                     fragmentEnd - node.segmentRange.begin));
         }
         context->expected = expected;
+        context->enumNamespace = std::string(enumNamespace);
         context->functionName = function == nullptr
                 ? std::string{}
                 : std::string(function->canonicalName);
@@ -524,6 +527,7 @@ bool FindCursorContext(const ConditionSyntaxNode &node,
                     fragmentEnd - node.segmentRange.begin));
         }
         context->expected = expected;
+        context->enumNamespace = std::string(enumNamespace);
         context->functionName = function == nullptr
                 ? std::string{}
                 : std::string(function->canonicalName);
@@ -531,21 +535,37 @@ bool FindCursorContext(const ConditionSyntaxNode &node,
         return true;
     }
 
-    for (const auto &child : node.children) {
+    for (std::size_t childIndex = 0u;
+         childIndex < node.children.size(); ++childIndex) {
+        const auto &child = node.children[childIndex];
         ConditionLanguageValueType childExpected = expected;
+        std::string_view childEnumNamespace = enumNamespace;
         if (node.kind == ConditionSyntaxKind::Comparison ||
             node.kind == ConditionSyntaxKind::Add ||
             node.kind == ConditionSyntaxKind::Subtract ||
             node.kind == ConditionSyntaxKind::Multiply ||
             node.kind == ConditionSyntaxKind::Divide) {
             childExpected = ConditionLanguageValueType::Scalar;
+            if (node.kind == ConditionSyntaxKind::Comparison) {
+                childEnumNamespace = {};
+                if (childIndex == 1u && !node.children.empty()) {
+                    const std::string leftName =
+                            ConditionSyntaxName(*node.children.front());
+                    if (const ConditionLanguageSymbol *const leftSymbol =
+                                FindConditionSymbol(leftName)) {
+                        childEnumNamespace = leftSymbol->enumNamespace;
+                    }
+                }
+            }
         } else if (node.kind == ConditionSyntaxKind::Vector) {
             childExpected = ConditionLanguageValueType::Scalar;
+            childEnumNamespace = {};
         }
         if (FindCursorContext(*child,
                               source,
                               cursor,
                               childExpected,
+                              childEnumNamespace,
                               function,
                               argumentIndex,
                               context)) {
@@ -560,6 +580,7 @@ bool FindCursorContext(const ConditionSyntaxNode &node,
                                       : ConditionCursorSite::FunctionArgument;
         context->replacement = node.range;
         context->expected = expected;
+        context->enumNamespace = std::string(enumNamespace);
         context->functionName = function == nullptr
                 ? std::string{}
                 : std::string(function->canonicalName);
@@ -619,6 +640,7 @@ std::optional<ConditionCursorContext> AnalyzeConditionCursor(
                            source,
                            cursor,
                            ConditionLanguageValueType::Scalar,
+                           {},
                            nullptr,
                            0u,
                            &context)) {

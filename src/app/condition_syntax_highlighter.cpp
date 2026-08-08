@@ -75,6 +75,12 @@ void ConditionSyntaxHighlighter::highlightBlock(const QString &text) {
                       ForegroundFormat(functionColor_));
             continue;
         }
+        if (FindConditionConstant(name) != nullptr) {
+            setFormat(match.capturedStart(),
+                      match.capturedLength(),
+                      ForegroundFormat(numberColor_));
+            continue;
+        }
         const ConditionLanguageSymbol *const symbol =
                 FindConditionSymbol(name);
         if (symbol == nullptr) continue;

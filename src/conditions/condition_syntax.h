@@ -78,6 +78,7 @@ struct ConditionCursorContext final {
     std::string fragment;
     ConditionLanguageValueType expected =
             ConditionLanguageValueType::Unknown;
+    std::string enumNamespace;
     std::string functionName;
     std::size_t argumentIndex = 0u;
     bool automaticTrigger = false;

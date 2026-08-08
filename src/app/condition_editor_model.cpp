@@ -70,6 +70,18 @@ QString ObjectDescription(const QString &path) {
         return ConditionEditorModel::tr(
                 "Telemetry for this wheel at the current simulation tick.");
     }
+    if (path == QStringLiteral("surface")) {
+        return ConditionEditorModel::tr(
+                "Trackmania surface material constants (values 0 through 30).");
+    }
+    if (path == QStringLiteral("turbo")) {
+        return ConditionEditorModel::tr(
+                "Turbo mode constants: inactive, direct, and roulette.");
+    }
+    if (path == QStringLiteral("gear")) {
+        return ConditionEditorModel::tr(
+                "Named transmission sentinels for reverse and neutral.");
+    }
     if (path == QStringLiteral("last_improvement")) {
         return ConditionEditorModel::tr(
                 "Search state captured when the last best result appeared.");
@@ -528,6 +540,20 @@ QVariantMap ConditionEditorModel::documentationAt(int position) const {
                     std::distance(symbols.begin(), found))));
         }
     }
+    const std::vector<ConditionLanguageConstant> &constants =
+            GetConditionConstants();
+    if (const ConditionLanguageConstant *const constant =
+                FindConditionConstant(name)) {
+        const auto found = std::find_if(
+                constants.begin(), constants.end(),
+                [constant](const ConditionLanguageConstant &candidate) {
+                    return &candidate == constant;
+                });
+        if (found != constants.end()) {
+            return located(constantMap(static_cast<std::size_t>(
+                    std::distance(constants.begin(), found))));
+        }
+    }
     const std::vector<ConditionLanguageFunction> &functions =
             GetConditionFunctions();
     if (const ConditionLanguageFunction *const function =
@@ -546,12 +572,20 @@ QVariantMap ConditionEditorModel::documentationAt(int position) const {
             syntaxName.data(), static_cast<qsizetype>(syntaxName.size()));
     while (objectPath.endsWith(QLatin1Char('.'))) objectPath.chop(1);
     const QString objectPrefix = objectPath + QLatin1Char('.');
-    const bool hasChildren = std::any_of(
+    const bool hasSymbolChildren = std::any_of(
             symbols.begin(), symbols.end(),
             [&objectPrefix](const ConditionLanguageSymbol &symbol) {
                 return FromView(symbol.canonicalName).startsWith(objectPrefix);
             });
-    if (hasChildren) return located(objectMap(objectPath));
+    const bool hasConstantChildren = std::any_of(
+            constants.begin(), constants.end(),
+            [&objectPrefix](const ConditionLanguageConstant &constant) {
+                return FromView(constant.canonicalName)
+                        .startsWith(objectPrefix);
+            });
+    if (hasSymbolChildren || hasConstantChildren) {
+        return located(objectMap(objectPath));
+    }
     return {};
 }
 
@@ -611,6 +645,31 @@ QVariantMap ConditionEditorModel::symbolMap(std::size_t index) const {
              available
                      ? QString{}
                      : tr("Requires Evaluation → Target → Point target.")}};
+}
+
+QVariantMap ConditionEditorModel::constantMap(std::size_t index) const {
+    const ConditionLanguageConstant &constant =
+            GetConditionConstants().at(index);
+    const QString value = QString::number(constant.value, 'g', 15);
+    const QString enumType = FromView(constant.enumNamespace);
+    return {{QStringLiteral("category"), QStringLiteral("constant")},
+            {QStringLiteral("label"), FromView(constant.friendlyName)},
+            {QStringLiteral("symbol"), FromView(constant.canonicalName)},
+            {QStringLiteral("kind"), QStringLiteral("enum")},
+            {QStringLiteral("type"), enumType},
+            {QStringLiteral("unit"), tr("value %1").arg(value)},
+            {QStringLiteral("detail"),
+             tr("%1 enum · value %2").arg(enumType, value)},
+            {QStringLiteral("description"),
+             FromView(constant.documentation)},
+            {QStringLiteral("aliases"),
+             AliasList(constant.aliases, constant.canonicalName)},
+            {QStringLiteral("example"), FromView(constant.example)},
+            {QStringLiteral("insertText"),
+             FromView(constant.canonicalName)},
+            {QStringLiteral("value"), constant.value},
+            {QStringLiteral("available"), true},
+            {QStringLiteral("unavailableReason"), QString{}}};
 }
 
 QVariantMap ConditionEditorModel::functionMap(std::size_t index) const {
@@ -745,6 +804,11 @@ void ConditionEditorModel::analyze() {
     for (std::size_t index = 0; index < symbols.size(); ++index) {
         catalogue_.push_back(symbolMap(index));
     }
+    const std::vector<ConditionLanguageConstant> &constants =
+            GetConditionConstants();
+    for (std::size_t index = 0; index < constants.size(); ++index) {
+        catalogue_.push_back(constantMap(index));
+    }
     const std::vector<ConditionLanguageFunction> &functions =
             GetConditionFunctions();
     for (std::size_t index = 0; index < functions.size(); ++index) {
@@ -775,6 +839,9 @@ void ConditionEditorModel::updateAssistance() {
     const QString fragment = QString::fromUtf8(
             context.fragment.data(),
             static_cast<qsizetype>(context.fragment.size()));
+    const QString expectedEnum = QString::fromUtf8(
+            context.enumNamespace.data(),
+            static_cast<qsizetype>(context.enumNamespace.size()));
     const int replaceStart =
             Utf16PositionForByteOffset(source_, context.replacement.begin);
     const int replaceEnd =
@@ -799,6 +866,7 @@ void ConditionEditorModel::updateAssistance() {
                     ? QStringLiteral("external-name")
                     : QStringLiteral("expression"));
     completionContext_.insert(QStringLiteral("fragment"), fragment);
+    completionContext_.insert(QStringLiteral("enumNamespace"), expectedEnum);
     completionContext_.insert(QStringLiteral("automaticTrigger"),
                               context.automaticTrigger);
     completionContext_.insert(
@@ -852,6 +920,8 @@ void ConditionEditorModel::updateAssistance() {
 
     const std::vector<ConditionLanguageSymbol> &symbols =
             GetConditionSymbols();
+    const std::vector<ConditionLanguageConstant> &constants =
+            GetConditionConstants();
     if (externalName) {
         if (pointTarget) {
             const ConditionLanguageSymbol *const target =
@@ -880,7 +950,10 @@ void ConditionEditorModel::updateAssistance() {
         const QString parentPrefix = parentPath.isEmpty()
                 ? QString{}
                 : parentPath + QLatin1Char('.');
-        for (std::size_t index = 0; index < symbols.size(); ++index) {
+        const bool contextualEnumPath = !expectedEnum.isEmpty() &&
+                (parentPath.isEmpty() || parentPath == expectedEnum);
+        for (std::size_t index = 0;
+             index < symbols.size() && !contextualEnumPath; ++index) {
             const ConditionLanguageSymbol &symbol = symbols[index];
             if (symbol.external) continue;
             if (symbol.pointTargetOnly && !pointTarget) continue;
@@ -949,6 +1022,66 @@ void ConditionEditorModel::updateAssistance() {
                          child.size());
         }
 
+        if (!vectorArgument) {
+            for (std::size_t index = 0; index < constants.size(); ++index) {
+                const ConditionLanguageConstant &constant = constants[index];
+                const QString enumNamespace =
+                        FromView(constant.enumNamespace);
+                if (contextualEnumPath && enumNamespace != expectedEnum) {
+                    continue;
+                }
+                const QString canonical =
+                        FromView(constant.canonicalName);
+                if (!canonical.startsWith(parentPrefix)) continue;
+                const QString remaining =
+                        canonical.mid(parentPrefix.size());
+                if (remaining.isEmpty()) continue;
+                const qsizetype separator =
+                        remaining.indexOf(QLatin1Char('.'));
+                const QString child = separator < 0
+                        ? remaining : remaining.left(separator);
+                const QString childPath = parentPrefix + child;
+                if (separator >= 0) {
+                    if (addedObjects.contains(childPath)) continue;
+                    addedObjects.insert(childPath);
+                    const QString insertion = child + QLatin1Char('.');
+                    addCandidate(objectMap(childPath),
+                                 QStringLiteral("object:") + childPath,
+                                 child,
+                                 {child},
+                                 insertion,
+                                 insertion.size());
+                    continue;
+                }
+
+                QVariantMap value = constantMap(index);
+                QStringList names{child};
+                if (!memberSite) {
+                    names.push_back(canonical);
+                    names.push_back(FromView(constant.friendlyName));
+                }
+                for (const std::string_view alias : constant.aliases) {
+                    const QString aliasName = FromView(alias);
+                    if (!memberSite) {
+                        names.push_back(aliasName);
+                        continue;
+                    }
+                    if (!aliasName.startsWith(parentPrefix)) continue;
+                    const QString localAlias =
+                            aliasName.mid(parentPrefix.size());
+                    if (!localAlias.contains(QLatin1Char('.'))) {
+                        names.push_back(localAlias);
+                    }
+                }
+                addCandidate(std::move(value),
+                             QStringLiteral("constant:") + canonical,
+                             child,
+                             names,
+                             child,
+                             child.size());
+            }
+        }
+
         if (parentPath.isEmpty() && vectorArgument && pointTarget) {
             const QString insertion =
                     QStringLiteral("variable(bf_target_point)");
@@ -976,7 +1109,8 @@ void ConditionEditorModel::updateAssistance() {
                          insertion.size());
         }
 
-        if (parentPath.isEmpty() && !vectorArgument) {
+        if (parentPath.isEmpty() && !vectorArgument &&
+            !contextualEnumPath) {
             const std::vector<ConditionLanguageFunction> &functions =
                     GetConditionFunctions();
             for (std::size_t index = 0; index < functions.size(); ++index) {

@@ -72,6 +72,41 @@ bool TestCatalogueCompiles() {
                       "catalogue symbol example did not compile");
     }
 
+    const std::vector<forevertas::ConditionLanguageConstant> &constants =
+            forevertas::GetConditionConstants();
+    okay &= Check(constants.size() == 38u,
+                  "typed constant catalogue lost an enum value");
+    for (const forevertas::ConditionLanguageConstant &constant : constants) {
+        okay &= Check(!constant.canonicalName.empty() &&
+                              !constant.enumNamespace.empty() &&
+                              !constant.documentation.empty() &&
+                              !constant.example.empty(),
+                      "catalogue constant is missing typed metadata");
+        for (const std::string_view alias : constant.aliases) {
+            const auto result = forevertas::CompileConditionScript(
+                    std::string(alias) + " = " +
+                    std::to_string(constant.value), variables);
+            if (result.error) std::cerr << *result.error << '\n';
+            okay &= Check(result.program.has_value() && !result.error,
+                          "catalogue constant alias did not compile");
+        }
+        const auto example = forevertas::CompileConditionScript(
+                std::string(constant.example), variables);
+        if (example.error) std::cerr << *example.error << '\n';
+        okay &= Check(example.program.has_value() && !example.error,
+                      "catalogue constant example did not compile");
+    }
+    const auto *const ice =
+            forevertas::FindConditionConstant("SURFACE.ICE");
+    const auto *const roulette =
+            forevertas::FindConditionConstant("turbo.roulette");
+    const auto *const reverse =
+            forevertas::FindConditionConstant("gear.reverse");
+    okay &= Check(ice != nullptr && ice->value == 3.0 &&
+                          roulette != nullptr && roulette->value == 2.0 &&
+                          reverse != nullptr && reverse->value == -1.0,
+                  "typed constants do not match runtime enum values");
+
     for (const forevertas::ConditionLanguageFunction &function :
          forevertas::GetConditionFunctions()) {
         okay &= Check(!function.signature.empty() &&
@@ -92,7 +127,7 @@ bool TestCatalogueCompiles() {
                       "catalogue function example did not compile");
     }
 
-    std::string uppercase = "CAR.SPEED = 0";
+    std::string uppercase = "CAR.WHEELS.FRONTLEFT.SURFACE = SURFACE.ICE";
     const auto caseInsensitive =
             forevertas::CompileConditionScript(uppercase, variables);
     okay &= Check(caseInsensitive.program.has_value() &&
@@ -203,6 +238,15 @@ bool TestGateModesAndDisabledLines() {
             " // iterations = 1\n\t// iterations = 2");
     okay &= Check(!allDisabled.program && !allDisabled.error,
                   "a script with only disabled gates was not empty");
+    const auto enumConstants = forevertas::CompileConditionScript(
+            "car.wheels.frontleft.surface = surface.concrete\n"
+            "car.turbo_type = turbo.inactive\n"
+            "car.freewheel = false\n"
+            "car.gear = gear.neutral");
+    okay &= Check(
+            enumConstants.program &&
+                    enumConstants.program->Evaluate(state, state, context),
+            "typed constants did not evaluate to their runtime values");
     return okay;
 }
 
@@ -252,6 +296,16 @@ bool TestParserOwnedCursorContexts() {
                           vectorArgument->functionName == "distance" &&
                           vectorArgument->argumentIndex == 1u,
                   "AST did not retain the active typed function argument");
+
+    const std::string surfaceComparison =
+            "car.wheels.frontleft.surface = ";
+    const auto surfaceValue = forevertas::AnalyzeConditionCursor(
+            surfaceComparison, surfaceComparison.size());
+    okay &= Check(surfaceValue &&
+                          surfaceValue->enumNamespace == "surface" &&
+                          surfaceValue->expected ==
+                                  forevertas::ConditionLanguageValueType::Scalar,
+                  "AST did not infer the surface enum on the comparison RHS");
 
     const std::string emptyFunction = "kmh()";
     const auto emptyFunctionArgument = forevertas::AnalyzeConditionCursor(

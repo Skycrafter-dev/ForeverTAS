@@ -119,6 +119,21 @@ bool TestAnalysis() {
                     functionDocumentation.value(QStringLiteral("length"))
                                     .toInt() == 3,
             "function hover documentation lost its signature, type, or range");
+    model.setSource(QStringLiteral(
+            "car.wheels.frontleft.surface = surface.ice"));
+    const int icePosition = model.source().indexOf(QStringLiteral("ice"));
+    const QVariantMap constantDocumentation =
+            model.documentationAt(icePosition + 1);
+    okay &= Check(
+            constantDocumentation.value(QStringLiteral("symbol")).toString() ==
+                            QStringLiteral("surface.ice") &&
+                    constantDocumentation.value(QStringLiteral("kind"))
+                                    .toString() == QStringLiteral("enum") &&
+                    constantDocumentation.value(QStringLiteral("type"))
+                                    .toString() == QStringLiteral("surface") &&
+                    constantDocumentation.value(QStringLiteral("value"))
+                                    .toDouble() == 3.0,
+            "enum hover lost its definition, type, or numeric value");
     return okay;
 }
 
@@ -217,6 +232,47 @@ bool TestCompletionAndHints() {
                                     .value(QStringLiteral("fragment"))
                                     .toString() == QStringLiteral("g"),
             "deep member completion stopped filtering the active segment");
+
+    const QString surfaceComparison =
+            QStringLiteral("car.wheels.frontleft.surface = ");
+    model.updateDocumentState(surfaceComparison, surfaceComparison.size());
+    const QVariantMap surfaceObject =
+            FindBySymbol(model.completions(), QStringLiteral("surface"));
+    okay &= Check(
+            model.completions().size() == 1 &&
+                    surfaceObject.value(QStringLiteral("isContainer"))
+                            .toBool() &&
+                    model.completionContext()
+                                    .value(QStringLiteral("enumNamespace"))
+                                    .toString() == QStringLiteral("surface"),
+            "surface comparison did not offer its typed enum namespace");
+    const QVariantMap expandedSurface = model.acceptCompletion(
+            surfaceObject.value(QStringLiteral("completionId")).toString(),
+            surfaceObject.value(QStringLiteral("revision")).toULongLong());
+    const QVariantMap ice = FindBySymbol(
+            model.completions(), QStringLiteral("surface.ice"));
+    okay &= Check(
+            expandedSurface.value(QStringLiteral("accepted")).toBool() &&
+                    expandedSurface.value(QStringLiteral("source")).toString() ==
+                            surfaceComparison + QStringLiteral("surface.") &&
+                    model.completions().size() == 31 &&
+                    ice.value(QStringLiteral("kind")).toString() ==
+                            QStringLiteral("enum") &&
+                    ice.value(QStringLiteral("value")).toDouble() == 3.0 &&
+                    ice.value(QStringLiteral("insertText")).toString() ==
+                            QStringLiteral("ice"),
+            "surface enum did not expand to its 31 direct values");
+
+    const QString booleanComparison =
+            QStringLiteral("car.freewheel = ");
+    model.updateDocumentState(booleanComparison, booleanComparison.size());
+    okay &= Check(
+            model.completions().size() == 2 &&
+                    !FindBySymbol(model.completions(), QStringLiteral("true"))
+                             .isEmpty() &&
+                    !FindBySymbol(model.completions(), QStringLiteral("false"))
+                             .isEmpty(),
+            "boolean comparison did not offer true and false constants");
 
     model.setSource(QStringLiteral("km"));
     model.setCursorPosition(2);
@@ -340,6 +396,8 @@ bool TestCatalogueAvailability() {
             FindBySymbol(model.catalogue(), QStringLiteral("car.speed"));
     const QVariantMap kmh =
             FindBySymbol(model.catalogue(), QStringLiteral("kmh"));
+    const QVariantMap ice =
+            FindBySymbol(model.catalogue(), QStringLiteral("surface.ice"));
     QVariantMap target =
             FindBySymbol(model.catalogue(), QStringLiteral("bf_target_point"));
     QVariantMap variableFunction =
@@ -350,7 +408,12 @@ bool TestCatalogueAvailability() {
                     speed.value(QStringLiteral("type")).toString() ==
                             QStringLiteral("number") &&
                     kmh.value(QStringLiteral("signature")).toString() ==
-                            QStringLiteral("kmh(number)"),
+                            QStringLiteral("kmh(number)") &&
+                    ice.value(QStringLiteral("kind")).toString() ==
+                            QStringLiteral("enum") &&
+                    ice.value(QStringLiteral("type")).toString() ==
+                            QStringLiteral("surface") &&
+                    ice.value(QStringLiteral("value")).toDouble() == 3.0,
             "catalogue exposed internal scalar terminology");
     okay &=
             Check(!target.isEmpty() &&
@@ -406,8 +469,8 @@ bool TestHighlighting() {
     const QColor op(QStringLiteral("#aabbcc"));
     const QColor error(QStringLiteral("#ee3344"));
     highlighter.setPalette(symbol, previous, function, number, op, error);
-    const QString source =
-            QStringLiteral("car.prev.speed + kmh(car.speed) >= 12");
+    const QString source = QStringLiteral(
+            "car.prev.speed + kmh(car.speed) >= surface.ice");
     document.setPlainText(source);
     highlighter.setDiagnostics({{0, 0, 3}});
     highlighter.rehighlight();
@@ -421,7 +484,7 @@ bool TestHighlighting() {
     const QTextCharFormat operatorFormat =
             FormatAt(block, source.indexOf(QStringLiteral(">=")));
     const QTextCharFormat numberFormat =
-            FormatAt(block, source.indexOf(QStringLiteral("12")));
+            FormatAt(block, source.indexOf(QStringLiteral("surface.ice")));
     bool okay = Check(
             previousFormat.foreground().color() == previous &&
                     previousFormat.underlineStyle() ==
@@ -435,7 +498,7 @@ bool TestHighlighting() {
     okay &= Check(operatorFormat.foreground().color() == op,
                   "operator syntax color is missing");
     okay &= Check(numberFormat.foreground().color() == number,
-                  "number syntax color is missing");
+                  "numeric constant syntax color is missing");
     document.setPlainText(QStringLiteral("// car.speed >= 12"));
     highlighter.rehighlight();
     const QTextCharFormat disabledFormat = FormatAt(document.firstBlock(), 0);

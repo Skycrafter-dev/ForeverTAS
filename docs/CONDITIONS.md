@@ -30,7 +30,8 @@ the run or extend the horizon.
 - Use the segmented **AND | OR** control above the editor to change how enabled
   lines are combined.
 - Completion uses familiar IDE-style badges: `{}` for an object namespace,
-  `ƒ` for a function, `#` for a number, and `→` for a vector. Point-target
+  `ƒ` for a function, `E` for an enum constant, `#` for a number, and `→`
+  for a vector. Point-target
   values keep their actual vector type instead of inventing a separate target
   type. The pane on the right explains the selected item.
 - Invalid lines are highlighted red in the editor and retain a red wave
@@ -104,6 +105,50 @@ following objects are available:
 | `car.wheels.<wheel>.groundcontact` | Wheel has ground contact (`0` or `1`) | - |
 | `car.wheels.<wheel>.is` | Wheel is sliding (`0` or `1`) | `car.wheels.<wheel>.is_sliding` |
 | `car.wheels.<wheel>.surface` | Surface-type identifier under the wheel | - |
+
+## Typed constants
+
+Named constants remove the need to remember raw runtime IDs. Completion uses
+the left side of a comparison to offer the relevant family: surface fields
+offer `surface`, turbo type offers `turbo`, gear offers `gear`, and boolean
+fields offer `true` / `false` directly. Constants remain numeric scalar values,
+so existing scripts that use numbers continue to work unchanged.
+
+| Family | Constants |
+|---|---|
+| Boolean | `false = 0`, `true = 1` |
+| Gear sentinels | `gear.reverse = -1`, `gear.neutral = 0` |
+| Turbo mode | `turbo.inactive = 0`, `turbo.direct = 1`, `turbo.roulette = 2` |
+
+Surface material constants match the runtime `EPlugSurfaceMaterialId` values:
+
+| Value | Constant | Value | Constant |
+|---:|---|---:|---|
+| 0 | `surface.concrete` | 16 | `surface.asphalt` |
+| 1 | `surface.pavement` | 17 | `surface.wet_dirt_road` |
+| 2 | `surface.grass` | 18 | `surface.wet_asphalt` |
+| 3 | `surface.ice` | 19 | `surface.wet_pavement` |
+| 4 | `surface.metal` | 20 | `surface.wet_grass` |
+| 5 | `surface.sand` | 21 | `surface.snow` |
+| 6 | `surface.dirt` | 22 | `surface.resonant_metal` |
+| 7 | `surface.turbo` | 23 | `surface.golf_ball` |
+| 8 | `surface.dirt_road` | 24 | `surface.golf_wall` |
+| 9 | `surface.rubber` | 25 | `surface.golf_ground` |
+| 10 | `surface.sliding_rubber` | 26 | `surface.turbo2` |
+| 11 | `surface.test` | 27 | `surface.bumper` |
+| 12 | `surface.rock` | 28 | `surface.not_collidable` |
+| 13 | `surface.water` | 29 | `surface.free_wheeling` |
+| 14 | `surface.wood` | 30 | `surface.turbo_roulette` |
+| 15 | `surface.danger` |  |  |
+
+Examples:
+
+```text
+car.wheels.frontleft.surface = surface.ice
+car.turbo_type = turbo.roulette
+car.freewheel = true
+car.gear = gear.reverse
+```
 
 ## Vector objects
 

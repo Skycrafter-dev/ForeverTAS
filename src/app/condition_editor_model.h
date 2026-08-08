@@ -88,6 +88,7 @@ private:
     void analyze();
     void updateAssistance();
     QVariantMap symbolMap(std::size_t index) const;
+    QVariantMap constantMap(std::size_t index) const;
     QVariantMap functionMap(std::size_t index) const;
     QVariantMap objectMap(const QString &path) const;
 
