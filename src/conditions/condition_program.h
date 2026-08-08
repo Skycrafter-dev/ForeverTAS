@@ -5,8 +5,11 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <forevervalidator/experimental/physics_sandbox.h>
+
+#include "conditions/condition_language_catalog.h"
 
 namespace forevertas {
 
@@ -26,6 +29,15 @@ struct ConditionExecutionContext {
     double currentTimeSeconds = 0.0;
 };
 
+struct ConditionDiagnostic {
+    std::uint32_t line = 0u;
+    std::uint32_t column = 1u;
+    std::uint32_t length = 1u;
+    std::string message;
+};
+
+enum class ConditionGateMode { All, Any };
+
 class ConditionProgram {
 public:
     bool Evaluate(
@@ -42,11 +54,13 @@ public:
 struct ConditionCompileResult {
     std::optional<ConditionProgram> program;
     std::optional<std::string> error;
+    std::vector<ConditionDiagnostic> diagnostics;
 };
 
 ConditionCompileResult CompileConditionScript(
         const std::string &source,
-        const ConditionVariables &variables = {});
+        const ConditionVariables &variables = {},
+        ConditionGateMode gateMode = ConditionGateMode::All);
 
 }  // namespace forevertas
 

@@ -1040,13 +1040,31 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     okay &= Check(controller.canStart() &&
                           QSettings().value(QStringLiteral(
                                   "search/conditionScript")) ==
-                                  QStringLiteral("iterations > 0"),
+                                  QStringLiteral("iterations > 0") &&
+                          controller.conditionEditor() != nullptr &&
+                          controller.conditionEditor()->source() ==
+                                  QStringLiteral("iterations > 0") &&
+                          controller.conditionEditor()->valid() &&
+                           controller.conditionEditor()->gateCount() == 1,
                   "valid condition script was not accepted and persisted");
+    okay &= Check(controller.conditionGateMode() == QStringLiteral("and"),
+                  "condition gate mode did not default to AND");
+    controller.setConditionGateMode(QStringLiteral("or"));
+    okay &= Check(controller.conditionGateMode() == QStringLiteral("or") &&
+                          controller.conditionEditor()->gateMode() ==
+                                  QStringLiteral("or") &&
+                          QSettings().value(QStringLiteral(
+                                  "search/conditionGateMode")) ==
+                                  QStringLiteral("or"),
+                  "OR gate mode was not applied and persisted");
     controller.setConditionScript(QStringLiteral(
             "not_a_condition_variable = 1"));
     okay &= Check(!controller.canStart() &&
                           controller.validationMessage().contains(
-                                  QStringLiteral("Condition line 1")),
+                                  QStringLiteral("Condition line 1")) &&
+                          !controller.conditionEditor()->valid() &&
+                          controller.conditionEditor()->diagnostics().size() ==
+                                  1,
                   "invalid condition script did not disable Start");
     controller.setConditionScript({});
     okay &= Check(controller.canStart(),
