@@ -134,6 +134,10 @@ ApplicationWindow {
             QStringLiteral("conditionScriptTextArea"));
     QObject *const completion = root->findChild<QObject *>(
             QStringLiteral("conditionCompletionPopup"));
+    QObject *const completionNoMatches = root->findChild<QObject *>(
+            QStringLiteral("conditionCompletionNoMatches"));
+    QObject *const completionNoMatchesHint = root->findChild<QObject *>(
+            QStringLiteral("conditionCompletionNoMatchesHint"));
     QObject *const symbolHover = root->findChild<QObject *>(
             QStringLiteral("conditionSymbolHoverPopup"));
     QObject *const symbolHoverTimer = root->findChild<QObject *>(
@@ -165,6 +169,9 @@ ApplicationWindow {
     reportMissing(builder, "qmlTestConditionBuilder");
     reportMissing(textArea, "conditionScriptTextArea");
     reportMissing(completion, "conditionCompletionPopup");
+    reportMissing(completionNoMatches, "conditionCompletionNoMatches");
+    reportMissing(completionNoMatchesHint,
+                  "conditionCompletionNoMatchesHint");
     reportMissing(symbolHover, "conditionSymbolHoverPopup");
     reportMissing(symbolHoverTimer, "conditionSymbolHoverTimer");
     reportMissing(gateModeLabel, "conditionGateModeLabel");
@@ -177,7 +184,10 @@ ApplicationWindow {
     reportMissing(editorFrame, "conditionEditorFrame");
     reportMissing(gateRail, "conditionGateRail");
     okay &= Check(builder != nullptr && textArea != nullptr &&
-                          completion != nullptr && symbolHover != nullptr &&
+                          completion != nullptr &&
+                          completionNoMatches != nullptr &&
+                          completionNoMatchesHint != nullptr &&
+                          symbolHover != nullptr &&
                           symbolHoverTimer != nullptr &&
                           gateModeLabel != nullptr &&
                           gateModeGroup != nullptr &&
@@ -423,6 +433,48 @@ ApplicationWindow {
                         assistance.source() ==
                                 QStringLiteral("kmh(car.speed)"),
                 "picker completion removed the auto-paired right parenthesis");
+        QMetaObject::invokeMethod(completion, "close");
+        processDeferred();
+
+        const QString deepMemberPrefix =
+                QStringLiteral("car.wheels.frontleft.");
+        textItem->setProperty("text", deepMemberPrefix);
+        textItem->setProperty("cursorPosition", deepMemberPrefix.size());
+        textItem->forceActiveFocus();
+        processDeferred();
+        QTest::keyClick(window, Qt::Key_Space, Qt::ControlModifier);
+        processDeferred();
+        QTest::keyClick(window, Qt::Key_G);
+        processDeferred();
+        const QVariantList deepMatches = assistance.completions();
+        okay &= Check(
+                completion->property("visible").toBool() &&
+                        deepMatches.size() == 1 &&
+                        deepMatches.front()
+                                        .toMap()
+                                        .value(QStringLiteral("symbol"))
+                                        .toString() ==
+                                QStringLiteral(
+                                        "car.wheels.frontleft.groundcontact"),
+                "deep completion did not filter by its active member segment");
+        QTest::keyClick(window, Qt::Key_X);
+        processDeferred();
+        okay &= Check(
+                assistance.completions().isEmpty() &&
+                        completion->property("visible").toBool() &&
+                        completion->property("currentIndex").toInt() == -1 &&
+                        completionNoMatches->property("visible").toBool() &&
+                        completionNoMatchesHint->property("visible").toBool(),
+                "zero matches closed the active completion session");
+        QTest::keyClick(window, Qt::Key_Backspace);
+        processDeferred();
+        okay &= Check(
+                assistance.completions().size() == 1 &&
+                        completion->property("visible").toBool() &&
+                        completion->property("currentIndex").toInt() == 0 &&
+                        !completionNoMatches->property("visible").toBool() &&
+                        !completionNoMatchesHint->property("visible").toBool(),
+                "deleting a mistyped member did not restore suggestions");
         QMetaObject::invokeMethod(completion, "close");
         processDeferred();
 

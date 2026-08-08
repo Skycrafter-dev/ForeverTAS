@@ -202,6 +202,22 @@ bool TestCompletionAndHints() {
                           model.source() == QStringLiteral("car.speed"),
                   "member completion left a random suffix in the document");
 
+    const QString deepMember = QStringLiteral("car.wheels.frontleft.g");
+    model.updateDocumentState(deepMember, deepMember.size());
+    const QVariantMap groundContact = FindBySymbol(
+            model.completions(),
+            QStringLiteral("car.wheels.frontleft.groundcontact"));
+    okay &= Check(
+            model.completions().size() == 1 && !groundContact.isEmpty() &&
+                    model.completionContext()
+                                    .value(QStringLiteral("symbol"))
+                                    .toString() ==
+                            QStringLiteral("car.wheels.frontleft") &&
+                    model.completionContext()
+                                    .value(QStringLiteral("fragment"))
+                                    .toString() == QStringLiteral("g"),
+            "deep member completion stopped filtering the active segment");
+
     model.setSource(QStringLiteral("km"));
     model.setCursorPosition(2);
     const QVariantMap kmh =

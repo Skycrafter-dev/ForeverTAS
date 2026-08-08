@@ -99,6 +99,18 @@ int MatchScore(const QString &query, const QStringList &values) {
     return best;
 }
 
+int MemberMatchScore(const QString &query, const QStringList &identifiers) {
+    if (query.isEmpty()) return 0;
+    const QString folded = query.toCaseFolded();
+    int best = std::numeric_limits<int>::max();
+    for (const QString &identifier : identifiers) {
+        const QString candidate = identifier.toCaseFolded();
+        if (candidate == folded) best = std::min(best, 0);
+        else if (candidate.startsWith(folded)) best = std::min(best, 10);
+    }
+    return best;
+}
+
 QString FunctionInsertion(const ConditionLanguageFunction &function) {
     return FromView(function.canonicalName) + QStringLiteral("()");
 }
@@ -771,6 +783,7 @@ void ConditionEditorModel::updateAssistance() {
             ConditionLanguageValueType::ExternalName;
     const bool vectorArgument = context.expected ==
             ConditionLanguageValueType::Vector;
+    const bool memberSite = context.site == ConditionCursorSite::Member;
     const bool pointTarget = evaluationTargetId_ ==
             QLatin1String(kPointTargetEvaluationId);
 
@@ -821,7 +834,9 @@ void ConditionEditorModel::updateAssistance() {
                                   const QStringList &searchValues,
                                   const QString &insertText,
                                   int cursorOffset) {
-        const int score = MatchScore(fragment, searchValues);
+        const int score = memberSite
+                ? MemberMatchScore(fragment, searchValues)
+                : MatchScore(fragment, searchValues);
         if (score == std::numeric_limits<int>::max()) return;
         value.insert(QStringLiteral("completionId"), completionId);
         value.insert(QStringLiteral("revision"),
@@ -892,24 +907,39 @@ void ConditionEditorModel::updateAssistance() {
                 if (addedObjects.contains(childPath)) continue;
                 addedObjects.insert(childPath);
                 const QString insertion = child + QLatin1Char('.');
+                QStringList names{child};
+                if (!memberSite) {
+                    names.push_back(childPath);
+                    names.push_back(ObjectDescription(childPath));
+                }
                 addCandidate(objectMap(childPath),
                              QStringLiteral("object:") + childPath,
                              child,
-                             {child,
-                              childPath,
-                              ObjectDescription(childPath)},
+                             names,
                              insertion,
                              insertion.size());
                 continue;
             }
 
             QVariantMap value = symbolMap(index);
-            QStringList names{child,
-                              canonical,
-                              FromView(symbol.friendlyName),
-                              FromView(symbol.detail)};
+            QStringList names{child};
+            if (!memberSite) {
+                names.push_back(canonical);
+                names.push_back(FromView(symbol.friendlyName));
+                names.push_back(FromView(symbol.detail));
+            }
             for (const std::string_view alias : symbol.aliases) {
-                names.push_back(FromView(alias));
+                const QString aliasName = FromView(alias);
+                if (!memberSite) {
+                    names.push_back(aliasName);
+                    continue;
+                }
+                if (!aliasName.startsWith(parentPrefix)) continue;
+                const QString localAlias =
+                        aliasName.mid(parentPrefix.size());
+                if (!localAlias.contains(QLatin1Char('.'))) {
+                    names.push_back(localAlias);
+                }
             }
             addCandidate(std::move(value),
                          QStringLiteral("symbol:") + canonical,

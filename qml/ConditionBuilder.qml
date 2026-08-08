@@ -73,12 +73,19 @@ ColumnLayout {
 
     function openCompletion(explicitRequest) {
         clearSymbolHover()
-        if (running || conditionScriptArea.inputMethodComposing
-                || assistance.completions.length === 0) {
+        if (running || conditionScriptArea.inputMethodComposing) {
+            completionPopup.close()
+            return
+        }
+        const preserveEmptySession = completionPopup.visible
+                || explicitRequest
+        if (assistance.completions.length === 0
+                && !preserveEmptySession) {
             completionPopup.close()
             return
         }
         if (!explicitRequest
+                && !completionPopup.visible
                 && root.assistance.completionContext.automaticTrigger
                 !== true)
             return

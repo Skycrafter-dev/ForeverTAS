@@ -155,6 +155,22 @@ Popup {
                     policy: ScrollBar.AsNeeded
                 }
 
+                Label {
+                    id: noMatchesLabel
+
+                    objectName: "conditionCompletionNoMatches"
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    visible: root.suggestions.length === 0
+                    text: qsTr("No matching symbols")
+                    color: AppTheme.textMuted
+                    font.family: "monospace"
+                    font.pixelSize: 10
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                    wrapMode: Text.WordWrap
+                }
+
                 delegate: ThemedItemDelegate {
                     id: suggestionDelegate
                     required property int index
@@ -262,6 +278,18 @@ Popup {
                     policy: ScrollBar.AsNeeded
                 }
 
+                Label {
+                    objectName: "conditionCompletionNoMatchesHint"
+                    x: 8
+                    y: 8
+                    width: documentationFlickable.width - 16
+                    visible: root.suggestions.length === 0
+                    text: qsTr("Delete a character to restore suggestions.")
+                    color: AppTheme.textMuted
+                    font.pixelSize: 10
+                    wrapMode: Text.WordWrap
+                }
+
                 ColumnLayout {
                     id: documentationColumn
 
@@ -270,6 +298,7 @@ Popup {
                     width: documentationFlickable.width - 16
                     spacing: 6
                     objectName: "conditionCompletionDocumentationContent"
+                    visible: root.suggestions.length > 0
 
                     Label {
                         Layout.fillWidth: true
