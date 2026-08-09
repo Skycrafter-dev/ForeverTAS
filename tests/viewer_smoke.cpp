@@ -59,6 +59,10 @@ std::vector<forevertas::SearchTimelineFrame> SyntheticSearchTimeline() {
                 tick >= 1000
                         ? std::optional<std::uint32_t>(9995u)
                         : std::nullopt});
+        frames.back().linearSpeedX = 3.0f;
+        frames.back().linearSpeedY = 4.0f;
+        frames.back().linearSpeedZ = 12.0f;
+        frames.back().signedSpeed = -7.0f;
     }
     return frames;
 }
@@ -297,6 +301,7 @@ int main(int argc, char **argv) {
     bool trajectoryPreviewValid = false;
     bool improvementTrajectoriesValid = false;
     bool cameraPresetsValid = false;
+    bool telemetrySpeedValid = false;
     QVector3D manualInitialPosition;
     QVector3D manualInitialCameraPosition;
     QObject::connect(
@@ -1390,6 +1395,17 @@ int main(int argc, char **argv) {
                         return;
                     }
                     verificationStarted = true;
+                    const QString telemetryRun = viewer.selectedRunId();
+                    const qint64 telemetryTick = viewer.currentTick();
+                    viewer.setSelectedRunId(QStringLiteral("best"));
+                    viewer.setCurrentTick(0);
+                    telemetrySpeedValid =
+                            viewer.renderTelemetry(
+                                    QStringLiteral(
+                                            "{car.speed:2} {car.speedKph:2}"),
+                                    {}) == QStringLiteral("13.00 46.80");
+                    viewer.setSelectedRunId(telemetryRun);
+                    viewer.setCurrentTick(telemetryTick);
                     const QVector2D clipPlanes = viewer.cameraClipPlanes(
                             viewer.carPosition() + QVector3D(0.0f, 0.0f, 38.0f),
                             38.0);
@@ -1840,6 +1856,7 @@ int main(int argc, char **argv) {
                                             viewer.currentTick() == 0;
                                     completed = true;
                                     exitCode = sceneValid &&
+                                                    telemetrySpeedValid &&
                                                     playbackAdvanced &&
                                                     endPaused &&
                                                     restartedFromEnd &&

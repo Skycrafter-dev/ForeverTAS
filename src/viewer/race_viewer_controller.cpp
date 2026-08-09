@@ -117,9 +117,9 @@ std::optional<TelemetryValue> ResolveTelemetryValue(
     if (name == QStringLiteral("car.velocity.z"))
         return number(frame.linearSpeed.z());
     if (name == QStringLiteral("car.speed"))
-        return number(frame.signedSpeed);
+        return number(frame.linearSpeed.length());
     if (name == QStringLiteral("car.speedKph"))
-        return number(frame.signedSpeed * 3.6);
+        return number(frame.linearSpeed.length() * 3.6);
     if (name == QStringLiteral("input.accelerate"))
         return number(frame.accelerate);
     if (name == QStringLiteral("input.brake"))
