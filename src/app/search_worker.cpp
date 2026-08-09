@@ -246,6 +246,18 @@ void SearchWorker::run() {
     control.cudaBatchSizeChanged = [this](std::uint32_t batchSize) {
         emit cudaBatchSizeChanged(batchSize);
     };
+    control.statisticsChanged =
+            [this, throughput = RollingThroughput()](
+                    const SearchStatisticsUpdate &statistics) mutable {
+                emit metricsChanged(
+                        FormatCompactNumber(
+                                static_cast<double>(statistics.iterations)),
+                        IterationsPerSecond(
+                                throughput.Observe(
+                                        statistics.iterations,
+                                        statistics.elapsed)),
+                        RoundedDuration(statistics.elapsed));
+            };
     const auto publishedTrajectoryNumber =
             std::make_shared<std::atomic_uint64_t>(0u);
     const auto publishImprovement =
@@ -276,8 +288,7 @@ void SearchWorker::run() {
                            latestSource = SearchWinnerSource::Baseline,
                            latestIteration =
                                    std::optional<std::uint64_t>{},
-                           publishImprovement,
-                           throughput = RollingThroughput()](
+                           publishImprovement](
                                   const SearchLiveUpdate &live) mutable {
         if (latestInputsText.isEmpty() ||
             latestSource != live.winnerSource ||
@@ -287,11 +298,6 @@ void SearchWorker::run() {
             latestSource = live.winnerSource;
             latestIteration = live.winningIterationIndex;
         }
-        emit metricsChanged(
-                FormatCompactNumber(static_cast<double>(live.iterations)),
-                IterationsPerSecond(
-                        throughput.Observe(live.iterations, live.elapsed)),
-                RoundedDuration(live.elapsed));
         publishImprovement(live, PhysicsBackendId(request_.backend));
         emit bestChanged(
                 FormatLive(live, QStringLiteral("Current best")),

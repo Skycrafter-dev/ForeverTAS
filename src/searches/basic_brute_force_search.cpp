@@ -383,7 +383,13 @@ void ReportLive(
         std::chrono::steady_clock::duration elapsed,
         const std::optional<std::chrono::steady_clock::duration>
                 &lastImprovementElapsed) {
-    if (control == nullptr || !control->liveChanged || !best.evaluation) {
+    if (control == nullptr) {
+        return;
+    }
+    if (control->statisticsChanged) {
+        control->statisticsChanged({iterations, elapsed});
+    }
+    if (!control->liveChanged || !best.evaluation) {
         return;
     }
     control->liveChanged({

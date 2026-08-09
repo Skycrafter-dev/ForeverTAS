@@ -716,6 +716,7 @@ BuildBaselineOrThrow(
 }
 
 struct CpuWorkerState {
+    std::optional<SearchStatisticsUpdate> statistics;
     std::optional<SearchLiveUpdate> live;
     std::optional<SearchResult> result;
     std::exception_ptr failure;
@@ -932,6 +933,14 @@ SearchResult RunMultiThreadedCpuSearch(
                             };
                     workerControl.progressChanged = {};
                     workerControl.cudaBatchSizeChanged = {};
+                    workerControl.statisticsChanged =
+                            [&, workerIndex](
+                                    const SearchStatisticsUpdate &statistics) {
+                                std::lock_guard<std::mutex> guard(stateMutex);
+                                states[workerIndex].statistics = statistics;
+                                ++revision;
+                                stateChanged.notify_one();
+                            };
                     workerControl.liveChanged =
                             [&, workerIndex](
                                     const SearchLiveUpdate &live) {
@@ -1035,6 +1044,8 @@ SearchResult RunMultiThreadedCpuSearch(
             std::chrono::milliseconds(100);
     try {
         while (completedWorkers < workerCount) {
+            std::vector<std::optional<SearchStatisticsUpdate>>
+                    statisticsUpdates;
             std::vector<std::optional<SearchLiveUpdate>> liveUpdates;
             {
                 std::unique_lock<std::mutex> lock(stateMutex);
@@ -1052,13 +1063,31 @@ SearchResult RunMultiThreadedCpuSearch(
                 }
                 publishedRevision = revision;
                 completedWorkers = finishedWorkerCount;
+                statisticsUpdates.reserve(states.size());
                 liveUpdates.reserve(states.size());
                 for (const CpuWorkerState &state : states) {
+                    statisticsUpdates.push_back(state.statistics);
                     liveUpdates.push_back(state.live);
                 }
                 nextReduction =
                         std::chrono::steady_clock::now() +
                         std::chrono::milliseconds(100);
+            }
+
+            std::uint64_t statisticsIterations = 0u;
+            bool haveStatistics = false;
+            for (const auto &statistics : statisticsUpdates) {
+                if (!statistics) {
+                    continue;
+                }
+                haveStatistics = true;
+                statisticsIterations += statistics->iterations;
+            }
+            if (haveStatistics && control != nullptr &&
+                control->statisticsChanged) {
+                control->statisticsChanged({
+                        statisticsIterations,
+                        std::chrono::steady_clock::now() - started});
             }
 
             std::optional<SearchLiveUpdate> candidate;

@@ -1926,6 +1926,62 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
     return okay;
 }
 
+bool TestMetricsWhenConditionExcludesBaseline(
+        const QString &packsDirectory,
+        const QString &replayPath) {
+    QSettings().clear();
+    SearchController controller;
+    SetValidPaths(controller, packsDirectory, replayPath);
+    controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
+    controller.setModifierPassSetting(
+            0,
+            QStringLiteral("minTimeMs"),
+            QStringLiteral("0"));
+    controller.setModifierPassSetting(
+            0,
+            QStringLiteral("maxTimeMs"),
+            QStringLiteral("20"));
+    controller.setEvaluationTargetSetting(
+            QStringLiteral("minTimeMs"),
+            QStringLiteral("0"));
+    controller.setEvaluationTargetSetting(
+            QStringLiteral("maxTimeMs"),
+            QStringLiteral("20"));
+    controller.setConditionScript(
+            QStringLiteral("iterations > 1000000000000"));
+    if (!Check(controller.canStart(),
+               "baseline-excluding condition did not enable search")) {
+        return false;
+    }
+
+    controller.startSearch();
+    bool okay = Check(
+            WaitUntil(
+                    [&controller]() {
+                        return controller.running() &&
+                                controller.statusText() ==
+                                        QStringLiteral("Searching...") &&
+                                controller.liveMetricsVisible() &&
+                                !controller.iterationCountText().isEmpty() &&
+                                controller.iterationCountText() !=
+                                        QStringLiteral("0.00") &&
+                                !controller.throughputText().isEmpty() &&
+                                !controller.elapsedText().isEmpty() &&
+                                controller.resultText().isEmpty() &&
+                                controller.bestInputsText().isEmpty();
+                    },
+                    30000),
+            "live metrics stayed hidden while the condition excluded all "
+            "current candidates");
+
+    controller.stopSearch();
+    okay &= Check(
+            WaitUntil([&controller]() { return !controller.running(); },
+                      30000),
+            "baseline-excluding metrics test did not stop cleanly");
+    return okay;
+}
+
 bool TestAutomaticPacksDetection() {
     QSettings().clear();
     QTemporaryDir root;
@@ -2022,9 +2078,10 @@ int main(int argc, char **argv) {
             TestLegacyMigration();
     if (okay && argc == 4 &&
         QString::fromLocal8Bit(argv[1]) == QStringLiteral("--lifecycle")) {
-        okay = TestIndefiniteSearchLifecycle(
-                QString::fromLocal8Bit(argv[2]),
-                QString::fromLocal8Bit(argv[3]));
+        const QString packs = QString::fromLocal8Bit(argv[2]);
+        const QString replay = QString::fromLocal8Bit(argv[3]);
+        okay = TestMetricsWhenConditionExcludesBaseline(packs, replay) &&
+                TestIndefiniteSearchLifecycle(packs, replay);
     }
     QSettings().clear();
     return okay ? 0 : 1;

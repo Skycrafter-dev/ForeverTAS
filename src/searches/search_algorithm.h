@@ -103,11 +103,17 @@ struct SearchLiveUpdate {
     std::vector<SearchTimelineFrame> bestTimeline;
 };
 
+struct SearchStatisticsUpdate {
+    std::uint64_t iterations = 0u;
+    std::chrono::steady_clock::duration elapsed{};
+};
+
 struct SearchRunControl {
     std::function<bool()> stopRequested;
     std::function<bool()> cancellationRequested;
     std::function<void(const SearchProgress &)> progressChanged;
     std::function<bool()> beginIteration;
+    std::function<void(const SearchStatisticsUpdate &)> statisticsChanged;
     std::function<void(const SearchLiveUpdate &)> liveChanged;
     std::function<void(const SearchLiveUpdate &)>
             improvementTimelineSampled;

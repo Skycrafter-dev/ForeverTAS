@@ -247,6 +247,68 @@ bool CheckModifierWindowClampedToHorizon(
     return result.iterations == 1u;
 }
 
+bool CheckStatisticsWithoutEligibleBest(
+        const char *packsDirectory,
+        const char *replayPath) {
+    PhysicsSandbox sandbox =
+            CreateEmptyInputSandbox(packsDirectory, replayPath);
+    IncrementingSteerMutator mutator;
+    SteeringEvaluator evaluator;
+    const forevertas::ConditionCompileResult compiled =
+            forevertas::CompileConditionScript("iterations > 100");
+    if (!compiled.program || compiled.error) {
+        throw std::runtime_error("could not compile statistics condition");
+    }
+
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 3u;
+    control.sampleBestTimeline = false;
+    std::uint64_t latestIterations = 0u;
+    std::size_t statisticsUpdates = 0u;
+    std::size_t bestUpdates = 0u;
+    control.statisticsChanged =
+            [&](const forevertas::SearchStatisticsUpdate &statistics) {
+                latestIterations = statistics.iterations;
+                ++statisticsUpdates;
+            };
+    control.liveChanged = [&](const forevertas::SearchLiveUpdate &) {
+        ++bestUpdates;
+    };
+
+    bool rejectedWithoutBest = false;
+    try {
+        static_cast<void>(
+                forevertas::BasicBruteForceSearch(false).Run(
+                        {sandbox,
+                         forevertas::kSearchTickDurationMs,
+                         mutator,
+                         evaluator,
+                         &control,
+                         1u,
+                         false,
+                         false,
+                         nullptr,
+                         nullptr,
+                         {},
+                         forevertas::kDefaultSimulationHorizonMs,
+                         &*compiled.program}));
+    } catch (const std::runtime_error &error) {
+        rejectedWithoutBest = std::string_view(error.what()) ==
+                "no iteration satisfied the selected evaluation target";
+    }
+
+    if (!rejectedWithoutBest || statisticsUpdates < 2u ||
+        latestIterations != 3u || bestUpdates != 0u) {
+        std::cerr
+                << "search statistics were suppressed without an eligible "
+                   "best: statistics="
+                << statisticsUpdates << " iterations=" << latestIterations
+                << " best_updates=" << bestUpdates << '\n';
+        return false;
+    }
+    return true;
+}
+
 #if FOREVERVALIDATOR_HAS_CUDA
 bool CheckCudaKernelModeLifecycle(
         const char *packsDirectory,
@@ -1497,6 +1559,7 @@ int main(int argc, char **argv) {
         }
         if (!CheckAutoPromoteSemantics(argv[1], argv[2]) ||
             !CheckModifierWindowClampedToHorizon(argv[1], argv[2]) ||
+            !CheckStatisticsWithoutEligibleBest(argv[1], argv[2]) ||
             !CheckCanonicalHorizonAndLateInputs(argv[1], argv[2]) ||
             !CheckPairedCanonicalFixtures(argv[1], argv[2]) ||
             (argc == 5 && !CheckStandaloneChallengeFixture(
