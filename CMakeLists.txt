@@ -71,7 +71,7 @@ set(FOREVERVALIDATOR_ENABLE_CUDA ${FOREVERTAS_ENABLE_CUDA} CACHE BOOL
 FetchContent_Declare(
     ForeverValidator
     GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-    GIT_TAG a370e6cd57e6681cda8ddc4f4ce3a9e0496e65d7
+    GIT_TAG 7c8773c68c840b23a6d510db7c26809f36431029
     GIT_SHALLOW FALSE)
 FetchContent_MakeAvailable(ForeverValidator)
 
@@ -734,10 +734,16 @@ if(BUILD_TESTING)
                 target_compile_options(forevertas-cuda-search-parity PRIVATE
                     ${FOREVERTAS_WARNING_OPTIONS})
             endif()
+            set(FOREVERTAS_CUDA_SEARCH_PARITY_ARGUMENTS
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                "${FOREVERTAS_TEST_REPLAY}")
+            if(FOREVERTAS_TEST_CHALLENGE_REPLAY)
+                list(APPEND FOREVERTAS_CUDA_SEARCH_PARITY_ARGUMENTS
+                    "${FOREVERTAS_TEST_CHALLENGE_REPLAY}")
+            endif()
             add_test(NAME forevertas-cuda-search-parity
                      COMMAND forevertas-cuda-search-parity
-                         "${FOREVERTAS_TEST_PACK_DIRECTORY}"
-                         "${FOREVERTAS_TEST_REPLAY}")
+                         ${FOREVERTAS_CUDA_SEARCH_PARITY_ARGUMENTS})
             set_tests_properties(forevertas-cuda-search-parity PROPERTIES
                 LABELS "cuda;parity;performance;stadium"
                 RESOURCE_LOCK cuda

@@ -241,6 +241,7 @@ private:
         if (name == "car.turning_rate" || name == "car.tr") return scalar(PhysicsSandboxCudaConditionValue::TurningRate);
         if (name == "car.turbo_type" || name == "car.tt") return scalar(PhysicsSandboxCudaConditionValue::TurboType);
         if (name == "car.turbo_boost_factor" || name == "car.tbf") return scalar(PhysicsSandboxCudaConditionValue::TurboBoostFactor);
+        if (name == "car.cps") return scalar(PhysicsSandboxCudaConditionValue::CheckpointCount);
         if (name == "iterations") return scalar(PhysicsSandboxCudaConditionValue::Iterations);
         if (name == "last_improvement.time") return scalar(PhysicsSandboxCudaConditionValue::LastImprovementTime);
         if (name == "last_restart.time") return scalar(PhysicsSandboxCudaConditionValue::LastRestartTime);
@@ -355,6 +356,7 @@ Value Source(PhysicsSandboxCudaConditionValue source,
     case PhysicsSandboxCudaConditionValue::LastImprovementTime: return {context.lastImprovementTimeSeconds};
     case PhysicsSandboxCudaConditionValue::LastRestartTime: return {context.lastRestartTimeSeconds};
     case PhysicsSandboxCudaConditionValue::CurrentTime: return {context.currentTimeSeconds};
+    case PhysicsSandboxCudaConditionValue::CheckpointCount: return {static_cast<double>(current.checkpointsCollected)};
     default: break;
     }
     const std::uint32_t raw = static_cast<std::uint32_t>(source);

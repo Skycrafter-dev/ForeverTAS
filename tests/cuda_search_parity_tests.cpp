@@ -555,6 +555,98 @@ bool CheckUnchangedIncumbentIsNotReconstructed(const char *packs,
     return true;
 }
 
+bool CheckCheckpointConditionParity(const char *packs,
+                                    const char *replay) {
+    OptionConfiguration velocity = DefaultEvaluator(
+            forevertas::kVelocityEvaluationId);
+    velocity.settings["minTimeMs"] = "1000";
+    velocity.settings["maxTimeMs"] = "1000";
+    OptionConfiguration random = DefaultModifier(
+            forevertas::kRandomSteeringModifierId);
+    random.settings["minTimeMs"] = "0";
+    random.settings["maxTimeMs"] = "0";
+    constexpr std::uint32_t probeHorizonMs = 60000u;
+    const SearchResult probe = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Reference,
+            1u,
+            0u,
+            {random},
+            velocity,
+            false,
+            nullptr,
+            true,
+            std::nullopt,
+            nullptr,
+            false,
+            true,
+            false,
+            probeHorizonMs);
+    const auto checkpoint = std::find_if(
+            probe.bestTimeline.begin(),
+            probe.bestTimeline.end(),
+            [](const forevertas::SearchTimelineFrame &frame) {
+                return frame.checkpointsCollected > 0u;
+            });
+    if (checkpoint == probe.bestTimeline.end()) {
+        std::cerr << "checkpoint condition fixture did not collect a checkpoint\n";
+        return false;
+    }
+
+    OptionConfiguration atCheckpoint = velocity;
+    atCheckpoint.settings["minTimeMs"] =
+            std::to_string(checkpoint->timeMs);
+    atCheckpoint.settings["maxTimeMs"] =
+            std::to_string(checkpoint->timeMs);
+    const std::string condition =
+            "car.cps = " + std::to_string(checkpoint->checkpointsCollected);
+    const std::uint32_t horizonMs = static_cast<std::uint32_t>(
+            std::max<std::int64_t>(
+                    checkpoint->timeMs +
+                            static_cast<std::int64_t>(
+                                    forevertas::kSearchTickDurationMs),
+                    1000));
+    const auto run = [&](forevertas::PhysicsBackend backend,
+                         bool specialize) {
+        return Run(
+                packs,
+                replay,
+                backend,
+                backend == forevertas::PhysicsBackend::Cuda ? 32u : 1u,
+                0u,
+                {random},
+                atCheckpoint,
+                false,
+                nullptr,
+                false,
+                std::nullopt,
+                nullptr,
+                false,
+                specialize,
+                false,
+                horizonMs,
+                condition);
+    };
+    const SearchResult reference = run(
+            forevertas::PhysicsBackend::Reference, false);
+    const SearchResult optimized = run(
+            forevertas::PhysicsBackend::OptimizedCpu, false);
+    const SearchResult cudaRegular = run(
+            forevertas::PhysicsBackend::Cuda, false);
+    const SearchResult cudaSpecialized = run(
+            forevertas::PhysicsBackend::Cuda, true);
+    return SameAuthoritativeResult(
+                   reference, optimized,
+                   "checkpoint condition optimized CPU") &&
+            SameAuthoritativeResult(
+                    reference, cudaRegular,
+                    "checkpoint condition regular CUDA") &&
+            SameAuthoritativeResult(
+                    reference, cudaSpecialized,
+                    "checkpoint condition fast CUDA");
+}
+
 SearchResult RunFixedScript(const char *packs,
                             const char *scenario,
                             const std::string &script,
@@ -862,10 +954,13 @@ int main(int argc, char **argv) {
     const bool preciseFinishOnly =
             argc == 4 &&
             std::string(argv[1]) == "--precise-finish-only";
+    const bool ordinaryParity =
+            argc == 3 ||
+            (argc == 4 && std::string_view(argv[1]).find("--") != 0u);
     if ((!scriptParity && !mutationParity && !mutationBackend &&
          !calibrationOnly &&
          !preciseFinishOnly &&
-         argc != 3) ||
+         !ordinaryParity) ||
         ((calibrationOnly || preciseFinishOnly) && argc != 4)) {
         std::cerr << "expected Packs directory and replay path\n";
         return 2;
@@ -896,6 +991,9 @@ int main(int argc, char **argv) {
             return CheckPreciseFinishParity(packs, replay) ? 0 : 1;
         }
         bool okay = CheckCudaKernelModeParity(packs, replay);
+        if (ordinaryParity && argc == 4) {
+            okay &= CheckCheckpointConditionParity(packs, argv[3]);
+        }
         okay &= CheckUnchangedIncumbentIsNotReconstructed(packs, replay);
         const OptionConfiguration velocity =
                 DefaultEvaluator(forevertas::kVelocityEvaluationId);

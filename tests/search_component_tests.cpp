@@ -2066,6 +2066,7 @@ bool TestConditionLanguageParity() {
             "car.tr = 0.25\n"
             "car.tt = 2\n"
             "car.tbf = 1.5\n"
+            "car.cps = 2\n"
             "car.wheels.frontleft.groundcontact = 1\n"
             "car.wheels.frontleft.is = 1\n"
             "car.wheels.frontleft.surface = 2\n"
@@ -2096,6 +2097,7 @@ bool TestConditionLanguageParity() {
     current.car.turningRate = 0.25f;
     current.car.turboType = 2u;
     current.car.turboBoostFactor = 1.5f;
+    current.checkpointsCollected = 2u;
     current.car.wheelContact[0] = true;
     current.car.wheelSliding[0] = true;
     current.car.wheelSurface[0] = 2u;
@@ -2104,6 +2106,13 @@ bool TestConditionLanguageParity() {
                     previous, current,
                     {17u, 100.0, 90.0, 104.0}),
             "compiled condition rejected an eligible tick");
+    current.checkpointsCollected = 1u;
+    okay &= Check(
+            !compiled.program->Evaluate(
+                    previous, current,
+                    {17u, 100.0, 90.0, 104.0}),
+            "compiled condition ignored car.cps");
+    current.checkpointsCollected = 2u;
     current.car.linearSpeed.z = 9.0f;
     okay &= Check(
             !compiled.program->Evaluate(
