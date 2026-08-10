@@ -28,6 +28,7 @@ values = {
     "CUDA_ARCHITECTURES": m["cuda"]["cmake_architectures"],
     "CUDA_ARCHITECTURE_KEY": m["cuda"]["architecture_key"],
     "FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS": str(m["cuda"]["split_compile_jobs"]),
+    "FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS": str(m["cuda"]["search_object_architecture_jobs"]),
     "FOREVERVALIDATOR_COMMIT": m["sources"]["forevervalidator"]["commit"],
     "FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT": m["cuda"]["search_object_source_commit"],
 }
@@ -53,6 +54,7 @@ docker run --rm --init \
     --env FOREVERVALIDATOR_COMMIT \
     --env FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT \
     --env FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS \
+    --env FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS \
     --env FOREVERTAS_VERSION \
     --env LINUXDEPLOY_VERSION \
     --env LINUXDEPLOY_PLUGIN_QT_VERSION \

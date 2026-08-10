@@ -14,8 +14,9 @@ if ([string]::IsNullOrWhiteSpace($Manifest)) {
 }
 $Release = Get-Content (Resolve-Path $Manifest) -Raw | ConvertFrom-Json
 if ($Release.cuda.version -ne "12.8.1" -or
-        $Release.cuda.split_compile_jobs -ne 4) {
-    throw "The Windows release requires CUDA 12.8.1 and split-compile 4"
+        $Release.cuda.split_compile_jobs -ne 4 -or
+        $Release.cuda.search_object_architecture_jobs -ne 2) {
+    throw "The Windows release requires CUDA 12.8.1, split-compile 4, and two search architecture jobs"
 }
 
 . C:\Tools\Enter-BuildEnv.ps1
@@ -28,6 +29,7 @@ $env:FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT = $Release.cuda.search_object_so
 $env:VCPKG_COMMIT = $Release.toolchains.windows.vcpkg_commit
 $env:FOREVERTAS_CACHE_ROOT = $Release.cache.windows
 $env:FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS = [string]$Release.cuda.split_compile_jobs
+$env:FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS = [string]$Release.cuda.search_object_architecture_jobs
 
 if ($LastResortRebuildCache -ne $ConfirmCacheRecoveryExhausted) {
     throw "A full cache rebuild requires both last-resort confirmation switches"

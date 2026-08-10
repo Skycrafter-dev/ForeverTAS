@@ -11,6 +11,7 @@ sccache coverage for smaller CUDA translation units and the compact LTO image.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -35,7 +36,17 @@ def main(argv: list[str]) -> int:
     )
 
     if compiles_search_executor and not produces_lto_ir:
-        command = [compiler, *compiler_args]
+        try:
+            architecture_jobs = int(
+                os.environ.get(
+                    "FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS", "1"))
+        except ValueError:
+            print("invalid CUDA search architecture job count", file=sys.stderr)
+            return 2
+        if architecture_jobs < 1:
+            print("invalid CUDA search architecture job count", file=sys.stderr)
+            return 2
+        command = [compiler, f"--threads={architecture_jobs}", *compiler_args]
     else:
         command = [sccache, compiler, *compiler_args]
 

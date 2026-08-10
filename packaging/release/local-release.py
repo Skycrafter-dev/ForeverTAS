@@ -56,6 +56,9 @@ def load_manifest(path: Path) -> dict:
         raise SystemExit("manifest changed the pinned CUDA release or architecture floor")
     if cuda["split_compile_jobs"] != 4:
         raise SystemExit("manifest changed the validated CUDA split-compile value")
+    if cuda.get("search_object_architecture_jobs") != 2:
+        raise SystemExit(
+            "manifest changed the validated CUDA search architecture job count")
     if not cuda.get("search_object_source_commit"):
         raise SystemExit("manifest has no CUDA search-object source identity")
     if manifest["release"]["tag"] != f"v{manifest['release']['version']}":

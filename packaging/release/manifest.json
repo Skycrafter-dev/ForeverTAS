@@ -24,6 +24,7 @@
     "cmake_architectures": "50-real;52-real;61-real;70-real;75-real;86-real;89-real;120-real;120-virtual",
     "architecture_key": "sm50-sm52-sm61-sm70-sm75-sm86-sm89-sm120-ptx120",
     "split_compile_jobs": 4,
+    "search_object_architecture_jobs": 2,
     "search_object_source_commit": "3ebed82b6292ab5677f744b2420f9f112f885005",
     "search_object_output_neutral_paths": [
       "src/format/static_solid/static_solid_decorator_assembler.cpp",

@@ -8,12 +8,14 @@ dist_dir="${repo_root}/dist"
 cache_root="${FOREVERTAS_CACHE_ROOT:-/cache}"
 search_cache_root="${cache_root}/cuda-search"
 split_compile_jobs="${FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS:-4}"
+search_architecture_jobs="${FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS:-2}"
 
 : "${CUDA_VERSION:?CUDA_VERSION is required}"
 : "${CUDA_ARCHITECTURES:?CUDA_ARCHITECTURES is required}"
 : "${CUDA_ARCHITECTURE_KEY:?CUDA_ARCHITECTURE_KEY is required}"
 : "${FOREVERVALIDATOR_COMMIT:?FOREVERVALIDATOR_COMMIT is required}"
 : "${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT:?FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT is required}"
+: "${FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS:?FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS is required}"
 : "${FOREVERTAS_VERSION:?FOREVERTAS_VERSION is required}"
 : "${FOREVERTAS_TOOLCHAIN_IMAGE:?FOREVERTAS_TOOLCHAIN_IMAGE is required}"
 
@@ -53,6 +55,7 @@ search_key="$({
         "architectures=${CUDA_ARCHITECTURES}" \
         "architecture_key=${CUDA_ARCHITECTURE_KEY}" \
         "split_compile_jobs=${split_compile_jobs}" \
+        "search_architecture_jobs=${search_architecture_jobs}" \
         "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}"
     nvcc --version
     c++ -dumpfullversion -dumpversion
@@ -83,6 +86,7 @@ verify_cache_integrity() {
     grep -Fxq "cuda=${CUDA_VERSION}" "${metadata}" || return 1
     grep -Fxq "architectures=${CUDA_ARCHITECTURES}" "${metadata}" || return 1
     grep -Fxq "split_compile_jobs=${split_compile_jobs}" "${metadata}" || return 1
+    grep -Fxq "search_architecture_jobs=${search_architecture_jobs}" "${metadata}" || return 1
     grep -Fxq "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}" "${metadata}" || return 1
     if [[ ! -f "${directory}/object.sha256" ]]; then
         (cd "${directory}" &&
@@ -150,6 +154,7 @@ if [[ "${cache_hit}" == false ]]; then
         "cuda=${CUDA_VERSION}" \
         "architectures=${CUDA_ARCHITECTURES}" \
         "split_compile_jobs=${split_compile_jobs}" \
+        "search_architecture_jobs=${search_architecture_jobs}" \
         "validator=${FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT}" \
         > "${temporary_cache_dir}/metadata.txt"
     (cd "${temporary_cache_dir}" &&

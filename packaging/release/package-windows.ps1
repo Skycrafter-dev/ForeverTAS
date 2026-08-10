@@ -6,6 +6,7 @@ $ValidatorRoot = Join-Path $RepoRoot ".dependencies/ForeverValidator"
 $BuildDirectory = Join-Path $RepoRoot "build/release"
 $DistDirectory = Join-Path $RepoRoot "dist"
 $SplitCompileJobs = $env:FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS
+$SearchArchitectureJobs = $env:FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS
 
 foreach ($Name in @(
     "CUDA_PATH",
@@ -13,6 +14,7 @@ foreach ($Name in @(
     "CUDA_ARCHITECTURES",
     "CUDA_ARCHITECTURE_KEY",
     "FOREVERVALIDATOR_COMMIT",
+    "FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS",
     "FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT",
     "FOREVERTAS_VERSION",
     "FOREVERTAS_WINDOWS_SEARCH_CACHE",
@@ -76,6 +78,7 @@ function Test-CudaCache([string]$Directory) {
         "cuda=$env:CUDA_VERSION",
         "architectures=$env:CUDA_ARCHITECTURES",
         "split_compile_jobs=$SplitCompileJobs",
+        "search_architecture_jobs=$SearchArchitectureJobs",
         "cuda_host_compatibility=allow-unsupported-compiler",
         "validator=$env:FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT"
     )) {
@@ -95,6 +98,7 @@ $CompilerIdentity = @(
     "architectures=$env:CUDA_ARCHITECTURES"
     "architecture_key=$env:CUDA_ARCHITECTURE_KEY"
     "split_compile_jobs=$SplitCompileJobs"
+    "search_architecture_jobs=$SearchArchitectureJobs"
     "cuda_host_compatibility=allow-unsupported-compiler"
     "validator=$env:FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT"
     (& clang-cl --version | Out-String)
@@ -189,6 +193,7 @@ try {
             "cuda=$env:CUDA_VERSION"
             "architectures=$env:CUDA_ARCHITECTURES"
             "split_compile_jobs=$SplitCompileJobs"
+            "search_architecture_jobs=$SearchArchitectureJobs"
             "cuda_host_compatibility=allow-unsupported-compiler"
             "validator=$env:FOREVERVALIDATOR_CUDA_SEARCH_SOURCE_COMMIT"
         ) | Set-Content -Path (Join-Path $TemporaryDirectory "metadata.txt")
