@@ -1,6 +1,7 @@
 #ifndef FOREVERTAS_EVALUATORS_ITERATION_EVALUATOR_H
 #define FOREVERTAS_EVALUATORS_ITERATION_EVALUATOR_H
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -43,6 +44,24 @@ public:
     virtual bool IsBetter(const EvaluationSample &iteration,
                           const EvaluationSample &incumbent) const = 0;
 };
+
+inline bool ImprovesSearchResult(
+        const IterationEvaluator &evaluator,
+        const EvaluationSample &candidate,
+        std::size_t candidateInputCount,
+        const EvaluationSample &incumbent,
+        std::size_t incumbentInputCount) {
+    if (evaluator.IsBetter(candidate, incumbent)) {
+        return true;
+    }
+    // EvaluationSample::score is the evaluator ordering key. Once the
+    // candidate is not strictly better, a different score is strictly worse;
+    // only an equal score is eligible for the input-count tie break.
+    if (candidate.score != incumbent.score) {
+        return false;
+    }
+    return candidateInputCount < incumbentInputCount;
+}
 
 }  // namespace forevertas
 

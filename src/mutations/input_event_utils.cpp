@@ -256,6 +256,24 @@ std::size_t EffectiveInputChangeCount(
     return count;
 }
 
+std::size_t InputCountAfterWindowPatch(
+        const std::vector<SandboxInputEvent> &baseline,
+        const MutationWindowPatch &patch) {
+    const auto first = std::lower_bound(
+            baseline.begin(), baseline.end(), patch.minimumTimeMs,
+            [](const SandboxInputEvent &event, std::int64_t timeMs) {
+                return event.timeMs < timeMs;
+            });
+    const auto last = std::upper_bound(
+            first, baseline.end(), patch.maximumTimeMs,
+            [](std::int64_t timeMs, const SandboxInputEvent &event) {
+                return timeMs < event.timeMs;
+            });
+    return baseline.size() -
+            static_cast<std::size_t>(last - first) +
+            patch.events.size();
+}
+
 std::vector<SandboxInputEvent> ApplyInputWindowPatch(
         const std::vector<SandboxInputEvent> &baseline,
         const MutationWindowPatch &patch) {

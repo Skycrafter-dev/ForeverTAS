@@ -292,6 +292,142 @@ bool CheckParity(const char *packs,
             (!requireMutationWinner || mutationWinner);
 }
 
+bool CheckEquivalentDeletionPrefersFewerInputs(
+        const char *packs,
+        const char *replay) {
+    OptionConfiguration deletion = DefaultModifier(
+            forevertas::kInputDeletionModifierId);
+    deletion.settings["minTimeMs"] = "10";
+    deletion.settings["maxTimeMs"] = "5990";
+    deletion.settings["steerEnabled"] = "true";
+    deletion.settings["steerMaxCount"] = "4";
+    deletion.settings["accelerateEnabled"] = "true";
+    deletion.settings["accelerateMaxCount"] = "2";
+    deletion.settings["brakeEnabled"] = "true";
+    deletion.settings["brakeMaxCount"] = "2";
+
+    OptionConfiguration stunt = DefaultEvaluator(
+            forevertas::kStuntPointsEvaluationId);
+    stunt.settings["targetTimeMs"] = "6000";
+
+    const SearchResult baseline = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Reference,
+            1u,
+            0u,
+            {deletion},
+            stunt,
+            false,
+            nullptr,
+            false);
+    if (baseline.bestInputs.empty()) {
+        std::cerr << "deletion equivalence fixture has no baseline inputs\n";
+        return false;
+    }
+
+    constexpr std::uint64_t iterations = 128u;
+    const SearchResult reference = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Reference,
+            1u,
+            iterations,
+            {deletion},
+            stunt,
+            false,
+            nullptr,
+            false);
+    const SearchResult optimized = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::OptimizedCpu,
+            1u,
+            iterations,
+            {deletion},
+            stunt,
+            false,
+            nullptr,
+            false);
+    const SearchResult multiThreaded = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::MultiThreadedCpu,
+            4u,
+            iterations,
+            {deletion},
+            stunt,
+            false,
+            nullptr,
+            false);
+    const SearchResult regularCuda = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Cuda,
+            64u,
+            iterations,
+            {deletion},
+            stunt,
+            false,
+            nullptr,
+            false,
+            std::nullopt,
+            nullptr,
+            false,
+            false);
+    const SearchResult fastCuda = Run(
+            packs,
+            replay,
+            forevertas::PhysicsBackend::Cuda,
+            64u,
+            iterations,
+            {deletion},
+            stunt,
+            false,
+            nullptr,
+            false,
+            std::nullopt,
+            nullptr,
+            false,
+            true);
+
+    const bool simplified =
+            reference.winnerSource ==
+                    forevertas::SearchWinnerSource::Mutation &&
+            reference.bestScore == baseline.bestScore &&
+            reference.bestInputs.size() < baseline.bestInputs.size() &&
+            reference.mutationImprovementCount > 0u;
+    if (!simplified) {
+        std::cerr
+                << "equivalent deletion did not simplify the reference run: "
+                << "baseline_inputs=" << baseline.bestInputs.size()
+                << " best_inputs=" << reference.bestInputs.size()
+                << " baseline_score=" << baseline.bestScore
+                << " best_score=" << reference.bestScore
+                << " winner="
+                << (reference.winnerSource ==
+                                    forevertas::SearchWinnerSource::Mutation
+                            ? "mutation" : "baseline")
+                << '\n';
+        return false;
+    }
+
+    bool okay = true;
+    okay &= SameAuthoritativeResult(
+            reference, optimized,
+            "equivalent deletion optimized CPU");
+    okay &= SameAuthoritativeResult(
+            reference, multiThreaded,
+            "equivalent deletion multi-threaded CPU");
+    okay &= SameAuthoritativeResult(
+            reference, regularCuda,
+            "equivalent deletion regular CUDA");
+    okay &= SameAuthoritativeResult(
+            reference, fastCuda,
+            "equivalent deletion fast CUDA");
+    return okay;
+}
+
 bool CheckCudaKernelModeParity(
         const char *packs,
         const char *replay) {
@@ -991,6 +1127,7 @@ int main(int argc, char **argv) {
             return CheckPreciseFinishParity(packs, replay) ? 0 : 1;
         }
         bool okay = CheckCudaKernelModeParity(packs, replay);
+        okay &= CheckEquivalentDeletionPrefersFewerInputs(packs, replay);
         if (ordinaryParity && argc == 4) {
             okay &= CheckCheckpointConditionParity(packs, argv[3]);
         }

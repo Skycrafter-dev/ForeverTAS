@@ -94,6 +94,28 @@ public:
     }
 };
 
+class DeleteLastInputMutator final : public forevertas::InputMutator {
+public:
+    forevertas::MutationResult Mutate(
+            const forevertas::MutationRequest &request) const override {
+        std::vector<forevertas::SandboxInputEvent> inputs =
+                request.baselineInputs;
+        if (inputs.empty()) {
+            return {std::move(inputs), 0u};
+        }
+        inputs.pop_back();
+        return {std::move(inputs), 1u};
+    }
+
+    std::int64_t EarliestMutationTimeMs() const override {
+        return 10;
+    }
+
+    forevertas::MutationTimeRange AffectedTimeRange() const override {
+        return {10, 20};
+    }
+};
+
 class SteeringSession final
     : public forevertas::IterationEvaluationSession {
 public:
@@ -222,6 +244,54 @@ bool CheckAutoPromoteSemantics(
                   << " improvements="
                   << fixed.mutationImprovementCount << "/"
                   << promoted.mutationImprovementCount << '\n';
+        return false;
+    }
+    return true;
+}
+
+bool CheckEquivalentResultPrefersFewerInputs(
+        const char *packsDirectory,
+        const char *replayPath) {
+    PhysicsSandbox sandbox =
+            CreateEmptyInputSandbox(packsDirectory, replayPath);
+    std::vector<forevertas::SandboxInputEvent> inputs;
+    PhysicsSandboxInputEvent first;
+    first.timeMs = 10;
+    first.action = forevertas::SandboxInputAction::Steer;
+    first.value.kind = PhysicsSandboxInputValueKind::Analog;
+    first.value.analog = 4096;
+    inputs.push_back(first);
+    PhysicsSandboxInputEvent second = first;
+    second.timeMs = 20;
+    second.value.analog = 8192;
+    inputs.push_back(second);
+    Require(sandbox.ReplaceInputs(inputs),
+            "installing equivalent-result deletion baseline");
+
+    DeleteLastInputMutator mutator;
+    SteeringEvaluator evaluator;
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 1u;
+    control.sampleBestTimeline = false;
+    const forevertas::SearchResult result =
+            forevertas::BasicBruteForceSearch(false).Run(
+                    {sandbox,
+                     forevertas::kSearchTickDurationMs,
+                     mutator,
+                     evaluator,
+                     &control});
+    if (result.winnerSource != forevertas::SearchWinnerSource::Mutation ||
+        result.winningIterationIndex != 0u ||
+        result.bestInputs.size() != 1u ||
+        result.mutationImprovementCount != 1u) {
+        std::cerr
+                << "equivalent result did not prefer fewer inputs: winner="
+                << (result.winnerSource ==
+                                    forevertas::SearchWinnerSource::Mutation
+                            ? "mutation" : "baseline")
+                << " inputs=" << result.bestInputs.size()
+                << " improvements=" << result.mutationImprovementCount
+                << '\n';
         return false;
     }
     return true;
@@ -1558,6 +1628,7 @@ int main(int argc, char **argv) {
                     : 1;
         }
         if (!CheckAutoPromoteSemantics(argv[1], argv[2]) ||
+            !CheckEquivalentResultPrefersFewerInputs(argv[1], argv[2]) ||
             !CheckModifierWindowClampedToHorizon(argv[1], argv[2]) ||
             !CheckStatisticsWithoutEligibleBest(argv[1], argv[2]) ||
             !CheckCanonicalHorizonAndLateInputs(argv[1], argv[2]) ||

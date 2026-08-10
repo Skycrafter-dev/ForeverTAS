@@ -726,38 +726,42 @@ struct CpuWorkerState {
 bool BetterEvaluation(const IterationEvaluator &evaluator,
                       double candidateScore,
                       double candidateTimeMs,
+                      std::size_t candidateInputCount,
                       double incumbentScore,
-                      double incumbentTimeMs) {
-    return evaluator.IsBetter(
+                      double incumbentTimeMs,
+                      std::size_t incumbentInputCount) {
+    return ImprovesSearchResult(
+            evaluator,
             {candidateScore, candidateTimeMs, {}},
-            {incumbentScore, incumbentTimeMs, {}});
+            candidateInputCount,
+            {incumbentScore, incumbentTimeMs, {}},
+            incumbentInputCount);
 }
 
 bool PreferEvaluation(
         const IterationEvaluator &evaluator,
         double candidateScore,
         double candidateTimeMs,
+        std::size_t candidateInputCount,
         SearchWinnerSource candidateSource,
         std::optional<std::uint64_t> candidateIteration,
         double incumbentScore,
         double incumbentTimeMs,
+        std::size_t incumbentInputCount,
         SearchWinnerSource incumbentSource,
         std::optional<std::uint64_t> incumbentIteration) {
-    if (BetterEvaluation(
-                evaluator,
-                candidateScore,
-                candidateTimeMs,
-                incumbentScore,
-                incumbentTimeMs)) {
+    const EvaluationSample candidate{
+            candidateScore, candidateTimeMs, {}};
+    const EvaluationSample incumbent{
+            incumbentScore, incumbentTimeMs, {}};
+    if (evaluator.IsBetter(candidate, incumbent)) {
         return true;
     }
-    if (BetterEvaluation(
-                evaluator,
-                incumbentScore,
-                incumbentTimeMs,
-                candidateScore,
-                candidateTimeMs)) {
+    if (candidateScore != incumbentScore) {
         return false;
+    }
+    if (candidateInputCount != incumbentInputCount) {
+        return candidateInputCount < incumbentInputCount;
     }
     if (candidateSource != incumbentSource) {
         return candidateSource == SearchWinnerSource::Baseline;
@@ -839,23 +843,29 @@ SearchResult RunMultiThreadedCpuSearch(
     const auto betterShared =
             [&](double candidateScore,
                 double candidateTimeMs,
+                std::size_t candidateInputCount,
                 double incumbentScore,
-                double incumbentTimeMs) {
+                double incumbentTimeMs,
+                std::size_t incumbentInputCount) {
                 std::lock_guard<std::mutex> guard(evaluatorMutex);
                 return BetterEvaluation(
                         *evaluator,
                         candidateScore,
                         candidateTimeMs,
+                        candidateInputCount,
                         incumbentScore,
-                        incumbentTimeMs);
+                        incumbentTimeMs,
+                        incumbentInputCount);
             };
     const auto preferShared =
             [&](double candidateScore,
                 double candidateTimeMs,
+                std::size_t candidateInputCount,
                 SearchWinnerSource candidateSource,
                 std::optional<std::uint64_t> candidateIteration,
                 double incumbentScore,
                 double incumbentTimeMs,
+                std::size_t incumbentInputCount,
                 SearchWinnerSource incumbentSource,
                 std::optional<std::uint64_t> incumbentIteration) {
                 std::lock_guard<std::mutex> guard(evaluatorMutex);
@@ -863,10 +873,12 @@ SearchResult RunMultiThreadedCpuSearch(
                         *evaluator,
                         candidateScore,
                         candidateTimeMs,
+                        candidateInputCount,
                         candidateSource,
                         candidateIteration,
                         incumbentScore,
                         incumbentTimeMs,
+                        incumbentInputCount,
                         incumbentSource,
                         incumbentIteration);
             };
@@ -953,8 +965,10 @@ SearchResult RunMultiThreadedCpuSearch(
                                      betterShared(
                                              live.bestScore,
                                              live.bestEvaluationTimeMs,
+                                             live.bestInputs.size(),
                                              promotedEvaluation->score,
-                                             promotedEvaluation->timeMs))) {
+                                             promotedEvaluation->timeMs,
+                                             promotedInputs.size()))) {
                                     promotedEvaluation = {
                                             live.bestScore,
                                             live.bestEvaluationTimeMs,
@@ -1105,10 +1119,12 @@ SearchResult RunMultiThreadedCpuSearch(
                     preferShared(
                             live->bestScore,
                             live->bestEvaluationTimeMs,
+                            live->bestInputs.size(),
                             live->winnerSource,
                             live->winningIterationIndex,
                             candidate->bestScore,
                             candidate->bestEvaluationTimeMs,
+                            candidate->bestInputs.size(),
                             candidate->winnerSource,
                             candidate->winningIterationIndex)) {
                     candidate = live;
@@ -1127,25 +1143,29 @@ SearchResult RunMultiThreadedCpuSearch(
             }
 
             bool improved = false;
-            const bool strictlyBetter = aggregateBest &&
+            const bool improvesResult = aggregateBest &&
                     betterShared(
                         candidate->bestScore,
                         candidate->bestEvaluationTimeMs,
+                        candidate->bestInputs.size(),
                         aggregateBest->bestScore,
-                        aggregateBest->bestEvaluationTimeMs);
+                        aggregateBest->bestEvaluationTimeMs,
+                        aggregateBest->bestInputs.size());
             if (!aggregateBest ||
                 preferShared(
                         candidate->bestScore,
                         candidate->bestEvaluationTimeMs,
+                        candidate->bestInputs.size(),
                         candidate->winnerSource,
                         candidate->winningIterationIndex,
                         aggregateBest->bestScore,
                         aggregateBest->bestEvaluationTimeMs,
+                        aggregateBest->bestInputs.size(),
                         aggregateBest->winnerSource,
                         aggregateBest->winningIterationIndex)) {
                 improved = candidate->winnerSource ==
                                 SearchWinnerSource::Mutation &&
-                        (!aggregateBest || strictlyBetter);
+                        (!aggregateBest || improvesResult);
                 aggregateBest = candidate;
                 if (improved) {
                     ++aggregateImprovementCount;
@@ -1234,11 +1254,13 @@ SearchResult RunMultiThreadedCpuSearch(
             preferShared(
                     result.bestScore,
                     result.bestEvaluationTimeMs,
+                    result.bestInputs.size(),
                     result.winnerSource,
                     result.winningIterationIndex,
                     states[*bestWorker].result->bestScore,
                     states[*bestWorker].result
                             ->bestEvaluationTimeMs,
+                    states[*bestWorker].result->bestInputs.size(),
                     states[*bestWorker].result->winnerSource,
                     states[*bestWorker].result
                             ->winningIterationIndex)) {
@@ -1252,8 +1274,10 @@ SearchResult RunMultiThreadedCpuSearch(
          betterShared(
                  result.bestScore,
                  result.bestEvaluationTimeMs,
+                 result.bestInputs.size(),
                  aggregateBest->bestScore,
-                 aggregateBest->bestEvaluationTimeMs)) ||
+                 aggregateBest->bestEvaluationTimeMs,
+                 aggregateBest->bestInputs.size())) ||
          aggregateImprovementCount == 0u) &&
         result.winnerSource == SearchWinnerSource::Mutation) {
         ++aggregateImprovementCount;

@@ -794,10 +794,8 @@ SearchResult RunCudaBasicBruteForce(
                 batch.bestValid;
         if (batch.bestChanged && batch.bestValid) {
             adoptBest(batch);
-            if (autoPromoteBest) {
-                best.mutationCount = EffectiveInputChangeCount(
-                        originalBaselineInputs, best.inputs);
-            }
+            best.mutationCount = EffectiveInputChangeCount(
+                    originalBaselineInputs, best.inputs);
         }
         if (configuration.condition &&
             batch.mutationImprovementCount != 0u) {
@@ -1096,7 +1094,8 @@ SearchResult BasicBruteForceSearch::Run(
 
     const auto evaluateTimeline = [&](SearchWinnerSource source,
                                       std::optional<std::uint64_t> iterationIndex,
-                                      std::size_t mutationCount) {
+                                      std::size_t mutationCount,
+                                      std::size_t inputCount) {
         bool improved = false;
         PhysicsSandboxStateView state = AdvanceTo(
                 context.sandbox,
@@ -1141,7 +1140,12 @@ SearchResult BasicBruteForceSearch::Run(
                         "iteration evaluator returned a non-finite result");
             }
             if (best.evaluation &&
-                !context.evaluator.IsBetter(*sample, *best.evaluation)) {
+                !ImprovesSearchResult(
+                        context.evaluator,
+                        *sample,
+                        inputCount,
+                        *best.evaluation,
+                        best.inputs.size())) {
                 if (state.raceCompleted) break;
                 continue;
             }
@@ -1171,7 +1175,11 @@ SearchResult BasicBruteForceSearch::Run(
     };
 
     ReportProgress(context.control, SearchProgressStage::Baseline, 0u);
-    evaluateTimeline(SearchWinnerSource::Baseline, std::nullopt, 0u);
+    evaluateTimeline(
+            SearchWinnerSource::Baseline,
+            std::nullopt,
+            0u,
+            baselineInputs.size());
     reportLive(true);
     ReportProgress(context.control, SearchProgressStage::Mutations, 0u);
 
@@ -1207,6 +1215,11 @@ SearchResult BasicBruteForceSearch::Run(
         bool improved = false;
         if (mutation.mutationCount != 0u) {
             totalMutationCount += mutation.mutationCount;
+            const std::size_t inputCount = mutation.windowPatch
+                    ? InputCountAfterWindowPatch(
+                              mutationBaselineInputs,
+                              *mutation.windowPatch)
+                    : mutation.inputs.size();
             if (mutation.windowPatch) {
                 mutation.windowPatch->minimumTimeMs = std::min(
                         mutation.windowPatch->minimumTimeMs,
@@ -1234,7 +1247,8 @@ SearchResult BasicBruteForceSearch::Run(
             improved = evaluateTimeline(
                     SearchWinnerSource::Mutation,
                     iterationIndex,
-                    mutation.mutationCount);
+                    mutation.mutationCount,
+                    inputCount);
             if (improved && autoPromoteBest_) {
                 best.mutationCount = EffectiveInputChangeCount(
                         baselineInputs, best.inputs);

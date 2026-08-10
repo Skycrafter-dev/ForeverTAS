@@ -45,6 +45,9 @@ std::size_t EffectiveInputChangeCount(
 std::size_t EffectiveInputChangeCount(
         const std::vector<SandboxInputEvent> &baseline,
         const MutationWindowPatch &patch);
+std::size_t InputCountAfterWindowPatch(
+        const std::vector<SandboxInputEvent> &baseline,
+        const MutationWindowPatch &patch);
 std::vector<SandboxInputEvent> ApplyInputWindowPatch(
         const std::vector<SandboxInputEvent> &baseline,
         const MutationWindowPatch &patch);
