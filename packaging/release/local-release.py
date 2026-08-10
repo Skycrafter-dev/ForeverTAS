@@ -176,33 +176,11 @@ def release_assets(manifest: dict, dist: Path) -> list[Path]:
 
 
 def release_notes(manifest: dict) -> str:
-    return f"""ForeverTAS {manifest['release']['version']} is built and verified entirely on local Linux and Windows machines with the pinned CUDA 12.8.1 toolchain.
+    return f"""ForeverTAS {manifest['release']['version']}
 
-### Highlights
-
-- Standalone `Challenge.Gbx` maps now load directly, while replays remain map and scenario sources rather than control or duration authorities.
-- Race camera initialization respects rotated spawns. Free-camera arrow keys strafe rather than scrub the timeline. Scripted telemetry has a downward-opening, window-bounded, scrollable field picker, target placement from the current camera or car, and an optional draw-through-blocks target mode.
-- Giving up a manual takeover restarts the selected Inputs or Best run from its beginning. Copied takeover inputs reproduce the driven race at the tick boundary, and cars use stable render nodes that remain attached while runs, modes, and ticks change.
-- Continuous cuboid moves and resizes update granular model roles and coalesce persistence instead of rebuilding 3D delegates or rewriting the complete settings file for every pointer event.
-- Simulation-horizon scrubbing moves in one-second steps and resimulates only when editing ends. Inputs, Best, and Manual trajectories retain one-second physics snapshots so later input edits and horizon changes resume from the latest valid state.
-- Browse actions use the Linux and Windows system file pickers, unsuffixed integer counters omit decimal zeroes while compact-unit values retain two digits, and packaged transport controls retain their intended silhouettes.
-- Modifier seeds randomize automatically on each search start by default. Modifier windows that extend beyond the Simulation horizon are silently limited at execution time while the saved user configuration remains unchanged.
-- Persisted BfV2-compatible condition scripts select eligible evaluation ticks on both CPU and CUDA. A satisfying mutation always outranks a baseline with no eligible tick; the chosen target remains the sole score comparator once conditions pass.
-- Disjoint cuboid sweeps are rejected before exact slab math on CPU and CUDA, restoring volume-entry throughput to point-target parity on the validated RTX 5060.
-- CUDA incumbents are reconstructed only when the device reports an actual best change. Every CUDA winner and improvement shown in the viewer is reconstructed by the Reference backend, which remains the authority for user-visible results.
-
-### Input timelines
-
-- Replays supply the map and required scenario context, never the simulation length or controls. A persisted user-configured Simulation horizon bounds search, preview, CPU, and CUDA execution.
-- Input scripts remain valid beyond that horizon. Later commands are preserved for editing and reconstruction but are not executed unless the user increases the horizon.
-
-### CUDA compatibility
-
-The x86_64 packages contain native cubins for `sm_50`, `sm_52`, `sm_61`, `sm_70`, `sm_75`, `sm_86`, `sm_89`, and `sm_120`. On desktop NVIDIA hardware, cubins are forward-compatible within the same compute-capability major version, so the native set covers compute capabilities 5.0 and later 5.x, 6.1 and later 6.x, 7.0 and later 7.x, 8.6 and later 8.x, and 12.0 and later 12.x. In current product terms this includes supported Maxwell, Pascal except P100/GP100, Volta, Turing, Ampere RTX/A-series except A100/A30, Ada, and GeForce RTX 50 / RTX PRO Blackwell GPUs. See NVIDIA's [GPU compute-capability tables](https://developer.nvidia.com/cuda-gpus) and [binary-compatibility rules](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/index.html#cuda-binary-compatibility).
-
-The fatbinary also contains `compute_120` PTX. A future NVIDIA architecture above compute capability 12.x may work by driver JIT compilation, with a slower first startup while the driver cache is populated, but it was not available for hardware validation and is not guaranteed by this release.
-
-The CUDA backend definitely does not support compute capability below 5.0; compute capability 6.0 (Tesla P100 / Quadro GP100), 8.0 (A100 / A30), 9.0 (H100 / H200 / GH200), 10.0 or 10.3 (B200 / B300 / GB200 / GB300), or 11.0; non-NVIDIA GPUs; non-x86_64 systems; or systems whose NVIDIA driver cannot load CUDA 12.8 applications. Those devices have neither a compatible cubin nor a backward-compatible PTX target. CPU search remains available on supported x86_64 Linux and Windows systems.
+- Search, scripting, telemetry, race-viewer, and map-rendering fixes for the 0.2.2 release.
+- CUDA acceleration supports NVIDIA GeForce GTX 900-series through RTX 50-series GPUs, plus many NVIDIA Quadro/RTX workstation GPUs. CPU mode works without an NVIDIA GPU.
+- Linux x86_64 AppImage and Windows x86_64 ZIP are attached below.
 """
 
 
