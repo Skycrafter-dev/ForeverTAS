@@ -64,6 +64,9 @@ class SearchController final : public QObject {
                        cudaSessionSpecializationEnabled WRITE
                        setCudaSessionSpecializationEnabled NOTIFY
                        cudaSessionSpecializationEnabledChanged)
+    Q_PROPERTY(bool cudaAvailable READ cudaAvailable CONSTANT)
+    Q_PROPERTY(bool cudaFastModeAvailable READ cudaFastModeAvailable CONSTANT)
+    Q_PROPERTY(QString cudaStatusText READ cudaStatusText CONSTANT)
     Q_PROPERTY(bool randomizeSeedsOnStart READ randomizeSeedsOnStart WRITE
                        setRandomizeSeedsOnStart NOTIFY
                        randomizeSeedsOnStartChanged)
@@ -138,6 +141,9 @@ public:
     QString cudaParallelSampleCount() const;
     bool cudaCalibrationEnabled() const;
     bool cudaSessionSpecializationEnabled() const;
+    bool cudaAvailable() const;
+    bool cudaFastModeAvailable() const;
+    QString cudaStatusText() const;
     bool randomizeSeedsOnStart() const;
     bool drawTargetsThroughBlocks() const;
     bool darkMode() const;
@@ -306,6 +312,9 @@ private:
             kDefaultCudaParallelSampleCount);
     bool cudaCalibrationEnabled_ = false;
     bool cudaSessionSpecializationEnabled_ = true;
+    bool cudaAvailable_ = false;
+    bool cudaFastModeAvailable_ = false;
+    QString cudaStatusText_;
     bool randomizeSeedsOnStart_ = true;
     bool drawTargetsThroughBlocks_ = false;
     bool darkMode_ = false;

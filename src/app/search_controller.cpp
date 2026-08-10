@@ -8,6 +8,8 @@
 #include "mutations/replay_input_script.h"
 #include "searches/algorithm_registry.h"
 
+#include <forevervalidator/validation.h>
+
 #include <QApplication>
 #include <QColor>
 #include <QCoreApplication>
@@ -223,6 +225,35 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
                            kCudaSessionSpecializationEnabledKey),
                    true)
             .toBool();
+#if FOREVERVALIDATOR_HAS_CUDA
+    const forevervalidator::CudaBackendDiagnostics cuda =
+            forevervalidator::QueryCudaBackendDiagnostics();
+    cudaAvailable_ = cuda.IsReady();
+    cudaFastModeAvailable_ = cuda.SupportsSessionSpecialization();
+    if (cuda.IsReady()) {
+        const QString device = QString::fromStdString(cuda.deviceName);
+        const QString capability =
+                QStringLiteral("%1.%2")
+                        .arg(cuda.computeCapabilityMajor)
+                        .arg(cuda.computeCapabilityMinor);
+        cudaStatusText_ = cudaFastModeAvailable_
+                ? QStringLiteral(
+                          "CUDA ready: %1 (compute capability %2). Fast CUDA "
+                          "is available.")
+                          .arg(device, capability)
+                : QStringLiteral(
+                          "CUDA ready: %1 (compute capability %2). Fast CUDA "
+                          "requires compute capability 7.5 or newer, so "
+                          "regular CUDA will be used.")
+                          .arg(device, capability);
+    } else {
+        cudaStatusText_ = QStringLiteral("CUDA unavailable: %1")
+                                  .arg(QString::fromStdString(cuda.diagnostic));
+    }
+#else
+    cudaStatusText_ =
+            QStringLiteral("CUDA support is not compiled into this build.");
+#endif
     QSettings settings;
     randomizeSeedsOnStart_ = settings
             .value(QLatin1String(kRandomizeSeedsOnStartKey), true)
@@ -341,9 +372,8 @@ QVariantList SearchController::simulationBackendOptions() const {
             {QStringLiteral("label"), QStringLiteral("CUDA")},
             {QStringLiteral("description"),
              QStringLiteral(
-                     "Fastest runtime optimized for Stadium, needs a modern "
-                     "NVIDIA GPU and may break compatibility in other "
-                     "environments")}});
+                     "NVIDIA CUDA for Stadium; compute capability 5.0+ is "
+                     "supported, with Fast CUDA on 7.5+")}});
 #endif
     return options;
 }
@@ -374,6 +404,18 @@ bool SearchController::cudaCalibrationEnabled() const {
 
 bool SearchController::cudaSessionSpecializationEnabled() const {
     return cudaSessionSpecializationEnabled_;
+}
+
+bool SearchController::cudaAvailable() const {
+    return cudaAvailable_;
+}
+
+bool SearchController::cudaFastModeAvailable() const {
+    return cudaFastModeAvailable_;
+}
+
+QString SearchController::cudaStatusText() const {
+    return cudaStatusText_;
 }
 
 bool SearchController::randomizeSeedsOnStart() const {
@@ -1221,6 +1263,9 @@ SearchController::ValidationResult SearchController::validate() const {
     }
 #if FOREVERVALIDATOR_HAS_CUDA
     if (simulationBackend_ == PhysicsBackend::Cuda) {
+        if (!cudaAvailable_) {
+            return {{}, cudaStatusText_};
+        }
         if (configuration.evaluationTarget.id ==
             kCustomVolumeEntryEvaluationId) {
             return {
@@ -1262,7 +1307,7 @@ SearchController::ValidationResult SearchController::validate() const {
     request.evaluationTarget = configuration.evaluationTarget;
     request.baseInputCommands = parsedBaseInputCommands_;
     request.useCudaSessionSpecialization =
-            cudaSessionSpecializationEnabled_;
+            cudaSessionSpecializationEnabled_ && cudaFastModeAvailable_;
     request.simulationHorizonMs = simulationHorizonMs;
     request.condition = std::move(condition.program);
     return {std::move(request), {}};

@@ -7,6 +7,8 @@
 #include "app/search_controller.h"
 #include "app/search_worker.h"
 
+#include <forevervalidator/validation.h>
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -1083,10 +1085,18 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                           QStringLiteral("cuda"),
                           QStringLiteral("CUDA"),
                           QStringLiteral(
-                                  "Fastest runtime optimized for Stadium, "
-                                  "needs a modern NVIDIA GPU and may break "
-                                  "compatibility in other environments")),
+                                  "NVIDIA CUDA for Stadium; compute "
+                                  "capability 5.0+ is supported, with Fast "
+                                  "CUDA on 7.5+")),
                   "CUDA metadata was not exposed");
+    const forevervalidator::CudaBackendDiagnostics cudaDiagnostics =
+            forevervalidator::QueryCudaBackendDiagnostics();
+    okay &= Check(controller.cudaAvailable() == cudaDiagnostics.IsReady() &&
+                          controller.cudaFastModeAvailable() ==
+                                  cudaDiagnostics
+                                          .SupportsSessionSpecialization() &&
+                          !controller.cudaStatusText().isEmpty(),
+                  "CUDA compatibility status did not match runtime diagnostics");
 #endif
     okay &= Check(controller.cudaParallelSampleCount() ==
                           QString::number(
@@ -1176,35 +1186,42 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
 #if FOREVERVALIDATOR_HAS_CUDA
     controller.setSimulationBackendId(QStringLiteral("cuda"));
-    okay &= Check(controller.simulationBackendId() ==
-                          QStringLiteral("cuda") &&
-                          controller.canStart(),
+    okay &= Check(controller.simulationBackendId() == QStringLiteral("cuda"),
                   "CUDA backend was not selectable");
-    controller.setCudaParallelSampleCount(QStringLiteral("0"));
-    okay &= Check(!controller.canStart(),
-                  "zero CUDA parallel samples enabled Start");
-    controller.setCudaParallelSampleCount(QStringLiteral("8192"));
-    okay &= Check(controller.canStart(),
-                  "CUDA batch size above 4096 did not enable Start");
-    controller.setCudaParallelSampleCount(QStringLiteral("4294967296"));
-    okay &= Check(!controller.canStart(),
-                  "unrepresentable CUDA parallel sample count enabled Start");
-    controller.setCudaCalibrationEnabled(true);
-    okay &= Check(controller.cudaCalibrationEnabled() &&
-                          controller.canStart(),
-                  "CUDA calibration depended on the manual sample count");
-    controller.setCudaCalibrationEnabled(false);
-    okay &= Check(!controller.canStart(),
-                  "manual CUDA mode ignored its invalid sample count");
-    controller.setCudaParallelSampleCount(QStringLiteral("512"));
-    controller.setCudaSessionSpecializationEnabled(false);
-    okay &= Check(!controller.cudaSessionSpecializationEnabled() &&
-                          controller.canStart(),
-                  "regular CUDA mode was not selectable");
-    controller.setCudaSessionSpecializationEnabled(true);
-    okay &= Check(controller.cudaSessionSpecializationEnabled() &&
-                          controller.canStart(),
-                  "CUDA fast mode was not selectable");
+    if (controller.cudaAvailable()) {
+        okay &= Check(controller.canStart(),
+                      "available CUDA backend did not enable Start");
+        controller.setCudaParallelSampleCount(QStringLiteral("0"));
+        okay &= Check(!controller.canStart(),
+                      "zero CUDA parallel samples enabled Start");
+        controller.setCudaParallelSampleCount(QStringLiteral("8192"));
+        okay &= Check(controller.canStart(),
+                      "CUDA batch size above 4096 did not enable Start");
+        controller.setCudaParallelSampleCount(QStringLiteral("4294967296"));
+        okay &= Check(!controller.canStart(),
+                      "unrepresentable CUDA parallel sample count enabled Start");
+        controller.setCudaCalibrationEnabled(true);
+        okay &= Check(controller.cudaCalibrationEnabled() &&
+                              controller.canStart(),
+                      "CUDA calibration depended on the manual sample count");
+        controller.setCudaCalibrationEnabled(false);
+        okay &= Check(!controller.canStart(),
+                      "manual CUDA mode ignored its invalid sample count");
+        controller.setCudaParallelSampleCount(QStringLiteral("512"));
+        controller.setCudaSessionSpecializationEnabled(false);
+        okay &= Check(!controller.cudaSessionSpecializationEnabled() &&
+                              controller.canStart(),
+                      "regular CUDA mode was not selectable");
+        controller.setCudaSessionSpecializationEnabled(true);
+        okay &= Check(controller.cudaSessionSpecializationEnabled() &&
+                              controller.canStart(),
+                      "CUDA fast preference was not selectable");
+    } else {
+        okay &= Check(!controller.canStart() &&
+                              controller.validationMessage() ==
+                                      controller.cudaStatusText(),
+                      "unavailable CUDA backend did not expose its incompatibility");
+    }
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
 #endif
     controller.setSimulationBackendId(QStringLiteral("missing-backend"));

@@ -181,8 +181,9 @@ def release_assets(manifest: dict, dist: Path) -> list[Path]:
 def release_notes(manifest: dict) -> str:
     return f"""ForeverTAS {manifest['release']['version']}
 
-- Search, scripting, telemetry, race-viewer, and map-rendering fixes for the 0.2.2 release.
-- CUDA acceleration supports NVIDIA GeForce GTX 900-series through RTX 50-series GPUs, plus many NVIDIA Quadro/RTX workstation GPUs. CPU mode works without an NVIDIA GPU.
+- Regular CUDA now supports NVIDIA GPUs with compute capability 5.0+, including GeForce GTX 750/750 Ti and newer supported architectures in the release build.
+- Fast CUDA requires compute capability 7.5+ and automatically falls back to regular CUDA on older supported GPUs. The UI reports CUDA and Fast CUDA compatibility explicitly.
+- The race viewer no longer depends on the selected CUDA search backend.
 - Linux x86_64 AppImage and Windows x86_64 ZIP are attached below.
 """
 

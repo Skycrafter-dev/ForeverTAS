@@ -1003,6 +1003,10 @@ int main(int argc, char **argv) {
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(QStringLiteral(
                                             "cudaSessionSpecializationSection")));
+                    auto *const cudaCompatibilityStatus =
+                            qobject_cast<QQuickItem *>(
+                                    root->findChild<QObject *>(QStringLiteral(
+                                            "cudaCompatibilityStatus")));
                     QObject *const cudaSessionSpecializationSwitch =
                             root->findChild<QObject *>(QStringLiteral(
                                     "cudaSessionSpecializationSwitch"));
@@ -2397,32 +2401,66 @@ int main(int argc, char **argv) {
                                                                     ->parentItem(),
                                                             QPointF{})
                                                     .y() &&
+                                    cudaCompatibilityStatus != nullptr &&
+                                    cudaCompatibilityStatus->isVisible() &&
+                                    cudaCompatibilityStatus
+                                                    ->property("text")
+                                                    .toString() ==
+                                            controller.cudaStatusText() &&
+                                    !controller.cudaStatusText().isEmpty() &&
                                     cudaSessionSpecializationSwitch != nullptr &&
-                                    cudaSessionSpecializationSwitch
-                                            ->property("checked")
-                                            .toBool() &&
                                     cudaSessionSpecializationWarning != nullptr &&
-                                    cudaSessionSpecializationWarning
-                                            ->property("text")
-                                            .toString()
-                                            .contains(QStringLiteral("stunts")) &&
-                                    cudaSessionSpecializationWarning
-                                            ->property("text")
-                                            .toString()
-                                            .contains(QStringLiteral("respawns")) &&
-                                    cudaSessionSpecializationWarning
-                                            ->property("text")
-                                            .toString()
-                                            .contains(QStringLiteral(
-                                                    "Regular CUDA is safer")) &&
                                     ContainsText(
                                             root,
                                             QStringLiteral(
-                                                    "Fastest runtime optimized "
-                                                    "for Stadium, needs a "
-                                                    "modern NVIDIA GPU and may "
-                                                    "break compatibility in "
-                                                    "other environments"));
+                                                    "NVIDIA CUDA for Stadium; "
+                                                    "compute capability 5.0+ "
+                                                    "is supported, with Fast "
+                                                    "CUDA on 7.5+"));
+                            if (controller.cudaFastModeAvailable()) {
+                                backendSelectorValid &=
+                                        cudaSessionSpecializationSwitch
+                                                ->property("checked")
+                                                .toBool() &&
+                                        cudaSessionSpecializationSwitch
+                                                ->property("enabled")
+                                                .toBool() &&
+                                        cudaSessionSpecializationWarning
+                                                ->property("text")
+                                                .toString()
+                                                .contains(QStringLiteral("stunts")) &&
+                                        cudaSessionSpecializationWarning
+                                                ->property("text")
+                                                .toString()
+                                                .contains(QStringLiteral("respawns")) &&
+                                        cudaSessionSpecializationWarning
+                                                ->property("text")
+                                                .toString()
+                                                .contains(QStringLiteral(
+                                                        "Regular CUDA is safer"));
+                            } else {
+                                const QString warning =
+                                        cudaSessionSpecializationWarning
+                                                ->property("text")
+                                                .toString();
+                                backendSelectorValid &=
+                                        !cudaSessionSpecializationSwitch
+                                                 ->property("checked")
+                                                 .toBool() &&
+                                        !cudaSessionSpecializationSwitch
+                                                 ->property("enabled")
+                                                 .toBool() &&
+                                        (controller.cudaAvailable()
+                                                 ? warning.contains(
+                                                           QStringLiteral(
+                                                                   "compute capability 7.5")) &&
+                                                           warning.contains(
+                                                                   QStringLiteral(
+                                                                           "Regular CUDA will be used automatically"))
+                                                 : warning.contains(
+                                                           QStringLiteral(
+                                                                   "CUDA is not available")));
+                            }
                             controller.setCudaCalibrationEnabled(true);
                             controller.setCudaParallelSampleCount(
                                     QStringLiteral("512"));
@@ -2439,24 +2477,34 @@ int main(int argc, char **argv) {
                                             QStringLiteral("512") &&
                                     !cudaSessionSpecializationSwitch
                                              ->property("checked")
-                                             .toBool() &&
-                                    cudaSessionSpecializationWarning
-                                            ->property("text")
-                                            .toString()
-                                            .startsWith(QStringLiteral(
-                                                    "Fast mode is off."));
+                                             .toBool();
+                            if (controller.cudaFastModeAvailable()) {
+                                backendSelectorValid &=
+                                        cudaSessionSpecializationWarning
+                                                ->property("text")
+                                                .toString()
+                                                .startsWith(QStringLiteral(
+                                                        "Fast mode is off."));
+                            }
                             controller.setCudaSessionSpecializationEnabled(
                                     true);
                             QCoreApplication::processEvents();
-                            backendSelectorValid &=
-                                    cudaSessionSpecializationSwitch
-                                            ->property("checked")
-                                            .toBool() &&
-                                    cudaSessionSpecializationWarning
-                                            ->property("text")
-                                            .toString()
-                                            .startsWith(QStringLiteral(
-                                                    "Fast mode is on."));
+                            if (controller.cudaFastModeAvailable()) {
+                                backendSelectorValid &=
+                                        cudaSessionSpecializationSwitch
+                                                ->property("checked")
+                                                .toBool() &&
+                                        cudaSessionSpecializationWarning
+                                                ->property("text")
+                                                .toString()
+                                                .startsWith(QStringLiteral(
+                                                        "Fast mode is on."));
+                            } else {
+                                backendSelectorValid &=
+                                        !cudaSessionSpecializationSwitch
+                                                 ->property("checked")
+                                                 .toBool();
+                            }
                         }
 #endif
                         controller.setSimulationBackendId(
@@ -2465,7 +2513,9 @@ int main(int argc, char **argv) {
 #if FOREVERVALIDATOR_HAS_CUDA
                         backendSelectorValid &=
                                 cudaSessionSpecializationSection != nullptr &&
-                                !cudaSessionSpecializationSection->isVisible();
+                                !cudaSessionSpecializationSection->isVisible() &&
+                                cudaCompatibilityStatus != nullptr &&
+                                !cudaCompatibilityStatus->isVisible();
 #endif
                     }
                     const bool algorithmSelectorsValid =

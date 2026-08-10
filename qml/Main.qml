@@ -3953,8 +3953,7 @@ ApplicationWindow {
                                 highlighted: true
                                 onClicked: window.viewer.loadMap(
                                     window.controller.packsDirectory,
-                                    window.controller.replayPath,
-                                    window.controller.simulationBackendId)
+                                    window.controller.replayPath)
                             }
 
                             ThemedButton {
@@ -4200,7 +4199,7 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             text: window.controller.simulationBackendId
                                   === "cuda"
-                                  ? qsTr("Fastest runtime optimized for Stadium, needs a modern NVIDIA GPU and may break compatibility in other environments")
+                                  ? qsTr("NVIDIA CUDA for Stadium; compute capability 5.0+ is supported, with Fast CUDA on 7.5+")
                                   : window.controller.simulationBackendId
                                     === "optimized-cpu"
                                     ? qsTr("Faster runtime optimized for Stadium, may break compatibility in other environments")
@@ -4209,6 +4208,21 @@ ApplicationWindow {
                                       ? qsTr("Runs independent optimized CPU simulations across multiple worker threads")
                                     : qsTr("Broadest compatibility")
                             color: AppTheme.textMuted
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                        }
+
+                        Label {
+                            objectName: "cudaCompatibilityStatus"
+                            Layout.fillWidth: true
+                            visible: window.controller.simulationBackendId
+                                     === "cuda"
+                            text: window.controller.cudaStatusText
+                            color: !window.controller.cudaAvailable
+                                   ? AppTheme.error
+                                   : !window.controller.cudaFastModeAvailable
+                                     ? AppTheme.warning
+                                     : AppTheme.success
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11
                         }
@@ -4415,8 +4429,12 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             text: qsTr("Use the faster CUDA kernel")
                             checked: window.controller
-                                .cudaSessionSpecializationEnabled
+                                         .cudaSessionSpecializationEnabled
+                                     && window.controller
+                                         .cudaFastModeAvailable
                             enabled: !window.controller.running
+                                     && window.controller
+                                         .cudaFastModeAvailable
                             onToggled: window.controller
                                 .cudaSessionSpecializationEnabled = checked
                             Accessible.name: text
@@ -4425,11 +4443,15 @@ ApplicationWindow {
                         Label {
                             objectName: "cudaSessionSpecializationWarning"
                             Layout.fillWidth: true
-                            text: (window.controller
-                                       .cudaSessionSpecializationEnabled
-                                   ? qsTr("Fast mode is on. Its kernel is built once for this map. ")
-                                   : qsTr("Fast mode is off. Its kernel will not be built. "))
-                                  + qsTr("Fast mode is for normal Stadium runs. It can give wrong results or fail when the run uses stunts, respawns, car resets, or unusual map physics. Turn it off for those runs. Regular CUDA is safer, but slower.")
+                            text: !window.controller.cudaAvailable
+                                  ? qsTr("Fast CUDA is unavailable because CUDA is not available on this system.")
+                                  : !window.controller.cudaFastModeAvailable
+                                    ? qsTr("Fast CUDA is unavailable on this GPU because it requires compute capability 7.5 or newer. Regular CUDA will be used automatically.")
+                                    : (window.controller
+                                         .cudaSessionSpecializationEnabled
+                                       ? qsTr("Fast mode is on. Its kernel is built once for this map. ")
+                                       : qsTr("Fast mode is off. Its kernel will not be built. "))
+                                      + qsTr("Fast mode is for normal Stadium runs. It can give wrong results or fail when the run uses stunts, respawns, car resets, or unusual map physics. Turn it off for those runs. Regular CUDA is safer, but slower.")
                             color: AppTheme.textMuted
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11
