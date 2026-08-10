@@ -5,6 +5,7 @@
 
 #include <QApplication>
 #include <QCoreApplication>
+#include <QGuiApplication>
 #include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
@@ -12,6 +13,19 @@
 #include <QVariant>
 
 int main(int argc, char **argv) {
+#if defined(Q_OS_LINUX)
+    const QString currentDesktop =
+            qEnvironmentVariable("XDG_CURRENT_DESKTOP");
+    if (qEnvironmentVariableIsSet("KDE_FULL_SESSION") ||
+        currentDesktop.contains(QStringLiteral("KDE"), Qt::CaseInsensitive)) {
+        // KDE Plasma's Qt platform theme can leave Qt Quick 3D View3D
+        // offscreen output transparent on affected Qt/Wayland combinations.
+        // ForeverTAS owns its application palette and QML styling, so avoid
+        // importing desktop settings while retaining the native Wayland
+        // platform and the user's KDE session environment.
+        QGuiApplication::setDesktopSettingsAware(false);
+    }
+#endif
     QQuickStyle::setStyle(QStringLiteral("Basic"));
     QApplication application(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("ForeverTAS"));
