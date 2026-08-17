@@ -14,6 +14,11 @@ ApplicationWindow {
     required property var viewer
 
     property string renderMode: "textured"
+
+    onRenderModeChanged: {
+        if (window.controller.renderMode !== renderMode)
+            window.controller.renderMode = renderMode
+    }
     property bool codeEditorExpanded: false
     readonly property bool rayTracingEnabled:
         renderMode === "textured-rt"
@@ -126,10 +131,15 @@ ApplicationWindow {
         }
     }
 
-    Component.onCompleted: Qt.callLater(function() {
-        if (window.viewer.loaded)
-            viewport.resetCameraFocus()
-    })
+    Component.onCompleted: {
+        renderMode = window.controller.renderMode
+        if (renderMode === "textured-rt" && !gpuRayTracingView.supported)
+            renderMode = "textured"
+        Qt.callLater(function() {
+            if (window.viewer.loaded)
+                viewport.resetCameraFocus()
+        })
+    }
 
     Connections {
         target: window.viewer
@@ -2887,7 +2897,10 @@ ApplicationWindow {
                                 }
                                 ToolTip.visible: hovered
                                 ToolTip.delay: 350
-                                ToolTip.text: qsTr("Free camera")
+                                ToolTip.text: qsTr(
+                                    "Free camera (7): drag to rotate, wheel "
+                                    + "to zoom, WASD/arrows to move, E/C "
+                                    + "for up/down")
                             }
 
                             ThemedButton {
@@ -3260,6 +3273,25 @@ ApplicationWindow {
                                          ]
                                 textRole: "text"
                                 valueRole: "value"
+
+                                function synchronizeSelection() {
+                                    const index = indexOfValue(
+                                        window.renderMode)
+                                    if (index >= 0 && currentIndex !== index)
+                                        currentIndex = index
+                                }
+
+                                Component.onCompleted:
+                                    synchronizeSelection()
+                                onModelChanged:
+                                    Qt.callLater(synchronizeSelection)
+                                Connections {
+                                    target: window
+                                    function onRenderModeChanged() {
+                                        renderModeSelector
+                                            .synchronizeSelection()
+                                    }
+                                }
                                 onActivated:
                                     window.renderMode = currentValue
 
@@ -3297,7 +3329,7 @@ ApplicationWindow {
                         anchors.bottomMargin: 20
                         z: 3
                         visible: !viewport.exportingWhiteboardImage
-                        width: 430
+                        width: Math.min(430, parent.width - 24)
                         height: 58
                         radius: 16
                         color: AppTheme.viewerOverlay
@@ -3515,7 +3547,12 @@ ApplicationWindow {
                                         }
                                     }
                                 }
-
+                                ToolTip.visible: hovered
+                                ToolTip.delay: 350
+                                ToolTip.text: qsTr(
+                                    "Drive manually with the arrow keys or "
+                                    + "WASD (ZQSD on AZERTY). Delete gives "
+                                    + "up; Enter or Backspace respawns.")
                             }
 
                             ThemedCheckBox {
@@ -4039,10 +4076,8 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             visible: text.length > 0
                             text: window.controller.replayInputStatusText
-                            color: text.indexOf(qsTr("failed")) >= 0
-                                   || text.indexOf(qsTr("discarded")) >= 0
-                                   ? AppTheme.error
-                                   : AppTheme.success
+                            color: window.controller.replayInputStatusIsError
+                                   ? AppTheme.error : AppTheme.success
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11
                         }
@@ -4578,6 +4613,19 @@ ApplicationWindow {
                         font.pixelSize: 12
                     }
 
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 20
+                        Layout.rightMargin: 20
+                        visible: window.controller.running
+                        wrapMode: Text.WordWrap
+                        text: qsTr("The search runs with the configuration "
+                                   + "from its Start; edits made now apply "
+                                   + "to the next search.")
+                        color: AppTheme.textMuted
+                        font.pixelSize: 11
+                    }
+
                     RowLayout {
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
@@ -4767,8 +4815,7 @@ ApplicationWindow {
                             visible: text.length > 0
                             text: window.controller.resultText
                             wrapMode: Text.WordWrap
-                            color: window.controller.statusText
-                                           === qsTr("Search failed")
+                            color: window.controller.lastRunFailed
                                    ? AppTheme.error
                                    : AppTheme.text
                         }

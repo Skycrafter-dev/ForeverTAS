@@ -44,6 +44,7 @@ constexpr char kRandomizeSeedsOnStartKey[] =
         "search/randomizeSeedsOnStart";
 constexpr char kDrawTargetsThroughBlocksKey[] =
         "viewer/drawTargetsThroughBlocks";
+constexpr char kRenderModeKey[] = "viewer/renderMode";
 constexpr char kDarkModeKey[] = "appearance/darkMode";
 std::atomic_bool gAutomaticPacksSearchScheduled{false};
 
@@ -283,6 +284,10 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             .toBool();
     darkMode_ =
             QSettings().value(QLatin1String(kDarkModeKey), false).toBool();
+    renderMode_ = QSettings()
+            .value(QLatin1String(kRenderModeKey),
+                   QStringLiteral("textured"))
+            .toString();
     ApplyApplicationPalette(darkMode_);
     const QString storedBackend = StoredValue(
             kSimulationBackendKey,
@@ -444,6 +449,10 @@ bool SearchController::randomizeSeedsOnStart() const {
 
 bool SearchController::drawTargetsThroughBlocks() const {
     return drawTargetsThroughBlocks_;
+}
+
+QString SearchController::renderMode() const {
+    return renderMode_;
 }
 
 bool SearchController::darkMode() const {
@@ -692,6 +701,15 @@ void SearchController::setDarkMode(bool value) {
     emit darkModeChanged();
 }
 
+void SearchController::setRenderMode(const QString &value) {
+    if (renderMode_ == value) {
+        return;
+    }
+    renderMode_ = value;
+    QSettings().setValue(QLatin1String(kRenderModeKey), value);
+    emit renderModeChanged();
+}
+
 void SearchController::setEvaluationTargetId(const QString &value) {
     setEvaluatorBlock(QStringLiteral("evaluate/") + value);
 }
@@ -880,18 +898,21 @@ void SearchController::extractReplayInputs() {
                                                 .absoluteFilePath()) {
                                 setReplayInputStatusText(QStringLiteral(
                                         "Replay selection changed; extracted "
-                                        "inputs were discarded."));
+                                        "inputs were discarded."),
+                                                          true);
                             } else if (!result.error.isEmpty()) {
                                 setReplayInputStatusText(
                                         QStringLiteral(
                                                 "Input extraction failed: %1")
-                                                .arg(result.error));
+                                                .arg(result.error),
+                                        true);
                             } else if (baseInputScript_ !=
                                        scriptAtExtractionStart) {
                                 setReplayInputStatusText(QStringLiteral(
                                         "Base input script was edited while "
                                         "extracting; extracted inputs were "
-                                        "discarded."));
+                                        "discarded."),
+                                                          true);
                             } else {
                                 setBaseInputScript(result.script);
                                 setReplayInputStatusText(
@@ -1009,10 +1030,12 @@ void SearchController::startSearch() {
                 setResultText(completion->summary);
                 setBestInputsText(completion->inputsText);
                 setProgress(false, 1.0);
+                lastRunFailed_ = false;
                 setStatusText(QStringLiteral("Search complete"));
                 emit searchCompleted(std::move(completion));
             });
     connect(worker, &SearchWorker::cancelled, this, [this]() {
+        lastRunFailed_ = false;
         setStatusText(QStringLiteral("Search aborted"));
         setProgress(false, progressValue_);
     });
@@ -1021,6 +1044,7 @@ void SearchController::startSearch() {
             this,
             [this](const QString &message) {
                 setResultText(message);
+                lastRunFailed_ = true;
                 setStatusText(QStringLiteral("Search failed"));
                 setProgress(false, progressValue_);
             });
@@ -1254,11 +1278,22 @@ void SearchController::setExtractingReplayInputs(bool value) {
     }
 }
 
-void SearchController::setReplayInputStatusText(const QString &value) {
-    if (replayInputStatusText_ == value) {
+bool SearchController::replayInputStatusIsError() const {
+    return replayInputStatusIsError_;
+}
+
+bool SearchController::lastRunFailed() const {
+    return lastRunFailed_;
+}
+
+void SearchController::setReplayInputStatusText(const QString &value,
+                                                bool isError) {
+    if (replayInputStatusText_ == value &&
+        replayInputStatusIsError_ == isError) {
         return;
     }
     replayInputStatusText_ = value;
+    replayInputStatusIsError_ = isError;
     emit replayInputStateChanged();
 }
 

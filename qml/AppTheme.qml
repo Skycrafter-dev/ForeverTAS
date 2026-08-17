@@ -29,7 +29,7 @@ QtObject {
     readonly property color accentPressed: dark ? "#359962" : "#1d5c3d"
     readonly property color accentSoft: dark ? "#234d35" : "#e7f2eb"
     readonly property color accentBorder: dark ? "#4d9369" : "#8eb49d"
-    readonly property color focus: dark ? "#73d59d" : "#315f8f"
+    readonly property color focus: dark ? "#73d59d" : "#2f7b50"
     readonly property color selection: dark ? "#2f5d42" : "#dce9e0"
 
     readonly property color success: dark ? "#62d090" : "#2f7b50"

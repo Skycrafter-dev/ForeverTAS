@@ -76,6 +76,8 @@ class SearchController final : public QObject {
                        drawTargetsThroughBlocksChanged)
     Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY
                        darkModeChanged)
+    Q_PROPERTY(QString renderMode READ renderMode WRITE setRenderMode NOTIFY
+                       renderModeChanged)
     Q_PROPERTY(QVariantList blockPalette READ blockPalette CONSTANT)
     Q_PROPERTY(QVariantMap blockScript READ blockScript NOTIFY
                        blockStructureChanged)
@@ -112,6 +114,10 @@ class SearchController final : public QObject {
     Q_PROPERTY(QString throughputText READ throughputText NOTIFY metricsChanged)
     Q_PROPERTY(QString elapsedText READ elapsedText NOTIFY metricsChanged)
     Q_PROPERTY(QString resultText READ resultText NOTIFY resultChanged)
+    Q_PROPERTY(bool lastRunFailed READ lastRunFailed NOTIFY statusChanged)
+    Q_PROPERTY(
+            bool replayInputStatusIsError READ replayInputStatusIsError NOTIFY
+                    replayInputStateChanged)
     Q_PROPERTY(QString bestInputsText READ bestInputsText NOTIFY resultChanged)
 
 public:
@@ -129,6 +135,8 @@ public:
     bool extractingReplayInputs() const;
     bool canExtractReplayInputs() const;
     QString replayInputStatusText() const;
+    bool replayInputStatusIsError() const;
+    bool lastRunFailed() const;
     QVariantList simulationBackendOptions() const;
     QString simulationBackendId() const;
     QString simulationHorizonMs() const;
@@ -143,6 +151,7 @@ public:
     bool randomizeSeedsOnStart() const;
     bool drawTargetsThroughBlocks() const;
     bool darkMode() const;
+    QString renderMode() const;
     QVariantList blockPalette() const;
     QVariantMap blockScript() const;
     QString programText() const;
@@ -181,6 +190,7 @@ public slots:
     void setRandomizeSeedsOnStart(bool value);
     void setDrawTargetsThroughBlocks(bool value);
     void setDarkMode(bool value);
+    void setRenderMode(const QString &value);
     void setEvaluationTargetId(const QString &value);
 
     Q_INVOKABLE void browseForPacksDirectory();
@@ -229,6 +239,7 @@ signals:
     void randomizeSeedsOnStartChanged();
     void drawTargetsThroughBlocksChanged();
     void darkModeChanged();
+    void renderModeChanged();
     void blockStructureChanged();
     void blockUpdated(int blockId);
     void programTextChanged();
@@ -270,7 +281,7 @@ private:
     void setResultText(const QString &value);
     void setBestInputsText(const QString &value);
     void setExtractingReplayInputs(bool value);
-    void setReplayInputStatusText(const QString &value);
+    void setReplayInputStatusText(const QString &value, bool isError = false);
     void setProgress(bool indeterminate, double value);
     void initialize(const QStringList *packsSearchPatterns);
     void scheduleAutoDetectPacksDirectory(
@@ -289,6 +300,8 @@ private:
     QString baseInputScriptError_;
     std::vector<QString> baseInputScriptUndoHistory_;
     QString replayInputStatusText_;
+    bool replayInputStatusIsError_ = false;
+    bool lastRunFailed_ = false;
     std::vector<ParsedInputCommand> parsedBaseInputCommands_;
     PhysicsBackend simulationBackend_ = PhysicsBackend::Reference;
     QString simulationHorizonMs_ = QString::number(
@@ -305,6 +318,7 @@ private:
     bool randomizeSeedsOnStart_ = true;
     bool drawTargetsThroughBlocks_ = false;
     bool darkMode_ = false;
+    QString renderMode_;
     BlockProgramModel configuration_;
     QString programTextError_;
     QString publishedEvaluationTargetId_;

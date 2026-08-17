@@ -37,9 +37,12 @@ QQuickItem *ScrollableFlickableAt(QQuickItem *item,
         return nullptr;
     }
 
-    for (QQuickItem *child : item->childItems()) {
+    // Visit children back-to-front so the visually topmost scrollable
+    // wins when siblings overlap.
+    const auto children = item->childItems();
+    for (auto it = children.rbegin(); it != children.rend(); ++it) {
         if (QQuickItem *const nested = ScrollableFlickableAt(
-                    child, outerFlickable, scenePosition)) {
+                    *it, outerFlickable, scenePosition)) {
             return nested;
         }
     }
@@ -101,7 +104,10 @@ bool PanelWheelRedirector::eventFilter(QObject *watched, QEvent *event) {
     const QPointF local = mapFromScene(wheel->position());
     if (!contains(local)) return false;
 
-    double deltaY = static_cast<double>(wheel->pixelDelta().y()) * 2.5;
+    // Trackpads report precise pixel deltas; map them 1:1. Coarse wheels
+    // report angle in eighths of a degree (120 per notch) and scroll the
+    // pane by that many pixels per notch.
+    double deltaY = static_cast<double>(wheel->pixelDelta().y());
     if (deltaY == 0.0) {
         deltaY = static_cast<double>(wheel->angleDelta().y());
     }
@@ -118,6 +124,25 @@ bool PanelWheelRedirector::eventFilter(QObject *watched, QEvent *event) {
     const double current = target->property("contentY").toDouble();
     const double next = std::clamp(current - deltaY, 0.0, maximum);
     target->setProperty("contentY", next);
+
+    if (nested != nullptr) {
+        // Chain whatever the nested list could not consume (it is at an
+        // extent) to the outer pane instead of swallowing the scroll.
+        const double leftover = (current - deltaY) - next;
+        if (std::abs(leftover) > 0.5) {
+            const double outerContentHeight =
+                    flickable_->property("contentHeight").toDouble();
+            const double outerMaximum = std::max(
+                    0.0,
+                    outerContentHeight - flickable_->height());
+            const double outerCurrent =
+                    flickable_->property("contentY").toDouble();
+            flickable_->setProperty(
+                    "contentY",
+                    std::clamp(outerCurrent + leftover, 0.0, outerMaximum));
+        }
+    }
+
     wheel->accept();
     return true;
 }
