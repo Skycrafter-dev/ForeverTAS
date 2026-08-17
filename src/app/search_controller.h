@@ -81,6 +81,8 @@ class SearchController final : public QObject {
     Q_PROPERTY(QVariantList blockPalette READ blockPalette CONSTANT)
     Q_PROPERTY(QVariantMap blockScript READ blockScript NOTIFY
                        blockStructureChanged)
+    Q_PROPERTY(QVariantList blockCanvas READ blockCanvas NOTIFY
+                       blockStructureChanged)
     Q_PROPERTY(QString programText READ programText NOTIFY
                        programTextChanged)
     Q_PROPERTY(QString programTextError READ programTextError NOTIFY
@@ -154,6 +156,7 @@ public:
     QString renderMode() const;
     QVariantList blockPalette() const;
     QVariantMap blockScript() const;
+    QVariantList blockCanvas() const;
     QString programText() const;
     QString programTextError() const;
     QString evaluationTargetId() const;
@@ -211,6 +214,15 @@ public slots:
     Q_INVOKABLE bool detachReporter(int blockId, const QString &key);
     Q_INVOKABLE bool moveBlock(int blockId, int toIndex);
     Q_INVOKABLE bool setBlockPosition(int blockId, double x, double y);
+    Q_INVOKABLE int addLooseBlock(const QString &definitionId,
+                                  double x,
+                                  double y);
+    Q_INVOKABLE bool attachBlock(int parentId, int index, int childId);
+    Q_INVOKABLE bool detachBlockToCanvas(int blockId, double x, double y);
+    Q_INVOKABLE bool graftReporterBlock(int blockId,
+                                        const QString &key,
+                                        int reporterId);
+    Q_INVOKABLE bool setEvaluatorBlockId(int blockId);
     Q_INVOKABLE bool setEvaluatorBlock(const QString &definitionId);
     Q_INVOKABLE void resetBlocks();
     Q_INVOKABLE bool applyProgramText(const QString &text);

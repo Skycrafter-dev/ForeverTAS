@@ -37,6 +37,7 @@ public:
     // Rendering views.
     QVariantList palette() const;
     QVariantMap scriptSummary() const;
+    QVariantList blockCanvas() const;
     Q_INVOKABLE QVariantMap blockData(int blockId) const;
 
     // Editing. Structural operations keep the single-script policy.
@@ -53,6 +54,20 @@ public:
     Q_INVOKABLE bool setBlockPosition(int blockId, double x, double y);
     Q_INVOKABLE bool setEvaluator(const QString &definitionId);
     Q_INVOKABLE void resetToDefault();
+
+    // Canvas editing. Drag-and-drop builds on these: every block can live
+    // loose on the canvas at any position and snaps into the script's
+    // stacks or number slots. `attachBlock`'s index refers to the parent's
+    // substack after the child is detached from its current parent.
+    Q_INVOKABLE int addLooseBlock(const QString &definitionId,
+                                  double x,
+                                  double y);
+    Q_INVOKABLE bool attachBlock(int parentId, int index, int childId);
+    Q_INVOKABLE bool detachBlockToCanvas(int blockId, double x, double y);
+    Q_INVOKABLE bool graftReporterBlock(int blockId,
+                                        const QString &key,
+                                        int reporterId);
+    Q_INVOKABLE bool setEvaluatorBlockId(int blockId);
 
     // Text interchange for tests and interchange with other tools.
     QString programText() const;

@@ -12,6 +12,7 @@
 #include <QSettings>
 
 #include <random>
+#include <set>
 #include <utility>
 
 
@@ -145,6 +146,31 @@ bool IsContainerNode(const blocks::BlockProgram &program,
             blocks::FindBlock(node->definitionId);
     return definition != nullptr &&
             definition->shape == blocks::BlockShape::Container;
+}
+
+// True when `candidate` lives anywhere inside `root`'s subtree (but is not
+// root itself); guards grafts against reference cycles.
+bool IsWithinSubtree(const blocks::BlockProgram &program,
+                     blocks::BlockId root,
+                     blocks::BlockId candidate) {
+    std::set<blocks::BlockId> visited;
+    std::vector<blocks::BlockId> pending{root};
+    while (!pending.empty()) {
+        const blocks::BlockId current = pending.back();
+        pending.pop_back();
+        if (!visited.insert(current).second) continue;
+        if (current == candidate && current != root) return true;
+        const blocks::BlockNode *const node = program.find(current);
+        if (node == nullptr) continue;
+        for (const blocks::BlockId child : node->substack) {
+            pending.push_back(child);
+        }
+        for (const auto &[key, child] : node->reporters) {
+            pending.push_back(child);
+        }
+        if (node->evaluator != 0) pending.push_back(node->evaluator);
+    }
+    return false;
 }
 
 }  // namespace
@@ -340,6 +366,32 @@ QVariantMap BlockProgramModel::scriptSummary() const {
     return summary;
 }
 
+QVariantList BlockProgramModel::blockCanvas() const {
+    QVariantList entries;
+    const blocks::BlockId hatId = scriptHat();
+    if (hatId != 0) {
+        const blocks::BlockNode *const hat = program_.find(hatId);
+        if (hat != nullptr) {
+            entries.push_back(QVariantMap{
+                    {QStringLiteral("blockId"), static_cast<int>(hatId)},
+                    {QStringLiteral("x"), hat->x},
+                    {QStringLiteral("y"), hat->y},
+                    {QStringLiteral("isScript"), true}});
+        }
+    }
+    for (const blocks::BlockId id : program_.topLevel()) {
+        if (id == hatId) continue;
+        const blocks::BlockNode *const node = program_.find(id);
+        if (node == nullptr) continue;
+        entries.push_back(QVariantMap{
+                {QStringLiteral("blockId"), static_cast<int>(id)},
+                {QStringLiteral("x"), node->x},
+                {QStringLiteral("y"), node->y},
+                {QStringLiteral("isScript"), false}});
+    }
+    return entries;
+}
+
 QVariantMap BlockProgramModel::blockData(int blockId) const {
     QVariantMap data;
     const blocks::BlockNode *const node =
@@ -370,6 +422,15 @@ QVariantMap BlockProgramModel::blockData(int blockId) const {
         fields.push_back(FieldData(program_, *node, field));
     }
     data.insert(QStringLiteral("fields"), fields);
+    data.insert(QStringLiteral("x"), node->x);
+    data.insert(QStringLiteral("y"), node->y);
+    QVariantList substack;
+    for (const blocks::BlockId childId : node->substack) {
+        substack.push_back(static_cast<int>(childId));
+    }
+    data.insert(QStringLiteral("substack"), substack);
+    data.insert(QStringLiteral("evaluator"),
+                static_cast<int>(node->evaluator));
     return data;
 }
 
@@ -557,6 +618,139 @@ bool BlockProgramModel::setBlockPosition(int blockId, double x, double y) {
     node->y = y;
     persist();
     emit blockChanged(blockId);
+    return true;
+}
+
+int BlockProgramModel::addLooseBlock(const QString &definitionId,
+                                     double x,
+                                     double y) {
+    const std::string id =
+            CanonicalBlockDefinition(definitionId.toStdString());
+    if (id.empty()) return 0;
+    const blocks::BlockDefinition *const definition = blocks::FindBlock(id);
+    if (definition == nullptr) return 0;
+    if (definition->shape == blocks::BlockShape::Hat) {
+        // Exactly one script exists; a dropped hat replaces it like a click.
+        return addBlock(definitionId) ? static_cast<int>(scriptHat()) : 0;
+    }
+    const blocks::BlockId created = program_.createBlock(
+            id,
+            definition->optionKind.empty() ? std::map<std::string, std::string>{}
+                                           : rememberedOr(id));
+    if (created == 0) return 0;
+    blocks::BlockNode *const node = program_.find(created);
+    node->x = x;
+    node->y = y;
+    persist();
+    emit structureChanged();
+    return static_cast<int>(created);
+}
+
+bool BlockProgramModel::attachBlock(int parentId, int index, int childId) {
+    if (index < 0) return false;
+    const blocks::BlockNode *const parent =
+            program_.find(static_cast<blocks::BlockId>(parentId));
+    blocks::BlockNode *const child =
+            program_.find(static_cast<blocks::BlockId>(childId));
+    if (parent == nullptr || child == nullptr || parent == child) {
+        return false;
+    }
+    const blocks::BlockDefinition *const parentDefinition =
+            blocks::FindBlock(parent->definitionId);
+    const blocks::BlockDefinition *const childDefinition =
+            blocks::FindBlock(child->definitionId);
+    if (parentDefinition == nullptr || childDefinition == nullptr) {
+        return false;
+    }
+    if (static_cast<blocks::BlockId>(childId) == scriptHat()) return false;
+    // Substacks follow the compile rules: windows under the hat, mutation
+    // atoms under windows, nothing else.
+    if (parentDefinition->shape == blocks::BlockShape::Hat) {
+        if (childDefinition->shape != blocks::BlockShape::Container) {
+            return false;
+        }
+    } else if (parentDefinition->shape == blocks::BlockShape::Container) {
+        if (childDefinition->shape != blocks::BlockShape::Stack ||
+            childDefinition->optionKind != "mutation") {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    if (IsWithinSubtree(program_,
+                        static_cast<blocks::BlockId>(childId),
+                        static_cast<blocks::BlockId>(parentId))) {
+        return false;
+    }
+    if (!program_.insertInSubstack(static_cast<blocks::BlockId>(parentId),
+                                   static_cast<std::size_t>(index),
+                                   static_cast<blocks::BlockId>(childId))) {
+        return false;
+    }
+    child->x = 0.0;
+    child->y = 0.0;
+    persist();
+    emit structureChanged();
+    return true;
+}
+
+bool BlockProgramModel::detachBlockToCanvas(int blockId, double x, double y) {
+    const blocks::BlockId id = static_cast<blocks::BlockId>(blockId);
+    if (id == scriptHat()) return false;
+    blocks::BlockNode *const node = program_.find(id);
+    if (node == nullptr) return false;
+    if (!program_.makeTopLevel(id)) return false;
+    node->x = x;
+    node->y = y;
+    persist();
+    emit structureChanged();
+    return true;
+}
+
+bool BlockProgramModel::graftReporterBlock(int blockId,
+                                           const QString &key,
+                                           int reporterId) {
+    const blocks::BlockId ownerId = static_cast<blocks::BlockId>(blockId);
+    const blocks::BlockId graftId = static_cast<blocks::BlockId>(reporterId);
+    if (ownerId == graftId) return false;
+    if (IsWithinSubtree(program_, graftId, ownerId)) return false;
+    blocks::BlockNode *const reporter = program_.find(graftId);
+    if (reporter == nullptr) return false;
+    if (!program_.graftReporter(ownerId, key.toStdString(), graftId)) {
+        return false;
+    }
+    reporter->x = 0.0;
+    reporter->y = 0.0;
+    persist();
+    // The reporter may have moved from the canvas or another slot, so the
+    // whole structure is re-read.
+    emit structureChanged();
+    return true;
+}
+
+bool BlockProgramModel::setEvaluatorBlockId(int blockId) {
+    const blocks::BlockId hatId = scriptHat();
+    if (hatId == 0) return false;
+    blocks::BlockNode *const node =
+            program_.find(static_cast<blocks::BlockId>(blockId));
+    if (node == nullptr) return false;
+    const blocks::BlockDefinition *const definition =
+            blocks::FindBlock(node->definitionId);
+    if (definition == nullptr || definition->optionKind != "evaluation") {
+        return false;
+    }
+    const blocks::BlockNode *const hat = program_.find(hatId);
+    if (hat->evaluator == node->id) return false;
+    if (hat->evaluator != 0) {
+        const blocks::BlockNode *const current =
+                program_.find(hat->evaluator);
+        if (current != nullptr) rememberFields(*current);
+    }
+    if (!program_.setEvaluator(hatId, node->id)) return false;
+    node->x = 0.0;
+    node->y = 0.0;
+    persist();
+    emit structureChanged();
     return true;
 }
 

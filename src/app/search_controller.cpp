@@ -751,6 +751,34 @@ bool SearchController::setBlockPosition(int blockId, double x, double y) {
     return configuration_.setBlockPosition(blockId, x, y);
 }
 
+QVariantList SearchController::blockCanvas() const {
+    return configuration_.blockCanvas();
+}
+
+int SearchController::addLooseBlock(const QString &definitionId,
+                                    double x,
+                                    double y) {
+    return configuration_.addLooseBlock(definitionId, x, y);
+}
+
+bool SearchController::attachBlock(int parentId, int index, int childId) {
+    return configuration_.attachBlock(parentId, index, childId);
+}
+
+bool SearchController::detachBlockToCanvas(int blockId, double x, double y) {
+    return configuration_.detachBlockToCanvas(blockId, x, y);
+}
+
+bool SearchController::graftReporterBlock(int blockId,
+                                          const QString &key,
+                                          int reporterId) {
+    return configuration_.graftReporterBlock(blockId, key, reporterId);
+}
+
+bool SearchController::setEvaluatorBlockId(int blockId) {
+    return configuration_.setEvaluatorBlockId(blockId);
+}
+
 bool SearchController::setEvaluatorBlock(const QString &definitionId) {
     return configuration_.setEvaluator(definitionId);
 }

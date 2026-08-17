@@ -1477,6 +1477,213 @@ bool TestCompositionEditing(const QString &packsDirectory,
     return okay;
 }
 
+QVariantMap CanvasEntry(const SearchController &controller, int blockId) {
+    for (const QVariant &value : controller.blockCanvas()) {
+        const QVariantMap entry = value.toMap();
+        if (entry.value(QStringLiteral("blockId")).toInt() == blockId) {
+            return entry;
+        }
+    }
+    return {};
+}
+
+bool CanvasHasEntry(const SearchController &controller, int blockId) {
+    return !CanvasEntry(controller, blockId).isEmpty();
+}
+
+bool TestBlockCanvasEditing(const QString &packsDirectory,
+                            const QString &replayPath) {
+    QSettings().clear();
+    SearchController controller;
+    SetValidPaths(controller, packsDirectory, replayPath);
+
+    QVariantList canvas = controller.blockCanvas();
+    bool okay = Check(
+            canvas.size() == 1 &&
+                    canvas.front().toMap()
+                            .value(QStringLiteral("isScript"))
+                            .toBool() &&
+                    canvas.front().toMap()
+                                .value(QStringLiteral("blockId"))
+                                .toInt() == HatBlockId(controller),
+            "canvas did not open with the script hat as its only entry");
+
+    // Structure is renderable from blockData alone.
+    const QVariantMap hatData = controller.blockData(HatBlockId(controller));
+    okay &= Check(
+            hatData.value(QStringLiteral("evaluator")).toInt() ==
+                            EvaluatorBlockId(controller) &&
+                    !hatData.value(QStringLiteral("substack"))
+                             .toList()
+                             .isEmpty(),
+            "hat blockData lacks the structural evaluator/substack ids");
+
+    // A palette drop creates a loose block at the drop position.
+    const int numberId =
+            controller.addLooseBlock(QStringLiteral("values/number"), 40, 90);
+    okay &= Check(numberId != 0 &&
+                          CanvasHasEntry(controller, numberId),
+                  "loose value block was not placed on the canvas");
+    QVariantMap entry = CanvasEntry(controller, numberId);
+    okay &= Check(
+            !entry.value(QStringLiteral("isScript")).toBool() &&
+                    entry.value(QStringLiteral("x")).toDouble() == 40.0 &&
+                    entry.value(QStringLiteral("y")).toDouble() == 90.0 &&
+                    controller.blockData(numberId)
+                                .value(QStringLiteral("x"))
+                                .toDouble() == 40.0,
+            "loose block position was not stored or exposed");
+    okay &= Check(!controller.attachBlock(HatBlockId(controller), 0,
+                                          numberId),
+                  "a reporter stacked under the hat was accepted");
+
+    // Detaching a window carries its atoms; the script reacts.
+    const int windowId = MutatorBlockId(controller, 0);
+    const int atomId = FirstWindowAtomId(controller.blockScript(), 0);
+    okay &= Check(!controller.detachBlockToCanvas(
+                          HatBlockId(controller), 10, 10),
+                  "the script hat was detached from itself");
+    okay &= Check(controller.detachBlockToCanvas(windowId, 120, 80) &&
+                          CanvasHasEntry(controller, windowId) &&
+                          MutatorBlockIds(controller.blockScript())
+                                  .isEmpty() &&
+                          !controller.canStart(),
+                  "window detach did not empty the script or block Start");
+    {
+        const QVariantMap windowData = controller.blockData(windowId);
+        okay &= Check(windowData.value(QStringLiteral("substack"))
+                              .toList()
+                              .contains(atomId),
+                      "detached window lost its atoms");
+    }
+    okay &= Check(controller.attachBlock(HatBlockId(controller), 0,
+                                         windowId) &&
+                          !CanvasHasEntry(controller, windowId) &&
+                          MutatorBlockIds(controller.blockScript()).size() ==
+                                  1 &&
+                          FirstWindowAtomId(controller.blockScript(), 0) ==
+                                  atomId &&
+                          controller.canStart(),
+                  "window re-attach did not restore the script");
+
+    // Windows can be nested nowhere, atoms move between windows, and the
+    // attach index counts the substack after the child is detached.
+    controller.addBlock(QStringLiteral("mutate/window"));
+    controller.addBlock(QStringLiteral("mutate/reroll-steering"));
+    const int secondWindow = MutatorBlockId(controller, 1);
+    const int rerollId =
+            FirstWindowAtomId(controller.blockScript(), 1);
+    okay &= Check(!controller.attachBlock(secondWindow, 0, windowId),
+                  "a window nested inside a window was accepted");
+    okay &= Check(!controller.attachBlock(HatBlockId(controller), 0,
+                                          rerollId),
+                  "an atom stacked directly under the hat was accepted");
+    okay &= Check(controller.attachBlock(secondWindow, 0, atomId) &&
+                          FirstWindowAtomId(controller.blockScript(), 1) ==
+                                  atomId &&
+                          !WindowAtomIds(controller.blockScript(), 0)
+                                   .contains(atomId),
+                  "atom did not move between windows");
+    okay &= Check(controller.attachBlock(secondWindow, 2, atomId) &&
+                          WindowAtomIds(controller.blockScript(), 1)
+                                  .last()
+                                  .toInt() == atomId &&
+                          WindowAtomIds(controller.blockScript(), 1)
+                                  .first()
+                                  .toInt() == rerollId,
+                  "attach index did not follow detach-then-insert semantics");
+
+    // Loose reporters graft into number slots and leave the canvas.
+    const int graftedId =
+            controller.addLooseBlock(QStringLiteral("values/number"), 5, 5);
+    controller.setBlockField(graftedId, QStringLiteral("value"),
+                             QStringLiteral("1500"));
+    okay &= Check(controller.graftReporterBlock(
+                          windowId, QStringLiteral("minTimeMs"), graftedId) &&
+                          !CanvasHasEntry(controller, graftedId),
+                  "grafting a loose reporter did not remove it from the canvas");
+    {
+        bool chipFound = false;
+        const QVariantList fields =
+                controller.blockData(windowId)
+                        .value(QStringLiteral("fields"))
+                        .toList();
+        for (const QVariant &value : fields) {
+            const QVariantMap field = value.toMap();
+            if (field.value(QStringLiteral("key")).toString() !=
+                QStringLiteral("minTimeMs")) {
+                continue;
+            }
+            chipFound = field.value(QStringLiteral("reporter"))
+                                .toMap()
+                                .value(QStringLiteral("blockId"))
+                                .toInt() == graftedId;
+        }
+        okay &= Check(chipFound,
+                      "grafted reporter is not exposed on its slot");
+    }
+    okay &= Check(!controller.graftReporterBlock(
+                          graftedId, QStringLiteral("value"), graftedId),
+                  "grafting a block into its own slot was accepted");
+    const int parentOpId =
+            controller.addLooseBlock(QStringLiteral("values/add"), 6, 6);
+    const int nestedId = controller.attachReporter(
+            parentOpId, QStringLiteral("left"),
+            QStringLiteral("values/add"));
+    okay &= Check(nestedId != 0 &&
+                          !controller.graftReporterBlock(
+                                  nestedId, QStringLiteral("right"),
+                                  parentOpId),
+                  "grafting a reporter into its own descendant was accepted");
+
+    // Evaluation reporters snap into the evaluator socket and back out.
+    const int stuntId = controller.addLooseBlock(
+            QStringLiteral("evaluate/stunt-points"), 10, 20);
+    okay &= Check(stuntId != 0 &&
+                          !controller.setEvaluatorBlockId(graftedId) &&
+                          controller.setEvaluatorBlockId(stuntId) &&
+                          EvaluatorBlockId(controller) == stuntId &&
+                          controller.evaluationTargetId() ==
+                                  QStringLiteral("stunt-points") &&
+                          !CanvasHasEntry(controller, stuntId),
+                  "evaluation reporter did not snap into the evaluator socket");
+    okay &= Check(controller.detachBlockToCanvas(stuntId, 30, 50) &&
+                          controller.evaluationTargetId().isEmpty() &&
+                          !controller.canStart() &&
+                          controller.setEvaluatorBlockId(stuntId) &&
+                          EvaluatorBlockId(controller) == stuntId,
+                  "evaluator detach or re-attach lost the block");
+
+    // Canvas contents, positions, and wiring survive persistence.
+    const QVariantList before = controller.blockCanvas();
+    const int windowCount =
+            MutatorBlockIds(controller.blockScript()).size();
+    QSettings().sync();
+    {
+        SearchController restored;
+        const QVariantList after = restored.blockCanvas();
+        bool same = after.size() == before.size();
+        for (const QVariant &value : before) {
+            const QVariantMap expected = value.toMap();
+            const QVariantMap found = CanvasEntry(
+                    restored,
+                    expected.value(QStringLiteral("blockId")).toInt());
+            same = same && found == expected;
+        }
+        okay &= Check(same,
+                      "canvas entries or positions were not persisted");
+        okay &= Check(MutatorBlockIds(restored.blockScript()).size() ==
+                              windowCount &&
+                              FirstWindowAtomId(restored.blockScript(),
+                                                1) == rerollId &&
+                              WindowAtomIds(restored.blockScript(), 1)
+                                      .last()
+                                      .toInt() == atomId,
+                      "script structure was not persisted alongside the canvas");
+    }
+    return okay;
+}
+
 bool TestPersistence(const QString &packsDirectory,
                      const QString &replayPath) {
     QSettings().clear();
@@ -2237,6 +2444,7 @@ int main(int argc, char **argv) {
             TestScenarioInputExtractionAvailability(
                     packsDirectory.path(), replayPath) &&
             TestCompositionEditing(packsDirectory.path(), replayPath) &&
+            TestBlockCanvasEditing(packsDirectory.path(), replayPath) &&
             TestPersistence(packsDirectory.path(), replayPath) &&
             TestStopAbortsBeforeFirstIteration(
                     packsDirectory.path(), replayPath) &&
