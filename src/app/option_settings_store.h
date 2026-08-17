@@ -56,6 +56,10 @@ QVariantMap LoadPersistedOptionSettings(const QString &category,
                                 QString::fromStdString(
                                         legacyKey->second))
                                 .toString();
+                // Persist the migrated value like the legacy-id path
+                // so the setting survives the old key disappearing.
+                storage.setValue(path, value);
+                loaded = true;
             } else {
                 value = QString::fromStdString(defaultValue);
             }

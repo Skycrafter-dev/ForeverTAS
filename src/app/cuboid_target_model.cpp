@@ -410,6 +410,7 @@ void CuboidTargetModel::load(const QVariantMap &legacySettings) {
             .toByteArray();
     const QJsonDocument document = QJsonDocument::fromJson(encoded);
     QString selectedId;
+    int skippedTargets = 0;
     if (document.isObject()) {
         const QJsonObject root = document.object();
         if (root.value(QStringLiteral("version")).toInt() ==
@@ -434,6 +435,7 @@ void CuboidTargetModel::load(const QVariantMap &legacySettings) {
                         object.value(QStringLiteral("size")).toArray();
                 if (id.isEmpty() || name.isEmpty() ||
                     centerArray.size() != 3 || sizeArray.size() != 3) {
+                    ++skippedTargets;
                     continue;
                 }
                 const QVector3D center(
@@ -459,9 +461,16 @@ void CuboidTargetModel::load(const QVariantMap &legacySettings) {
                 if (!duplicateId && IsFinite(center) &&
                     HasPositiveComponents(size)) {
                     targets_.push_back(Target{id, name, center, size});
+                } else {
+                    ++skippedTargets;
                 }
             }
         }
+    }
+    if (skippedTargets > 0) {
+        qWarning("ForeverTAS: dropped %d invalid persisted cuboid "
+                 "target(s)",
+                 skippedTargets);
     }
 
     if (targets_.empty()) {

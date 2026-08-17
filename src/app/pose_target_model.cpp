@@ -397,6 +397,7 @@ void PoseTargetModel::load(const QVariantMap &legacySettings) {
             QSettings().value(QLatin1String(kPoseTargetsKey)).toByteArray());
     QString selectedId;
     QSet<QString> loadedIds;
+    int skippedTargets = 0;
     if (document.isObject()) {
         const QJsonObject root = document.object();
         if (root.value(QStringLiteral("version")).toInt() == kVersion) {
@@ -421,6 +422,7 @@ void PoseTargetModel::load(const QVariantMap &legacySettings) {
                 if (id.isEmpty() || loadedIds.contains(id) ||
                     name.isEmpty() || positionArray.size() != 3 ||
                     rotationArray.size() != 3) {
+                    ++skippedTargets;
                     continue;
                 }
                 const QVector3D position(
@@ -441,6 +443,7 @@ void PoseTargetModel::load(const QVariantMap &legacySettings) {
                     std::abs(yaw) > kMaximumCoordinate ||
                     std::abs(pitch) > kMaximumCoordinate ||
                     std::abs(roll) > kMaximumCoordinate) {
+                    ++skippedTargets;
                     continue;
                 }
                 targets_.push_back(Target{
@@ -453,6 +456,11 @@ void PoseTargetModel::load(const QVariantMap &legacySettings) {
                 loadedIds.insert(id);
             }
         }
+    }
+    if (skippedTargets > 0) {
+        qWarning("ForeverTAS: dropped %d invalid persisted pose "
+                 "target(s)",
+                 skippedTargets);
     }
     if (targets_.empty()) {
         const auto number = [&legacySettings](

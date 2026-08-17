@@ -2853,22 +2853,9 @@ ApplicationWindow {
                         id: cameraFocusToolbar
                         objectName: "cameraFocusToolbar"
 
-                        function layoutX(viewportWidth, drawingListOpen) {
-                            return viewportWidth - width - 12
-                        }
-
-                        function layoutTopMargin(viewportWidth,
-                                                 drawingListOpen) {
-                            return 10
-                        }
-
                         anchors.top: raceViewerHeader.bottom
-                        anchors.topMargin: layoutTopMargin(
-                                               parent.width,
-                                               whiteboardOverlay
-                                                       .drawingListOpen)
-                        x: layoutX(parent.width,
-                                   whiteboardOverlay.drawingListOpen)
+                        anchors.topMargin: 10
+                        x: parent.width - width - 12
                         z: 3
                         width: cameraFocusControls.implicitWidth + 12
                         height: 42

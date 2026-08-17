@@ -539,6 +539,7 @@ bool BlockProgramModel::detachReporter(int blockId, const QString &key) {
 }
 
 bool BlockProgramModel::moveBlock(int blockId, int toIndex) {
+    if (toIndex < 0) return false;
     if (!program_.moveWithinSubstack(static_cast<blocks::BlockId>(blockId),
                                      static_cast<std::size_t>(toIndex))) {
         return false;

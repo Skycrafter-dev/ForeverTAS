@@ -16,8 +16,24 @@ MenuItem {
 
     hoverEnabled: true
     implicitHeight: 34
-    leftPadding: 12
+    leftPadding: checkable ? 30 : 12
     rightPadding: 12
+
+    indicator: Item {
+        x: 8
+        width: 16
+        height: 16
+        anchors.verticalCenter: parent.verticalCenter
+        visible: control.checkable
+
+        Label {
+            anchors.centerIn: parent
+            text: control.checked ? "\u2713" : ""
+            color: control.effectiveTextColor
+            font.pixelSize: 13
+            font.weight: Font.DemiBold
+        }
+    }
 
     contentItem: Label {
         text: control.text

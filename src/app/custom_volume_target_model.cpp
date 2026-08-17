@@ -785,6 +785,7 @@ void CustomVolumeTargetModel::load(const QVariantMap &legacySettings) {
             QSettings().value(QLatin1String(kCustomVolumesKey)).toByteArray());
     QString selectedId;
     QSet<QString> loadedIds;
+    int skippedTargets = 0;
     if (document.isObject()) {
         const QJsonObject root = document.object();
         if (root.value(QStringLiteral("version")).toInt() == kVersion) {
@@ -801,6 +802,7 @@ void CustomVolumeTargetModel::load(const QVariantMap &legacySettings) {
                         object.value(QStringLiteral("vertices")).toArray();
                 if (vertexArray.size() < 3 ||
                     vertexArray.size() > kMaximumVertices) {
+                    ++skippedTargets;
                     continue;
                 }
                 std::vector<QPointF> vertices;
@@ -835,6 +837,7 @@ void CustomVolumeTargetModel::load(const QVariantMap &legacySettings) {
                     !std::isfinite(depth) || depth < kMinimumDepth ||
                     depth > kMaximumCoordinate ||
                     !validPolygon(vertices)) {
+                    ++skippedTargets;
                     continue;
                 }
                 const QVector3D origin(
@@ -850,6 +853,7 @@ void CustomVolumeTargetModel::load(const QVariantMap &legacySettings) {
                     std::abs(origin.x()) > kMaximumCoordinate ||
                     std::abs(origin.y()) > kMaximumCoordinate ||
                     std::abs(origin.z()) > kMaximumCoordinate) {
+                    ++skippedTargets;
                     continue;
                 }
                 Target target{
@@ -866,6 +870,11 @@ void CustomVolumeTargetModel::load(const QVariantMap &legacySettings) {
                 loadedIds.insert(id);
             }
         }
+    }
+    if (skippedTargets > 0) {
+        qWarning("ForeverTAS: dropped %d invalid persisted custom "
+                 "volume(s)",
+                 skippedTargets);
     }
     if (targets_.empty()) {
         const QString plane =

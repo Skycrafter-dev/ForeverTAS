@@ -157,9 +157,7 @@ QString SearchStageStatus(SearchProgressStage stage,
                           "Searching across optimized CPU workers...")
                 : QStringLiteral("Searching...");
     case SearchProgressStage::FinalSamplingSetup:
-        return cuda
-                ? QStringLiteral("Preparing final best-run sampling...")
-                : QStringLiteral("Preparing final best-run sampling...");
+        return QStringLiteral("Preparing final best-run sampling...");
     case SearchProgressStage::FinalSampling:
         return QStringLiteral("Sampling best run...");
     }

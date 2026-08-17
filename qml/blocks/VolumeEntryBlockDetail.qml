@@ -475,12 +475,22 @@ ColumnLayout {
             Layout.fillWidth: true
             visible: root.controller.customVolumeDrawing
             text: root.selected.vertexCount < 3
-                  ? qsTr("%1 of 3 minimum vertices")
+                  ? qsTr("%1 of at least 3 vertices placed")
                         .arg(root.selected.vertexCount)
                   : qsTr("%1 vertices").arg(root.selected.vertexCount)
             color: root.selected.valid
                    ? ThemeControls.AppTheme.success
                    : ThemeControls.AppTheme.warning
+            font.pixelSize: 11
+        }
+
+        Label {
+            Layout.fillWidth: true
+            visible: root.controller.customVolumeDrawing
+            wrapMode: Text.WordWrap
+            text: qsTr("Click in the 3D view to place each vertex on the "
+                       + "drawing plane, then press Finish polygon.")
+            color: ThemeControls.AppTheme.textMuted
             font.pixelSize: 11
         }
 
@@ -545,7 +555,7 @@ ColumnLayout {
                             value)
                 }
                 ThemeControls.ThemedToolButton {
-                    text: "x"
+                    text: "\u00d7"
                     enabled: !root.controller.running
                              && !root.controller.customVolumeDrawing
                              && root.selected.vertexCount > 3
