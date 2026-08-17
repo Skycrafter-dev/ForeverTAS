@@ -50,12 +50,15 @@ Item {
         Loader {
             id: inlineEditor
 
+            Layout.minimumWidth: root.compact ? 64 : 96
             Layout.preferredWidth: root.compact
-                                   ? 64
+                                   ? 72
                                    : root.fieldData
                                      && root.fieldData.kind === "line"
-                                     ? 140
-                                     : 96
+                                     ? 150
+                                     : 110
+            Layout.fillWidth: root.fieldData
+                              && root.fieldData.kind === "line"
             Layout.preferredHeight: item ? item.implicitHeight : 36
             active: root.visible && !root.hasReporter && !root.mirrored
 
@@ -95,9 +98,10 @@ Item {
                 id: lineEditor
 
                 TextField {
+                    id: lineSlotEditor
+
                     objectName: "block" + root.blockId + "Field"
                                 + root.fieldData.key
-                    text: root.fieldData.value
                     enabled: !root.controller.running
                     selectByMouse: true
                     color: enabled ? ThemeControls.AppTheme.text
@@ -112,6 +116,22 @@ Item {
                                       ? ThemeControls.AppTheme.focus
                                       : ThemeControls.AppTheme.border
                     }
+
+                    // Text edits sever a `text:` binding, so keep the
+                    // field in sync imperatively from fieldData changes.
+                    function synchronize() {
+                        const next = root.fieldData ? root.fieldData.value : ""
+                        if (!activeFocus && text !== next)
+                            text = next
+                    }
+
+                    Component.onCompleted: synchronize()
+                    Connections {
+                        target: root
+                        function onFieldDataChanged() {
+                            lineSlotEditor.synchronize()
+                        }
+                    }
                     onEditingFinished:
                         root.controller.setBlockField(
                             root.blockId, root.fieldData.key, text)
@@ -122,10 +142,27 @@ Item {
                 id: booleanEditor
 
                 ThemeControls.ThemedCheckBox {
+                    id: booleanSlotEditor
+
                     objectName: "block" + root.blockId + "Switch"
                                 + root.fieldData.key
-                    checked: root.fieldData.value === "true"
                     enabled: !root.controller.running
+
+                    // Toggling severs a `checked:` binding; sync from
+                    // fieldData imperatively so external updates (text
+                    // interchange, program reload) still land.
+                    function synchronize() {
+                        checked = root.fieldData
+                                  && root.fieldData.value === "true"
+                    }
+
+                    Component.onCompleted: synchronize()
+                    Connections {
+                        target: root
+                        function onFieldDataChanged() {
+                            booleanSlotEditor.synchronize()
+                        }
+                    }
                     onToggled: root.controller.setBlockField(
                                    root.blockId, root.fieldData.key,
                                    checked ? "true" : "false")
@@ -141,7 +178,7 @@ Item {
                     model: root.fieldData.enumValues
                     textRole: "label"
                     valueRole: "value"
-                    currentIndex: {
+                    boundIndex: {
                         const values = root.fieldData.enumValues
                         for (let index = 0; index < values.length; ++index) {
                             if (values[index].value === root.fieldData.value)
@@ -196,9 +233,15 @@ Item {
                         onLoaded: {
                             item.controller = root.controller
                             item.blockId = root.fieldData.reporter.blockId
-                            item.fieldData = modelData
                             item.compact = true
-                            item.armedSlot = root.armedSlot
+                            // Bindings (not one-time assignments) so a
+                            // re-armed slot propagates into nested slots.
+                            item.fieldData = Qt.binding(
+                                        function() {
+                                            return chipSlotLoader.modelData
+                                        })
+                            item.armedSlot = Qt.binding(
+                                        function() { return root.armedSlot })
                         }
 
                         Connections {

@@ -381,7 +381,6 @@ qt_add_qml_module(forevertas
         qml/settings/ScrubNumberField.qml
         qml/settings/SettingCombo.qml
         qml/settings/SettingSlider.qml
-        qml/settings/SettingSwitch.qml
         qml/settings/SettingTextField.qml
         qml/settings/StyledComboBox.qml
         qml/settings/TimeWindowSettings.qml

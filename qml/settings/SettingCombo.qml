@@ -26,6 +26,7 @@ RowLayout {
     Label {
         Layout.fillWidth: true
         text: root.label
+        wrapMode: Text.WordWrap
     }
 
     StyledComboBox {
@@ -34,7 +35,7 @@ RowLayout {
         model: root.options
         textRole: "label"
         valueRole: "value"
-        currentIndex: root.valueIndex()
+        boundIndex: root.valueIndex()
         enabled: !root.running
         onActivated: selectedIndex =>
             root.selected(valueAt(selectedIndex).toString())

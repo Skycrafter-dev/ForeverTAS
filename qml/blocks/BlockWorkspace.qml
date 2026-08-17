@@ -63,13 +63,29 @@ ColumnLayout {
                 model: root.palette
 
                 delegate: ThemeControls.ThemedTabButton {
+                    id: paletteTab
+
                     required property var modelData
                     required property int index
 
                     objectName: "paletteCategory_" + modelData.id
                     text: modelData.label
-                    checked: paletteStack.currentIndex === index
                     enabled: !root.controller.running
+
+                    // Re-clicking the active tab severs a `checked:`
+                    // binding and would leave it looking deselected;
+                    // sync imperatively instead.
+                    function synchronize() {
+                        checked = paletteStack.currentIndex === index
+                    }
+
+                    Component.onCompleted: synchronize()
+                    Connections {
+                        target: paletteStack
+                        function onCurrentIndexChanged() {
+                            paletteTab.synchronize()
+                        }
+                    }
                     onClicked: paletteStack.currentIndex = index
                 }
             }

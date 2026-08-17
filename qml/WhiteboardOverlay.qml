@@ -13,6 +13,7 @@ Item {
     readonly property real toolbarRight: toolbar.x + toolbar.width
     readonly property real toolbarBottom: toolbar.y + toolbar.height
     property int editingIndex: -2
+    property string editingFingerprint: ""
     property real pendingTextX: 0
     property real pendingTextY: 0
     property bool drawingListOpen: false
@@ -37,8 +38,20 @@ Item {
         imageExportDialog.open()
     }
 
+    function textEntryFingerprint(index) {
+        if (index < 0 || index >= model.items.length)
+            return ""
+        const item = model.items[index]
+        return item.type + ":" + item.text + ":" + item.x + ":" + item.y
+    }
+
     function beginTextEntry(index, value, normalizedX, normalizedY) {
+        // Commit any in-progress entry first: starting a second edit
+        // must never discard what was already typed.
+        if (textEditor.visible)
+            commitTextEntry()
         editingIndex = index
+        editingFingerprint = textEntryFingerprint(index)
         pendingTextX = normalizedX
         pendingTextY = normalizedY
         textEditor.text = value
@@ -60,10 +73,17 @@ Item {
             return
         const value = textEditor.text.trim()
         if (value.length > 0) {
-            if (editingIndex >= 0)
-                model.setText(editingIndex, value)
-            else
+            if (editingIndex >= 0) {
+                // The item list may have changed while editing; only
+                // write when the item under the recorded index is still
+                // the one the edit started on.
+                if (editingIndex < model.items.length
+                        && textEntryFingerprint(editingIndex)
+                        === editingFingerprint)
+                    model.setText(editingIndex, value)
+            } else {
                 model.addText(pendingTextX, pendingTextY, value)
+            }
         }
         cancelTextEntry()
     }
@@ -82,7 +102,23 @@ Item {
             restoreViewpoint(board)
     }
 
+    function clampTextEditor() {
+        if (!textEditor.visible)
+            return
+        textEditor.x = Math.max(
+                    8, Math.min(boardArea.width - textEditor.width - 8,
+                                textEditor.x))
+        textEditor.y = Math.max(
+                    8, Math.min(boardArea.height - textEditor.height - 8,
+                                textEditor.y))
+    }
+
+    onWidthChanged: clampTextEditor()
+    onHeightChanged: clampTextEditor()
+
     component WhiteboardToolButton: ThemedButton {
+        id: toolButton
+
         required property string toolId
         required property string label
         required property real buttonWidth
@@ -93,8 +129,22 @@ Item {
         width: Math.max(buttonWidth, implicitWidth + 4)
         checkable: true
         elideText: false
-        checked: root.model.tool === toolId
         text: label
+
+        // Toggling severs a `checked:` binding (re-clicking the active
+        // tool would look unchecked while staying active), so sync from
+        // the model imperatively.
+        function synchronize() {
+            checked = root.model.tool === toolButton.toolId
+        }
+
+        Component.onCompleted: synchronize()
+        Connections {
+            target: root.model
+            function onToolChanged() {
+                toolButton.synchronize()
+            }
+        }
         onClicked: root.model.tool = toolId
     }
 
@@ -103,14 +153,20 @@ Item {
             model.active = false
     }
 
+    // Keyboard shortcut for the drawings list, which is a floating panel
+    // rather than a Popup.
+    Keys.onEscapePressed: drawingListOpen = false
+
     Connections {
         target: root.model
 
         function onActiveChanged() {
             if (!root.model.active) {
-                root.cancelTextEntry()
+                // Keep what was typed instead of discarding it.
+                root.commitTextEntry()
                 colorPopup.close()
             }
+            modeToggle.synchronize()
         }
     }
 
@@ -303,7 +359,7 @@ Item {
             id: textEditor
             objectName: "whiteboardTextEditor"
             z: 12
-            width: Math.min(300, boardArea.width - 16)
+            width: Math.max(60, Math.min(300, boardArea.width - 16))
             height: 42
             visible: false
             placeholderText: qsTr("Annotation text")
@@ -389,10 +445,18 @@ Item {
                         width: Math.max(98, implicitWidth + 4)
                         height: 34
                         checkable: true
-                        checked: root.model.active
                         enabled: root.available
                         elideText: false
                         text: qsTr("Whiteboard")
+
+                        // Toggling severs a `checked:` binding; sync from
+                        // the model so forced deactivation (map unload)
+                        // still clears the pressed look.
+                        function synchronize() {
+                            checked = root.model.active
+                        }
+
+                        Component.onCompleted: synchronize()
                         onToggled: root.model.active = checked
 
                         ToolTip.visible: hovered
@@ -799,10 +863,24 @@ Item {
                             anchors.verticalCenter: parent.verticalCenter
                             width: 36
                             enabled: boardRow.modelData.isCurrentMap
-                            checked: boardRow.modelData.visible
                             Accessible.name: qsTr(
                                                  "Show %1 in the current map")
                                              .arg(boardRow.modelData.name)
+
+                            // Clicking severs a `checked:` binding; sync
+                            // from the boards list so imports and other
+                            // updates stay reflected.
+                            function synchronize() {
+                                checked = boardRow.modelData.visible
+                            }
+
+                            Component.onCompleted: synchronize()
+                            Connections {
+                                target: root.model
+                                function onBoardsChanged() {
+                                    visibilityToggle.synchronize()
+                                }
+                            }
                             onClicked: root.model.setBoardVisible(
                                            boardRow.index, checked)
                         }
@@ -898,10 +976,15 @@ Item {
         y: toolbar.y + toolbar.height + 6
         z: 30
         width: 212
-        height: 92
+        height: colorPopupColumn.implicitHeight + 20
         padding: 10
         closePolicy: Popup.CloseOnEscape
                      | Popup.CloseOnPressOutside
+
+        onAboutToShow: {
+            customColor.text = root.model.color.toString()
+            colorErrorLabel.text = ""
+        }
 
         background: Rectangle {
             radius: 6
@@ -911,6 +994,8 @@ Item {
         }
 
         ColumnLayout {
+            id: colorPopupColumn
+
             anchors.fill: parent
             spacing: 8
 
@@ -927,6 +1012,8 @@ Item {
                         Layout.preferredHeight: 26
                         onClicked: {
                             root.model.color = modelData
+                            customColor.text = modelData
+                            colorErrorLabel.text = ""
                             colorPopup.close()
                         }
                         contentItem: Rectangle {
@@ -939,8 +1026,8 @@ Item {
                                           === modelData ? 2 : 1
                             border.color: root.model.color.toString()
                                           === modelData
-                                          ? AppTheme.focus
-                                          : AppTheme.viewerOverlayBorder
+                                          ? AppTheme.accent
+                                          : AppTheme.borderStrong
                         }
                     }
                 }
@@ -951,14 +1038,31 @@ Item {
                 objectName: "whiteboardCustomColor"
                 Layout.fillWidth: true
                 Layout.preferredHeight: 30
-                text: root.model.color.toString()
                 placeholderText: qsTr("#RRGGBB")
                 selectByMouse: true
+                color: colorErrorLabel.text.length > 0
+                       ? AppTheme.error : AppTheme.viewerOverlayText
                 onAccepted: {
-                    root.model.color = text
-                    text = root.model.color.toString()
-                    colorPopup.close()
+                    if (/^#[0-9a-fA-F]{6}$/.test(text.trim())) {
+                        root.model.color = text.trim()
+                        colorErrorLabel.text = ""
+                        colorPopup.close()
+                    } else {
+                        colorErrorLabel.text = qsTr(
+                                    "Enter a color as #RRGGBB.")
+                    }
                 }
+            }
+
+            Label {
+                id: colorErrorLabel
+
+                Layout.fillWidth: true
+                visible: text.length > 0
+                text: ""
+                color: AppTheme.error
+                font.pixelSize: 10
+                wrapMode: Text.WordWrap
             }
         }
     }

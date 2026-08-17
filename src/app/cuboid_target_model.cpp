@@ -547,6 +547,7 @@ void CuboidTargetModel::schedulePersist() {
 
 void CuboidTargetModel::notifyTargetChanged(int index) {
     emit dataChanged(this->index(index), this->index(index));
+    emit targetsChanged();
     if (index == selectedIndex_) emit selectedTargetChanged();
 }
 

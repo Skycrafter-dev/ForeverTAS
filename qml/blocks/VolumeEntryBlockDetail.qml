@@ -22,11 +22,16 @@ ColumnLayout {
     readonly property bool customActive:
         optionId === "custom-volume-entry-time"
     readonly property var activeModel:
-        customActive ? controller.customVolumeTargets
-                     : controller.cuboidTargets
-    readonly property var selected: activeModel.selectedTarget
+        controller
+        ? (customActive ? controller.customVolumeTargets
+                        : controller.cuboidTargets)
+        : null
+    readonly property var selected: activeModel ? activeModel.selectedTarget
+                                                 : null
     readonly property var targetOptions: {
         let result = []
+        if (!controller)
+            return result
         const cuboids = controller.cuboidTargets.targets
         for (let index = 0; index < cuboids.length; ++index) {
             result.push({
@@ -123,17 +128,6 @@ ColumnLayout {
         }
     }
 
-    function synchronizeTargetSelector() {
-        if (!controller)
-            return
-        targetSelector.model = targetOptions
-        targetSelector.currentIndex = selectedOptionIndex
-    }
-
-    onControllerChanged: Qt.callLater(synchronizeTargetSelector)
-    onTargetOptionsChanged: Qt.callLater(synchronizeTargetSelector)
-    onSelectedOptionIndexChanged: Qt.callLater(synchronizeTargetSelector)
-
     RowLayout {
         Layout.fillWidth: true
         spacing: 6
@@ -145,7 +139,7 @@ ColumnLayout {
             Layout.fillWidth: true
             model: root.targetOptions
             textRole: "name"
-            currentIndex: root.selectedOptionIndex
+            boundIndex: root.selectedOptionIndex
             enabled: !root.controller.running
                      && !root.controller.customVolumeDrawing
             onActivated: index => {
@@ -305,15 +299,43 @@ ColumnLayout {
 
         objectName: "shapeTargetNameField"
         Layout.fillWidth: true
-        text: root.selected.name ?? ""
         enabled: !root.controller.running
                  && !root.controller.customVolumeDrawing
         selectByMouse: true
         maximumLength: 80
         placeholderText: qsTr("Target name")
+
+        // Editing severs a `text:` binding; sync imperatively so a
+        // rejected rename or switching the selected shape (or evaluator
+        // option) never leaves a stale name that edits the wrong target.
+        function synchronize() {
+            const name = root.selected ? root.selected.name : ""
+            if (text !== name)
+                text = name
+        }
+
+        Component.onCompleted: synchronize()
+        Connections {
+            target: root.controller.cuboidTargets
+            function onSelectedTargetChanged() {
+                targetName.synchronize()
+            }
+            function onTargetsChanged() {
+                targetName.synchronize()
+            }
+        }
+        Connections {
+            target: root.controller.customVolumeTargets
+            function onSelectedTargetChanged() {
+                targetName.synchronize()
+            }
+            function onTargetsChanged() {
+                targetName.synchronize()
+            }
+        }
         onEditingFinished: {
             root.activeModel.setName(root.activeModel.selectedIndex, text)
-            text = root.activeModel.selectedTarget.name
+            synchronize()
         }
     }
 

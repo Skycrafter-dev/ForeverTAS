@@ -17,8 +17,8 @@ ColumnLayout {
     property var viewport
     property int blockId: 0
     property var blockInformation: null
-    readonly property var targets: controller.poseTargets
-    readonly property var selected: targets.selectedTarget
+    readonly property var targets: controller ? controller.poseTargets : null
+    readonly property var selected: targets ? targets.selectedTarget : null
     readonly property var settings: {
         const values = {}
         if (!blockInformation)
@@ -84,7 +84,7 @@ ColumnLayout {
             model: root.targets.targets
             textRole: "name"
             valueRole: "id"
-            currentIndex: root.targets.selectedIndex
+            boundIndex: root.targets.selectedIndex
             enabled: !root.controller.running
             onActivated: index => root.targets.selectTarget(index)
         }
@@ -182,16 +182,38 @@ ColumnLayout {
     }
 
     TextField {
+        id: poseTargetNameField
+
         objectName: "poseTargetNameField"
         Layout.fillWidth: true
-        text: root.selected.name ?? ""
         enabled: !root.controller.running
         selectByMouse: true
         maximumLength: 80
         placeholderText: qsTr("Pose target name")
+
+        // Editing severs a `text:` binding, so sync imperatively from the
+        // model; otherwise a rejected rename (empty name) or selecting a
+        // different pose would leave stale text that edits the wrong
+        // target.
+        function synchronize() {
+            const name = root.selected ? root.selected.name : ""
+            if (text !== name)
+                text = name
+        }
+
+        Component.onCompleted: synchronize()
+        Connections {
+            target: root.targets
+            function onSelectedTargetChanged() {
+                poseTargetNameField.synchronize()
+            }
+            function onTargetsChanged() {
+                poseTargetNameField.synchronize()
+            }
+        }
         onEditingFinished: {
             root.targets.setName(root.targets.selectedIndex, text)
-            text = root.targets.selectedTarget.name
+            synchronize()
         }
     }
 

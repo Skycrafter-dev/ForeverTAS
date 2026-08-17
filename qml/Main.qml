@@ -3122,14 +3122,29 @@ ApplicationWindow {
                                 enabled: window.viewer.hasTrajectoryForRun(
                                              window.viewer.selectedRunId)
                                          && !window.viewer.manualDriving
-                                checked: {
+                                Accessible.name: qsTr(
+                                    "Show selected run trajectory")
+
+                                // Toggling severs a `checked:` binding;
+                                // sync imperatively so clearing or
+                                // reloading trajectories stays reflected.
+                                function synchronize() {
                                     const paths = window.viewer.trajectoryPaths
-                                    return window.viewer
+                                    checked = window.viewer
                                         .trajectoryVisibleForRun(
                                             window.viewer.selectedRunId)
                                 }
-                                Accessible.name: qsTr(
-                                    "Show selected run trajectory")
+
+                                Component.onCompleted: synchronize()
+                                Connections {
+                                    target: window.viewer
+                                    function onSelectedRunChanged() {
+                                        trajectoryVisibilityToggle.synchronize()
+                                    }
+                                    function onTrajectoryPathsChanged() {
+                                        trajectoryVisibilityToggle.synchronize()
+                                    }
+                                }
                                 onClicked:
                                     window.viewer.setTrajectoryVisibleForRun(
                                         window.viewer.selectedRunId,
@@ -3509,12 +3524,23 @@ ApplicationWindow {
                                 Layout.preferredWidth: 156
                                 Layout.preferredHeight: 42
                                 text: qsTr("Take Over on Input")
-                                checked: window.viewer.takeOverOnInput
                                 enabled: window.viewer.loaded
                                          && !window.viewer.loading
                                          && !window.viewer.manualDriving
                                          && !window.controller.running
                                          && !window.controller.extractingReplayInputs
+
+                                function synchronize() {
+                                    checked = window.viewer.takeOverOnInput
+                                }
+
+                                Component.onCompleted: synchronize()
+                                Connections {
+                                    target: window.viewer
+                                    function onTakeOverOnInputChanged() {
+                                        takeOverOnInputCheckBox.synchronize()
+                                    }
+                                }
                                 onToggled:
                                     window.viewer.takeOverOnInput = checked
 
@@ -3875,12 +3901,31 @@ ApplicationWindow {
                             spacing: 8
 
                             TextField {
+                                id: packsDirectoryField
+
+                                objectName: "packsDirectoryField"
                                 Layout.fillWidth: true
-                                text: window.controller.packsDirectory
                                 enabled: !window.controller.running
                                          && !window.controller.extractingReplayInputs
                                 placeholderText: qsTr("Select installed Packs directory")
                                 selectByMouse: true
+
+                                // Typing severs a `text:` binding, so keep
+                                // the field synced imperatively; otherwise
+                                // Browse/Apply results would not appear
+                                // after the first manual edit.
+                                function synchronize() {
+                                    if (text !== window.controller.packsDirectory)
+                                        text = window.controller.packsDirectory
+                                }
+
+                                Component.onCompleted: synchronize()
+                                Connections {
+                                    target: window.controller
+                                    function onPacksDirectoryChanged() {
+                                        packsDirectoryField.synchronize()
+                                    }
+                                }
                                 onTextEdited:
                                     window.controller.packsDirectory = text
                             }
@@ -3915,13 +3960,27 @@ ApplicationWindow {
                             spacing: 8
 
                             TextField {
+                                id: replayPathField
+
                                 objectName: "replayPathField"
                                 Layout.fillWidth: true
-                                text: window.controller.replayPath
                                 enabled: !window.controller.running
                                          && !window.controller.extractingReplayInputs
                                 placeholderText: qsTr("Select replay or challenge file")
                                 selectByMouse: true
+
+                                function synchronize() {
+                                    if (text !== window.controller.replayPath)
+                                        text = window.controller.replayPath
+                                }
+
+                                Component.onCompleted: synchronize()
+                                Connections {
+                                    target: window.controller
+                                    function onReplayPathChanged() {
+                                        replayPathField.synchronize()
+                                    }
+                                }
                                 onTextEdited: window.controller.replayPath = text
                             }
 
@@ -4041,7 +4100,6 @@ ApplicationWindow {
                                 width: Math.max(
                                     baseInputScriptScroll.availableWidth,
                                     contentWidth + leftPadding + rightPadding)
-                                text: window.controller.baseInputScript
                                 enabled: !window.controller.running
                                          && !window.controller.extractingReplayInputs
                                 selectByMouse: true
@@ -4052,6 +4110,26 @@ ApplicationWindow {
                                 color: enabled ? AppTheme.text
                                                : AppTheme.disabledText
                                 placeholderText: qsTr("0.00 press up")
+
+                                // Typing severs a `text:` binding; sync
+                                // imperatively so controller-side changes
+                                // (replay extraction, Copy current race,
+                                // controller Undo) always refresh the
+                                // editor.
+                                function synchronize() {
+                                    if (!activeFocus
+                                            && text
+                                            !== window.controller.baseInputScript)
+                                        text = window.controller.baseInputScript
+                                }
+
+                                Component.onCompleted: synchronize()
+                                Connections {
+                                    target: window.controller
+                                    function onBaseInputScriptChanged() {
+                                        baseInputScriptArea.synchronize()
+                                    }
+                                }
                                 onActiveFocusChanged: {
                                     if (!activeFocus)
                                         window.commitBaseInputScript()
@@ -4101,7 +4179,19 @@ ApplicationWindow {
                             id: darkModeToggle
                             objectName: "darkModeToggle"
                             text: qsTr("Dark mode")
-                            checked: window.controller.darkMode
+                            enabled: true
+
+                            function synchronize() {
+                                checked = window.controller.darkMode
+                            }
+
+                            Component.onCompleted: synchronize()
+                            Connections {
+                                target: window.controller
+                                function onDarkModeChanged() {
+                                    darkModeToggle.synchronize()
+                                }
+                            }
                             onToggled:
                                 window.controller.darkMode = checked
                             Accessible.name: qsTr("Dark mode")
@@ -4243,20 +4333,45 @@ ApplicationWindow {
                         }
 
                         ThemedCheckBox {
+                            id: randomizeSeedsOnStartCheckBox
                             objectName: "randomizeSeedsOnStartCheckBox"
                             text: qsTr("Randomize modifier seeds on Start")
-                            checked: window.controller.randomizeSeedsOnStart
                             enabled: !window.controller.running
+
+                            function synchronize() {
+                                checked = window.controller.randomizeSeedsOnStart
+                            }
+
+                            Component.onCompleted: synchronize()
+                            Connections {
+                                target: window.controller
+                                function onRandomizeSeedsOnStartChanged() {
+                                    randomizeSeedsOnStartCheckBox.synchronize()
+                                }
+                            }
                             onToggled:
                                 window.controller.randomizeSeedsOnStart =
                                     checked
                         }
 
                         ThemedCheckBox {
+                            id: drawTargetsThroughBlocksCheckBox
                             objectName: "drawTargetsThroughBlocksCheckBox"
                             text: qsTr("Draw targets through blocks")
-                            checked:
-                                window.controller.drawTargetsThroughBlocks
+
+                            function synchronize() {
+                                checked =
+                                    window.controller.drawTargetsThroughBlocks
+                            }
+
+                            Component.onCompleted: synchronize()
+                            Connections {
+                                target: window.controller
+                                function onDrawTargetsThroughBlocksChanged() {
+                                    drawTargetsThroughBlocksCheckBox
+                                        .synchronize()
+                                }
+                            }
                             onToggled:
                                 window.controller.drawTargetsThroughBlocks =
                                     checked
@@ -4290,12 +4405,25 @@ ApplicationWindow {
                         }
 
                         ThemedCheckBox {
+                            id: cudaCalibrationCheckBox
                             objectName: "cudaCalibrationCheckBox"
                             visible: window.controller.simulationBackendId
                                      === "cuda"
                             text: qsTr("Calibrate for maximum throughput")
-                            checked: window.controller.cudaCalibrationEnabled
                             enabled: !window.controller.running
+
+                            function synchronize() {
+                                checked =
+                                    window.controller.cudaCalibrationEnabled
+                            }
+
+                            Component.onCompleted: synchronize()
+                            Connections {
+                                target: window.controller
+                                function onCudaCalibrationEnabledChanged() {
+                                    cudaCalibrationCheckBox.synchronize()
+                                }
+                            }
                             onToggled:
                                 window.controller.cudaCalibrationEnabled =
                                     checked
@@ -4385,16 +4513,37 @@ ApplicationWindow {
                         title: qsTr("CUDA fast mode")
 
                         ThemedSwitch {
+                            id: cudaSessionSpecializationSwitch
                             objectName: "cudaSessionSpecializationSwitch"
                             Layout.fillWidth: true
                             text: qsTr("Use the faster CUDA kernel")
-                            checked: window.controller
-                                         .cudaSessionSpecializationEnabled
-                                     && window.controller
-                                         .cudaFastModeAvailable
                             enabled: !window.controller.running
                                      && window.controller
                                          .cudaFastModeAvailable
+
+                            // The checked state combines two properties and
+                            // fast-mode availability arrives asynchronously
+                            // after the GPU probe, so sync imperatively
+                            // instead of a severable binding.
+                            function synchronize() {
+                                checked = window.controller
+                                             .cudaSessionSpecializationEnabled
+                                         && window.controller
+                                             .cudaFastModeAvailable
+                            }
+
+                            Component.onCompleted: synchronize()
+                            Connections {
+                                target: window.controller
+                                function onCudaSessionSpecializationEnabledChanged() {
+                                    cudaSessionSpecializationSwitch
+                                        .synchronize()
+                                }
+                                function onCudaFastModeAvailableChanged() {
+                                    cudaSessionSpecializationSwitch
+                                        .synchronize()
+                                }
+                            }
                             onToggled: window.controller
                                 .cudaSessionSpecializationEnabled = checked
                             Accessible.name: text

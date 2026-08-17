@@ -5,6 +5,22 @@ import ".." as ThemeControls
 ComboBox {
     id: control
 
+    // Declarative selection that survives user interaction. Writing
+    // currentIndex from a delegate severs a `currentIndex:` binding, so
+    // bind `boundIndex` instead: user picks keep it authoritative until
+    // the bound value itself changes.
+    property int boundIndex: -1
+    onBoundIndexChanged: {
+        if (boundIndex >= 0 && currentIndex !== boundIndex)
+            currentIndex = boundIndex
+    }
+    onModelChanged: {
+        // A model rebuild resets currentIndex even when the bound value
+        // is unchanged, so re-apply it here.
+        if (boundIndex >= 0 && currentIndex !== boundIndex)
+            currentIndex = boundIndex
+    }
+
     readonly property bool slotStyled: true
     readonly property bool themedControl: true
     readonly property color effectiveBackgroundColor:
@@ -125,6 +141,34 @@ ComboBox {
         rightMargin: 8
         padding: 1
 
+        // Near the window bottom there is no room below the control, so
+        // the list would collapse to zero height. Re-measure on open and
+        // flip the popup above the control when that gives it more room.
+        // The popup also widens past the control so elided labels can be
+        // read while choosing.
+        onAboutToShow: {
+            let widest = control.width
+            for (let index = 0; index < control.count; ++index) {
+                popupMetrics.text = control.textAt(index)
+                widest = Math.max(widest,
+                                  popupMetrics.advanceWidth + 46)
+            }
+            width = Math.min(
+                        widest,
+                        control.Window.width - leftMargin - rightMargin)
+            const mappedTop = control.mapToItem(null, 0, 0).y
+            const below = control.Window.height - mappedTop - control.height
+                    - bottomMargin
+            const above = mappedTop - topMargin
+            const desired = contentItem.implicitHeight + topPadding
+                    + bottomPadding
+            const openAbove = below < Math.min(desired, 140)
+                              && above > below
+            height = Math.min(desired,
+                              Math.max(0, openAbove ? above : below))
+            y = openAbove ? -height + 1 : control.height - 1
+        }
+
         contentItem: ListView {
             objectName: control.objectName.length > 0
                         ? control.objectName + "PopupList"
@@ -145,6 +189,12 @@ ComboBox {
             border.width: 1
             border.color: ThemeControls.AppTheme.borderStrong
             radius: 6
+        }
+
+        TextMetrics {
+            id: popupMetrics
+
+            font: control.font
         }
     }
 }
