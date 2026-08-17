@@ -179,7 +179,7 @@ ComboBox {
             currentIndex: control.highlightedIndex
             boundsBehavior: Flickable.StopAtBounds
             interactive: contentHeight > height
-            ScrollBar.vertical: ScrollBar {
+            ScrollBar.vertical: ThemeControls.ThemedScrollBar {
                 policy: ScrollBar.AsNeeded
             }
         }

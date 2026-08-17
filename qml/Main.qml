@@ -3612,7 +3612,7 @@ ApplicationWindow {
                                     positionViewAtEnd()
                             }
 
-                            ScrollBar.vertical: ScrollBar {
+                            ScrollBar.vertical: ThemedScrollBar {
                                 policy: checkpointSplitList.contentHeight
                                         > checkpointSplitList.height
                                         ? ScrollBar.AsNeeded

@@ -367,6 +367,7 @@ qt_add_qml_module(forevertas
         qml/ThemedItemDelegate.qml
         qml/ThemedMenuItem.qml
         qml/ThemedSlider.qml
+        qml/ThemedScrollBar.qml
         qml/ThemedSwitch.qml
         qml/ThemedTabButton.qml
         qml/ThemedToolButton.qml

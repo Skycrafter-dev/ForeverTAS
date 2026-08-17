@@ -103,6 +103,8 @@ ColumnLayout {
             spacing: 4
 
             Label {
+                id: blockHeaderLabel
+
                 Layout.fillWidth: true
                 text: {
                     if (!root.blockInformation)
@@ -117,6 +119,14 @@ ColumnLayout {
                 }
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
+
+                HoverHandler {
+                    id: blockLabelHover
+                }
+                ToolTip.visible: blockLabelHover.hovered && truncated
+                ToolTip.delay: 350
+                ToolTip.text: root.blockInformation
+                              ? root.blockInformation.label : ""
             }
 
             ThemeControls.ThemedToolButton {

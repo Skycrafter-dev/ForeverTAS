@@ -39,24 +39,15 @@ Item {
             root.editingLine.cancelEdit()
     }
 
-    function escapeStyledText(value) {
-        return String(value || "").replace(/&/g, "&amp;")
-                                     .replace(/</g, "&lt;")
-                                     .replace(/>/g, "&gt;")
-    }
-
     function sourceName(entry) {
         const name = String(entry.name || "")
-        if (!entry.modified || !entry.breakpoint)
+        if (!entry.modified)
             return name
-        let result = ""
-        for (let index = 0; index < name.length; ++index) {
-            const color = index % 2 === 0
-                        ? AppTheme.codeBreakpoint : AppTheme.success
-            result += "<font color=\"" + color + "\">"
-                    + root.escapeStyledText(name.charAt(index)) + "</font>"
-        }
-        return result
+        if (!entry.breakpoint)
+            return name
+        // Modified files that also carry a breakpoint: readable single
+        // color per meaning instead of per-character alternation.
+        return "\u25cf " + name
     }
 
     function restoreEditorPositions(sourcePosition, codePosition) {
@@ -170,14 +161,14 @@ Item {
                 Label {
                     Layout.fillWidth: true
                     text: root.debuggerModel.preparing
-                          ? qsTr("preparing native source")
+                          ? qsTr("Preparing native source")
                           : (root.debuggerModel.running
-                             ? qsTr("native execution running")
+                             ? qsTr("Native execution running")
                              : (root.debuggerModel.stepping
-                                ? qsTr("native execution stepping")
+                                ? qsTr("Native execution stepping")
                                 : (root.debuggerModel.compiling
-                                   ? qsTr("compiling edited C++")
-                                   : qsTr("native execution paused"))))
+                                   ? qsTr("Compiling edited C++")
+                                   : qsTr("Native execution paused"))))
                     font.family: "monospace"
                     font.pixelSize: 10
                     color: AppTheme.textMuted
@@ -207,7 +198,7 @@ Item {
                     root.debuggerModel.resetEdits()
                 }
                 ToolTip.visible: hovered
-                ToolTip.text: qsTr("Restore all in-memory source edits")
+                ToolTip.text: qsTr("Discard all in-memory source edits")
             }
 
             ThemedToolButton {
@@ -233,10 +224,18 @@ Item {
             Layout.preferredHeight: referenceLoadingWarningText.implicitHeight
                                     + 24
             visible: root.debuggerModel.loadingReplay
-            color: AppTheme.errorSoft
+            color: AppTheme.infoSoft
             border.width: 2
-            border.color: AppTheme.error
+            border.color: AppTheme.info
             radius: 4
+
+            BusyIndicator {
+                anchors.left: parent.left
+                anchors.leftMargin: 12
+                anchors.verticalCenter: parent.verticalCenter
+                running: root.debuggerModel.loadingReplay
+                visible: running
+            }
 
             Label {
                 id: referenceLoadingWarningText
@@ -244,8 +243,9 @@ Item {
                 objectName: "referenceLoadingWarningText"
                 anchors.fill: parent
                 anchors.margins: 12
+                anchors.leftMargin: 56
                 text: root.debuggerModel.statusText
-                color: AppTheme.error
+                color: AppTheme.info
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
                 wrapMode: Text.WordWrap
@@ -259,8 +259,7 @@ Item {
             Layout.fillWidth: true
             visible: !root.debuggerModel.loadingReplay
             text: root.debuggerModel.statusText
-            color: root.debuggerModel.editError.length > 0
-                   ? AppTheme.error : AppTheme.textMuted
+            color: AppTheme.textMuted
             wrapMode: Text.WordWrap
             font.pixelSize: 11
         }
@@ -366,7 +365,8 @@ Item {
 
                         Label {
                             text: sourceRow.modelData.directory
-                                  ? (sourceRow.modelData.expanded ? "v" : ">")
+                                  ? (sourceRow.modelData.expanded
+                                     ? "\u25be" : "\u25b8")
                                   : "{}"
                             color: sourceRow.modelData.breakpoint
                                    ? AppTheme.codeBreakpoint
@@ -381,9 +381,6 @@ Item {
                             objectName: "simulationSourceName"
                             Layout.fillWidth: true
                             text: root.sourceName(sourceRow.modelData)
-                            textFormat: sourceRow.modelData.modified
-                                        && sourceRow.modelData.breakpoint
-                                        ? Text.StyledText : Text.PlainText
                             color: sourceRow.modelData.breakpoint
                                    ? AppTheme.codeBreakpoint
                                    : (sourceRow.modelData.modified
@@ -448,8 +445,8 @@ Item {
                 anchors.margins: 1
                 model: root.debuggerModel.lines
                 boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar {}
-                ScrollBar.horizontal: ScrollBar {}
+                ScrollBar.vertical: ThemedScrollBar {}
+                ScrollBar.horizontal: ThemedScrollBar {}
 
                 delegate: Rectangle {
                     id: codeLine
@@ -486,6 +483,10 @@ Item {
                             return
                         }
                         root.commitActiveEdit()
+                        // Reset the editor text from the model: typing
+                        // severs the text binding and a delegate can be
+                        // reused after a model update.
+                        liveEdit.text = codeLine.modelData.text
                         codeLine.editing = true
                         root.editingLine = codeLine
                         root.hasDraftEdit =
@@ -519,27 +520,17 @@ Item {
                               ? AppTheme.codeSurface
                               : AppTheme.codeAlternate)
 
-                    Timer {
-                        id: lineBreakpointTimer
-                        interval: 280
-                        repeat: false
-                        onTriggered:
-                            root.toggleBreakpoint(codeLine.modelData.number)
-                    }
-
                     HoverHandler {
                         id: codeLineHover
                     }
 
+                    // Breakpoints are toggled from the gutter circle only.
+                    // A plain tap on the code must not create or remove
+                    // breakpoints; double-click edits the line.
                     TapHandler {
                         enabled: !codeLine.editing
                         acceptedButtons: Qt.LeftButton
-                        onTapped: function(eventPoint, button) {
-                            if (eventPoint.position.x >= 23)
-                                lineBreakpointTimer.restart()
-                        }
                         onDoubleTapped: function(eventPoint, button) {
-                            lineBreakpointTimer.stop()
                             if (eventPoint.position.x >= 23)
                                 codeLine.beginEdit()
                         }
@@ -562,8 +553,8 @@ Item {
 
                         ThemedToolButton {
                             objectName: "insertLiveCodeLineButton"
-                            width: 22
-                            height: 22
+                            width: 26
+                            height: 26
                             text: "+"
                             enabled: !root.debuggerModel.running
                                      && !root.debuggerModel.stepping
@@ -579,8 +570,8 @@ Item {
 
                         ThemedToolButton {
                             objectName: "deleteLiveCodeLineButton"
-                            width: 22
-                            height: 22
+                            width: 26
+                            height: 26
                             text: "\u00d7"
                             enabled: !root.debuggerModel.running
                                      && !root.debuggerModel.stepping
@@ -619,6 +610,18 @@ Item {
                                     root.toggleBreakpoint(
                                         codeLine.modelData.number)
                             }
+
+                            HoverHandler {
+                                id: breakpointHover
+                            }
+
+                            ToolTip.visible:
+                                breakpointHover.hovered
+                                && codeLine.modelData.editable
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr(
+                                "Click to toggle a breakpoint on line %1")
+                                .arg(codeLine.modelData.number)
                         }
 
                         Label {
@@ -667,10 +670,18 @@ Item {
                             onEditingFinished: codeLine.commitEdit()
                             Keys.onEscapePressed: codeLine.cancelEdit()
                             Keys.onReturnPressed: function(event) {
-                                const lineNumber =
-                                    codeLine.modelData.number
-                                codeLine.commitEdit()
-                                root.insertLineAfter(lineNumber)
+                                // Return commits the edit; Ctrl+Return
+                                // commits and inserts a new line after
+                                // this one.
+                                if (event.modifiers
+                                        & Qt.ControlModifier) {
+                                    const lineNumber =
+                                        codeLine.modelData.number
+                                    codeLine.commitEdit()
+                                    root.insertLineAfter(lineNumber)
+                                } else {
+                                    codeLine.commitEdit()
+                                }
                                 event.accepted = true
                             }
                         }
@@ -784,7 +795,7 @@ Item {
                 anchors.margins: 3
                 model: root.debuggerModel.debugOutput
                 boundsBehavior: Flickable.StopAtBounds
-                ScrollBar.vertical: ScrollBar {}
+                ScrollBar.vertical: ThemedScrollBar {}
 
                 delegate: ThemedItemDelegate {
                     id: outputEntry

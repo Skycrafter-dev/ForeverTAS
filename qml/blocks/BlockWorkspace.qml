@@ -20,14 +20,28 @@ ColumnLayout {
     readonly property var palette: controller ? controller.blockPalette : []
     readonly property var script: controller ? controller.blockScript : null
     property var armedSlot: null
+    property string paletteHint: ""
 
     spacing: 8
+
+    Timer {
+        id: paletteHintTimer
+        interval: 6000
+        onTriggered: root.paletteHint = ""
+    }
+
+    function showPaletteHint(text) {
+        paletteHint = text
+        paletteHintTimer.restart()
+    }
 
     function sanitizedId(definitionId) {
         return definitionId.split("/").join("_")
     }
 
     function requestArm(blockId, key) {
+        paletteHint = ""
+        paletteHintTimer.stop()
         if (armedSlot && armedSlot.blockId === blockId
                 && armedSlot.key === key)
             armedSlot = null
@@ -40,6 +54,13 @@ ColumnLayout {
 
         function onBlockStructureChanged() {
             root.armedSlot = null
+        }
+
+        function onRunningChanged() {
+            if (root.controller.running)
+                root.showPaletteHint(qsTr(
+                    "The search is running; block editing resumes "
+                    + "after it stops."))
         }
     }
 
@@ -137,6 +158,15 @@ ColumnLayout {
                     }
                 }
             }
+        }
+        Label {
+            objectName: "blockPaletteHint"
+            Layout.fillWidth: true
+            visible: root.paletteHint.length > 0
+            text: root.paletteHint
+            color: ThemeControls.AppTheme.warning
+            wrapMode: Text.WordWrap
+            font.pixelSize: 11
         }
     }
 
@@ -327,8 +357,13 @@ ColumnLayout {
 
     function activatePaletteBlock(block) {
         if (block.optionKind === "" && block.shape === "reporter") {
-            if (!root.armedSlot)
+            if (!root.armedSlot) {
+                root.showPaletteHint(qsTr(
+                    "Value blocks plug into a number slot: click the "
+                    + "\u2295 button next to the slot first, then pick "
+                    + "the value block."))
                 return
+            }
             root.controller.attachReporter(
                         root.armedSlot.blockId, root.armedSlot.key, block.id)
             root.armedSlot = null

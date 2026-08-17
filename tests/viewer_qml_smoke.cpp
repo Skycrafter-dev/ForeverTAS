@@ -2804,11 +2804,11 @@ int main(int argc, char **argv) {
                             referenceLoadingWarning
                                             ->property("color")
                                             .value<QColor>()
-                                            .red() >
+                                            .blue() >
                                     referenceLoadingWarning
                                             ->property("color")
                                             .value<QColor>()
-                                            .green() &&
+                                            .red() &&
                             referenceLoadingWarning
                                             ->property("radius")
                                             .toReal() <= 8.0 &&
@@ -2825,11 +2825,11 @@ int main(int argc, char **argv) {
                             referenceLoadingWarningText
                                             ->property("color")
                                             .value<QColor>()
-                                            .red() >
+                                            .blue() >
                                     referenceLoadingWarningText
                                             ->property("color")
                                             .value<QColor>()
-                                            .green() &&
+                                            .red() &&
                             referenceLoadingWarningText
                                             ->property("color")
                                             .value<QColor>() !=
