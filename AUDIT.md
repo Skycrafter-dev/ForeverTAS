@@ -5,6 +5,38 @@ Complete issue list from the adversarial audit (3 parallel deep-audit passes ove
 plus a full manual pass over `Main.qml`). Issues are fixed one by one; each
 section records what was done.
 
+## Resolution log (fix commits on top of the audited baseline)
+
+- `d7fecf7` — **A1, A2, A5, A6, C5, C6, D7, dead file**: the whole
+  binding-severance/stale-state family; whiteboard text-tool data loss and
+  stale-edit-index; combo popups flip upward and widen to full labels; slot
+  editors widen; cuboid model emits `targetsChanged`; `SettingSwitch.qml`
+  removed.
+- `a8d6f4d` — **A3, A4, C7, D8, D12 (partial)**: debugger click hazards
+  (breakpoint only from gutter, Return no longer inserts surprise lines),
+  palette feedback hints, loading banner as info, status/glyph/tooltip polish,
+  themed scrollbars, deduplicated error display.
+- `a61ce8e` — **B1, B2, B3, B8 (diagnostics), D16, D17**: smooth steering
+  cumulative-bump fix with restore + regression test and window-patch parity;
+  expression overflow rejected; evaluation/mutation window conflict validated
+  at configuration time; actionable no-satisfied-iteration message; condition
+  stack-depth rejected at compile; reserved words quoted in the text
+  interchange.
+- `abb8345` — **B4, B5, B6, B7, D3, D4, D6, D14, m9, m10**: persist() OOB
+  guards; corrupt program backup; CUDA preference kept across non-CUDA builds;
+  extraction no longer clobbers concurrent edits; stale text-apply error;
+  packs-hint early return; focus payload validation; numeric seed comparison;
+  message fixes.
+- `845efa5` — **C1, C2, C3, C4 (controller-owned), C9, D1, D13**: wheel
+  chaining to the outer pane at extents + 1:1 trackpad deltas + topmost-first
+  hit test; keyboard tooltips; persisted render mode; severity as state
+  instead of translated-string matching; running-search edit hint; green
+  focus color; dock width clamp.
+- `13eb9ac` — **D12, D15 (partial), D19, D20, volume-entry UX nits**: legacy
+  key migration persists forward; dropped persisted targets warn; moveBlock
+  rejects negative indices; draw-polygon instructions; menu checkmarks; dead
+  code removed.
+
 ## A. Critical UI state bugs (wrong data shown / silent data loss)
 
 - **A1** `WhiteboardOverlay.qml:40-56,142-150` — Text tool: clicking a second
@@ -145,6 +177,13 @@ section records what was done.
 
 - One-tick evaluation/mutation timeline asymmetry (intended, codified in tests;
   improved error messaging instead of semantic change).
+- **B9** script time ceil-rounding on unaligned origins (latent — needs an
+  unaligned-origin replay fixture to validate a change).
+- **B10** loose reporter blocks: the palette no longer creates them silently
+  (hint instead); the underlying canvas affordance is future work.
+- **B11** unbounded destructor wait / packs-detection cancellation plumbing.
+- **B12** portal dialog timeout/parenting and silent no-op when the portal is
+  unavailable (platform work).
 - Snap-Steam autodetection, Wayland portal window parenting, Windows dialog
   owner HWND (platform feature work).
 - Unbounded sandbox cache growth, multi-worker improvement double-count
@@ -152,3 +191,9 @@ section records what was done.
   testing).
 - Pose score mixing meters/radians (semantic change to ranking; needs
   validation strategy).
+- Whiteboard board renaming, drawings list as a real Popup, export busy
+  indicator (feature work).
+- `Vector3Settings` three-column squeeze beyond the popup-width fix.
+- `qml/qmldir` kept: potentially load-bearing for source-directory loads.
+- Base-input undo semantics (per-keystroke entries, 100-cap) — controller undo
+  now refreshes the editor correctly; coalescing is a design change.
