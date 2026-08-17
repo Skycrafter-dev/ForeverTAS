@@ -19,6 +19,7 @@ namespace forevertas::app {
 namespace {
 
 constexpr char kProgramKey[] = "blocks/program";
+constexpr char kProgramCorruptBackupKey[] = "blocks/program.corrupt";
 constexpr char kSearchAlgorithmKey[] = "selection/searchAlgorithm";
 constexpr char kLegacyMutationAlgorithmKey[] = "selection/mutationAlgorithm";
 constexpr char kModifierPassesKey[] = "composition/modifiers";
@@ -165,6 +166,12 @@ void BlockProgramModel::load() {
             remembered_ = parsed.remembered;
             return;
         }
+        // Keep the unreadable program under a backup key instead of
+        // silently replacing the user's work with defaults.
+        storage.setValue(QLatin1String(kProgramCorruptBackupKey),
+                         stored);
+        qWarning("ForeverTAS: the stored block program could not be "
+                 "parsed; it was backed up and defaults were loaded");
     }
     if (migrateLegacy(storage)) {
         persist();
@@ -622,10 +629,15 @@ bool BlockProgramModel::randomizeSeeds(std::uint32_t entropy) {
             if (!field.isSeed) continue;
             std::uint32_t generated = random();
             const auto current = node->fields.find(field.key);
-            if (current != node->fields.end() &&
-                QString::number(generated) ==
-                        QString::fromStdString(current->second)) {
-                ++generated;
+            if (current != node->fields.end()) {
+                // Compare numerically: "42" and "0042" are the same seed.
+                bool storedParsed = false;
+                const quint64 storedSeed =
+                        QString::fromStdString(current->second)
+                                .toULongLong(&storedParsed);
+                if (storedParsed && storedSeed == generated) {
+                    ++generated;
+                }
             }
             changed |= program_.setFieldValue(
                     blockId,

@@ -941,12 +941,16 @@ void CustomVolumeTargetModel::persist() const {
                 {QStringLiteral("depth"), target.depth},
                 {QStringLiteral("vertices"), vertices}});
     }
+    const QString selectedId =
+            selectedIndex_ >= 0
+                    && selectedIndex_ < static_cast<int>(targets_.size())
+            ? targets_[static_cast<std::size_t>(selectedIndex_)].id
+            : QString{};
     QSettings().setValue(
             QLatin1String(kCustomVolumesKey),
             QJsonDocument(QJsonObject{
                     {QStringLiteral("version"), kVersion},
-                    {QStringLiteral("selectedId"),
-                     targets_[static_cast<std::size_t>(selectedIndex_)].id},
+                    {QStringLiteral("selectedId"), selectedId},
                     {QStringLiteral("targets"), values}})
                     .toJson(QJsonDocument::Compact));
 }

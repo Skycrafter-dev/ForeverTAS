@@ -176,6 +176,12 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     connect(&configuration_, &BlockProgramModel::blockChanged, this,
             [this](int blockId) {
                 emit blockUpdated(blockId);
+                // A failed text apply's error is stale once the user
+                // edits the program structurally; programTextChanged
+                // also notifies programTextError.
+                if (!programTextError_.isEmpty()) {
+                    programTextError_.clear();
+                }
                 emit programTextChanged();
                 refreshValidation();
             });
@@ -285,9 +291,16 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             ParsePhysicsBackend(storedBackend.toStdString());
     simulationBackend_ = parsedBackend.value_or(PhysicsBackend::Reference);
     if (!parsedBackend) {
-        QSettings().setValue(
-                QLatin1String(kSimulationBackendKey),
-                BackendId(simulationBackend_));
+        // A stored "cuda" selection on a build without CUDA stays in
+        // storage so switching binaries does not lose the preference;
+        // only genuinely unknown values are rewritten.
+        const bool knownButUnavailable =
+                storedBackend == QLatin1String("cuda");
+        if (!knownButUnavailable) {
+            QSettings().setValue(
+                    QLatin1String(kSimulationBackendKey),
+                    BackendId(simulationBackend_));
+        }
     }
     scheduleAutoDetectPacksDirectory(packsSearchPatterns);
     refreshValidation();
@@ -751,9 +764,13 @@ void SearchController::focusSelectedCuboid() {
 
 void SearchController::focusSelectedCustomVolume() {
     const QVariantMap target = customVolumeTargets_.selectedTarget();
+    const QVariant center = target.value(QStringLiteral("focusCenter"));
+    const QVariant size = target.value(QStringLiteral("focusSize"));
+    if (!center.canConvert<QVector3D>() || !size.canConvert<QVector3D>()) {
+        return;
+    }
     emit customVolumeFocusRequested(
-            target.value(QStringLiteral("focusCenter")).value<QVector3D>(),
-            target.value(QStringLiteral("focusSize")).value<QVector3D>());
+            center.value<QVector3D>(), size.value<QVector3D>());
 }
 
 void SearchController::beginCustomVolumeDrawing() {
@@ -775,16 +792,19 @@ void SearchController::cancelCustomVolumeDrawing() {
 
 void SearchController::focusSelectedPoseTarget() {
     const QVariantMap target = poseTargets_.selectedTarget();
-    emit poseTargetFocusRequested(
-            target.value(QStringLiteral("position")).value<QVector3D>(),
-            QVector3D(4.0F, 2.5F, 7.0F));
+    const QVariant position = target.value(QStringLiteral("position"));
+    if (!position.canConvert<QVector3D>()) {
+        return;
+    }
+    emit poseTargetFocusRequested(position.value<QVector3D>(),
+                                  QVector3D(4.0F, 2.5F, 7.0F));
 }
 
 void SearchController::setPacksDirectory(const QString &value) {
-    clearAutoDetectedPacksDirectory();
     if (packsDirectory_ == value) {
         return;
     }
+    clearAutoDetectedPacksDirectory();
     packsDirectory_ = value;
     persist(kPacksDirectoryKey, value);
     emit packsDirectoryChanged();
@@ -837,11 +857,12 @@ void SearchController::extractReplayInputs() {
     const QString packsDirectory = QFileInfo(packsDirectory_)
             .absoluteFilePath();
     const QString replayPath = QFileInfo(replayPath_).absoluteFilePath();
+    const QString scriptAtExtractionStart = baseInputScript_;
     setExtractingReplayInputs(true);
     setReplayInputStatusText(QStringLiteral("Extracting replay inputs..."));
 
     QThread *const thread = QThread::create(
-            [this, packsDirectory, replayPath]() {
+            [this, packsDirectory, replayPath, scriptAtExtractionStart]() {
                 ReplayInputExtractionResult result =
                         ExtractReplayInputScript(packsDirectory, replayPath);
                 QMetaObject::invokeMethod(
@@ -849,6 +870,7 @@ void SearchController::extractReplayInputs() {
                         [this,
                          packsDirectory,
                          replayPath,
+                         scriptAtExtractionStart,
                          result = std::move(result)]() mutable {
                             if (packsDirectory !=
                                         QFileInfo(packsDirectory_)
@@ -864,6 +886,12 @@ void SearchController::extractReplayInputs() {
                                         QStringLiteral(
                                                 "Input extraction failed: %1")
                                                 .arg(result.error));
+                            } else if (baseInputScript_ !=
+                                       scriptAtExtractionStart) {
+                                setReplayInputStatusText(QStringLiteral(
+                                        "Base input script was edited while "
+                                        "extracting; extracted inputs were "
+                                        "discarded."));
                             } else {
                                 setBaseInputScript(result.script);
                                 setReplayInputStatusText(
@@ -1073,7 +1101,8 @@ SearchController::ValidationResult SearchController::validate() const {
                 {},
                 QStringLiteral(
                         "Simulation horizon must be a whole number of "
-                        "milliseconds between 10 and %1, aligned to 10 ms.")
+                        "milliseconds between %1 and %2, aligned to %1 ms.")
+                        .arg(kSearchTickDurationMs)
                         .arg(kMaximumSimulationHorizonMs)};
     }
     const std::uint32_t simulationHorizonMs =
@@ -1100,7 +1129,8 @@ SearchController::ValidationResult SearchController::validate() const {
                             true});
         } catch (...) {
             return {{}, QStringLiteral(
-                                "Point target cannot be exposed to the condition script.")};
+                                "The point target's x, y, and z values must "
+                                "all be valid numbers.")};
         }
     }
     ConditionCompileResult condition = CompileConditionScript(
