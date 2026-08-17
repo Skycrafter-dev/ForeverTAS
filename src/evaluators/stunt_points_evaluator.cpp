@@ -68,6 +68,12 @@ std::optional<std::int64_t> ParseDeadline(
 
 }  // namespace
 
+OptionFieldList StuntPointsOptionFields() {
+    OptionFieldList fields;
+    fields.push_back(NumberField("targetTimeMs", "Deadline (ms)", "6000"));
+    return fields;
+}
+
 OptionSettings DefaultStuntPointsOptionSettings() {
     return {{"targetTimeMs", "6000"}};
 }

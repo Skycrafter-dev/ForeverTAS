@@ -219,6 +219,31 @@ private:
 
 }  // namespace
 
+OptionFieldList ExistingEventPerturbationOptionFields() {
+    OptionFieldList fields;
+    AppendWindowFields(fields, "1000", "5990");
+    AppendSeedField(fields);
+    fields.push_back(NumberField("minCount", "Min events", "1"));
+    fields.push_back(NumberField("maxCount", "Max events", "3"));
+    fields.push_back(
+            NumberField("maxTimeShiftMs", "Max time shift (ms)", "100"));
+    fields.push_back(EnumField("steerMode", "Steering changes",
+            {{"delta", "Delta"},
+             {"absolute", "Absolute"}}));
+    fields.push_back(ClampedField(
+            "steerDeltaMin", "Delta min", "-0.15", -1.0, 1.0, 3, 0.01));
+    fields.push_back(ClampedField(
+            "steerDeltaMax", "Delta max", "0.15", -1.0, 1.0, 3, 0.01));
+    fields.push_back(ClampedField(
+            "steerAbsoluteMin", "Absolute min", "-1", -1.0, 1.0, 3, 0.01));
+    fields.push_back(ClampedField(
+            "steerAbsoluteMax", "Absolute max", "1", -1.0, 1.0, 3, 0.01));
+    fields.push_back(
+            BooleanField("toggleAccelerate", "Toggle accelerate", true));
+    fields.push_back(BooleanField("toggleBrake", "Toggle brake", true));
+    return fields;
+}
+
 OptionSettings DefaultExistingEventPerturbationSettings() {
     return {{"minTimeMs", "1000"},
             {"maxTimeMs", "5990"},

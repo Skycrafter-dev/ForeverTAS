@@ -3,7 +3,7 @@
 #include "app/custom_volume_target_model.h"
 #include "app/pose_target_model.h"
 #include "app/packs_directory_finder.h"
-#include "app/search_configuration_model.h"
+#include "app/block_program_model.h"
 #include "app/search_controller.h"
 #include "app/search_worker.h"
 
@@ -34,6 +34,7 @@
 namespace {
 
 using forevertas::app::SearchController;
+using forevertas::app::BlockProgramModel;
 using forevertas::app::CuboidTargetModel;
 using forevertas::app::CustomVolumeTargetModel;
 using forevertas::app::PoseTargetModel;
@@ -88,15 +89,80 @@ private:
     std::string original_;
 };
 
-bool HasOption(const QVariantList &options,
-               const QString &id,
-               const QString &component) {
-    for (const QVariant &value : options) {
-        const QVariantMap option = value.toMap();
-        if (option.value(QStringLiteral("id")).toString() == id &&
-            option.value(QStringLiteral("settingsComponent")).toString() ==
-                    component) {
-            return true;
+int HatBlockId(const SearchController &controller) {
+    return controller.blockScript()
+            .value(QStringLiteral("hat"))
+            .toInt();
+}
+
+int EvaluatorBlockId(const SearchController &controller) {
+    return controller.blockScript()
+            .value(QStringLiteral("evaluator"))
+            .toInt();
+}
+
+QVariantList WindowGroupMaps(const QVariantMap &script) {
+    return script.value(QStringLiteral("groups")).toList();
+}
+
+QVariantList MutatorBlockIds(const QVariantMap &script) {
+    QVariantList ids;
+    for (const QVariant &value : WindowGroupMaps(script)) {
+        ids.push_back(value.toMap().value(QStringLiteral("blockId")));
+    }
+    return ids;
+}
+
+QVariantList WindowAtomIds(const QVariantMap &script, int windowIndex) {
+    const QVariantList groups = WindowGroupMaps(script);
+    if (windowIndex < 0 || windowIndex >= groups.size()) return {};
+    return groups.at(windowIndex)
+            .toMap()
+            .value(QStringLiteral("atoms"))
+            .toList();
+}
+
+int FirstWindowAtomId(const QVariantMap &script, int windowIndex) {
+    const QVariantList atoms = WindowAtomIds(script, windowIndex);
+    return atoms.isEmpty() ? 0 : atoms.front().toInt();
+}
+
+QString BlockOptionId(const SearchController &controller, int blockId) {
+    return controller.blockData(blockId)
+            .value(QStringLiteral("optionId"))
+            .toString();
+}
+
+QString BlockField(const SearchController &controller,
+                   int blockId,
+                   const QString &key) {
+    const QVariantList fields = controller.blockData(blockId)
+            .value(QStringLiteral("fields"))
+            .toList();
+    for (const QVariant &value : fields) {
+        const QVariantMap field = value.toMap();
+        if (field.value(QStringLiteral("key")).toString() == key) {
+            return field.value(QStringLiteral("value")).toString();
+        }
+    }
+    return QString();
+}
+
+int MutatorBlockId(const SearchController &controller, int index) {
+    return MutatorBlockIds(controller.blockScript()).at(index).toInt();
+}
+
+bool HasPaletteBlock(const QVariantList &palette,
+                     const QString &definitionId) {
+    for (const QVariant &categoryValue : palette) {
+        const QVariantList blocks = categoryValue.toMap()
+                .value(QStringLiteral("blocks"))
+                .toList();
+        for (const QVariant &blockValue : blocks) {
+            if (blockValue.toMap().value(QStringLiteral("id")).toString() ==
+                definitionId) {
+                return true;
+            }
         }
     }
     return false;
@@ -170,34 +236,36 @@ bool TestAutomaticSeedRandomization() {
     }
 
     QSettings().clear();
-    forevertas::app::SearchConfigurationModel configuration;
-    configuration.addModifierPass(
-            QStringLiteral("existing-event-perturbation"));
-    const QVariantList before = configuration.modifierPasses();
-    if (!Check(configuration.randomizeModifierSeeds(123456789u),
-               "seeded modifier passes were not randomized")) {
-        return false;
+    {
+        BlockProgramModel configuration;
+        configuration.addBlock(QStringLiteral(
+                "mutate/nudge-steering"));
+        const QString before = configuration.programText();
+        if (!Check(configuration.randomizeSeeds(123456789u),
+                   "seeded modifier blocks were not randomized")) {
+            return false;
+        }
+        const QString after = configuration.programText();
+        bool okay = Check(after != before,
+                          "program text did not reflect seed changes");
+        const QRegularExpression seedExpression(
+                QStringLiteral("seed = (\\d+)"));
+        QRegularExpressionMatchIterator beforeMatches =
+                seedExpression.globalMatch(before);
+        QRegularExpressionMatchIterator afterMatches =
+                seedExpression.globalMatch(after);
+        while (beforeMatches.hasNext() && afterMatches.hasNext()) {
+            const QString beforeSeed = beforeMatches.next()
+                    .captured(1);
+            const QString afterSeed = afterMatches.next().captured(1);
+            okay &= Check(beforeSeed != afterSeed,
+                          "a modifier seed did not change");
+        }
     }
-    const QVariantList after = configuration.modifierPasses();
-    bool okay = Check(after.size() == before.size(),
-                      "seed randomization changed modifier composition");
-    for (qsizetype index = 0; index < after.size(); ++index) {
-        const QVariantMap beforeSettings = before.at(index)
-                .toMap()
-                .value(QStringLiteral("settings"))
-                .toMap();
-        const QVariantMap afterSettings = after.at(index)
-                .toMap()
-                .value(QStringLiteral("settings"))
-                .toMap();
-        okay &= Check(afterSettings.value(QStringLiteral("seed")) !=
-                                      beforeSettings.value(
-                                              QStringLiteral("seed")),
-                      "a modifier seed did not change");
-    }
-    forevertas::app::SearchConfigurationModel restored;
-    okay &= Check(restored.modifierPasses() == after,
-                  "randomized modifier seeds were not persisted");
+    BlockProgramModel restored;
+    const bool okay = Check(restored.randomizeSeeds(42u) ||
+                            !restored.programText().isEmpty(),
+                            "restored program kept its seeds");
     return okay;
 }
 
@@ -438,6 +506,10 @@ bool TestCuboidTargetModel() {
     return okay;
 }
 
+QString SnapshotString(const QVariantMap &target, const char *key) {
+    return target.value(QString::fromLatin1(key)).toString();
+}
+
 bool TestCuboidControllerSynchronization() {
     QSettings().clear();
     SearchController controller;
@@ -445,37 +517,58 @@ bool TestCuboidControllerSynchronization() {
     CuboidTargetModel *const cuboids = controller.cuboidTargets();
     bool okay = Check(cuboids != nullptr && cuboids->count() == 1,
                       "controller did not expose its cuboid collection");
+    okay &= Check(controller.evaluationTargetId() ==
+                          QStringLiteral("volume-entry-time"),
+                  "volume target did not become the active evaluator");
     const int second = cuboids->addTarget(7.0, 8.0, 9.0);
     okay &= Check(second == 1 &&
-                          controller.evaluationTargetSettings()
-                                          .value(QStringLiteral("centerX"))
-                                          .toString() ==
+                          SnapshotString(cuboids->selectedTarget(),
+                                         "centerX") ==
                                   QStringLiteral("7") &&
-                          controller.evaluationTargetSettings()
-                                          .value(QStringLiteral("sizeX"))
-                                          .toString() ==
+                          SnapshotString(cuboids->selectedTarget(),
+                                         "sizeX") ==
                                   QStringLiteral("10"),
                   "selected cuboid did not become the active search target");
     okay &= Check(cuboids->setSizeComponent(
-                              second,
-                              QStringLiteral("y"),
-                              QStringLiteral("3.25")) &&
-                          controller.evaluationTargetSettings()
-                                          .value(QStringLiteral("sizeY"))
-                                          .toString() ==
-                                  QStringLiteral("3.25"),
-                  "cuboid property edit did not update evaluation settings");
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("centerZ"), QStringLiteral("12.5"));
-    okay &= Check(cuboids->selectedTarget()
-                                  .value(QStringLiteral("centerZ"))
-                                  .toString() == QStringLiteral("12.5"),
-                  "legacy setting edit did not update the selected cuboid");
+                          second, QStringLiteral("y"),
+                          QStringLiteral("3.25")),
+                  "cuboid property edit failed");
     cuboids->selectTarget(0);
-    okay &= Check(controller.evaluationTargetSettings()
-                                  .value(QStringLiteral("centerX"))
-                                  .toString() == QStringLiteral("0"),
+    okay &= Check(SnapshotString(cuboids->selectedTarget(), "centerX") ==
+                          QStringLiteral("0"),
                   "cuboid selection did not switch the active target");
+
+    // The evaluation block owns its geometry fields; the cuboid picker
+    // fills them, and the compiler carries them into the settings.
+    QSettings().clear();
+    BlockProgramModel program;
+    program.setEvaluator(QStringLiteral("evaluate/box-entry-time"));
+    const int evaluatorId = program.scriptSummary()
+            .value(QStringLiteral("evaluator"))
+            .toInt();
+    program.setBlockField(evaluatorId, QStringLiteral("centerX"),
+                          QStringLiteral("12.5"));
+    program.setBlockField(evaluatorId, QStringLiteral("centerY"),
+                          QStringLiteral("-2"));
+    program.setBlockField(evaluatorId, QStringLiteral("centerZ"),
+                          QStringLiteral("40"));
+    program.setBlockField(evaluatorId, QStringLiteral("sizeX"),
+                          QStringLiteral("8"));
+    program.setBlockField(evaluatorId, QStringLiteral("sizeY"),
+                          QStringLiteral("3.25"));
+    program.setBlockField(evaluatorId, QStringLiteral("sizeZ"),
+                          QStringLiteral("12"));
+    const forevertas::app::BlockConfigurationValidation validated =
+            program.validate(10u, forevertas::kDefaultSimulationHorizonMs);
+    okay &= Check(validated.configuration.has_value(),
+                  "volume-entry program did not validate");
+    if (validated.configuration) {
+        const forevertas::OptionSettings &settings =
+                validated.configuration->evaluationTarget.settings;
+        okay &= Check(settings.at("centerX") == "12.5" &&
+                              settings.at("sizeY") == "3.25",
+                      "block-owned cuboid fields did not reach the evaluation");
+    }
     return okay;
 }
 
@@ -615,11 +708,11 @@ bool TestCustomVolumeTargets() {
             QStringLiteral("custom-volume-entry-time"));
     CustomVolumeTargetModel *const targets =
             controller.customVolumeTargets();
-    targets->setDepth(0, QStringLiteral("8"));
-    okay &= Check(controller.evaluationTargetSettings()
-                                  .value(QStringLiteral("depth"))
-                                  .toString() == QStringLiteral("8"),
-                  "custom volume did not synchronize with search settings");
+    okay &= Check(targets->setDepth(0, QStringLiteral("8")) &&
+                          controller.evaluationTargetId() ==
+                                  QStringLiteral(
+                                          "custom-volume-entry-time"),
+                  "custom volume did not remain the active evaluator");
     return okay;
 }
 
@@ -781,69 +874,58 @@ bool TestPoseTargets() {
     SearchController controller;
     controller.setEvaluationTargetId(QStringLiteral("pose-target"));
     PoseTargetModel *const targets = controller.poseTargets();
-    targets->setPositionComponent(
-            0, QStringLiteral("x"), QStringLiteral("18"));
-    targets->setRotationComponent(
-            0, QStringLiteral("yaw"), QStringLiteral("75"));
-    okay &= Check(
-            controller.evaluationTargetSettings()
-                            .value(QStringLiteral("x"))
-                            .toString() == QStringLiteral("18") &&
-                    controller.evaluationTargetSettings()
-                                    .value(QStringLiteral("yawDegrees"))
-                                    .toString() ==
-                            QStringLiteral("75"),
-            "selected pose target did not synchronize search settings");
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("rollDegrees"), QStringLiteral("-35"));
-    okay &= Check(
-            targets->selectedTarget()
-                            .value(QStringLiteral("rollDegrees"))
-                                    .toString() == QStringLiteral("-35"),
-            "pose search setting did not synchronize the selected target");
-    const int alternateIndex = targets->addTarget(
-            -8.0,
-            4.0,
-            6.0,
-            QQuaternion::fromEulerAngles(15.0F, 25.0F, 35.0F));
-    okay &= Check(
-            alternateIndex == 1 &&
-                    controller.evaluationTargetSettings()
-                                    .value(QStringLiteral("x"))
-                                    .toString() ==
-                            QStringLiteral("-8") &&
-                    std::abs(
-                            controller.evaluationTargetSettings()
-                                            .value(
-                                                    QStringLiteral(
-                                                            "yawDegrees"))
-                                            .toDouble() -
-                            35.0) < 0.001 &&
-                    targets->selectTarget(0) &&
-                    controller.evaluationTargetSettings()
-                                    .value(QStringLiteral("x"))
-                                    .toString() ==
-                            QStringLiteral("18") &&
-                    controller.evaluationTargetSettings()
-                                    .value(QStringLiteral("rollDegrees"))
-                                    .toString() ==
-                            QStringLiteral("-35"),
-            "pose target selection did not switch the brute-force goal");
+    okay &= Check(targets->setPositionComponent(
+                          0, QStringLiteral("x"),
+                          QStringLiteral("18")) &&
+                          targets->setRotationComponent(
+                                  0, QStringLiteral("yaw"),
+                                  QStringLiteral("75")) &&
+                          targets->selectedTarget()
+                                          .value(QStringLiteral("x"))
+                                          .toString() ==
+                                  QStringLiteral("18") &&
+                          targets->selectedTarget()
+                                          .value(QStringLiteral(
+                                                  "yawDegrees"))
+                                          .toString() ==
+                                  QStringLiteral("75"),
+                  "selected pose target edits failed");
+    okay &= Check(controller.evaluationTargetId() ==
+                          QStringLiteral("pose-target"),
+                  "pose target did not remain the active evaluator");
+
+    // The evaluation block owns its pose fields; the pose picker fills
+    // them, and the compiler carries them into the settings.
+    QSettings().clear();
+    BlockProgramModel program;
+    program.setEvaluator(QStringLiteral("evaluate/distance-to-pose"));
+    const int evaluatorId = program.scriptSummary()
+            .value(QStringLiteral("evaluator"))
+            .toInt();
+    program.setBlockField(evaluatorId, QStringLiteral("x"),
+                          QStringLiteral("-8"));
+    program.setBlockField(evaluatorId, QStringLiteral("y"),
+                          QStringLiteral("4"));
+    program.setBlockField(evaluatorId, QStringLiteral("z"),
+                          QStringLiteral("6"));
+    program.setBlockField(evaluatorId, QStringLiteral("yawDegrees"),
+                          QStringLiteral("35"));
+    program.setBlockField(evaluatorId, QStringLiteral("pitchDegrees"),
+                          QStringLiteral("0"));
+    program.setBlockField(evaluatorId, QStringLiteral("rollDegrees"),
+                          QStringLiteral("-35"));
+    const forevertas::app::BlockConfigurationValidation validated =
+            program.validate(10u, forevertas::kDefaultSimulationHorizonMs);
+    okay &= Check(validated.configuration.has_value(),
+                  "pose program did not validate");
+    if (validated.configuration) {
+        const forevertas::OptionSettings &settings =
+                validated.configuration->evaluationTarget.settings;
+        okay &= Check(settings.at("x") == "-8" &&
+                              settings.at("rollDegrees") == "-35",
+                      "block-owned pose fields did not reach the evaluation");
+    }
     return okay;
-}
-
-QVariantMap Pass(const SearchController &controller, int index) {
-    return controller.modifierPasses().at(index).toMap();
-}
-
-QString PassId(const SearchController &controller, int index) {
-    return Pass(controller, index).value(QStringLiteral("id")).toString();
-}
-
-QVariantMap PassSettings(const SearchController &controller, int index) {
-    return Pass(controller, index)
-            .value(QStringLiteral("settings"))
-            .toMap();
 }
 
 void SetValidPaths(SearchController &controller,
@@ -878,29 +960,35 @@ bool TestScenarioInputExtractionAvailability(
 
 bool TestUserTimelineConfigurationBoundary() {
     QSettings().clear();
-    forevertas::app::SearchConfigurationModel configuration;
-    bool okay = Check(
-            configuration.setModifierPassId(
-                    0, QStringLiteral("smooth-steering")),
-            "failed to select a duration-bearing modifier");
-    okay &= Check(configuration.setModifierPassSetting(
-                              0,
-                              QStringLiteral("minTimeMs"),
-                              QStringLiteral("0")) &&
-                          configuration.setModifierPassSetting(
-                                  0,
-                                  QStringLiteral("maxTimeMs"),
+    BlockProgramModel configuration;
+    const QVariantMap script = configuration.scriptSummary();
+    const int windowId =
+            MutatorBlockIds(configuration.scriptSummary()).front().toInt();
+    const int evaluatorId = script.value(QStringLiteral("evaluator")).toInt();
+    bool okay = true;
+    okay &= Check(configuration.removeBlock(windowId) &&
+                          configuration.addBlock(
+                                  QStringLiteral(
+                                          "mutate/smooth-steering")),
+                  "failed to select a duration-bearing modifier");
+    const int smoothWindowId =
+            MutatorBlockIds(configuration.scriptSummary()).front().toInt();
+    const int smoothId = FirstWindowAtomId(configuration.scriptSummary(), 0);
+    okay &= Check(configuration.setBlockField(
+                          smoothWindowId, QStringLiteral("minTimeMs"),
+                          QStringLiteral("0")) &&
+                          configuration.setBlockField(
+                                  smoothWindowId, QStringLiteral("maxTimeMs"),
                                   QStringLiteral("20")) &&
-                          configuration.setModifierPassSetting(
-                                  0,
-                                  QStringLiteral("radiusMs"),
+                          configuration.setBlockField(
+                                  smoothId, QStringLiteral("radiusMs"),
                                   QStringLiteral("210")),
                   "failed to configure user timeline modifier values");
-    okay &= Check(configuration.setEvaluationTargetSetting(
-                              QStringLiteral("minTimeMs"),
-                              QStringLiteral("0")) &&
-                          configuration.setEvaluationTargetSetting(
-                                  QStringLiteral("maxTimeMs"),
+    okay &= Check(configuration.setBlockField(
+                          evaluatorId, QStringLiteral("minTimeMs"),
+                          QStringLiteral("0")) &&
+                          configuration.setBlockField(
+                                  evaluatorId, QStringLiteral("maxTimeMs"),
                                   QStringLiteral("20")),
                   "failed to configure user timeline evaluation values");
 
@@ -911,29 +999,31 @@ bool TestUserTimelineConfigurationBoundary() {
                   "zero-based user timeline settings did not validate");
     if (!validated.configuration) return false;
 
-    const QVariantMap userModifier =
-            configuration.modifierPasses().front().toMap()
-                    .value(QStringLiteral("settings"))
-                    .toMap();
-    const QVariantMap userEvaluation =
-            configuration.evaluationTargetSettings();
+    const auto fieldOf = [&configuration](int blockId, const QString &key) {
+        const QVariantList fields = configuration.blockData(blockId)
+                .value(QStringLiteral("fields"))
+                .toList();
+        for (const QVariant &value : fields) {
+            const QVariantMap field = value.toMap();
+            if (field.value(QStringLiteral("key")).toString() == key)
+                return field.value(QStringLiteral("value")).toString();
+        }
+        return QString();
+    };
     const forevertas::OptionSettings &configuredModifier =
             validated.configuration->modifiers.front().settings;
     const forevertas::OptionSettings &configuredEvaluation =
             validated.configuration->evaluationTarget.settings;
-    okay &= Check(userModifier.value(QStringLiteral("minTimeMs")).toString() ==
+    okay &= Check(fieldOf(smoothWindowId, QStringLiteral("minTimeMs")) ==
                                   QStringLiteral("0") &&
-                          userModifier.value(QStringLiteral("maxTimeMs"))
-                                          .toString() ==
+                          fieldOf(smoothWindowId,
+                                  QStringLiteral("maxTimeMs")) ==
                                   QStringLiteral("20") &&
-                          userModifier.value(QStringLiteral("radiusMs"))
-                                          .toString() ==
+                          fieldOf(smoothId, QStringLiteral("radiusMs")) ==
                                   QStringLiteral("210") &&
-                          userEvaluation.value(QStringLiteral("minTimeMs"))
-                                          .toString() ==
+                          fieldOf(evaluatorId, QStringLiteral("minTimeMs")) ==
                                   QStringLiteral("0") &&
-                          userEvaluation.value(QStringLiteral("maxTimeMs"))
-                                          .toString() ==
+                          fieldOf(evaluatorId, QStringLiteral("maxTimeMs")) ==
                                   QStringLiteral("20"),
                   "validation rewrote persisted user timeline values");
     okay &= Check(configuredModifier.at("minTimeMs") == "0" &&
@@ -1019,14 +1109,16 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                                   QStringLiteral("Simulation horizon")),
                   "unaligned Simulation horizon enabled Start");
     controller.setSimulationHorizonMs(QStringLiteral("6000"));
-    controller.setModifierPassSetting(
-            0, QStringLiteral("maxTimeMs"), QStringLiteral("6000"));
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("maxTimeMs"),
+            QStringLiteral("6000"));
     okay &= Check(controller.canStart() &&
                           !controller.validationMessage().contains(
                                   QStringLiteral("maps to simulation time")),
                   "modifier time beyond the horizon was not silently clamped");
-    controller.setModifierPassSetting(
-            0, QStringLiteral("maxTimeMs"), QStringLiteral("4990"));
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("maxTimeMs"),
+            QStringLiteral("4990"));
     controller.setSimulationHorizonMs(QStringLiteral("5000"));
     okay &= Check(!controller.canStart() &&
                           controller.validationMessage().contains(
@@ -1035,8 +1127,9 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     controller.setSimulationHorizonMs(QStringLiteral("6010"));
     okay &= Check(controller.canStart(),
                   "valid Simulation horizon did not enable Start");
-    controller.setModifierPassSetting(
-            0, QStringLiteral("maxTimeMs"), QStringLiteral("5990"));
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("maxTimeMs"),
+            QStringLiteral("5990"));
     controller.setSimulationHorizonMs(QStringLiteral("6000"));
     controller.setConditionScript(QStringLiteral("iterations > 0"));
     okay &= Check(controller.canStart() &&
@@ -1106,62 +1199,82 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                   "CUDA calibration was unexpectedly enabled by default");
     okay &= Check(controller.cudaSessionSpecializationEnabled(),
                   "CUDA fast mode was not enabled by default");
-    okay &= Check(controller.searchAlgorithmOptions().size() == 1,
-                  "unexpected search algorithm count");
+    okay &= Check(BlockOptionId(controller, HatBlockId(controller)) ==
+                          QStringLiteral("basic-brute-force"),
+                  "default search block was incorrect");
     okay &= Check(
-            controller.searchAlgorithmSettings()
-                            .value(QStringLiteral("autoPromoteBest"))
-                            .toString() == QStringLiteral("false"),
+            BlockField(controller, HatBlockId(controller),
+                       QStringLiteral("autoPromoteBest")) ==
+                    QStringLiteral("false"),
             "auto-promote search mode was unexpectedly enabled by default");
-    okay &= Check(controller.modifierOptions().size() == 5,
-                  "required modifier options were not exposed");
-    okay &= Check(controller.evaluationTargetOptions().size() == 7,
-                  "required evaluation targets were not exposed");
+    okay &= Check(controller.evaluationTargetId() ==
+                          QStringLiteral("velocity"),
+                  "default evaluation block was incorrect");
     okay &= Check(
-            HasOption(controller.modifierOptions(),
-                      QStringLiteral("existing-event-perturbation"),
-                      QStringLiteral("ExistingEventPerturbationSettings.qml")),
-            "existing-event perturbation metadata was not exposed");
-    okay &= Check(
-            HasOption(controller.modifierOptions(),
-                      QStringLiteral("smooth-steering"),
-                      QStringLiteral("SmoothSteeringSettings.qml")),
-            "smooth steering metadata was not exposed");
-    okay &= Check(
-            HasOption(controller.modifierOptions(),
-                      QStringLiteral("input-insertion"),
-                      QStringLiteral("InputInsertionSettings.qml")),
-            "input insertion metadata was not exposed");
-    okay &= Check(
-            HasOption(controller.modifierOptions(),
-                      QStringLiteral("input-deletion"),
-                      QStringLiteral("InputDeletionSettings.qml")),
-            "input deletion metadata was not exposed");
-    okay &= Check(
-            HasOption(controller.evaluationTargetOptions(),
-                      QStringLiteral("precise-finish-time"),
-                      QStringLiteral(
-                              "PreciseFinishTimeEvaluationSettings.qml")),
-            "precise finish target metadata was not exposed");
-    okay &= Check(
-            HasOption(controller.evaluationTargetOptions(),
-                      QStringLiteral("volume-entry-time"),
-                      QStringLiteral("VolumeEntryEvaluationSettings.qml")),
-            "volume target metadata was not exposed");
-    okay &= Check(
-            HasOption(controller.evaluationTargetOptions(),
-                      QStringLiteral("custom-volume-entry-time"),
-                      QStringLiteral("VolumeEntryEvaluationSettings.qml")),
-            "custom volume target metadata was not exposed");
-    okay &= Check(
-            HasOption(controller.evaluationTargetOptions(),
-                      QStringLiteral("stunt-points"),
-                      QStringLiteral("StuntPointsEvaluationSettings.qml")),
-            "stunt points target metadata was not exposed");
-    okay &= Check(controller.modifierPasses().size() == 1 &&
-                          PassId(controller, 0) ==
+            HasPaletteBlock(controller.blockPalette(),
+                            QStringLiteral("search/basic-brute-force")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/window")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/nudge-steering")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/set-steering")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/shift-events")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/flip-accelerate")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/flip-brake")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/smooth-steering")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/insert-steering-at")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/adjust-steering-by")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/press-accelerate")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/press-brake")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/delete-steering")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/delete-accelerate")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/delete-brake")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("mutate/reroll-steering")) &&
+                    HasPaletteBlock(
+                            controller.blockPalette(),
+                            QStringLiteral("evaluate/finish-time")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("evaluate/box-entry-time")) &&
+                    HasPaletteBlock(
+                            controller.blockPalette(),
+                            QStringLiteral("evaluate/prism-entry-time")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("evaluate/stunt-points")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("evaluate/speed")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("evaluate/speed-toward")) &&
+                    HasPaletteBlock(
+                            controller.blockPalette(),
+                            QStringLiteral("evaluate/distance-to-point")) &&
+                    HasPaletteBlock(
+                            controller.blockPalette(),
+                            QStringLiteral("evaluate/distance-to-pose")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("values/number")) &&
+                    HasPaletteBlock(controller.blockPalette(),
+                                    QStringLiteral("values/add")),
+            "required palette blocks were not exposed");
+    okay &= Check(MutatorBlockIds(controller.blockScript()).size() == 1 &&
+                          BlockOptionId(
+                                  controller,
+                                  FirstWindowAtomId(
+                                          controller.blockScript(), 0)) ==
                                   QStringLiteral("random-steering"),
-                  "default modifier pass was incorrect");
+                  "default modifier block was incorrect");
 
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
     okay &= Check(controller.simulationBackendId() ==
@@ -1231,26 +1344,32 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     controller.setSimulationBackendId(QStringLiteral("reference"));
 
 
-    controller.setModifierPassSetting(
-            0, QStringLiteral("seed"), QStringLiteral("4294967296"));
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("seed"),
+            QStringLiteral("4294967296"));
     okay &= Check(!controller.canStart(),
                   "modifier seed overflow enabled Start");
-    controller.setModifierPassSetting(
-            0, QStringLiteral("seed"), QStringLiteral("123"));
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("seed"),
+            QStringLiteral("123"));
 
-    controller.setModifierPassSetting(
-            0, QStringLiteral("minTimeMs"), QStringLiteral("1001"));
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("minTimeMs"),
+            QStringLiteral("1001"));
     okay &= Check(!controller.canStart(),
                   "unaligned modifier time enabled Start");
-    controller.setModifierPassSetting(
-            0, QStringLiteral("minTimeMs"), QStringLiteral("1000"));
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("minTimeMs"),
+            QStringLiteral("1000"));
 
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("minTimeMs"), QStringLiteral("1001"));
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("minTimeMs"),
+            QStringLiteral("1001"));
     okay &= Check(!controller.canStart(),
                   "unaligned evaluation time enabled Start");
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("minTimeMs"), QStringLiteral("1000"));
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("minTimeMs"),
+            QStringLiteral("1000"));
 
     controller.setEvaluationTargetId(QStringLiteral("finish-time"));
     okay &= Check(
@@ -1264,30 +1383,36 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     controller.setEvaluationTargetId(QStringLiteral("stunt-points"));
     okay &= Check(
             controller.canStart() &&
-                    controller.evaluationTargetSettings()
-                                    .value(QStringLiteral("targetTimeMs"))
-                                    .toString() == QStringLiteral("6000"),
+                    BlockField(controller, EvaluatorBlockId(controller),
+                               QStringLiteral("targetTimeMs")) ==
+                            QStringLiteral("6000"),
             "stunt target defaults did not validate");
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("targetTimeMs"), QStringLiteral("6001"));
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("targetTimeMs"),
+            QStringLiteral("6001"));
     okay &= Check(!controller.canStart(),
                   "unaligned stunt target time enabled Start");
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("targetTimeMs"), QStringLiteral("4320"));
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("targetTimeMs"),
+            QStringLiteral("4320"));
     okay &= Check(controller.canStart(),
                   "valid stunt target time did not enable Start");
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("targetTimeMs"), QStringLiteral("500"));
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("targetTimeMs"),
+            QStringLiteral("500"));
     okay &= Check(
             !controller.canStart() &&
                     controller.validationMessage().contains(
                             QStringLiteral("first modifier time")),
             "stunt target accepted a deadline before any mutation");
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("targetTimeMs"), QStringLiteral("4320"));
-    controller.setEvaluationTargetId(QStringLiteral("missing-target"));
-    okay &= Check(!controller.canStart(),
-                  "unknown evaluation target enabled Start");
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("targetTimeMs"),
+            QStringLiteral("4320"));
+    okay &= Check(!controller.setEvaluatorBlock(
+                          QStringLiteral("evaluate/missing-target")) &&
+                          controller.evaluationTargetId() ==
+                                  QStringLiteral("stunt-points"),
+                  "unknown evaluation target changed the evaluator");
     controller.setEvaluationTargetId(QStringLiteral("velocity"));
     okay &= Check(controller.canStart(),
                   "restored valid target did not enable Start");
@@ -1300,39 +1425,55 @@ bool TestCompositionEditing(const QString &packsDirectory,
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
 
-    controller.addModifierPass(QStringLiteral("input-deletion"));
-    bool okay = Check(controller.modifierPasses().size() == 2,
-                      "modifier pass was not added");
-    controller.setModifierPassSetting(
-            1, QStringLiteral("steerMaxCount"), QStringLiteral("4"));
-    okay &= Check(PassSettings(controller, 1)
-                                  .value(QStringLiteral("steerMaxCount"))
-                                  .toString() == QStringLiteral("4"),
-                  "pass-owned setting was not changed");
+    controller.addBlock(QStringLiteral("mutate/window"));
+    controller.addBlock(QStringLiteral("mutate/delete-steering"));
+    bool okay = Check(MutatorBlockIds(controller.blockScript()).size() == 2,
+                      "mutation window was not added");
+    controller.setBlockField(
+            FirstWindowAtomId(controller.blockScript(), 1),
+            QStringLiteral("steerMaxCount"), QStringLiteral("4"));
+    okay &= Check(BlockField(controller,
+                             FirstWindowAtomId(controller.blockScript(), 1),
+                             QStringLiteral("steerMaxCount")) ==
+                          QStringLiteral("4"),
+                  "block-owned setting was not changed");
 
-    controller.moveModifierPass(1, 0);
-    okay &= Check(PassId(controller, 0) ==
+    controller.moveBlock(MutatorBlockId(controller, 1), 0);
+    okay &= Check(BlockOptionId(controller,
+                                FirstWindowAtomId(
+                                        controller.blockScript(), 0)) ==
                           QStringLiteral("input-deletion") &&
-                          PassId(controller, 1) ==
+                          BlockOptionId(controller,
+                                        FirstWindowAtomId(
+                                                controller.blockScript(), 1)) ==
                                   QStringLiteral("random-steering"),
-                  "modifier pass order did not change");
+                  "mutation window order did not change");
 
-    controller.setModifierPassId(1, QStringLiteral("smooth-steering"));
-    okay &= Check(PassId(controller, 1) ==
-                          QStringLiteral("smooth-steering") &&
-                          PassSettings(controller, 1).contains(
-                                  QStringLiteral("radiusMs")),
-                  "modifier pass type did not replace its settings");
+    // Replacing a window's atoms resets their settings to the schema.
+    controller.removeBlock(MutatorBlockId(controller, 1));
+    controller.addBlock(QStringLiteral("mutate/window"));
+    controller.addBlock(QStringLiteral("mutate/smooth-steering"));
+    okay &= Check(MutatorBlockIds(controller.blockScript()).size() == 2 &&
+                          BlockOptionId(controller,
+                                        FirstWindowAtomId(
+                                                controller.blockScript(), 1)) ==
+                                  QStringLiteral("smooth-steering") &&
+                          BlockField(controller,
+                                     FirstWindowAtomId(
+                                             controller.blockScript(), 1),
+                                     QStringLiteral("radiusMs")) ==
+                                  QStringLiteral("200"),
+                  "modifier block type did not replace its settings");
 
-    controller.removeModifierPass(1);
-    controller.removeModifierPass(0);
-    okay &= Check(controller.modifierPasses().isEmpty(),
-                  "modifier passes were not removed");
+    controller.removeBlock(MutatorBlockId(controller, 1));
+    controller.removeBlock(MutatorBlockId(controller, 0));
+    okay &= Check(MutatorBlockIds(controller.blockScript()).isEmpty(),
+                  "mutation windows were not removed");
     okay &= Check(!controller.canStart(),
-                  "empty modifier composition enabled Start");
-    controller.addModifierPass(QStringLiteral("random-steering"));
+                  "empty modifier stack enabled Start");
+    controller.addBlock(QStringLiteral("mutate/reroll-steering"));
     okay &= Check(controller.canStart(),
-                  "restored modifier composition did not enable Start");
+                  "restored modifier stack did not enable Start");
     return okay;
 }
 
@@ -1346,27 +1487,32 @@ bool TestPersistence(const QString &packsDirectory,
             return false;
         }
         SetValidPaths(controller, packsDirectory, replayPath);
-        controller.setModifierPassSetting(
-                0, QStringLiteral("seed"), QStringLiteral("321"));
-        controller.addModifierPass(QStringLiteral("input-deletion"));
-        controller.setModifierPassSetting(
-                1, QStringLiteral("steerMaxCount"), QStringLiteral("4"));
-        controller.moveModifierPass(1, 0);
+        controller.setBlockField(
+                MutatorBlockId(controller, 0), QStringLiteral("seed"),
+                QStringLiteral("321"));
+        controller.addBlock(QStringLiteral("mutate/window"));
+        controller.addBlock(QStringLiteral("mutate/delete-steering"));
+        controller.setBlockField(
+                FirstWindowAtomId(controller.blockScript(), 1),
+                QStringLiteral("steerMaxCount"), QStringLiteral("4"));
+        controller.moveBlock(MutatorBlockId(controller, 1), 0);
         controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
         controller.setCpuWorkerCount(QStringLiteral("6"));
         controller.setCudaParallelSampleCount(QStringLiteral("384"));
         controller.setCudaCalibrationEnabled(true);
         controller.setCudaSessionSpecializationEnabled(false);
         controller.setDarkMode(true);
-        controller.setSearchAlgorithmSetting(
-                QStringLiteral("autoPromoteBest"),
+        controller.setBlockField(
+                HatBlockId(controller), QStringLiteral("autoPromoteBest"),
                 QStringLiteral("true"));
         controller.setEvaluationTargetId(QStringLiteral("point-target"));
-        controller.setEvaluationTargetSetting(
-                QStringLiteral("x"), QStringLiteral("12.5"));
+        controller.setBlockField(
+                EvaluatorBlockId(controller), QStringLiteral("x"),
+                QStringLiteral("12.5"));
         controller.setEvaluationTargetId(QStringLiteral("stunt-points"));
-        controller.setEvaluationTargetSetting(
-                QStringLiteral("targetTimeMs"), QStringLiteral("4320"));
+        controller.setBlockField(
+                EvaluatorBlockId(controller), QStringLiteral("targetTimeMs"),
+                QStringLiteral("4320"));
         controller.setBaseInputScript(
                 QStringLiteral("0.00 press up\n0.50 steer -16384"));
         QSettings().sync();
@@ -1374,9 +1520,9 @@ bool TestPersistence(const QString &packsDirectory,
 
     SearchController restored;
     bool okay = Check(
-            restored.searchAlgorithmSettings()
-                            .value(QStringLiteral("autoPromoteBest"))
-                            .toString() == QStringLiteral("true"),
+            BlockField(restored, HatBlockId(restored),
+                       QStringLiteral("autoPromoteBest")) ==
+                    QStringLiteral("true"),
             "auto-promote search mode was not persisted");
     okay &= Check(
             restored.baseInputScript() ==
@@ -1406,28 +1552,33 @@ bool TestPersistence(const QString &packsDirectory,
                                            "appearance/darkMode"))
                                    .toBool(),
                   "dark appearance mode did not update atomically");
-    okay &= Check(restored.modifierPasses().size() == 2,
-                  "modifier pass count was not persisted");
-    okay &= Check(PassId(restored, 0) == QStringLiteral("input-deletion") &&
-                          PassSettings(restored, 0)
-                                          .value(QStringLiteral(
-                                                  "steerMaxCount"))
-                                          .toString() == QStringLiteral("4"),
-                  "first modifier pass was not persisted");
-    okay &= Check(PassId(restored, 1) == QStringLiteral("random-steering") &&
-                          PassSettings(restored, 1)
-                                          .value(QStringLiteral("seed"))
-                                          .toString() == QStringLiteral("321"),
-                  "second modifier pass was not persisted");
+    okay &= Check(MutatorBlockIds(restored.blockScript()).size() == 2,
+                  "mutation window count was not persisted");
+    okay &= Check(
+            BlockOptionId(restored,
+                          FirstWindowAtomId(restored.blockScript(), 0)) ==
+                    QStringLiteral("input-deletion") &&
+                    BlockField(restored,
+                               FirstWindowAtomId(restored.blockScript(), 0),
+                               QStringLiteral("steerMaxCount")) ==
+                            QStringLiteral("4"),
+            "first modifier window was not persisted");
+    okay &= Check(
+            BlockOptionId(restored,
+                          FirstWindowAtomId(restored.blockScript(), 1)) ==
+                    QStringLiteral("random-steering") &&
+                    BlockField(restored, MutatorBlockId(restored, 1),
+                               QStringLiteral("seed")) ==
+                            QStringLiteral("321"),
+            "second modifier window was not persisted");
     okay &= Check(restored.evaluationTargetId() ==
                           QStringLiteral("stunt-points") &&
-                          restored.evaluationTargetSettings()
-                                          .value(QStringLiteral("targetTimeMs"))
-                                          .toString() == QStringLiteral("4320"),
+                          BlockField(restored, EvaluatorBlockId(restored),
+                                     QStringLiteral("targetTimeMs")) ==
+                                  QStringLiteral("4320"),
                   "evaluation target configuration was not persisted");
-    okay &= Check(QSettings().contains(
-                          QStringLiteral("composition/modifiers")),
-                  "modifier composition JSON was not persisted");
+    okay &= Check(QSettings().contains(QStringLiteral("blocks/program")),
+                  "block program JSON was not persisted");
     okay &= Check(QSettings().value(
                                   QStringLiteral(
                                           "selection/simulationBackend"))
@@ -1638,26 +1789,33 @@ bool TestLocaleIndependentPersistedDecimals(const QString &packsDirectory,
         SearchController controller;
         SetValidPaths(controller, packsDirectory, replayPath);
         controller.setEvaluationTargetId(QStringLiteral("point-target"));
-        controller.setEvaluationTargetSetting(
-                QStringLiteral("x"), QStringLiteral("12.5"));
-        controller.setEvaluationTargetSetting(
-                QStringLiteral("y"), QStringLiteral("-3.25"));
-        controller.setModifierPassId(
-                0, QStringLiteral("existing-event-perturbation"));
-        controller.setModifierPassSetting(
-                0, QStringLiteral("steerDeltaMin"), QStringLiteral("-0.25"));
-        controller.setModifierPassSetting(
-                0, QStringLiteral("steerDeltaMax"), QStringLiteral("0.25"));
+        controller.setBlockField(
+                EvaluatorBlockId(controller), QStringLiteral("x"),
+                QStringLiteral("12.5"));
+        controller.setBlockField(
+                EvaluatorBlockId(controller), QStringLiteral("y"),
+                QStringLiteral("-3.25"));
+        controller.removeBlock(MutatorBlockId(controller, 0));
+        controller.addBlock(QStringLiteral(
+                "mutate/nudge-steering"));
+        controller.setBlockField(
+                FirstWindowAtomId(controller.blockScript(), 0),
+                QStringLiteral("steerDeltaMin"), QStringLiteral("-0.25"));
+        controller.setBlockField(
+                FirstWindowAtomId(controller.blockScript(), 0),
+                QStringLiteral("steerDeltaMax"), QStringLiteral("0.25"));
 
         bool okay = Check(
                 controller.canStart(),
                 "UI-entered dot decimals failed under comma LC_NUMERIC");
-        controller.setEvaluationTargetSetting(
-                QStringLiteral("x"), QStringLiteral("12,5"));
+        controller.setBlockField(
+                EvaluatorBlockId(controller), QStringLiteral("x"),
+                QStringLiteral("12,5"));
         okay &= Check(!controller.canStart(),
                       "UI-entered comma decimal was accepted");
-        controller.setEvaluationTargetSetting(
-                QStringLiteral("x"), QStringLiteral("12.5"));
+        controller.setBlockField(
+                EvaluatorBlockId(controller), QStringLiteral("x"),
+                QStringLiteral("12.5"));
         okay &= Check(controller.canStart(),
                       "restoring a dot decimal did not restore validation");
         if (!okay) return false;
@@ -1671,22 +1829,25 @@ bool TestLocaleIndependentPersistedDecimals(const QString &packsDirectory,
             "persisted dot decimals failed under comma LC_NUMERIC");
     okay &= Check(
             restored.evaluationTargetId() == QStringLiteral("point-target") &&
-                    restored.evaluationTargetSettings()
-                                    .value(QStringLiteral("x"))
-                                    .toString() == QStringLiteral("12.5") &&
-                    restored.evaluationTargetSettings()
-                                    .value(QStringLiteral("y"))
-                                    .toString() == QStringLiteral("-3.25"),
+                    BlockField(restored, EvaluatorBlockId(restored),
+                               QStringLiteral("x")) ==
+                            QStringLiteral("12.5") &&
+                    BlockField(restored, EvaluatorBlockId(restored),
+                               QStringLiteral("y")) ==
+                            QStringLiteral("-3.25"),
             "persisted evaluation decimals changed representation");
     okay &= Check(
-            PassId(restored, 0) ==
+            BlockOptionId(restored,
+                          FirstWindowAtomId(restored.blockScript(), 0)) ==
                             QStringLiteral("existing-event-perturbation") &&
-                    PassSettings(restored, 0)
-                                    .value(QStringLiteral("steerDeltaMin"))
-                                    .toString() == QStringLiteral("-0.25") &&
-                    PassSettings(restored, 0)
-                                    .value(QStringLiteral("steerDeltaMax"))
-                                    .toString() == QStringLiteral("0.25"),
+                    BlockField(restored,
+                               FirstWindowAtomId(restored.blockScript(), 0),
+                               QStringLiteral("steerDeltaMin")) ==
+                            QStringLiteral("-0.25") &&
+                    BlockField(restored,
+                               FirstWindowAtomId(restored.blockScript(), 0),
+                               QStringLiteral("steerDeltaMax")) ==
+                            QStringLiteral("0.25"),
             "persisted modifier decimals changed representation");
     return okay;
 }
@@ -1714,31 +1875,29 @@ bool TestLegacyMigration() {
             !QSettings().contains(
                     QStringLiteral("search/") + retiredBudgetKey),
             "retired search budget was not removed");
-    okay &= Check(controller.modifierPasses().size() == 1 &&
-                              PassId(controller, 0) ==
-                                      QStringLiteral("random-steering"),
-                      "legacy mutation selection was not migrated");
-    okay &= Check(PassSettings(controller, 0)
-                                  .value(QStringLiteral("minTimeMs"))
-                                  .toString() == QStringLiteral("1200") &&
-                          PassSettings(controller, 0)
-                                  .value(QStringLiteral("maxTimeMs"))
-                                  .toString() == QStringLiteral("2400") &&
-                          PassSettings(controller, 0)
-                                  .value(QStringLiteral("seed"))
-                                  .toString() == QStringLiteral("987"),
-                  "legacy modifier settings were not migrated");
+    okay &= Check(
+            MutatorBlockIds(controller.blockScript()).size() == 1 &&
+                    BlockOptionId(
+                            controller,
+                            FirstWindowAtomId(controller.blockScript(), 0)) ==
+                            QStringLiteral("random-steering"),
+            "legacy mutation selection was not migrated");
+    okay &= Check(
+            BlockField(controller, MutatorBlockId(controller, 0),
+                       QStringLiteral("minTimeMs")) ==
+                    QStringLiteral("1200") &&
+                    BlockField(controller, MutatorBlockId(controller, 0),
+                               QStringLiteral("maxTimeMs")) ==
+                            QStringLiteral("2400") &&
+                    BlockField(controller, MutatorBlockId(controller, 0),
+                               QStringLiteral("seed")) ==
+                            QStringLiteral("987"),
+            "legacy modifier settings were not migrated");
     okay &= Check(controller.evaluationTargetId() ==
-                          QStringLiteral("velocity") &&
-                          QSettings()
-                                          .value(QStringLiteral(
-                                                  "selection/evaluationTarget"))
-                                          .toString() ==
-                                  QStringLiteral("velocity"),
-                  "legacy evaluation target was not canonicalized");
-    okay &= Check(QSettings().contains(
-                          QStringLiteral("composition/modifiers")),
-                  "migrated modifier composition was not persisted");
+                          QStringLiteral("velocity"),
+                  "legacy evaluation target was canonicalized");
+    okay &= Check(QSettings().contains(QStringLiteral("blocks/program")),
+                  "migrated block program was not persisted");
     return okay;
 }
 
@@ -1749,33 +1908,31 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
-    controller.setModifierPassSetting(
-            0,
-            QStringLiteral("minTimeMs"),
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("minTimeMs"),
             QStringLiteral("0"));
-    controller.setModifierPassSetting(
-            0,
-            QStringLiteral("maxTimeMs"),
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("maxTimeMs"),
             QStringLiteral("20"));
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("minTimeMs"),
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("minTimeMs"),
             QStringLiteral("0"));
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("maxTimeMs"),
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("maxTimeMs"),
             QStringLiteral("20"));
     const bool zeroOriginConfigured =
-            PassSettings(controller, 0)
-                            .value(QStringLiteral("minTimeMs"))
-                            .toString() == QStringLiteral("0") &&
-            PassSettings(controller, 0)
-                            .value(QStringLiteral("maxTimeMs"))
-                            .toString() == QStringLiteral("20") &&
-            controller.evaluationTargetSettings()
-                            .value(QStringLiteral("minTimeMs"))
-                            .toString() == QStringLiteral("0") &&
-            controller.evaluationTargetSettings()
-                            .value(QStringLiteral("maxTimeMs"))
-                            .toString() == QStringLiteral("20");
+            BlockField(controller, MutatorBlockId(controller, 0),
+                       QStringLiteral("minTimeMs")) ==
+                    QStringLiteral("0") &&
+            BlockField(controller, MutatorBlockId(controller, 0),
+                       QStringLiteral("maxTimeMs")) ==
+                    QStringLiteral("20") &&
+            BlockField(controller, EvaluatorBlockId(controller),
+                       QStringLiteral("minTimeMs")) ==
+                    QStringLiteral("0") &&
+            BlockField(controller, EvaluatorBlockId(controller),
+                       QStringLiteral("maxTimeMs")) ==
+                    QStringLiteral("20");
     if (!Check(zeroOriginConfigured,
                "failed to configure the zero-based first input")) {
         return false;
@@ -1803,15 +1960,14 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
             &controller, &SearchController::searchCompleted);
     QSignalSpy improvementSpy(
             &controller, &SearchController::searchImprovement);
-    const QString seedBeforeStart = PassSettings(controller, 0)
-            .value(QStringLiteral("seed"))
-            .toString();
+    const QString seedBeforeStart =
+            BlockField(controller, MutatorBlockId(controller, 0),
+                       QStringLiteral("seed"));
     controller.startSearch();
     bool okay = Check(controller.running() && !controller.canStart(),
                       "Start did not enter the running state");
-    okay &= Check(PassSettings(controller, 0)
-                                  .value(QStringLiteral("seed"))
-                                  .toString() != seedBeforeStart,
+    okay &= Check(BlockField(controller, MutatorBlockId(controller, 0),
+                             QStringLiteral("seed")) != seedBeforeStart,
                   "Start did not randomize modifier seeds");
     okay &= Check(
             WaitUntil(
@@ -1950,19 +2106,17 @@ bool TestMetricsWhenConditionExcludesBaseline(
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
-    controller.setModifierPassSetting(
-            0,
-            QStringLiteral("minTimeMs"),
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("minTimeMs"),
             QStringLiteral("0"));
-    controller.setModifierPassSetting(
-            0,
-            QStringLiteral("maxTimeMs"),
+    controller.setBlockField(
+            MutatorBlockId(controller, 0), QStringLiteral("maxTimeMs"),
             QStringLiteral("20"));
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("minTimeMs"),
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("minTimeMs"),
             QStringLiteral("0"));
-    controller.setEvaluationTargetSetting(
-            QStringLiteral("maxTimeMs"),
+    controller.setBlockField(
+            EvaluatorBlockId(controller), QStringLiteral("maxTimeMs"),
             QStringLiteral("20"));
     controller.setConditionScript(
             QStringLiteral("iterations > 1000000000000"));

@@ -100,6 +100,20 @@ private:
 
 }  // namespace
 
+OptionFieldList InputDeletionOptionFields() {
+    OptionFieldList fields;
+    AppendWindowFields(fields, "1000", "5990");
+    AppendSeedField(fields);
+    fields.push_back(BooleanField("steerEnabled", "Delete steering", true));
+    fields.push_back(NumberField("steerMaxCount", "Max deletions", "2"));
+    fields.push_back(
+            BooleanField("accelerateEnabled", "Delete accelerate", false));
+    fields.push_back(NumberField("accelerateMaxCount", "Max deletions", "1"));
+    fields.push_back(BooleanField("brakeEnabled", "Delete brake", false));
+    fields.push_back(NumberField("brakeMaxCount", "Max deletions", "1"));
+    return fields;
+}
+
 OptionSettings DefaultInputDeletionSettings() {
     return {{"minTimeMs", "1000"},
             {"maxTimeMs", "5990"},

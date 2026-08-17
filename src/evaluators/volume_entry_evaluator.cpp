@@ -149,6 +149,16 @@ std::optional<Box> ParseBox(const OptionSettings &settings) {
 
 }  // namespace
 
+OptionFieldList VolumeEntryOptionFields() {
+    return {
+            MirroredField("centerX", "cuboid", "0"),
+            MirroredField("centerY", "cuboid", "0"),
+            MirroredField("centerZ", "cuboid", "0"),
+            MirroredField("sizeX", "cuboid", "10"),
+            MirroredField("sizeY", "cuboid", "10"),
+            MirroredField("sizeZ", "cuboid", "10")};
+}
+
 OptionSettings DefaultVolumeEntryOptionSettings() {
     return {{"centerX", "0"},
             {"centerY", "0"},

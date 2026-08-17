@@ -1399,11 +1399,33 @@ bool TestAllModifierAnalogInvariants() {
     return true;
 }
 
+namespace {
+
+bool FieldSchemasCoverSettings(
+        const forevertas::OptionFieldList &fields,
+        const forevertas::OptionSettings &defaults) {
+    if (fields.size() != defaults.size()) return false;
+    for (const auto &field : fields) {
+        const auto expected = defaults.find(field.key);
+        if (expected == defaults.end()) return false;
+        if (field.defaultValue != expected->second) return false;
+        if (field.kind == forevertas::OptionField::Kind::Enum &&
+            field.enumValues.empty()) {
+            return false;
+        }
+    }
+    return true;
+}
+
+}  // namespace
+
 bool TestRegistries() {
     bool okay = true;
     for (const auto &registration : forevertas::SearchAlgorithmRegistry()) {
-        okay &= Check(!registration.settingsComponent.empty(),
-                      "search option is missing its QML component");
+        okay &= Check(FieldSchemasCoverSettings(
+                              registration.fields,
+                              registration.defaultSettings),
+                      "search option fields do not cover its settings");
         okay &= Check(!registration.validateSettings(
                               registration.defaultSettings, 10u),
                       "search option defaults are invalid");
@@ -1412,8 +1434,10 @@ bool TestRegistries() {
                       "search option factory returned null");
     }
     for (const auto &registration : forevertas::ModifierRegistry()) {
-        okay &= Check(!registration.settingsComponent.empty(),
-                      "modifier is missing its QML component");
+        okay &= Check(FieldSchemasCoverSettings(
+                              registration.fields,
+                              registration.defaultSettings),
+                      "modifier fields do not cover its settings");
         okay &= Check(!registration.validateSettings(
                               registration.defaultSettings, 10u),
                       "modifier defaults are invalid");
@@ -1422,8 +1446,10 @@ bool TestRegistries() {
                       "modifier factory returned null");
     }
     for (const auto &registration : forevertas::EvaluationTargetRegistry()) {
-        okay &= Check(!registration.settingsComponent.empty(),
-                      "evaluation target is missing its QML component");
+        okay &= Check(FieldSchemasCoverSettings(
+                              registration.fields,
+                              registration.defaultSettings),
+                      "evaluation fields do not cover its settings");
         okay &= Check(!registration.validateSettings(
                               registration.defaultSettings, 10u),
                       "evaluation target defaults are invalid");

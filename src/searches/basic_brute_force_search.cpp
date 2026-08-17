@@ -947,6 +947,14 @@ SearchResult RunCudaBasicBruteForce(
 
 }  // namespace
 
+OptionFieldList BasicBruteForceOptionFields() {
+    OptionFieldList fields;
+    fields.push_back(BooleanField("autoPromoteBest",
+                                  "Promote each best result to baseline",
+                                  false));
+    return fields;
+}
+
 OptionSettings DefaultBasicBruteForceOptionSettings() {
     return {{"autoPromoteBest", "false"}};
 }

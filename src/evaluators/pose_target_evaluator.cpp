@@ -128,6 +128,21 @@ std::optional<PoseSettings> ParseSettings(const OptionSettings &settings) {
 
 }  // namespace
 
+OptionFieldList PoseTargetOptionFields() {
+    OptionFieldList fields;
+    AppendWindowFields(fields, "1000", "6000");
+    fields.push_back(ClampedField("rotationWeightPercent",
+                                  "Rotation weight", "50",
+                                  0.0, 100.0, 0, 1));
+    fields.push_back(MirroredField("x", "pose", "0"));
+    fields.push_back(MirroredField("y", "pose", "0"));
+    fields.push_back(MirroredField("z", "pose", "0"));
+    fields.push_back(MirroredField("yawDegrees", "pose", "0"));
+    fields.push_back(MirroredField("pitchDegrees", "pose", "0"));
+    fields.push_back(MirroredField("rollDegrees", "pose", "0"));
+    return fields;
+}
+
 OptionSettings DefaultPoseTargetOptionSettings() {
     return {{"minTimeMs", "1000"},
             {"maxTimeMs", "6000"},

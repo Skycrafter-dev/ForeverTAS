@@ -1,7 +1,8 @@
 #ifndef FOREVERTAS_APP_SEARCH_CONTROLLER_H
 #define FOREVERTAS_APP_SEARCH_CONTROLLER_H
 
-#include "app/search_configuration_model.h"
+#include "app/block_program_model.h"
+#include "searches/search_runner.h"
 #include "app/search_completion.h"
 #include "app/cuboid_target_model.h"
 #include "app/custom_volume_target_model.h"
@@ -75,22 +76,17 @@ class SearchController final : public QObject {
                        drawTargetsThroughBlocksChanged)
     Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY
                        darkModeChanged)
-    Q_PROPERTY(QVariantList searchAlgorithmOptions READ searchAlgorithmOptions
-                       CONSTANT)
-    Q_PROPERTY(QVariantList modifierOptions READ modifierOptions CONSTANT)
-    Q_PROPERTY(QVariantList evaluationTargetOptions READ evaluationTargetOptions
-                       CONSTANT)
-    Q_PROPERTY(QString searchAlgorithmId READ searchAlgorithmId WRITE
-                       setSearchAlgorithmId NOTIFY searchAlgorithmIdChanged)
+    Q_PROPERTY(QVariantList blockPalette READ blockPalette CONSTANT)
+    Q_PROPERTY(QVariantMap blockScript READ blockScript NOTIFY
+                       blockStructureChanged)
+    Q_PROPERTY(QString programText READ programText NOTIFY
+                       programTextChanged)
+    Q_PROPERTY(QString programTextError READ programTextError NOTIFY
+                       programTextChanged)
+    // Derived from the script's evaluation block; writing it replaces the
+    // evaluator block, which also drives the viewer's target interactions.
     Q_PROPERTY(QString evaluationTargetId READ evaluationTargetId WRITE
                        setEvaluationTargetId NOTIFY evaluationTargetIdChanged)
-    Q_PROPERTY(QVariantMap searchAlgorithmSettings READ searchAlgorithmSettings
-                       NOTIFY searchAlgorithmSettingsChanged)
-    Q_PROPERTY(QVariantList modifierPasses READ modifierPasses NOTIFY
-                       modifierPassesChanged)
-    Q_PROPERTY(QVariantMap evaluationTargetSettings READ
-                       evaluationTargetSettings NOTIFY
-                       evaluationTargetSettingsChanged)
     Q_PROPERTY(forevertas::app::CuboidTargetModel* cuboidTargets READ
                        cuboidTargets CONSTANT)
     Q_PROPERTY(forevertas::app::CustomVolumeTargetModel*
@@ -147,14 +143,11 @@ public:
     bool randomizeSeedsOnStart() const;
     bool drawTargetsThroughBlocks() const;
     bool darkMode() const;
-    QVariantList searchAlgorithmOptions() const;
-    QVariantList modifierOptions() const;
-    QVariantList evaluationTargetOptions() const;
-    QString searchAlgorithmId() const;
+    QVariantList blockPalette() const;
+    QVariantMap blockScript() const;
+    QString programText() const;
+    QString programTextError() const;
     QString evaluationTargetId() const;
-    QVariantMap searchAlgorithmSettings() const;
-    QVariantList modifierPasses() const;
-    QVariantMap evaluationTargetSettings() const;
     CuboidTargetModel *cuboidTargets();
     CustomVolumeTargetModel *customVolumeTargets();
     bool customVolumeDrawing() const;
@@ -188,7 +181,6 @@ public slots:
     void setRandomizeSeedsOnStart(bool value);
     void setDrawTargetsThroughBlocks(bool value);
     void setDarkMode(bool value);
-    void setSearchAlgorithmId(const QString &value);
     void setEvaluationTargetId(const QString &value);
 
     Q_INVOKABLE void browseForPacksDirectory();
@@ -197,17 +189,21 @@ public slots:
     Q_INVOKABLE QString formatCompactNumber(double value) const;
     Q_INVOKABLE void extractReplayInputs();
     Q_INVOKABLE bool undoBaseInputScript();
-    Q_INVOKABLE void setSearchAlgorithmSetting(const QString &key,
-                                               const QString &value);
-    Q_INVOKABLE void addModifierPass(const QString &id);
-    Q_INVOKABLE void removeModifierPass(int index);
-    Q_INVOKABLE void moveModifierPass(int fromIndex, int toIndex);
-    Q_INVOKABLE void setModifierPassId(int index, const QString &id);
-    Q_INVOKABLE void setModifierPassSetting(int index,
-                                            const QString &key,
-                                            const QString &value);
-    Q_INVOKABLE void setEvaluationTargetSetting(const QString &key,
-                                                const QString &value);
+    Q_INVOKABLE QVariantMap blockData(int blockId) const;
+    Q_INVOKABLE bool addBlock(const QString &definitionId);
+    Q_INVOKABLE bool removeBlock(int blockId);
+    Q_INVOKABLE bool setBlockField(int blockId,
+                                   const QString &key,
+                                   const QString &value);
+    Q_INVOKABLE int attachReporter(int blockId,
+                                   const QString &key,
+                                   const QString &reporterDefinitionId);
+    Q_INVOKABLE bool detachReporter(int blockId, const QString &key);
+    Q_INVOKABLE bool moveBlock(int blockId, int toIndex);
+    Q_INVOKABLE bool setBlockPosition(int blockId, double x, double y);
+    Q_INVOKABLE bool setEvaluatorBlock(const QString &definitionId);
+    Q_INVOKABLE void resetBlocks();
+    Q_INVOKABLE bool applyProgramText(const QString &text);
     Q_INVOKABLE void focusSelectedCuboid();
     Q_INVOKABLE void focusSelectedCustomVolume();
     Q_INVOKABLE void beginCustomVolumeDrawing();
@@ -233,11 +229,10 @@ signals:
     void randomizeSeedsOnStartChanged();
     void drawTargetsThroughBlocksChanged();
     void darkModeChanged();
-    void searchAlgorithmIdChanged();
+    void blockStructureChanged();
+    void blockUpdated(int blockId);
+    void programTextChanged();
     void evaluationTargetIdChanged();
-    void searchAlgorithmSettingsChanged();
-    void modifierPassesChanged();
-    void evaluationTargetSettingsChanged();
     void canStartChanged();
     void runningChanged();
     void stoppingChanged();
@@ -284,15 +279,7 @@ private:
     void clearAutoDetectedPacksDirectory();
     void persist(const char *key, const QString &value);
     void waitForWorker();
-    void synchronizeSelectedCuboid();
-    void synchronizeCuboidSetting(const QString &key,
-                                   const QString &value);
-    void synchronizeSelectedCustomVolume();
-    void synchronizeCustomVolumeSetting(const QString &key,
-                                        const QString &value);
-    void synchronizeSelectedPoseTarget();
-    void synchronizePoseTargetSetting(const QString &key,
-                                      const QString &value);
+    void publishConfigurationChange();
     void applyBaseInputScript(const QString &value, bool recordUndo);
 
     QString packsDirectory_;
@@ -318,7 +305,9 @@ private:
     bool randomizeSeedsOnStart_ = true;
     bool drawTargetsThroughBlocks_ = false;
     bool darkMode_ = false;
-    SearchConfigurationModel configuration_;
+    BlockProgramModel configuration_;
+    QString programTextError_;
+    QString publishedEvaluationTargetId_;
     CuboidTargetModel cuboidTargets_;
     CustomVolumeTargetModel customVolumeTargets_;
     PoseTargetModel poseTargets_;

@@ -107,6 +107,19 @@ private:
 
 }  // namespace
 
+OptionFieldList SmoothSteeringOptionFields() {
+    OptionFieldList fields;
+    AppendWindowFields(fields, "1000", "5990");
+    AppendSeedField(fields);
+    fields.push_back(NumberField("deformationCount", "Deformations", "1"));
+    fields.push_back(NumberField("radiusMs", "Radius (ms)", "200"));
+    fields.push_back(ClampedField(
+            "amplitudeMin", "Amplitude min", "-0.2", -1.0, 1.0, 2, 0.01));
+    fields.push_back(ClampedField(
+            "amplitudeMax", "Amplitude max", "0.2", -1.0, 1.0, 2, 0.01));
+    return fields;
+}
+
 OptionSettings DefaultSmoothSteeringSettings() {
     return {{"minTimeMs", "1000"},
             {"maxTimeMs", "5990"},

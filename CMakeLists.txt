@@ -118,9 +118,24 @@ add_library(forevertas_core STATIC
     src/mutations/smooth_steering_mutator.h
     src/conditions/condition_program.cpp
     src/conditions/condition_program.h
+    src/blocks/block_catalog.cpp
+    src/blocks/block_catalog.h
+    src/blocks/block_compiler.cpp
+    src/blocks/block_compiler.h
+    src/blocks/block_expression.cpp
+    src/blocks/block_expression.h
+    src/blocks/block_lowering.cpp
+    src/blocks/block_lowering.h
+    src/blocks/block_program.cpp
+    src/blocks/block_program.h
+    src/blocks/block_program_io.cpp
+    src/blocks/block_program_io.h
+    src/blocks/block_value.cpp
+    src/blocks/block_value.h
     src/searches/algorithm_registry.cpp
     src/searches/algorithm_registry.h
     src/searches/option_configuration.h
+    src/searches/option_fields.h
     src/searches/option_settings_utils.h
     src/searches/basic_brute_force_search.cpp
     src/searches/basic_brute_force_search.h
@@ -166,8 +181,9 @@ add_library(forevertas_gui STATIC
     src/viewer/whiteboard_canvas_item.h
     src/viewer/whiteboard_model.cpp
     src/viewer/whiteboard_model.h
-    src/app/search_configuration_model.cpp
-    src/app/search_configuration_model.h
+    src/app/block_program_model.cpp
+    src/app/block_program_model.h
+    src/app/option_settings_store.h
     src/app/cuboid_target_model.cpp
     src/app/cuboid_target_model.h
     src/app/custom_volume_target_model.cpp
@@ -356,29 +372,20 @@ qt_add_qml_module(forevertas
         qml/ThemedToolButton.qml
         qml/WhiteboardOverlay.qml
         qml/WhiteboardPlanes.qml
-        qml/settings/AlgorithmSelector.qml
-        qml/settings/BasicBruteForceSearchSettings.qml
+        qml/blocks/BlockSlot.qml
+        qml/blocks/BlockView.qml
+        qml/blocks/BlockWorkspace.qml
+        qml/blocks/PoseTargetBlockDetail.qml
+        qml/blocks/VolumeEntryBlockDetail.qml
         qml/settings/ConfigurationSection.qml
-        qml/settings/ExistingEventPerturbationSettings.qml
-        qml/settings/PreciseFinishTimeEvaluationSettings.qml
-        qml/settings/InputDeletionSettings.qml
-        qml/settings/InputInsertionSettings.qml
-        qml/settings/ModifierComposition.qml
-        qml/settings/PointTargetEvaluationSettings.qml
-        qml/settings/PoseTargetEvaluationSettings.qml
-        qml/settings/RandomSteeringMutationSettings.qml
         qml/settings/ScrubNumberField.qml
         qml/settings/SettingCombo.qml
         qml/settings/SettingSlider.qml
         qml/settings/SettingSwitch.qml
         qml/settings/SettingTextField.qml
-        qml/settings/SmoothSteeringSettings.qml
-        qml/settings/StuntPointsEvaluationSettings.qml
         qml/settings/StyledComboBox.qml
         qml/settings/TimeWindowSettings.qml
-        qml/settings/Vector3Settings.qml
-        qml/settings/VelocityEvaluationSettings.qml
-        qml/settings/VolumeEntryEvaluationSettings.qml)
+        qml/settings/Vector3Settings.qml)
 file(GLOB FOREVERTAS_REPLACEMENT_TEXTURES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/*.png")
 qt_add_resources(forevertas "replacement-materials"
@@ -614,6 +621,10 @@ if(BUILD_TESTING)
         tests/search_component_tests.cpp)
     target_link_libraries(forevertas-strategy-tests PRIVATE forevertas_core)
 
+    add_executable(forevertas-block-tests
+        tests/block_program_tests.cpp)
+    target_link_libraries(forevertas-block-tests PRIVATE forevertas_core)
+
     add_executable(forevertas-controller-tests
         tests/search_controller_tests.cpp)
     target_link_libraries(forevertas-controller-tests PRIVATE
@@ -642,6 +653,8 @@ if(BUILD_TESTING)
     if(FOREVERTAS_WARNING_OPTIONS)
         target_compile_options(forevertas-strategy-tests PRIVATE
             ${FOREVERTAS_WARNING_OPTIONS})
+        target_compile_options(forevertas-block-tests PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-controller-tests PRIVATE
             ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-renderer-tests PRIVATE
@@ -652,6 +665,8 @@ if(BUILD_TESTING)
 
     add_test(NAME forevertas-strategies
              COMMAND forevertas-strategy-tests)
+    add_test(NAME forevertas-blocks
+             COMMAND forevertas-block-tests)
     add_test(NAME forevertas-no-replay-duration-control
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}

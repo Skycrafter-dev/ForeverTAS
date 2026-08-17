@@ -4,6 +4,7 @@
 #include "evaluators/iteration_evaluator.h"
 #include "mutations/input_mutator.h"
 #include "searches/option_configuration.h"
+#include "searches/option_fields.h"
 #include "searches/search_algorithm.h"
 
 #include <memory>
@@ -34,7 +35,10 @@ struct SearchAlgorithmRegistration {
     std::string id;
     std::vector<std::string> legacyIds;
     std::string displayName;
+    // Optional rich QML detail component for options that manage app-level
+    // collections; scalar settings render from `fields` generically.
     std::string settingsComponent;
+    OptionFieldList fields;
     OptionSettings defaultSettings;
     OptionSettings legacyPersistenceKeys;
 
@@ -57,7 +61,10 @@ struct ModifierRegistration {
     std::string id;
     std::vector<std::string> legacyIds;
     std::string displayName;
+    // Optional rich QML detail component for options that manage app-level
+    // collections; scalar settings render from `fields` generically.
     std::string settingsComponent;
+    OptionFieldList fields;
     OptionSettings defaultSettings;
     OptionSettings legacyPersistenceKeys;
 
@@ -81,7 +88,10 @@ struct EvaluationTargetRegistration {
     std::string id;
     std::vector<std::string> legacyIds;
     std::string displayName;
+    // Optional rich QML detail component for options that manage app-level
+    // collections; scalar settings render from `fields` generically.
     std::string settingsComponent;
+    OptionFieldList fields;
     OptionSettings defaultSettings;
     OptionSettings legacyPersistenceKeys;
 

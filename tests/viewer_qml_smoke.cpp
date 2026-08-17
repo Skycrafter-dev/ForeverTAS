@@ -308,6 +308,42 @@ QColor FirstDescendantColor(QObject *root) {
     return {};
 }
 
+// Block object names embed per-run block ids, so controls are located by
+// a stable suffix (for example "SwitchautoPromoteBest").
+QObject *FindBlockControl(QQuickItem *root, const QString &suffix) {
+    if (root == nullptr) return nullptr;
+    const QList<QObject *> children = root->findChildren<QObject *>();
+    for (QObject *child : children) {
+        if (child->objectName().endsWith(suffix)) return child;
+    }
+    return nullptr;
+}
+
+// Mutation window (group) block ids of the script, in substack order.
+QVariantList WindowIds(const forevertas::app::SearchController &controller) {
+    QVariantList ids;
+    const QVariantList groups = controller.blockScript()
+            .value(QStringLiteral("groups"))
+            .toList();
+    for (const QVariant &value : groups) {
+        ids.push_back(value.toMap().value(QStringLiteral("blockId")));
+    }
+    return ids;
+}
+
+int FirstWindowAtomId(
+        const forevertas::app::SearchController &controller) {
+    const QVariantList groups = controller.blockScript()
+            .value(QStringLiteral("groups"))
+            .toList();
+    if (groups.isEmpty()) return 0;
+    const QVariantList atoms = groups.front()
+            .toMap()
+            .value(QStringLiteral("atoms"))
+            .toList();
+    return atoms.isEmpty() ? 0 : atoms.front().toInt();
+}
+
 bool InvokeSliderValueCommit(
         QObject *field,
         const QString &text,
@@ -967,9 +1003,6 @@ int main(int argc, char **argv) {
                                     "autoPacksSuggestionText"));
                     QObject *const applyAutoPacks = root->findChild<QObject *>(
                             QStringLiteral("applyAutoPacksButton"));
-                    QObject *const searchAlgorithmCombo =
-                            root->findChild<QObject *>(
-                                    QStringLiteral("searchAlgorithmCombo"));
                     QObject *const simulationBackendCombo =
                             root->findChild<QObject *>(
                                     QStringLiteral("simulationBackendCombo"));
@@ -1101,52 +1134,50 @@ int main(int argc, char **argv) {
                     QObject *const debuggerTickStepButton =
                             root->findChild<QObject *>(
                                     QStringLiteral("debuggerTickStepButton"));
-                    auto *const evaluationSection = qobject_cast<QQuickItem *>(
-                            root->findChild<QObject *>(
-                                    QStringLiteral("evaluationSection")));
                     auto *const conditionsSection = qobject_cast<QQuickItem *>(
                             root->findChild<QObject *>(
                                     QStringLiteral("conditionsSection")));
                     QObject *const conditionScriptTextArea =
                             root->findChild<QObject *>(
                                     QStringLiteral("conditionScriptTextArea"));
-                    auto *const modifierSection = qobject_cast<QQuickItem *>(
+                    auto *const blocksSection = qobject_cast<QQuickItem *>(
                             root->findChild<QObject *>(
-                                    QStringLiteral("modifierSection")));
-                    auto *const searchSection = qobject_cast<QQuickItem *>(
+                                    QStringLiteral("blocksSection")));
+                    auto *const blockWorkspace = qobject_cast<QQuickItem *>(
                             root->findChild<QObject *>(
-                                    QStringLiteral("searchSection")));
-                    QObject *const evaluationTargetSelector =
+                                    QStringLiteral("blockWorkspace")));
+                    QObject *const blockPalette =
                             root->findChild<QObject *>(
-                                    QStringLiteral("evaluationTargetSelector"));
-                    QObject *const modifierComposition =
+                                    QStringLiteral("blockPalette"));
+                    QObject *const paletteStack =
                             root->findChild<QObject *>(
-                                    QStringLiteral("modifierComposition"));
-                    QObject *const addModifierCombo =
+                                    QStringLiteral("paletteStack"));
+                    auto *const blockScriptArea = qobject_cast<QQuickItem *>(
                             root->findChild<QObject *>(
-                                    QStringLiteral("addModifierCombo"));
-                    QObject *const addModifierButton =
+                                    QStringLiteral("blockScript")));
+                    auto *const evaluatorView = qobject_cast<QQuickItem *>(
                             root->findChild<QObject *>(
-                                    QStringLiteral("addModifierButton"));
-                    QObject *const evaluationTargetCombo =
+                                    QStringLiteral("blockViewEvaluator")));
+                    QObject *const evaluatorDetail =
                             root->findChild<QObject *>(
-                                    QStringLiteral("evaluationTargetCombo"));
-                    QObject *const basicBruteForceSettings =
-                            root->findChild<QObject *>(QStringLiteral(
-                                    "basicBruteForceSearchSettings"));
+                                    QStringLiteral(
+                                            "blockViewEvaluatorDetail"));
+                    auto *const rootItem = qobject_cast<QQuickItem *>(root);
                     QObject *const autoPromoteBestSwitch =
-                            root->findChild<QObject *>(QStringLiteral(
-                                    "autoPromoteBestSwitch"));
-                    QObject *const velocitySettings =
-                            root->findChild<QObject *>(QStringLiteral(
-                                    "velocityEvaluationSettings"));
-                    auto *const velocityModeCombo =
-                            qobject_cast<QQuickItem *>(
-                                    root->findChild<QObject *>(QStringLiteral(
-                                            "velocityModeCombo")));
-                    QObject *const velocityModeComboContent =
-                            root->findChild<QObject *>(QStringLiteral(
-                                    "velocityModeComboContent"));
+                            FindBlockControl(
+                                    rootItem,
+                                    QStringLiteral("SwitchautoPromoteBest"));
+                    // The prism evaluator's plane slot provides the enum
+                    // combo exercised below; the default speed goal has no
+                    // enum of its own.
+                    auto *const enumCombo = qobject_cast<QQuickItem *>(
+                            FindBlockControl(
+                                    rootItem,
+                                    QStringLiteral("Comboplane")));
+                    QObject *const enumComboContent =
+                            FindBlockControl(
+                                    rootItem,
+                                    QStringLiteral("ComboplaneContent"));
                     QObject *const bestInputsScrollView =
                             root->findChild<QObject *>(QStringLiteral(
                                     "bestInputsScrollView"));
@@ -2518,43 +2549,52 @@ int main(int argc, char **argv) {
                                 !cudaCompatibilityStatus->isVisible();
 #endif
                     }
+                    const QVariantMap blockScript =
+                            controller.blockScript();
+                    const int hatBlockId =
+                            blockScript.value(QStringLiteral("hat")).toInt();
+                    const int evaluatorBlockId =
+                            blockScript.value(QStringLiteral("evaluator"))
+                                    .toInt();
+                    const QVariantList mutatorIds = WindowIds(controller);
+                    const int firstMutatorId =
+                            mutatorIds.isEmpty()
+                            ? 0
+                            : mutatorIds.front().toInt();
+                    QVariantList paletteCategories;
+                    for (const QVariant &category :
+                         controller.blockPalette()) {
+                        paletteCategories.push_back(
+                                category.toMap()
+                                        .value(QStringLiteral("id")));
+                    }
                     const bool algorithmSelectorsValid =
-                            searchAlgorithmCombo != nullptr &&
-                            modifierComposition != nullptr &&
-                            addModifierCombo != nullptr &&
-                            addModifierButton != nullptr &&
-                            evaluationTargetCombo != nullptr &&
-                            searchAlgorithmCombo->property("count").toInt() ==
-                                    1 &&
-                            modifierComposition
-                                            ->property("firstPassOptionCount")
-                                            .toInt() == 5 &&
-                            addModifierCombo->property("count").toInt() == 5 &&
-                            evaluationTargetCombo->property("count").toInt() ==
-                                    7 &&
-                            searchAlgorithmCombo->property("currentValue")
-                                            .toString() ==
-                                    QStringLiteral("basic-brute-force") &&
-                            searchAlgorithmCombo->property("displayText")
-                                            .toString() ==
-                                    QStringLiteral("Basic bruteforce") &&
-                            modifierComposition
-                                            ->property("firstPassSelectedId")
-                                            .toString() ==
-                                    QStringLiteral("random-steering") &&
-                            evaluationTargetCombo->property("currentValue")
-                                            .toString() ==
+                            blocksSection != nullptr &&
+                            blockWorkspace != nullptr &&
+                            blockPalette != nullptr &&
+                            paletteStack != nullptr &&
+                            blockScriptArea != nullptr &&
+                            evaluatorView != nullptr &&
+                            paletteCategories.size() == 4 &&
+                            paletteCategories.contains(
+                                    QStringLiteral("search")) &&
+                            paletteCategories.contains(
+                                    QStringLiteral("evaluate")) &&
+                            paletteCategories.contains(
+                                    QStringLiteral("mutate")) &&
+                            paletteCategories.contains(
+                                    QStringLiteral("values")) &&
+                            hatBlockId != 0 &&
+                            evaluatorBlockId != 0 &&
+                            mutatorIds.size() == 1 &&
+                            controller.evaluationTargetId() ==
                                     QStringLiteral("velocity") &&
-                            basicBruteForceSettings != nullptr &&
                             autoPromoteBestSwitch != nullptr &&
                             !autoPromoteBestSwitch
                                      ->property("checked")
-                                     .toBool() &&
-                            modifierComposition
-                                    ->property("firstPassSettingsLoaded")
-                                    .toBool() &&
-                            velocitySettings != nullptr;
-                    controller.setSearchAlgorithmSetting(
+                                     .toBool();
+                    controller.setBlockField(
+                            hatBlockId,
                             QStringLiteral("autoPromoteBest"),
                             QStringLiteral("true"));
                     QCoreApplication::processEvents();
@@ -2563,59 +2603,62 @@ int main(int argc, char **argv) {
                             autoPromoteBestSwitch
                                     ->property("checked")
                                     .toBool();
-                    controller.setSearchAlgorithmSetting(
+                    controller.setBlockField(
+                            hatBlockId,
                             QStringLiteral("autoPromoteBest"),
                             QStringLiteral("false"));
                     QCoreApplication::processEvents();
+                    controller.setEvaluatorBlock(
+                            QStringLiteral("evaluate/prism-entry-time"));
+                    QCoreApplication::processEvents();
+                    QCoreApplication::processEvents();
                     const bool settingComboTextValid =
-                            velocityModeCombo != nullptr &&
-                            velocityModeComboContent != nullptr &&
-                            velocityModeCombo->property("displayText")
+                            enumCombo != nullptr &&
+                            enumComboContent != nullptr &&
+                            enumCombo->property("displayText")
                                             .toString() ==
-                                    QStringLiteral("Total speed") &&
-                            velocityModeComboContent->property("text")
+                                    QStringLiteral("XZ") &&
+                            enumComboContent->property("text")
                                             .toString() ==
-                                    QStringLiteral("Total speed") &&
-                            !velocityModeComboContent->property("truncated")
+                                    QStringLiteral("XZ") &&
+                            !enumComboContent->property("truncated")
                                      .toBool() &&
-                            velocityModeCombo->width() >= 160.0;
+                            enumCombo->width() >= 50.0;
                     const bool configurationSectionsValid =
                             conditionsSection != nullptr &&
                             conditionScriptTextArea != nullptr &&
-                            evaluationSection != nullptr &&
-                            modifierSection != nullptr &&
-                            searchSection != nullptr &&
-                            evaluationSection->parentItem() ==
-                                    modifierSection->parentItem() &&
-                            modifierSection->parentItem() ==
-                                    searchSection->parentItem() &&
-                            conditionsSection->y() < evaluationSection->y() &&
-                            evaluationSection->y() < modifierSection->y() &&
-                            modifierSection->y() < searchSection->y() &&
-                            evaluationSection->property("radius").toReal() >
-                                    0.0 &&
-                            modifierSection->property("radius").toReal() >
-                                    0.0 &&
-                            searchSection->property("radius").toReal() > 0.0;
+                            blocksSection != nullptr &&
+                            conditionsSection->parentItem() ==
+                                    blocksSection->parentItem() &&
+                            conditionsSection->y() < blocksSection->y() &&
+                            blocksSection->property("radius").toReal() > 0.0;
                     const bool comboSlotsStyled =
                             simulationBackendCombo != nullptr &&
-                            searchAlgorithmCombo != nullptr &&
-                            evaluationTargetCombo != nullptr &&
-                            addModifierCombo != nullptr &&
+                            enumCombo != nullptr &&
                             simulationBackendCombo->property("slotStyled")
                                     .toBool() &&
-                            searchAlgorithmCombo->property("slotStyled")
-                                    .toBool() &&
-                            evaluationTargetCombo->property("slotStyled")
-                                    .toBool() &&
-                            addModifierCombo->property("slotStyled").toBool() &&
-                            modifierComposition
-                                    ->property("firstPassSlotStyled").toBool();
-                    const bool modifierPassLayoutValid =
-                            modifierComposition != nullptr &&
-                            modifierComposition
-                                    ->property("firstPassHeaderLayoutValid")
+                            enumCombo->property("slotStyled")
                                     .toBool();
+                    const bool modifierPassLayoutValid =
+                            firstMutatorId != 0 &&
+                            FindBlockControl(
+                                    rootItem,
+                                    QStringLiteral("blockUp") +
+                                            QString::number(
+                                                    firstMutatorId)) !=
+                                    nullptr &&
+                            FindBlockControl(
+                                    rootItem,
+                                    QStringLiteral("blockDown") +
+                                            QString::number(
+                                                    firstMutatorId)) !=
+                                    nullptr &&
+                            FindBlockControl(
+                                    rootItem,
+                                    QStringLiteral("blockRemove") +
+                                            QString::number(
+                                                    firstMutatorId)) !=
+                                    nullptr;
                     const bool debuggerSourceTreeScrollable = [&]() {
                         if (simulationSourceTree == nullptr ||
                             simulationSourceTreeScrollBar == nullptr) {
@@ -2877,9 +2920,7 @@ int main(int argc, char **argv) {
                         auto *const redirectorItem =
                                 qobject_cast<QQuickItem *>(
                                         settingsWheelRedirector);
-                        auto *const comboItem =
-                                qobject_cast<QQuickItem *>(
-                                        evaluationTargetCombo);
+                        auto *const comboItem = enumCombo;
                         auto *const bestInputsItem =
                                 qobject_cast<QQuickItem *>(
                                         bestInputsScrollView);
@@ -2971,46 +3012,21 @@ int main(int argc, char **argv) {
                             wheelScrollingValid &=
                                     globalComboWheelValid;
 
-                            controller.setModifierPassId(
-                                    0,
-                                    QStringLiteral(
-                                            "existing-event-perturbation"));
+                            controller.removeBlock(firstMutatorId);
+                            controller.addBlock(QStringLiteral(
+                                    "mutate/set-steering"));
                             QCoreApplication::processEvents();
                             QCoreApplication::processEvents();
-                            QObject *const perturbationSettings =
-                                    modifierComposition
-                                            ->property("firstPassSettingsItem")
-                                            .value<QObject *>();
                             auto *const absoluteMinimumSlider =
-                                    perturbationSettings == nullptr
-                                    ? nullptr
-                                    : qobject_cast<QQuickItem *>(
-                                              perturbationSettings
-                                                      ->findChild<QObject *>(
-                                                              QStringLiteral(
-                                                                      "perturbationAbsoluteMinimumSlider")));
-                            QObject *const perturbationMinimumField =
-                                    perturbationSettings == nullptr
-                                    ? nullptr
-                                    : perturbationSettings
-                                              ->findChild<QObject *>(
-                                                      QStringLiteral(
-                                                              "perturbationAbsoluteMinimumSliderValueField"));
-                            QObject *const perturbationMaximumField =
-                                    perturbationSettings == nullptr
-                                    ? nullptr
-                                    : perturbationSettings
-                                              ->findChild<QObject *>(
-                                                      QStringLiteral(
-                                                              "perturbationAbsoluteMaximumSliderValueField"));
+                                    qobject_cast<QQuickItem *>(
+                                            FindBlockControl(
+                                                    rootItem,
+                                                    QStringLiteral(
+                                                            "FieldsteerAbsoluteMin")));
                             perturbationSliderEditorsValid =
-                                    perturbationMinimumField != nullptr &&
-                                    perturbationMaximumField != nullptr &&
-                                    perturbationMinimumField
-                                            ->property("exactValueEditor")
-                                            .toBool() &&
-                                    perturbationMaximumField
-                                            ->property("exactValueEditor")
+                                    absoluteMinimumSlider != nullptr &&
+                                    absoluteMinimumSlider
+                                            ->property("scrubbable")
                                             .toBool();
                             wheelScrollingValid &=
                                     absoluteMinimumSlider != nullptr;
@@ -3072,8 +3088,13 @@ int main(int argc, char **argv) {
                                 wheelScrollingValid &=
                                         globalSliderWheelValid;
                             }
-                            controller.setModifierPassId(
-                                    0, QStringLiteral("random-steering"));
+                            controller.removeBlock(
+                                    WindowIds(controller)
+                                            .front()
+                                            .toInt());
+                            controller.addBlock(
+                                    QStringLiteral(
+                                            "mutate/reroll-steering"));
                             QCoreApplication::processEvents();
                             QCoreApplication::processEvents();
 
@@ -3263,135 +3284,112 @@ int main(int argc, char **argv) {
                         }
                     }
                     bool everyOwnedPanelLoaded =
-                            evaluationTargetSelector != nullptr &&
-                            modifierComposition != nullptr;
+                            blockWorkspace != nullptr &&
+                            evaluatorDetail != nullptr;
                     const std::array<std::pair<const char *, const char *>, 7>
                             evaluationPanels{{
-                                    {"velocity",
-                                     "velocityEvaluationSettings"},
-                                    {"stunt-points",
-                                     "stuntPointsEvaluationSettings"},
-                                    {"precise-finish-time",
-                                     "preciseFinishTimeEvaluationSettings"},
+                                    {"velocity", ""},
+                                    {"stunt-points", ""},
+                                    {"precise-finish-time", ""},
                                     {"volume-entry-time",
-                                     "volumeEntryEvaluationSettings"},
+                                     "volumeEntryBlockDetail"},
                                     {"custom-volume-entry-time",
-                                     "volumeEntryEvaluationSettings"},
-                                    {"point-target",
-                                     "pointTargetEvaluationSettings"},
+                                     "volumeEntryBlockDetail"},
+                                    {"point-target", ""},
                                     {"pose-target",
-                                     "poseTargetEvaluationSettings"}}};
+                                     "poseTargetBlockDetail"}}};
                     for (const auto &[id, objectName] : evaluationPanels) {
                         controller.setEvaluationTargetId(
                                 QString::fromLatin1(id));
                         QCoreApplication::processEvents();
+                        QCoreApplication::processEvents();
+                        const QString expectedDetail =
+                                QString::fromLatin1(objectName);
+                        const QVariant detailItem =
+                                evaluatorDetail->property("item");
                         everyOwnedPanelLoaded &=
-                                evaluationTargetSelector != nullptr &&
-                                evaluationTargetSelector
-                                                ->property("settingsLoaded")
-                                                .toBool() &&
-                                evaluationTargetSelector
-                                                ->property(
-                                                        "settingsObjectName")
-                                                .toString() ==
-                                        QString::fromLatin1(objectName);
+                                controller.evaluationTargetId() ==
+                                QString::fromLatin1(id);
+                        if (expectedDetail.isEmpty()) {
+                            everyOwnedPanelLoaded &=
+                                    evaluatorDetail->property("active")
+                                            .toBool() == false;
+                        } else {
+                            everyOwnedPanelLoaded &=
+                                    evaluatorDetail->property("active")
+                                            .toBool() &&
+                                    detailItem.value<QObject *>() !=
+                                            nullptr &&
+                                    detailItem.value<QObject *>()
+                                            ->objectName() == expectedDetail;
+                        }
                     }
                     controller.setEvaluationTargetId(
                             QStringLiteral("pose-target"));
                     QCoreApplication::processEvents();
+                    QCoreApplication::processEvents();
                     const qreal expandedEvaluationHeight =
-                            evaluationSection == nullptr
+                            blocksSection == nullptr
                             ? 0.0
-                            : evaluationSection->height();
-                    const qreal expandedSelectorHeight =
-                            evaluationTargetSelector == nullptr
-                            ? 0.0
-                            : evaluationTargetSelector
-                                      ->property("height")
-                                      .toReal();
-                    const QPointer<QObject> expandedSettingsItem =
-                            evaluationTargetSelector == nullptr
-                            ? nullptr
-                            : evaluationTargetSelector
-                                      ->property("settingsItem")
-                                      .value<QObject *>();
-                    const QString expandedSettingsObjectName =
-                            expandedSettingsItem == nullptr
-                            ? QString()
-                            : expandedSettingsItem->objectName();
+                            : blocksSection->height();
                     controller.setEvaluationTargetId(
                             QStringLiteral("precise-finish-time"));
                     QCoreApplication::processEvents();
+                    QCoreApplication::processEvents();
                     const qreal compactEvaluationHeight =
-                            evaluationSection == nullptr
+                            blocksSection == nullptr
                             ? 0.0
-                            : evaluationSection->height();
-                    const qreal compactSelectorHeight =
-                            evaluationTargetSelector == nullptr
-                            ? 0.0
-                            : evaluationTargetSelector
-                                      ->property("height")
-                                      .toReal();
-                    QObject *const compactSettingsItem =
-                            evaluationTargetSelector == nullptr
-                            ? nullptr
-                            : evaluationTargetSelector
-                                      ->property("settingsItem")
-                                      .value<QObject *>();
+                            : blocksSection->height();
                     const bool targetLayoutUpdatesImmediately =
-                            expandedSettingsItem != nullptr &&
-                            expandedSettingsObjectName ==
-                                    QStringLiteral(
-                                            "poseTargetEvaluationSettings") &&
-                            compactSettingsItem != nullptr &&
-                            compactSettingsItem != expandedSettingsItem.data() &&
-                            compactSettingsItem->objectName() ==
-                                    QStringLiteral(
-                                            "preciseFinishTimeEvaluationSettings") &&
                             expandedEvaluationHeight >
-                                    compactEvaluationHeight + 250.0 &&
-                            expandedSelectorHeight >
-                                    compactSelectorHeight + 250.0 &&
-                            compactSelectorHeight < 90.0;
+                                    compactEvaluationHeight + 250.0;
                     controller.setEvaluationTargetId(
                             QStringLiteral("stunt-points"));
                     QCoreApplication::processEvents();
-                    QObject *const stuntPointsTimeField =
-                            root->findChild<QObject *>(
-                                    QStringLiteral("stuntPointsTimeField"));
+                    QCoreApplication::processEvents();
+                    const int stuntEvaluatorId =
+                            controller.blockScript()
+                                    .value(QStringLiteral("evaluator"))
+                                    .toInt();
+                    QObject *const stuntPointsTimeField = FindBlockControl(
+                            rootItem,
+                            QStringLiteral("FieldtargetTimeMs"));
                     const bool stuntPointsFieldValid =
                             stuntPointsTimeField != nullptr &&
-                            stuntPointsTimeField->property("text").toString() ==
+                            stuntPointsTimeField->property("text")
+                                            .toString() ==
                                     QStringLiteral("6000") &&
-                            stuntPointsTimeField->property("minimum").toReal() ==
-                                    0.0;
+                            controller.blockData(stuntEvaluatorId)
+                                            .value(QStringLiteral("fields"))
+                                            .toList()
+                                            .size() == 1;
                     const std::array<std::pair<const char *, const char *>, 5>
-                            modifierPanels{{
-                                    {"random-steering",
-                                     "randomSteeringMutationSettings"},
-                                    {"existing-event-perturbation",
-                                     "existingEventPerturbationSettings"},
-                                    {"smooth-steering",
-                                     "smoothSteeringSettings"},
-                                    {"input-insertion",
-                                     "inputInsertionSettings"},
-                                    {"input-deletion",
-                                     "inputDeletionSettings"}}};
-                    for (const auto &[id, objectName] : modifierPanels) {
-                        controller.setModifierPassId(
-                                0, QString::fromLatin1(id));
+                            modifierKinds{{
+                                    {"reroll-steering", "random-steering"},
+                                    {"nudge-steering",
+                                     "existing-event-perturbation"},
+                                    {"smooth-steering", "smooth-steering"},
+                                    {"insert-steering-at", "input-insertion"},
+                                    {"delete-steering", "input-deletion"}}};
+                    for (const auto &kind : modifierKinds) {
+                        controller.removeBlock(
+                                WindowIds(controller).front().toInt());
+                        controller.addBlock(
+                                QStringLiteral("mutate/") +
+                                QString::fromLatin1(kind.first));
                         QCoreApplication::processEvents();
                         everyOwnedPanelLoaded &=
-                                modifierComposition != nullptr &&
-                                modifierComposition
-                                                ->property(
-                                                        "firstPassSettingsLoaded")
-                                                .toBool() &&
-                                modifierComposition
-                                                ->property(
-                                                        "firstPassSettingsObjectName")
-                                                .toString() ==
-                                        QString::fromLatin1(objectName);
+                                WindowIds(controller).size() == 1 &&
+                                controller.blockData(
+                                        FirstWindowAtomId(controller))
+                                        .value(QStringLiteral(
+                                                "optionId"))
+                                        .toString() ==
+                                        QString::fromLatin1(kind.second) &&
+                                FindBlockControl(
+                                        rootItem,
+                                        QStringLiteral(
+                                                "Fieldseed")) != nullptr;
                     }
 
                     const auto activateCombo = [](QObject *combo, int index) {
@@ -3401,187 +3399,113 @@ int main(int argc, char **argv) {
                                 Qt::DirectConnection,
                                 Q_ARG(int, index));
                     };
-                    QObject *const firstPassForCombo =
-                            modifierComposition
-                                    ->property("firstRenderedPass")
-                                    .value<QObject *>();
-                    QObject *const modifierPassCombo =
-                            firstPassForCombo == nullptr
-                            ? nullptr
-                            : firstPassForCombo->findChild<QObject *>(
-                                      QStringLiteral("modifierPassCombo0"));
-
+                    auto mutatorId = [&controller]() {
+                        return FirstWindowAtomId(controller);
+                    };
+                    controller.removeBlock(
+                            WindowIds(controller).front().toInt());
+                    controller.addBlock(
+                            QStringLiteral("mutate/insert-steering-at"));
+                    QCoreApplication::processEvents();
                     bool dropdownStateUpdates =
-                            activateCombo(modifierPassCombo, 2);
-                    QCoreApplication::processEvents();
-                    QCoreApplication::processEvents();
-                    dropdownStateUpdates &=
-                            controller.modifierPasses()
-                                            .front()
-                                            .toMap()
-                                            .value(QStringLiteral("id"))
+                            controller.blockData(mutatorId())
+                                            .value(QStringLiteral("optionId"))
                                             .toString() ==
-                                    QStringLiteral("smooth-steering") &&
-                            modifierComposition
-                                            ->property(
-                                                    "firstPassSettingsObjectName")
-                                            .toString() ==
-                                    QStringLiteral("smoothSteeringSettings");
+                            QStringLiteral("input-insertion");
+                    {
+                        // The prism evaluator's plane enum slot follows UI
+                        // activation.
+                        controller.setEvaluatorBlock(
+                                QStringLiteral(
+                                        "evaluate/prism-entry-time"));
+                        QCoreApplication::processEvents();
+                        QCoreApplication::processEvents();
+                        QObject *const modeCombo = FindBlockControl(
+                                rootItem,
+                                QStringLiteral("Comboplane"));
+                        dropdownStateUpdates &=
+                                activateCombo(modeCombo, 1);
+                        QCoreApplication::processEvents();
+                        const QVariantMap blockData =
+                                controller.blockData(
+                                        controller.blockScript()
+                                                .value(
+                                                        QStringLiteral(
+                                                                "evaluator"))
+                                                .toInt());
+                        QString plane;
+                        for (const QVariant &value :
+                             blockData.value(QStringLiteral("fields"))
+                                     .toList()) {
+                            const QVariantMap field = value.toMap();
+                            if (field.value(QStringLiteral("key"))
+                                        .toString() ==
+                                QStringLiteral("plane")) {
+                                plane = field
+                                        .value(QStringLiteral("value"))
+                                        .toString();
+                            }
+                        }
+                        dropdownStateUpdates &=
+                                plane == QStringLiteral("xy");
+                    }
 
-                    dropdownStateUpdates &=
-                            activateCombo(modifierPassCombo, 3);
-                    QCoreApplication::processEvents();
-                    QCoreApplication::processEvents();
-                    QObject *const insertionSettings =
-                            modifierComposition
-                                    ->property("firstPassSettingsItem")
-                                    .value<QObject *>();
-                    QObject *const insertionModeCombo =
-                            insertionSettings == nullptr
-                            ? nullptr
-                            : insertionSettings->findChild<QObject *>(
-                                      QStringLiteral(
-                                              "insertionSteeringModeCombo"));
-                    QObject *const insertionMinimumSlider =
-                            insertionSettings == nullptr
-                            ? nullptr
-                            : insertionSettings->findChild<QObject *>(
-                                      QStringLiteral(
-                                              "insertionAbsoluteMinimumSlider"));
-                    QObject *const insertionMaximumSlider =
-                            insertionSettings == nullptr
-                            ? nullptr
-                            : insertionSettings->findChild<QObject *>(
-                                      QStringLiteral(
-                                              "insertionAbsoluteMaximumSlider"));
-                    QObject *const insertionMinimumField =
-                            insertionSettings == nullptr
-                            ? nullptr
-                            : insertionSettings->findChild<QObject *>(
-                                      QStringLiteral(
-                                              "insertionAbsoluteMinimumSliderValueField"));
-                    QObject *const insertionMaximumField =
-                            insertionSettings == nullptr
-                            ? nullptr
-                            : insertionSettings->findChild<QObject *>(
-                                      QStringLiteral(
-                                              "insertionAbsoluteMaximumSliderValueField"));
-                    dropdownStateUpdates &=
-                            activateCombo(insertionModeCombo, 1);
-                    QCoreApplication::processEvents();
-                    const QVariantMap insertionPass =
-                            controller.modifierPasses().front().toMap();
-                    dropdownStateUpdates &=
-                            insertionPass.value(QStringLiteral("settings"))
-                                            .toMap()
-                                            .value(QStringLiteral("steerMode"))
-                                            .toString() ==
-                                    QStringLiteral("absolute");
-
-                    bool insertionSlidersValid =
-                            insertionMinimumSlider != nullptr &&
-                            insertionMaximumSlider != nullptr &&
-                            insertionMinimumField != nullptr &&
-                            insertionMaximumField != nullptr &&
-                            insertionMinimumField
-                                    ->property("exactValueEditor").toBool() &&
-                            insertionMaximumField
-                                    ->property("exactValueEditor").toBool() &&
-                            insertionMinimumSlider->property("from").toReal() ==
-                                    -1.0 &&
-                            insertionMinimumSlider->property("to").toReal() ==
-                                    1.0 &&
-                            insertionMaximumSlider->property("from").toReal() ==
-                                    -1.0 &&
-                            insertionMaximumSlider->property("to").toReal() ==
-                                    1.0;
-                    insertionSlidersValid &=
-                            InvokeSliderValueCommit(
-                                    insertionMinimumField,
-                                    QStringLiteral("-0.375"),
-                                    true) &&
-                            controller.modifierPasses()
-                                            .front()
-                                            .toMap()
-                                            .value(QStringLiteral("settings"))
-                                            .toMap()
-                                            .value(
-                                                    QStringLiteral(
-                                                            "steerAbsoluteMin"))
-                                            .toString() ==
-                                    QStringLiteral("-0.375") &&
-                            std::abs(
-                                    insertionMinimumSlider
-                                                    ->property("value")
-                                                    .toReal() +
-                                    0.375) < 0.000001 &&
-                            InvokeSliderValueCommit(
-                                    insertionMinimumField,
-                                    QStringLiteral("-1.01"),
-                                    false) &&
-                            insertionMinimumField
-                                    ->property("validationFailed").toBool() &&
-                            !insertionMinimumField
-                                     ->property("inputValid").toBool() &&
-                            insertionMinimumField
-                                            ->property("effectiveBorderColor")
-                                            .value<QColor>() ==
-                                    QColor(QStringLiteral("#a23434")) &&
-                            controller.modifierPasses()
-                                            .front()
-                                            .toMap()
-                                            .value(QStringLiteral("settings"))
-                                            .toMap()
-                                            .value(
-                                                    QStringLiteral(
-                                                            "steerAbsoluteMin"))
-                                            .toString() ==
-                                    QStringLiteral("-0.375") &&
-                            InvokeSliderValueCommit(
-                                    insertionMinimumField,
-                                    QStringLiteral("not-a-number"),
-                                    false);
-                    controller.setModifierPassSetting(
-                            0,
-                            QStringLiteral("steerAbsoluteMin"),
-                            QStringLiteral("-0.625"));
-                    QCoreApplication::processEvents();
-                    insertionSlidersValid &=
-                            insertionMinimumField != nullptr &&
-                            insertionMinimumField->property("text").toString() ==
-                                    QStringLiteral("-0.625") &&
-                            !insertionMinimumField
-                                     ->property("validationFailed").toBool() &&
-                            std::abs(
-                                    insertionMinimumSlider
-                                                    ->property("value")
-                                                    .toReal() +
-                                    0.625) < 0.000001 &&
-                            InvokeSliderValueCommit(
-                                    insertionMinimumField,
-                                    QStringLiteral("-1"),
-                                    true);
-
-                    dropdownStateUpdates &=
-                            activateCombo(evaluationTargetCombo, 5);
+                    bool insertionSlidersValid = [&]() {
+                        // Number slots validate through the search
+                        // pipeline: out-of-range values disable Start.
+                        const int mutator = mutatorId();
+                        QObject *const absoluteMinimumField =
+                                FindBlockControl(
+                                        rootItem,
+                                        QStringLiteral(
+                                                "FieldsteerAbsoluteMin"));
+                        if (absoluteMinimumField == nullptr) return false;
+                        controller.setBlockField(
+                                mutator,
+                                QStringLiteral("steerAbsoluteMin"),
+                                QStringLiteral("-0.375"));
+                        QCoreApplication::processEvents();
+                        if (absoluteMinimumField->property("value")
+                                    .toString() !=
+                            QStringLiteral("-0.375")) {
+                            return false;
+                        }
+                        controller.setBlockField(
+                                mutator,
+                                QStringLiteral("steerAbsoluteMin"),
+                                QStringLiteral("-1.01"));
+                        QCoreApplication::processEvents();
+                        const bool rejected =
+                                !controller.canStart() &&
+                                !controller.validationMessage().isEmpty();
+                        controller.setBlockField(
+                                mutator,
+                                QStringLiteral("steerAbsoluteMin"),
+                                QStringLiteral("-0.625"));
+                        QCoreApplication::processEvents();
+                        const bool accepted = controller.canStart();
+                        return rejected && accepted &&
+                                absoluteMinimumField->property("value")
+                                        .toString() ==
+                                        QStringLiteral("-0.625");
+                    }();
+                    controller.setEvaluationTargetId(
+                            QStringLiteral("point-target"));
                     QCoreApplication::processEvents();
                     QCoreApplication::processEvents();
                     dropdownStateUpdates &=
                             controller.evaluationTargetId() ==
                                     QStringLiteral("point-target") &&
-                            evaluationTargetSelector
-                                            ->property("settingsObjectName")
-                                            .toString() ==
-                                    QStringLiteral(
-                                            "pointTargetEvaluationSettings");
+                            FindBlockControl(
+                                    rootItem,
+                                    QStringLiteral("Fieldx")) != nullptr;
 
-                    dropdownStateUpdates &=
-                            activateCombo(evaluationTargetCombo, 6);
+                    controller.setEvaluationTargetId(
+                            QStringLiteral("pose-target"));
                     QCoreApplication::processEvents();
                     QCoreApplication::processEvents();
                     QObject *const poseEditor =
-                            evaluationTargetSelector
-                                    ->property("settingsItem")
+                            evaluatorDetail->property("item")
                                     .value<QObject *>();
                     QObject *const rotationWeightSlider =
                             poseEditor == nullptr ? nullptr
@@ -3732,7 +3656,8 @@ int main(int argc, char **argv) {
                                                     QStringLiteral(
                                                             "yawDegrees"))
                                             .toDouble() > initialPoseYaw &&
-                            controller.evaluationTargetSettings()
+                            controller.poseTargets()
+                                            ->selectedTarget()
                                             .value(QStringLiteral("x"))
                                             .toDouble() > initialPoseX &&
                             viewport->property("cuboidFocused").toBool() &&
@@ -3757,12 +3682,34 @@ int main(int argc, char **argv) {
                                     rotationWeightField,
                                     QStringLiteral("37.5"),
                                     true) &&
-                            controller.evaluationTargetSettings()
-                                            .value(
-                                                    QStringLiteral(
-                                                            "rotationWeightPercent"))
-                                            .toString() ==
-                                    QStringLiteral("37.5") &&
+                            [&controller]() {
+                                const QVariantList fields =
+                                        controller.blockData(
+                                                    controller.blockScript()
+                                                            .value(
+                                                                    QStringLiteral(
+                                                                            "evaluator"))
+                                                                    .toInt())
+                                                .value(
+                                                        QStringLiteral(
+                                                                "fields"))
+                                                .toList();
+                                for (const QVariant &value : fields) {
+                                    const QVariantMap field = value.toMap();
+                                    if (field.value(QStringLiteral("key"))
+                                                .toString() ==
+                                        QStringLiteral(
+                                                "rotationWeightPercent")) {
+                                        return field
+                                                .value(
+                                                        QStringLiteral(
+                                                                "value"))
+                                                .toString() ==
+                                               QStringLiteral("37.5");
+                                    }
+                                }
+                                return false;
+                            }() &&
                             std::abs(
                                     rotationWeightSlider
                                                     ->property("value")
@@ -3817,10 +3764,9 @@ int main(int argc, char **argv) {
                                                       .toStdString()
                                             : "<missing>")
                                 << ", stored="
-                                << controller.evaluationTargetSettings()
-                                           .value(
-                                                   QStringLiteral(
-                                                           "rotationWeightPercent"))
+                                << controller.poseTargets()
+                                           ->selectedTarget()
+                                           .value(QStringLiteral("name"))
                                            .toString()
                                            .toStdString()
                                 << ", slider="
@@ -3832,13 +3778,14 @@ int main(int argc, char **argv) {
                                 << '\n';
                     }
 
-                    dropdownStateUpdates &=
-                            activateCombo(evaluationTargetCombo, 3);
+                    controller.setEvaluationTargetId(
+                            QStringLiteral("volume-entry-time"));
+                    QCoreApplication::processEvents();
+                    QCoreApplication::processEvents();
                     QCoreApplication::processEvents();
                     QCoreApplication::processEvents();
                     QObject *const cuboidEditor =
-                            evaluationTargetSelector
-                                    ->property("settingsItem")
+                            evaluatorDetail->property("item")
                                     .value<QObject *>();
                     QObject *const cuboidSelector =
                             cuboidEditor == nullptr ? nullptr
@@ -3991,7 +3938,8 @@ int main(int argc, char **argv) {
                             cuboidStressTimer.elapsed() < 250 &&
                             cuboidModelsAfterStress ==
                                     initialCuboidModelObjects &&
-                            controller.evaluationTargetSettings()
+                            controller.cuboidTargets()
+                                            ->selectedTarget()
                                             .value(QStringLiteral("sizeX"))
                                             .toDouble() >
                                     initialCuboidSize;
@@ -4052,13 +4000,13 @@ int main(int argc, char **argv) {
                     }
                     dropdownStateUpdates &= cuboidEditorValid;
 
-                    dropdownStateUpdates &=
-                            activateCombo(evaluationTargetCombo, 4);
+                    controller.setEvaluationTargetId(
+                            QStringLiteral(
+                                    "custom-volume-entry-time"));
                     QCoreApplication::processEvents();
                     QCoreApplication::processEvents();
                     QObject *const customEditor =
-                            evaluationTargetSelector
-                                    ->property("settingsItem")
+                            evaluatorDetail->property("item")
                                     .value<QObject *>();
                     QObject *const customPlaneSetting =
                             customEditor == nullptr ? nullptr
@@ -4161,11 +4109,13 @@ int main(int argc, char **argv) {
                     }
                     customVolumeEditorValid &=
                             !controller.customVolumeDrawing() &&
-                            controller.evaluationTargetSettings()
+                            controller.customVolumeTargets()
+                                            ->selectedTarget()
                                             .value(QStringLiteral("depth"))
                                             .toString() ==
                                     QStringLiteral("6.5") &&
-                            controller.evaluationTargetSettings()
+                            controller.customVolumeTargets()
+                                            ->selectedTarget()
                                             .value(QStringLiteral("polygon"))
                                             .toString() ==
                                     QStringLiteral("-2,-2;2,-2;0,2") &&
@@ -4200,99 +4150,53 @@ int main(int argc, char **argv) {
                                     .value<QVector3D>() == viewer.carPosition();
                     dropdownStateUpdates &= customVolumeEditorValid;
 
-                    dropdownStateUpdates &=
-                            activateCombo(evaluationTargetCombo, 0);
-                    dropdownStateUpdates &=
-                            activateCombo(modifierPassCombo, 0);
-                    QCoreApplication::processEvents();
-                    QCoreApplication::processEvents();
-                    QObject *const velocityEditor =
-                            evaluationTargetSelector
-                                    ->property("settingsItem")
-                                    .value<QObject *>();
-                    QObject *const minimumAlignmentSlider =
-                            velocityEditor == nullptr ? nullptr
-                            : velocityEditor->findChild<QObject *>(
-                                      QStringLiteral(
-                                              "minimumAlignmentSlider"));
-                    QObject *const minimumAlignmentField =
-                            velocityEditor == nullptr ? nullptr
-                            : velocityEditor->findChild<QObject *>(
-                                      QStringLiteral(
-                                              "minimumAlignmentSliderValueField"));
-                    bool velocitySliderValid =
-                            minimumAlignmentSlider != nullptr &&
-                            minimumAlignmentField != nullptr &&
-                            minimumAlignmentField
-                                    ->property("exactValueEditor").toBool() &&
-                            minimumAlignmentSlider->property("from").toReal() ==
-                                    -100.0 &&
-                            minimumAlignmentSlider->property("to").toReal() ==
-                                    100.0;
-                    velocitySliderValid &=
-                            InvokeSliderValueCommit(
-                                    minimumAlignmentField,
-                                    QStringLiteral("-12.5"),
-                                    true) &&
-                            controller.evaluationTargetSettings()
-                                            .value(
-                                                    QStringLiteral(
-                                                            "minAlignmentPercent"))
-                                            .toString() ==
-                                    QStringLiteral("-12.5") &&
-                            std::abs(
-                                    minimumAlignmentSlider
-                                                    ->property("value")
-                                                    .toReal() +
-                                    12.5) < 0.000001 &&
-                            InvokeSliderValueCommit(
-                                    minimumAlignmentField,
-                                    QStringLiteral("-100"),
-                                    true);
-                    if (!velocitySliderValid) {
-                        std::cerr
-                                << "velocity slider editor: field="
-                                << (minimumAlignmentField != nullptr
-                                            ? minimumAlignmentField
-                                                      ->property("text")
-                                                      .toString()
-                                                      .toStdString()
-                                            : "<missing>")
-                                << ", stored="
-                                << controller.evaluationTargetSettings()
-                                           .value(
-                                                   QStringLiteral(
-                                                           "minAlignmentPercent"))
-                                           .toString()
-                                           .toStdString()
-                                << ", slider="
-                                << (minimumAlignmentSlider != nullptr
-                                            ? minimumAlignmentSlider
-                                                      ->property("value")
-                                                      .toReal()
-                                            : -999.0)
-                                << '\n';
-                    }
-
-                    controller.setModifierPassId(
-                            0, QStringLiteral("random-steering"));
                     controller.setEvaluationTargetId(
                             QStringLiteral("velocity"));
                     QCoreApplication::processEvents();
-                    QObject *const firstPassBefore =
-                            modifierComposition
-                                    ->property("firstRenderedPass")
-                                    .value<QObject *>();
-                    QObject *const firstPassSettings =
-                            modifierComposition
-                                    ->property("firstPassSettingsItem")
-                                    .value<QObject *>();
-                    QObject *const minimumTimeField = firstPassSettings == nullptr
-                            ? nullptr
-                            : firstPassSettings->findChild<QObject *>(
-                                      QStringLiteral("minimumTimeField"));
-                    const int rebuildCountBefore =
-                            modifierComposition->property("rebuildCount").toInt();
+                    QCoreApplication::processEvents();
+                    controller.setEvaluatorBlock(
+                            QStringLiteral("evaluate/speed-toward"));
+                    QCoreApplication::processEvents();
+                    QCoreApplication::processEvents();
+                    auto *const minimumAlignmentField = qobject_cast<QQuickItem *>(
+                            FindBlockControl(
+                                    rootItem,
+                                    QStringLiteral(
+                                            "FieldminAlignmentPercent")));
+                    bool velocitySliderValid = [&]() {
+                        if (minimumAlignmentField == nullptr) return false;
+                        controller.setBlockField(
+                                controller.blockScript()
+                                        .value(QStringLiteral("evaluator"))
+                                        .toInt(),
+                                QStringLiteral("minAlignmentPercent"),
+                                QStringLiteral("-12.5"));
+                        QCoreApplication::processEvents();
+                        return minimumAlignmentField->property("value")
+                                        .toString() ==
+                                QStringLiteral("-12.5");
+                    }();
+
+                    {
+                        controller.removeBlock(
+                                WindowIds(controller).front().toInt());
+                        controller.addBlock(
+                                QStringLiteral(
+                                        "mutate/reroll-steering"));
+                    }
+                    controller.setEvaluationTargetId(
+                            QStringLiteral("velocity"));
+                    QCoreApplication::processEvents();
+                    QCoreApplication::processEvents();
+                    const int stableMutatorId =
+                            WindowIds(controller).front().toInt();
+                    auto *const mutatorViewBefore = qobject_cast<QQuickItem *>(
+                            root->findChild<QObject *>(
+                                    QStringLiteral("blockView") +
+                                    QString::number(stableMutatorId)));
+                    QObject *const minimumTimeField = FindBlockControl(
+                            rootItem,
+                            QStringLiteral("FieldminTimeMs"));
                     const bool focusRequested = minimumTimeField != nullptr &&
                             QMetaObject::invokeMethod(
                                     minimumTimeField,
@@ -4301,102 +4205,58 @@ int main(int argc, char **argv) {
                     QCoreApplication::processEvents();
                     const bool focusedBeforeUpdate =
                             minimumTimeField != nullptr &&
-                            (minimumTimeField->property("activeFocus").toBool() ||
-                             minimumTimeField->property("focus").toBool());
-                    controller.setModifierPassSetting(
-                            0,
+                            minimumTimeField->property("activeFocus")
+                                    .toBool();
+                    controller.setBlockField(
+                            stableMutatorId,
                             QStringLiteral("minTimeMs"),
                             QStringLiteral("1010"));
                     QCoreApplication::processEvents();
                     QCoreApplication::processEvents();
-                    QObject *const firstPassAfter =
-                            modifierComposition
-                                    ->property("firstRenderedPass")
-                                    .value<QObject *>();
-                    const QVariantMap updatedPass =
-                            controller.modifierPasses().front().toMap();
+                    auto *const mutatorViewAfter = qobject_cast<QQuickItem *>(
+                            root->findChild<QObject *>(
+                                    QStringLiteral("blockView") +
+                                    QString::number(stableMutatorId)));
+                    QString updatedMinimumTime;
+                    for (const QVariant &value :
+                         controller.blockData(stableMutatorId)
+                                 .value(QStringLiteral("fields"))
+                                 .toList()) {
+                        const QVariantMap field = value.toMap();
+                        if (field.value(QStringLiteral("key")).toString() ==
+                            QStringLiteral("minTimeMs")) {
+                            updatedMinimumTime =
+                                    field.value(QStringLiteral("value"))
+                                            .toString();
+                        }
+                    }
                     const bool modifierFocusStable = focusRequested &&
                             focusedBeforeUpdate &&
-                            firstPassBefore == firstPassAfter &&
-                            modifierComposition->property("rebuildCount").toInt() ==
-                                    rebuildCountBefore &&
+                            mutatorViewBefore != nullptr &&
+                            mutatorViewBefore == mutatorViewAfter &&
                             minimumTimeField != nullptr &&
-                            (minimumTimeField->property("activeFocus").toBool() ||
-                             minimumTimeField->property("focus").toBool()) &&
-                            updatedPass.value(QStringLiteral("settings"))
-                                            .toMap()
-                                            .value(QStringLiteral("minTimeMs"))
-                                            .toString() ==
-                                    QStringLiteral("1010");
+                            minimumTimeField->property("activeFocus")
+                                    .toBool() &&
+                            updatedMinimumTime == QStringLiteral("1010");
                     const bool unboundedFieldsScrubbable =
                             minimumTimeField != nullptr &&
-                            minimumTimeField->property("scrubbable").toBool();
-                    controller.setModifierPassSetting(
-                            0,
+                            minimumTimeField->property("scrubbable")
+                                    .toBool();
+                    controller.setBlockField(
+                            stableMutatorId,
                             QStringLiteral("minTimeMs"),
                             QStringLiteral("1000"));
                     QCoreApplication::processEvents();
                     if (!algorithmSelectorsValid) {
-                        const auto count = [](QObject *object) {
-                            return object == nullptr
-                                    ? -1
-                                    : object->property("count").toInt();
-                        };
-                        const auto current = [](QObject *object) {
-                            return object == nullptr
-                                    ? QStringLiteral("<missing>")
-                                    : object->property("currentValue")
-                                              .toString();
-                        };
-                        std::cerr
-                                << "algorithm structure failed: search="
-                                << count(searchAlgorithmCombo) << "/"
-                                << current(searchAlgorithmCombo).toStdString()
-                                << ", modifierComposition="
-                                << (modifierComposition != nullptr)
-                                << "/"
-                                << (modifierComposition == nullptr
-                                            ? -1
-                                            : modifierComposition
-                                                      ->property("passCount")
-                                                      .toInt())
-                                << "/"
-                                << (modifierComposition == nullptr
-                                            ? -1
-                                            : modifierComposition
-                                                      ->property(
-                                                              "passModelCount")
-                                                      .toInt())
-                                << "/"
-                                << (modifierComposition == nullptr
-                                            ? -1
-                                            : modifierComposition
-                                                      ->property(
-                                                              "renderedPassCount")
-                                                      .toInt())
-                                << ", controllerPasses="
-                                << controller.modifierPasses().size()
-                                << ", firstPass="
-                                << modifierComposition
-                                           ->property("firstPassOptionCount")
-                                           .toInt() << "/"
-                                << modifierComposition
-                                           ->property("firstPassSelectedId")
-                                           .toString().toStdString()
-                                << "/"
-                                << modifierComposition
-                                           ->property("firstPassSettingsLoaded")
-                                           .toBool()
-                                << ", addCombo=" << count(addModifierCombo)
-                                << ", addButton="
-                                << (addModifierButton != nullptr)
-                                << ", evaluation="
-                                << count(evaluationTargetCombo) << "/"
-                                << current(evaluationTargetCombo).toStdString()
-                                << ", basicSettings="
-                                << (basicBruteForceSettings != nullptr)
-                                << ", velocitySettings="
-                                << (velocitySettings != nullptr) << '\n';
+                        std::cerr << "algorithm structure failed: palette="
+                                  << (blockPalette == nullptr) << ", script hat="
+                                  << controller.blockScript()
+                                             .value(QStringLiteral("hat"))
+                                             .toInt()
+                                  << ", evaluator="
+                                  << controller.evaluationTargetId()
+                                         .toStdString()
+                                  << '\n';
                     }
                     editorStructure = timeline != nullptr &&
                             timeline->viewer() == &viewer &&

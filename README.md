@@ -53,8 +53,16 @@ Build and launch the Qt 6 Quick application:
 ```
 
 Select an installed TMUF `Packs` directory and either a replay or standalone
-`Challenge.Gbx`, enter a base input script, choose an evaluation target,
-assemble an ordered list of input modifier passes, then start the basic search.
+`Challenge.Gbx`, enter a base input script, compose the search from blocks,
+then start the search. The Search blocks workspace works like a Scratch
+script: a search block holds one evaluation goal and an ordered stack of
+mutation windows chosen from the categorized palette; each window owns the
+shared from/to times and seed and holds small single-purpose mutation
+blocks (nudge steering, shift existing events, press accelerate, delete
+brake, …), every setting is a typed slot on its block, number slots accept
+value expressions, and switching a block keeps the last values used for
+that kind. The whole script is
+exchanged as a stable text format and persisted as one program.
 The Browse buttons always open the operating system's file picker rather than
 a Qt-provided dialog.
 The selected file supplies the map and scenario; only the editable script

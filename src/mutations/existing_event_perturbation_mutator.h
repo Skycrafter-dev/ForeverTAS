@@ -3,6 +3,7 @@
 
 #include "mutations/input_mutator.h"
 #include "searches/option_configuration.h"
+#include "searches/option_fields.h"
 
 #include <memory>
 #include <optional>
@@ -11,6 +12,7 @@
 namespace forevertas {
 
 OptionSettings DefaultExistingEventPerturbationSettings();
+OptionFieldList ExistingEventPerturbationOptionFields();
 std::optional<std::string> ValidateExistingEventPerturbationSettings(
         const OptionSettings &settings,
         std::uint32_t tickDurationMs);

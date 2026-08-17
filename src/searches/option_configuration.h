@@ -13,6 +13,11 @@ struct OptionConfiguration {
     OptionSettings settings;
 };
 
+inline bool operator==(const OptionConfiguration &lhs,
+                       const OptionConfiguration &rhs) {
+    return lhs.id == rhs.id && lhs.settings == rhs.settings;
+}
+
 }  // namespace forevertas
 
 #endif

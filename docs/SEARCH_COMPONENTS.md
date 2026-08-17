@@ -1,487 +1,314 @@
 # Search Components Architecture
 
-This document describes how ForeverTAS organizes configurable search
-algorithms, ordered input modifiers, and evaluation targets. It is the primary
-reference for adding search features without coupling the controller or main
-QML file to individual implementations.
+This document describes how ForeverTAS turns a Scratch-like block program
+into a running bruteforce search. It is the primary reference for adding
+search features without coupling the controller, the workspace UI, or the
+search engine to individual implementations.
 
 ## Feature Model
 
-A search request contains five parts:
+Users compose one search script from small, single-purpose blocks:
 
-1. The Packs directory and replay-or-challenge scenario path.
-2. Parsed base-input commands.
-3. One selected search algorithm.
-4. An ordered list of configured modifier passes.
-5. One selected evaluation target.
+```text
+search: basic bruteforce
+  scored by (evaluation goal)
+  apply input mutations:
+    [mutate inputs in window 1000→5990, seed 7]
+        op: nudge steering
+        op: shift existing events
+        op: flip accelerate presses
+    [mutate inputs in window 2000→4000, seed 9]
+        op: insert brake presses
+```
 
-The application currently requires at least one modifier pass before a search
-can start.
+The workspace keeps a single script: one **search block** (a hat that binds
+a registered search algorithm), one **evaluation goal** plugged into its
+evaluation slot, and an ordered stack of **mutation windows**. Each window
+is a container block owning the shared from/to times and RNG seed, and
+holds an ordered substack of **mutation atoms** — blocks that each do one
+input operation with one small configuration. Value reporters (`number`,
+`+`, `−`, `×`, `÷`, `min`, `max`) may be plugged into number slots to
+compute settings at compile time.
 
-Each selectable implementation owns:
+The application requires at least one non-empty window before a search can
+start, matching the original composition rules.
 
-- A stable ID and display name.
-- Its complete default settings map.
-- Typed parsing and validation.
-- Its runtime factory.
-- Its QML settings component.
-- Optional aliases and legacy persistence mappings.
-
-The registry is the only source that connects these pieces. `Main.qml`,
-`SearchController`, and `RunSearch` do not switch on implementation IDs.
+Registered options are never blocks themselves. Every block lowers to the
+registered options behind it at compile time (see "Lowering"), which is
+what keeps each block trivial while the engine keeps its stable,
+string-keyed configuration surface.
 
 ## Directory Organization
 
 ```text
-ForeverTAS/
-├── src/
-│   ├── searches/
-│   │   ├── algorithm_registry.h/.cpp
-│   │   ├── option_configuration.h
-│   │   ├── option_settings_utils.h
-│   │   ├── search_algorithm.h
-│   │   ├── search_runner.h/.cpp
-│   │   └── basic_brute_force_search.h/.cpp
-│   │
-│   ├── mutations/
-│   │   ├── input_mutator.h
-│   │   ├── input_event_utils.h/.cpp
-│   │   ├── input_event_formatter.h/.cpp
-│   │   ├── modifier_utils.h
-│   │   ├── composite_input_mutator.h/.cpp
-│   │   ├── random_steering_mutator.h/.cpp
-│   │   ├── existing_event_perturbation_mutator.h/.cpp
-│   │   ├── smooth_steering_mutator.h/.cpp
-│   │   ├── input_insertion_mutator.h/.cpp
-│   │   └── input_deletion_mutator.h/.cpp
-│   │
-│   ├── evaluators/
-│   │   ├── iteration_evaluator.h
-│   │   ├── evaluator_utils.h
-│   │   ├── precise_finish_time_evaluator.h/.cpp
-│   │   ├── volume_entry_evaluator.h/.cpp
-│   │   ├── velocity_evaluator.h/.cpp
-│   │   ├── point_target_evaluator.h/.cpp
-│   │   └── pose_target_evaluator.h/.cpp
-│   │
-│   └── app/
-│       ├── search_completion.h
-│       ├── search_configuration_model.h/.cpp
-│       ├── search_controller.h/.cpp
-│       └── search_worker.h/.cpp
+src/
+├── blocks/                      # Qt-free block core
+│   ├── block_catalog.h/.cpp     # atomic block vocabulary (windows, ops,
+│   │                            # evaluation goals, value primitives)
+│   ├── block_program.h/.cpp     # placed-block representation and edits
+│   ├── block_program_io.h/.cpp  # JSON persistence (v2, migrates v1) and
+│   │                            # the text interchange (parser + printer)
+│   ├── block_compiler.h/.cpp    # program → search components and
+│   │                            # component validation
+│   ├── block_lowering.h/.cpp    # atoms ↔ registered options, both
+│   │                            # directions (compile + migration)
+│   ├── block_expression.h/.cpp  # number-reporter evaluation
+│   └── block_value.h/.cpp       # locale-independent number helpers
 │
-├── qml/
-│   ├── Main.qml
-│   └── settings/
-│       ├── AlgorithmSelector.qml
-│       ├── ModifierComposition.qml
-│       ├── SettingTextField.qml
-│       ├── SettingSwitch.qml
-│       ├── SettingCombo.qml
-│       ├── TimeWindowSettings.qml
-│       ├── Vector3Settings.qml
-│       └── one owned component per selectable implementation
+├── searches/
+│   ├── algorithm_registry.h/.cpp  # option registries (internal ABI)
+│   ├── option_configuration.h     # settings transport
+│   ├── option_fields.h            # typed field schema
+│   └── ...
 │
-├── tests/
-│   ├── search_component_tests.cpp
-│   ├── search_controller_tests.cpp
-│   ├── search_smoke.cpp
-│   ├── viewer_smoke.cpp
-│   └── viewer_qml_smoke.cpp
-│
-└── CMakeLists.txt
+└── app/
+    ├── block_program_model.h/.cpp  # QML-facing editing model,
+    │                               # persistence, legacy migration
+    ├── option_settings_store.h     # legacy per-option settings loader
+    ├── search_controller.h/.cpp    # application coordination
+    └── search_worker.h/.cpp
+
+qml/
+├── Main.qml
+└── blocks/
+    ├── BlockWorkspace.qml       # palette + script column with windows
+    ├── BlockView.qml            # generic block rendering
+    ├── BlockSlot.qml            # typed value slots and reporter chips
+    └── target-picker detail components for collection-backed goals
 ```
 
-## Generic Configuration Transport
+## Block Vocabulary
 
-`src/searches/option_configuration.h` defines the category-neutral transport
-format:
+`src/blocks/block_catalog.*` declares one block per behavior. Every block
+binds to the registered option it lowers to:
 
-```cpp
-using OptionSettings = std::map<std::string, std::string>;
+| Block          | Id                            | Shape     | Lowers to             |
+|----------------|-------------------------------|-----------|-----------------------|
+| search hat     | `search/basic-brute-force`    | Hat       | basic-brute-force     |
+| window         | `mutate/window`               | Container | (owns window + seed)  |
+| reroll         | `mutate/reroll-steering`      | Stack     | random-steering      |
+| shift events   | `mutate/shift-events`         | Stack     | existing-event-perturbation |
+| nudge steering | `mutate/nudge-steering`       | Stack     | existing-event-perturbation |
+| set steering   | `mutate/set-steering`         | Stack     | existing-event-perturbation |
+| flip accel     | `mutate/flip-accelerate`      | Stack     | existing-event-perturbation |
+| flip brake     | `mutate/flip-brake`           | Stack     | existing-event-perturbation |
+| insert steer   | `mutate/insert-steering-at`   | Stack     | input-insertion (absolute) |
+| adjust steer   | `mutate/adjust-steering-by`   | Stack     | input-insertion (offset) |
+| press accel    | `mutate/press-accelerate`     | Stack     | input-insertion       |
+| press brake    | `mutate/press-brake`          | Stack     | input-insertion       |
+| delete steer   | `mutate/delete-steering`      | Stack     | input-deletion        |
+| delete accel   | `mutate/delete-accelerate`    | Stack     | input-deletion        |
+| delete brake   | `mutate/delete-brake`         | Stack     | input-deletion        |
+| deformations   | `mutate/smooth-steering`      | Stack     | smooth-steering       |
+| finish time    | `evaluate/finish-time`        | Reporter  | precise-finish-time   |
+| stunt points   | `evaluate/stunt-points`       | Reporter  | stunt-points          |
+| speed          | `evaluate/speed`              | Reporter  | velocity (total)      |
+| speed toward   | `evaluate/speed-toward`       | Reporter  | velocity (projected + alignment gate; a threshold of −100 disables the gate) |
+| distance point | `evaluate/distance-to-point`  | Reporter  | point-target          |
+| distance pose  | `evaluate/distance-to-pose`   | Reporter  | pose-target           |
+| box entry      | `evaluate/box-entry-time`     | Reporter  | volume-entry-time     |
+| prism entry    | `evaluate/prism-entry-time`   | Reporter  | custom-volume-entry-time |
 
-struct OptionConfiguration {
-    std::string id;
-    OptionSettings settings;
-};
-```
+Value primitives (`values/number`, `values/add`, `values/subtract`,
+`values/multiply`, `values/divide`, `values/minimum`, `values/maximum`)
+are declared directly in the catalog and output `number` values.
 
-Values remain strings while they are edited and persisted. The implementation
-that owns the option parses them into a typed structure during validation and
-construction.
+What used to be mode enums and per-channel toggles is now vocabulary:
+`velocity`'s total/projected enum is the `speed` / `speed-toward` pair,
+perturbation's delta/absolute mode is the `nudge` / `set` pair, insertion's
+offset/absolute mode is the `adjust` / `insert-at` pair, and every channel
+flag became its own press/flip/delete atom. Evaluation coordinates
+(formerly hidden "mirrored" fields) are ordinary number slots; the target
+collections act as pickers that fill them.
 
-`SearchRequest` contains:
+A placed program is a flat pool of `BlockNode`s (`blocks/block_program.h`):
+each node stores its definition id, literal field values, reporter links
+per field key, and — for hats and containers — the ordered substack (hats
+additionally the evaluator id). Structural edits (attach, graft, detach,
+move, remove) keep unreachable nodes garbage-collected, so persistence and
+undo stay simple.
+
+## Typed Field Schema
+
+`src/searches/option_fields.h` defines `OptionField`, the typed
+description of one settings key:
 
 ```text
-SearchRequest
-├── packDirectory
-├── replayPath
-├── baseInputCommands: vector<ParsedInputCommand>
-├── searchAlgorithm: OptionConfiguration
-├── modifiers: vector<OptionConfiguration>
-└── evaluationTarget: OptionConfiguration
+key, label
+kind: Number | Line | Enum | Boolean | Mirrored
+defaultValue (exact settings string)
+enumValues, minimum/maximum/decimals/step (numbers)
+isSeed (participates in seed randomization)
+group (display grouping)
+mirrorAsset ("cuboid" | "custom-volume" | "pose")
 ```
 
-Repeated modifier IDs are allowed. Each vector entry is an independent pass
-with its own settings.
+Registrations declare their `fields` next to their `defaultSettings`; the
+registry tests enforce coverage. Blocks reuse the same schema: each atom's
+field list is a subset of its option's settings keys with byte-identical
+defaults (enforced by the block tests), so lowering stays byte-stable.
+`Mirrored` fields remain available to the registries but no block uses
+them — goals own their values as ordinary fields.
 
-## Registry Contract
+## Compiler and Lowering
 
-`src/searches/algorithm_registry.*` contains three registries:
+`blocks::CompileProgram(program)` walks the script and produces a
+`SearchComponentConfiguration` (algorithm, ordered modifiers, evaluation
+target as `OptionConfiguration`s):
 
-- `SearchAlgorithmRegistry()`
-- `ModifierRegistry()`
-- `EvaluationTargetRegistry()`
+- Field values come from literals or evaluated number reporters
+  (arithmetic evaluates bottom-up; division by zero fails the compile).
+- Each mutation window lowers through `blocks::LowerMutationGroup`:
+  atoms bound to the same registered option merge into **one**
+  configuration — which is what makes a migrated window behave exactly
+  like the legacy multi-feature block it came from — while atoms of
+  different options in one window lower to sequential passes sharing the
+  window and seed (order: first appearance).
+- Channel enablement and modes are derived from which atoms are present;
+  keys for absent features are neutralized (shift 0, delta 0..0, toggles
+  off). Two atoms of one window disagreeing on a shared key, or two
+  conflicting steering modes (`nudge` + `set`, `adjust` + `insert-at`),
+  produce an actionable compile error suggesting another window.
+- Evaluation goals lower through `LowerEvaluationAtom`, pinning the
+  fixed parts of their option (for example `speed-toward` pins
+  `mode = projected` and derives `alignmentEnabled` from whether the
+  alignment threshold exceeds −100).
 
-Every registration contains:
+`blocks::ValidateSearchComponents(...)` then applies the shared
+validation: registry validation, mutation windows versus the Simulation
+horizon (silently clamped), and the evaluation plan versus the horizon
+and first mutation time. `RunSearch` consumes the compiled request
+unchanged, so the search engine remains independent of the block system.
 
-```text
-id
-legacyIds
-displayName
-settingsComponent
-defaultSettings
-legacyPersistenceKeys
-validateSettings callback
-create callback
-```
+Within one window the op order in the UI does not change behavior (the
+engine applies a pass's operations in its own fixed order); across
+windows, order matters.
 
-Stable IDs use lowercase hyphen-separated names. Released IDs must not be
-silently reused for a different behavior. Renames require an alias in
-`legacyIds`; the controller canonicalizes persisted aliases back to the current
-ID.
+## Interchange Formats
 
-`defaultSettings` is also the allowed key set. The controller ignores update
-requests for unknown keys, while implementation validation rejects incomplete
-or extra maps received outside the controller.
+- **JSON** (`blocks/program` in the platform settings store, version 2)
+  is the full-fidelity persistence format, including block positions,
+  loose canvas blocks, and remembered field values. Version 1 documents
+  (option blocks) migrate on load by compiling to components and
+  expanding through the lowering table; loose value blocks survive as
+  literals at their positions, and legacy remembered values are dropped.
+- **Text** is the human-editable interchange for the semantic program:
 
-## Search Algorithm Contract
+  ```text
+  search basic-brute-force {
+    autoPromoteBest = false
+    evaluate speed {
+      minTimeMs = 0
+      maxTimeMs = 6000
+    }
+    mutate window {
+      minTimeMs = (1000 + 500)
+      maxTimeMs = min(5990, 7000)
+      seed = 1179926867
+      op smooth-steering {
+        deformationCount = max(1, 2)
+        radiusMs = 200
+        amplitudeMin = -0.2
+        amplitudeMax = 0.2
+      }
+    }
+  }
+  ```
 
-`SearchAlgorithm` receives a `SearchExecutionContext` containing:
+  Parenthesized expressions rebuild the matching value-reporter blocks;
+  printing a program always produces a stable, byte-identical document.
+  The parser also accepts the previous option-id spelling
+  (`mutate random-steering { ... }`, `evaluate velocity { ... }`) and
+  expands it to the equivalent atoms; expressions in legacy entries must
+  evaluate numerically.
 
-- A loaded `PhysicsSandbox`.
-- The physics tick duration.
-- The composed `InputMutator` pipeline.
-- The selected `IterationEvaluator`.
-- Stop, hard-abort, progress, and live-best callbacks.
+## Legacy Migration
 
-The Basic bruteforce implementation owns continuous iteration scheduling and
-global winner selection. It does not own modifier windows, seeds, evaluation
-windows, or comparison direction.
+`BlockProgramModel` builds the program from the pre-block configuration
+on first launch: `selection/searchAlgorithm` plus
+`configuration/search/*`, the `composition/modifiers` JSON array, and
+`selection/evaluationTarget` plus `configuration/evaluation/*`, including
+legacy aliases (`finish-time` → `precise-finish-time`, `maximum-speed` →
+`velocity`) and the single-modifier `selection/mutationAlgorithm` layout.
+Both this path and JSON v1 load go through
+`blocks::BuildProgramFromComponents`, the inverse of compilation, so a
+migrated program recompiles byte-identically. One documented corner:
+`velocity` configured for total speed *with* the alignment gate migrates
+to `speed-toward` (direction and gate preserved, measure projected).
 
-It asks:
-
-- The modifier pipeline for its earliest affected input time.
-- The evaluation target for its observation plan.
-- The evaluation target whether a sample is better than the incumbent.
-
-This keeps search orchestration independent from every target and modifier ID.
-
-### Winner retention and final sampling
-
-`SearchLiveUpdate` publishes the current winning state, normalized input
-timeline, iteration count, throughput, elapsed time, and last-improvement time.
-It is emitted periodically while the loop runs and immediately after each new
-global best. The worker refreshes the summary live without simulating a complete
-viewer timeline.
-
-Pressing Stop finishes the current iteration and returns `SearchResult`. Only
-then does `RunSearch` perform the separate final-sampling stage:
-
-1. Open a fresh Reference-backend sandbox with the configured Simulation horizon.
-2. Reload the map into a canonical timeline from tick zero.
-3. Replace its inputs with the winning timeline.
-4. Advance exactly one physics tick at a time until genuine completion or the
-   Simulation horizon.
-5. Record position, rotation, and input state for every tick.
-
-This Stop-triggered pass is intentionally separate from iteration evaluation.
-Search algorithms remain free to branch, restore snapshots, and observe only
-the target-required window without retaining complete iteration traces. The
-worker reports this pass as `SearchProgressStage::FinalSampling`. A private
-hard-abort callback exists only for application shutdown and skips completion
-sampling.
-
-`input_event_formatter.*` converts the retained timeline into invariant,
-copy-ready input script syntax and parses that same input-only command subset.
-Timestamps always use `.` decimals and do not depend on `LC_NUMERIC`; analog
-states are already canonical integers and are serialized verbatim.
-
-Parsed commands retain user-relative milliseconds and their source line.
-Loading a map creates a canonical `RaceRunning` origin at zero, after which the
-runner applies the existing one-tick user-timeline offset. Recorded controls,
-finish markers, outcomes, and timing are not imported. Input commands may extend
-beyond the user-configured Simulation horizon; they remain in the script but are
-not executed or previewed past that horizon. Modifier windows may also extend
-beyond it in the saved configuration; execution silently limits them to the
-last input tick inside the horizon. Cached sandboxes always restore the
-canonical map snapshot before applying the current request's script.
-
-### Canonical analog input representation
-
-All replay, sandbox, mutation, winner-retention, and script-export layers use
-`AnalogInputState`, a signed integer constrained to `[-65536, 65536]`. Its sign
-convention is explicit: negative steering is left, positive steering is right;
-analog gas uses negative values for accelerate and positive values for brake. Replay decoding converts the game's signed-24
-storage representation directly into this canonical form.
-
-Before a search starts, keyboard left/right events are collapsed into canonical
-analog steering events. The conversion mirrors the engine's timestamp
-arbitration, same-tick analog dead zone, and left-over-right priority, so mixed
-keyboard and analog scripts produce the same physics while modifiers see one
-steering channel.
-
-Modifier settings remain normalized decimal strings in `[-1, 1]` for UI and
-persistence compatibility. `ParseNormalizedAnalogInput` quantizes each setting
-once to an integer state. Mutators subsequently use integer sampling, addition,
-comparison, and saturation only; iteration timelines never carry arbitrary
-floating-point analog values.
-
-The only integer-to-float conversion occurs when ForeverValidator builds the
-normalized vehicle-control state consumed by physics. Physics state snapshots,
-search samples, and Race Viewer channels intentionally remain floats because
-they describe applied simulation controls rather than editable input events.
-
-## Modifier Contract
-
-`InputMutator::Mutate` receives:
-
-- The current input timeline entering that pass.
-- The iteration index.
-- The pass index.
-- The physics tick duration.
-
-Each modifier instance owns its own active window, seed, channel selection,
-and modification parameters. `EarliestMutationTimeMs()` reports the earliest
-input tick that the pass may change. `CompositeInputMutator` uses the minimum
-across all passes.
-
-### User timeline origin
-
-All UI and persisted input timeline values are zero-based. The simulation's
-first actionable input occurs one physics tick later, so user `0 ms` maps to
-simulation `10 ms` at the current 100 Hz rate. This translation is centralized
-in `input_timeline_time.h` and applied exactly once by the public modifier
-registry validation and factory methods before their simulation-native
-implementation hooks are called.
-
-The naming contract is deliberate: every absolute input timeline setting key
-ends in `TimeMs` and is shifted by one tick. Relative durations use a more
-specific suffix such as `HoldMs`, `ShiftMs`, or `RadiusMs` and are never shifted.
-Only modifier settings pass through this conversion; evaluation frames and
-search-policy settings use the entered simulation time directly. Registry
-coverage tests enforce this boundary for every current option, while
-input-script serialization uses the same inverse conversion. Components must
-not add local time offsets.
-
-### Composition
-
-Modifier passes run in displayed order. Each pass receives the previous pass's
-output. The search also supplies the earliest mutable input time: the first tick
-after the restored branch state. Every pass and the final composite
-normalization preserve baseline events before that boundary byte-for-byte and
-in their original order. Only the mutable suffix is normalized:
-
-- Saturate every analog state to the exact integer range `[-65536, 65536]`.
-- Align event times to whole simulation ticks.
-- Sort events chronologically with stable ordering.
-- For multiple events with the same action and tick, keep the last pass value.
-- Reattach the exact immutable baseline prefix.
-- Count effective differences from the original baseline.
-
-This split is required because `PhysicsSandbox::ReplaceInputs` rejects any
-change to replay history before the restored branch. If no effective change
-remains after normalization, the iteration is still counted but the unchanged
-simulation is not repeated.
-
-Deterministic random streams are derived from:
-
-```text
-configured seed + iteration index + pass index
-```
-
-By default, Start first replaces and persists every displayed modifier seed so
-successive searches explore new streams. Disabling **Randomize modifier seeds
-on Start** leaves those values untouched for reproducible reruns. Within a run,
-the configured seed, iteration index, and pass index keep streams deterministic
-while allowing repeated instances of the same modifier to remain independent.
-
-## Evaluation Target Contract
-
-### Conditions
-
-`search/conditionScript` is an optional persisted tick-eligibility program.
-Every non-empty line is a comparison and all lines are ANDed. The language
-matches BfV2 condition scripts: scalar and vector current/previous car state,
-wheel contact/sliding/surface values, search timestamps and iteration count,
-`+ - * /`, `> < >= <= =`, grouping, `kmh`, `deg`, `distance`, `time_since`,
-and `variable`/`var`. The active point target is available as the vector
-`bf_target_point`.
-
-The parser emits one bounded postfix program used by both host and CUDA
-interpreters. The search checks that program immediately before calling the
-target session. A false condition therefore removes only that tick from
-evaluation; it does not stop simulation or reset target state. A run with at
-least one eligible target sample always outranks a baseline with none, while
-two eligible runs remain ordered exclusively by `IterationEvaluator::IsBetter`.
-
-Evaluation is timeline-based rather than a single stateless score function.
-
-`IterationEvaluator` owns:
-
-- `Plan(...)`: the closed observation window for a replay and modifier branch.
-- `CreateSession()`: per-iteration timeline state.
-- `IsBetter(...)`: maximize or minimize semantics.
-
-Each observed result is an `EvaluationSample`:
-
-```text
-score
-timeMs
-description
-```
-
-The description is displayed directly in the result summary, so targets own
-their metric wording.
-
-Timeline sessions receive the previous and current sandbox states. This lets
-transition targets, such as entering a volume, interpolate crossing time
-between ticks without adding target-specific logic to the search algorithm.
+The result is persisted as `blocks/program`; legacy keys are left in
+place but no longer read. Remembered field values seed a replaced
+evaluator or hat with the last values used for that block definition.
 
 ## Controller Responsibilities
 
-`SearchConfigurationModel` owns the generic component configuration state:
+`SearchController` owns application coordination only:
 
-- Selected search ID and search settings map.
-- Ordered modifier-pass list.
-- Selected evaluation ID and evaluation settings map.
-- Generic add/remove/move/type/setting methods for modifier passes.
-- Registry-driven validation.
-- Generic persistence and request construction.
+- Worker-thread lifecycle, paths, base-script handling, status, progress.
+- The target collections (cuboids, custom volumes, poses) as app-level
+  editing aids; their detail components copy the selected target's
+  geometry into the block's own fields and keep it in sync while edited.
+- QML properties and change notifications that delegate to
+  `BlockProgramModel`.
 
-`SearchController` owns application coordination:
+`evaluationTargetId` is derived from the script's evaluation block (it
+reports the registered option id, e.g. `velocity` for both speed goals);
+writing it replaces the evaluator block. Neither class contains a field,
+property, or method named after a concrete target or modifier.
 
-- Worker-thread lifecycle, paths, base-script validation and persistence,
-  replay-input extraction, status, and progress.
-- Completed-search transport: summary text, copy-ready winning inputs, replay
-  identity, and the fully sampled winning timeline.
-- QML properties and change notifications that delegate to the configuration
-  model.
-
-Neither class may gain a field, property, or method named after a concrete
-target or modifier.
-
-The QML-facing composition API is:
+The QML-facing editing API is:
 
 ```text
-modifierOptions
-modifierPasses
-addModifierPass(id)
-removeModifierPass(index)
-moveModifierPass(fromIndex, toIndex)
-setModifierPassId(index, id)
-setModifierPassSetting(index, key, value)
+blockPalette
+blockScript                      (hat, evaluator, groups with atoms)
+blockData(blockId)               (rendering data: fields, chips, detail)
+addBlock(definitionId)
+removeBlock(blockId)
+setBlockField(blockId, key, value)
+attachReporter(blockId, key, reporterDefinitionId)
+detachReporter(blockId, key)
+moveBlock(blockId, toIndex)      (atoms within a window, windows within
+                                 the script)
+setEvaluatorBlock(definitionId)
+resetBlocks()
+applyProgramText(text)
+programText
 ```
 
-## Viewer runs
-
-`RaceViewerController` stores a vector of named `RaceViewerRun` entries rather
-than one global frame vector. Each run owns its sampled frames and current
-interpolated pose.
-
-`loadMap` reads the selected scenario's scene, render geometry, and vehicle
-shape without advancing the simulation or creating a run. A loaded map
-therefore has zero runs and disabled timeline controls. A completed search
-upserts `Best`; the same run
-container supports additional result types later without adding more controller
-fields.
-
-Scenario loading is serialized and transactional. If another file is requested
-while the active worker is still finishing, the latest request is queued and
-starts as soon as the worker exits. A monotonically increasing load serial
-prevents a late result from an older worker from replacing the newer scene.
-The current scene remains published while a replacement is loading; publishing
-an intermediate empty run or ellipsoid model would detach nested Qt Quick 3D
-render nodes. QML mirrors ellipsoid transforms into a stable `ListModel`, updates
-roles in place, and retains inactive delegates when vehicle shape counts shrink.
-The controller and QML regressions perform three real first-second-first loads;
-the QML test invokes the actual **Load map** button for every load and checks
-current shape transforms and map rendering on a capable graphics backend.
-
-The settings pane uses one window-level wheel redirector over its entire visible
-rectangle. Mouse-wheel and touchpad vertical deltas update only the outer
-settings flickable, even over sliders, dropdowns, or the best-input preview.
-Nested scroll areas remain usable through direct dragging and their scrollbars,
-but do not steal wheel input from the pane.
-
-The selected run owns the active timeline, duration, input channels, playback,
-and camera focus. All runs are still interpolated at the active time and exposed
-to QML through `runPoses`, so the preview renders one car hierarchy per run.
-`runOptions` and `selectedRunId` drive the centered run selector.
-
-QML mirrors `runPoses` into a stable `ListModel` and updates roles in place.
-Each run pose also carries its prebuilt car geometry. Best and future runs use
-separate baked palettes with the same flat-shading formula. Filled materials
-stay white with vertex colors enabled, avoiding color multiplication that would
-darken or distort the baked shading. Binding `Repeater3D` directly to a rebuilt
-`QVariantList` would destroy and
-recreate every car model whenever the time changes.
-
-## Persistence
-
-Search and evaluation selections use:
-
-```text
-selection/searchAlgorithm
-selection/evaluationTarget
-```
-
-Their settings remain namespaced by category and option ID:
-
-```text
-configuration/search/<id>/<key>
-configuration/evaluation/<id>/<key>
-```
-
-The ordered modifier composition is stored as compact JSON under:
-
-```text
-composition/modifiers
-```
-
-Each JSON entry contains its modifier ID and complete settings object. This
-preserves order, repeated modifier types, and independent values.
-
-Older single-modifier settings are migrated only when no composition JSON is
-present. Legacy mappings stay in registry metadata or narrowly named migration
-constants; they must not appear as selectable options.
+Seed randomization on Start rewrites every `isSeed` field — the windows'
+seeds, in substack order — preserving the legacy deterministic stream.
 
 ## QML Ownership
 
-`Main.qml` places one generic search selector, one generic modifier composition
-editor, and one generic evaluation selector.
+`Main.qml` places one `BlockWorkspace` inside the "Search blocks"
+section. The workspace renders the palette (categories: Search,
+Evaluate, Mutate, Values) and the script column:
 
-`AlgorithmSelector` loads the selected option's `settingsComponent` directly
-from registry metadata.
+- Clicking a search block replaces the script hat.
+- Clicking an evaluation goal replaces the evaluator slot.
+- Clicking a mutation window appends it to the script; clicking a
+  mutation atom snaps it into the last window (creating one when none
+  exists yet).
+- Clicking a value block plugs it into the armed number slot (slots arm
+  via their ⊕ button and highlight while armed).
+- Windows and atoms reorder with ↑/↓ and leave the script with ×.
 
-`ModifierComposition` renders the persisted pass order, provides add/remove/
-move controls, and loads each pass's settings component. It supplies a pass
-component with:
+`BlockView` renders any block from its definition data, including
+containers; `BlockSlot` renders the typed inline editors (number scrub
+fields, combos, checkboxes, line edits) or the reporter chip plugged
+into the slot. Field edits refresh block data in place, so delegates and
+focus survive programmatic updates.
 
-```qml
-property var settings
-property var updateSetting
-property bool running
-```
+Collection-backed goals load a **detail component** under the block
+(`VolumeEntryBlockDetail.qml` for box and prism goals,
+`PoseTargetBlockDetail.qml` for poses). A detail component receives
+`controller`, `viewer`, `viewport`, `blockId`, and `blockInformation`,
+edits the target models, and writes the block's fields via
+`controller.setBlockField` — the block owns its values, and the picker
+keeps them in sync while its target stays selected.
 
-A modifier QML file reads only its provided settings map and writes only via
-`updateSetting(key, value)`.
-
-Search and evaluation components receive `property var controller` and use only
-their corresponding generic settings map and update method.
-
-Reusable field/layout components belong in `qml/settings/`; implementation
-logic and implementation-specific field lists belong in the owned component.
+Reusable field/layout components belong in `qml/settings/`; block
+rendering belongs in `qml/blocks/`.
 
 ## Adding a Modifier
 
@@ -489,91 +316,63 @@ Assume a new modifier named **Steering Jitter** with ID `steering-jitter`.
 
 1. Create `src/mutations/steering_jitter_mutator.h/.cpp`.
 2. Implement `InputMutator`, including `EarliestMutationTimeMs()`.
-3. Define a typed settings structure owned by the modifier.
-4. Provide defaults, validation, and a factory matching
-   `ModifierRegistration`.
-5. Reject unknown keys and parse every default key.
-6. Use the shared deterministic RNG helpers when randomness is involved.
-7. Add one `ModifierRegistration` entry.
-8. Create `qml/settings/SteeringJitterSettings.qml` using `settings`,
-   `updateSetting`, and `running`.
-9. Add source and QML files to CMake.
-10. Test validation, deterministic output, boundaries, normalization,
-    registry construction, persistence, and QML loading.
+3. Declare `SteeringJitterOptionFields()` next to the defaults: one
+   `OptionField` per settings key, using `SeedField` for the seed and
+   `AppendWindowFields` for the shared time window.
+4. Reject unknown keys and parse every declared key.
+5. Add one `ModifierRegistration` entry referencing the field list.
+6. If the option is multi-feature, expose its features as atoms: declare
+   the atom blocks in `block_catalog.cpp`, extend the assembler in
+   `block_lowering.cpp`, and extend `ExpandModifierAtoms` so the option
+   and its atoms remain mutual inverses (byte-identical round trips).
+   Single-op options only need one atom definition and trivially map
+   through the direct assembler.
 
-No change to `Main.qml`, `SearchController`, `SearchRequest`, or
-`BasicBruteForceSearch` should be needed.
+No QML file, workspace change, controller change, or compiler change is
+needed: the palette entries, typed slots, persistence, text interchange,
+and validation are all derived from the catalog and lowering table.
 
 ## Adding an Evaluation Target
 
 1. Create target files under `src/evaluators/`.
 2. Implement `IterationEvaluator` and a per-iteration session.
-3. Define the target's observation plan and comparison direction.
-4. Provide defaults, validation, and a factory.
-5. Return a clear target-owned `EvaluationSample::description`.
-6. Add one `EvaluationTargetRegistration` entry.
-7. Create and register the owned QML component.
-8. Test the metric with synthetic state sequences, including transition and
-   interpolation cases where relevant.
-
-No search-loop or controller branch should be added for the target.
+3. Declare the option's `fields` (`MirroredField` entries are no longer
+   used by blocks; prefer ordinary fields).
+4. Return a clear target-owned `EvaluationSample::description`.
+5. Add one `EvaluationTargetRegistration` entry.
+6. Declare the goal's atom in `block_catalog.cpp` and wire it in
+   `block_lowering.cpp` (`LowerEvaluationAtom`, `ExpandEvaluationAtom`,
+   `EvaluationAtomDefinitionForOption`).
+7. Only if the target manages a collection: create a detail component in
+   `qml/blocks/` and reference it from `settingsComponent`; the
+   component writes the block's fields.
 
 ## Adding a Search Algorithm
 
 1. Implement `SearchAlgorithm` under `src/searches/`.
-2. Keep only search-policy settings in its typed structure.
+2. Keep only search-policy settings in its field schema.
 3. Consume the generic mutator and evaluator contracts.
-4. Report progress, publish improvements, and check Stop regularly.
-5. Provide defaults, validation, factory, registry entry, and QML component.
-6. Test default construction and algorithm-specific scheduling behavior.
-
-## Current Built-In Components
-
-### Search algorithms
-
-- `basic-brute-force`: baseline plus independent deterministic iterations,
-  continuing until Stop is requested.
-
-### Modifiers
-
-- `random-steering`: replaces existing steering values in a window.
-- `existing-event-perturbation`: perturbs selected existing event values and
-  times.
-- `smooth-steering`: adds raised-cosine steering deformations.
-- `input-insertion`: inserts steering, accelerate, or brake segments.
-- `input-deletion`: deletes eligible events per channel.
-
-### Evaluation targets
-
-- `velocity`: total or projected velocity with optional alignment threshold.
-- `precise-finish-time`: minimizes the inclusive nanosecond upper bound of
-  the simulated finish transition. The legacy `finish-time` ID migrates to
-  this target. Results use the compact `h:mm:ss.nnnnnnnnn` form, omitting
-  zero-valued hour and minute components while retaining all nine fractional
-  digits. CUDA searches use the ordinary CUDA timeline for this target because
-  the resident evaluator only exposes tick-rounded finish time.
-- `volume-entry-time`: minimizes interpolated entry time into a cuboid.
-- `point-target`: minimizes distance to a target point over a window.
-- `pose-target`: minimizes weighted position and orientation error.
-
-Spatial target models expose atomic absolute-placement operations. Their QML
-editors receive the viewport's rendered camera pose and the viewer's simulated
-car pose, allowing the selected cuboid, polygon volume, or full pose target to
-be moved directly to either source without incremental coordinate edits.
+4. Add one `SearchAlgorithmRegistration` entry; the hat block derives
+   from the registry automatically.
 
 ## Testing Checklist
 
 Before submitting a new component:
 
 1. Build with the strict warning flags.
-2. Run all CTest targets.
-3. Run the real Wayland/GPU viewer smoke test when available.
-4. Run a real replay search smoke test.
-5. Run `git diff --check`.
-6. Confirm IDs appear only in registry code, migration tests, and registry
-   assertions.
-7. Confirm no ID switch or option-specific controller field was introduced.
-8. Confirm every option owns defaults, validation, factory, persistence
-   metadata, and QML.
-9. Confirm repeated modifier instances preserve independent settings and order.
-10. Confirm invalid settings produce actionable messages.
+2. Run all CTest targets, including the data-gated viewer QML smoke
+   when a replay is available.
+3. Extend `tests/block_program_tests.cpp` when adding core behavior —
+   every new atom or option pair gets an entry in the lowering
+   equivalence table (expand → compile must reproduce the configuration
+   byte for byte).
+4. Confirm field schemas cover `defaultSettings` exactly (enforced by
+   the registry tests) and atom defaults match option defaults (enforced
+   by the block tests).
+5. Confirm IDs appear only in registry code, lowering/migration code,
+   and registry assertions.
+6. Confirm no ID switch or option-specific controller field was
+   introduced.
+7. Confirm repeated windows preserve independent settings and order.
+8. Confirm invalid settings and atom conflicts produce actionable
+   messages.

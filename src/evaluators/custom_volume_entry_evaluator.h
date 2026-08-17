@@ -3,6 +3,7 @@
 
 #include "evaluators/iteration_evaluator.h"
 #include "searches/option_configuration.h"
+#include "searches/option_fields.h"
 
 #include <memory>
 #include <optional>
@@ -11,6 +12,7 @@
 namespace forevertas {
 
 OptionSettings DefaultCustomVolumeEntryOptionSettings();
+OptionFieldList CustomVolumeEntryOptionFields();
 std::optional<std::string> ValidateCustomVolumeEntryOptionSettings(
         const OptionSettings &settings,
         std::uint32_t tickDurationMs);

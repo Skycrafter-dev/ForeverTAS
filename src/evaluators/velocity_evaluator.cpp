@@ -118,6 +118,29 @@ std::optional<VelocitySettings> ParseSettings(
 
 }  // namespace
 
+OptionFieldList VelocityOptionFields() {
+    OptionFieldList fields;
+    AppendWindowFields(fields, "1000", "6000");
+    fields.push_back(EnumField("mode", "Measure",
+            {{"total", "Total speed"},
+             {"projected", "Projected on direction"}}));
+    fields.push_back(BooleanField("alignmentEnabled",
+                                  "Require direction alignment", false));
+    OptionField directionX = NumberField("directionX", "X", "1");
+    directionX.group = "Direction";
+    fields.push_back(directionX);
+    OptionField directionY = NumberField("directionY", "Y", "0");
+    directionY.group = "Direction";
+    fields.push_back(directionY);
+    OptionField directionZ = NumberField("directionZ", "Z", "0");
+    directionZ.group = "Direction";
+    fields.push_back(directionZ);
+    fields.push_back(ClampedField("minAlignmentPercent",
+                                  "Minimum alignment", "-100",
+                                  -100.0, 100.0, 0, 1));
+    return fields;
+}
+
 OptionSettings DefaultVelocityOptionSettings() {
     return {{"minTimeMs", "1000"},
             {"maxTimeMs", "6000"},

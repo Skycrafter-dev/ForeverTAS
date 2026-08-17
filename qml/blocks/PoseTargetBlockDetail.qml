@@ -3,19 +3,74 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import ".." as ThemeControls
 
+// Detail panel for the distance-to-pose evaluation block: the persistent
+// pose collection acts as a picker; the selected pose's values are copied
+// into the block's own fields (position and rotation), and stay in sync
+// while the pose is edited. The block owns its values, so the text
+// interchange and reporters keep working.
 ColumnLayout {
     id: root
 
-    objectName: "poseTargetEvaluationSettings"
+    objectName: "poseTargetBlockDetail"
     property var controller
     property var viewer
     property var viewport
+    property int blockId: 0
+    property var blockInformation: null
     readonly property var targets: controller.poseTargets
     readonly property var selected: targets.selectedTarget
-    readonly property var settings: controller.evaluationTargetSettings
+    readonly property var settings: {
+        const values = {}
+        if (!blockInformation)
+            return values
+        for (let index = 0; index < blockInformation.fields.length;
+             ++index) {
+            values[blockInformation.fields[index].key] =
+                    blockInformation.fields[index].value
+        }
+        return values
+    }
 
     Layout.fillWidth: true
     spacing: 8
+
+    function applySelectedPose() {
+        const target = root.targets.selectedTarget
+        if (!target || !root.controller)
+            return
+        root.controller.setBlockField(root.blockId, "x",
+                                      String(target.x))
+        root.controller.setBlockField(root.blockId, "y",
+                                      String(target.y))
+        root.controller.setBlockField(root.blockId, "z",
+                                      String(target.z))
+        root.controller.setBlockField(root.blockId, "yawDegrees",
+                                      String(target.yawDegrees))
+        root.controller.setBlockField(root.blockId, "pitchDegrees",
+                                      String(target.pitchDegrees))
+        root.controller.setBlockField(root.blockId, "rollDegrees",
+                                      String(target.rollDegrees))
+    }
+
+    Component.onCompleted: applySelectedPose()
+
+    Connections {
+        target: root.controller
+
+        function onBlockUpdated(updatedBlockId) {
+            if (updatedBlockId === root.blockId)
+                root.blockInformation = root.controller.blockData(
+                            root.blockId)
+        }
+    }
+
+    Connections {
+        target: root.targets
+
+        function onSelectedTargetChanged() {
+            root.applySelectedPose()
+        }
+    }
 
     RowLayout {
         Layout.fillWidth: true
@@ -207,7 +262,8 @@ ColumnLayout {
 
     TimeWindowSettings {
         settings: root.settings
-        updateSetting: root.controller.setEvaluationTargetSetting
+        updateSetting: (key, value) =>
+            root.controller.setBlockField(root.blockId, key, value)
         running: root.controller.running
     }
 
@@ -221,7 +277,7 @@ ColumnLayout {
         stepSize: 1
         suffix: "%"
         onEdited: value =>
-            root.controller.setEvaluationTargetSetting(
-                "rotationWeightPercent", value)
+            root.controller.setBlockField(
+                root.blockId, "rotationWeightPercent", value)
     }
 }

@@ -212,6 +212,38 @@ std::optional<std::string> ValidateChannel(const ChannelSettings &channel,
 
 }  // namespace
 
+OptionFieldList InputInsertionOptionFields() {
+    OptionFieldList fields;
+    AppendWindowFields(fields, "1000", "5990");
+    AppendSeedField(fields);
+    fields.push_back(BooleanField("steerEnabled", "Insert steering", true));
+    fields.push_back(EnumField("steerMode", "Steering values",
+            {{"offset", "Offset from current"},
+             {"absolute", "Absolute"}}));
+    fields.push_back(ClampedField(
+            "steerAbsoluteMin", "Absolute min", "-1", -1.0, 1.0, 3, 0.01));
+    fields.push_back(ClampedField(
+            "steerAbsoluteMax", "Absolute max", "1", -1.0, 1.0, 3, 0.01));
+    fields.push_back(ClampedField(
+            "steerOffsetMin", "Offset min", "-0.2", -1.0, 1.0, 3, 0.01));
+    fields.push_back(ClampedField(
+            "steerOffsetMax", "Offset max", "0.2", -1.0, 1.0, 3, 0.01));
+    fields.push_back(NumberField("steerMinCount", "Min inserts", "0"));
+    fields.push_back(NumberField("steerMaxCount", "Max inserts", "2"));
+    fields.push_back(NumberField("steerMaxHoldMs", "Max hold (ms)", "200"));
+    fields.push_back(
+            BooleanField("accelerateEnabled", "Insert accelerate", false));
+    fields.push_back(NumberField("accelerateMinCount", "Min inserts", "0"));
+    fields.push_back(NumberField("accelerateMaxCount", "Max inserts", "1"));
+    fields.push_back(
+            NumberField("accelerateMaxHoldMs", "Max hold (ms)", "200"));
+    fields.push_back(BooleanField("brakeEnabled", "Insert brake", false));
+    fields.push_back(NumberField("brakeMinCount", "Min inserts", "0"));
+    fields.push_back(NumberField("brakeMaxCount", "Max inserts", "1"));
+    fields.push_back(NumberField("brakeMaxHoldMs", "Max hold (ms)", "200"));
+    return fields;
+}
+
 OptionSettings DefaultInputInsertionSettings() {
     return {{"minTimeMs", "1000"},
             {"maxTimeMs", "5990"},

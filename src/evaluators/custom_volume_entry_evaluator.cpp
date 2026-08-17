@@ -364,6 +364,16 @@ private:
 
 }  // namespace
 
+OptionFieldList CustomVolumeEntryOptionFields() {
+    return {
+            MirroredField("plane", "custom-volume", "xz"),
+            MirroredField("originX", "custom-volume", "0"),
+            MirroredField("originY", "custom-volume", "0"),
+            MirroredField("originZ", "custom-volume", "0"),
+            MirroredField("depth", "custom-volume", "5"),
+            MirroredField("polygon", "custom-volume", "-5,-5;5,-5;0,5")};
+}
+
 OptionSettings DefaultCustomVolumeEntryOptionSettings() {
     return {{"plane", "xz"},
             {"originX", "0"},

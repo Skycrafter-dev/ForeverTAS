@@ -3,6 +3,7 @@
 
 #include "mutations/input_mutator.h"
 #include "searches/option_configuration.h"
+#include "searches/option_fields.h"
 
 #include <cstdint>
 #include <memory>
@@ -19,6 +20,7 @@ struct RandomSteeringSettings {
 
 RandomSteeringSettings DefaultRandomSteeringSettings();
 OptionSettings DefaultRandomSteeringOptionSettings();
+OptionFieldList RandomSteeringOptionFields();
 std::optional<std::string> ValidateRandomSteeringOptionSettings(
         const OptionSettings &settings,
         std::uint32_t tickDurationMs);

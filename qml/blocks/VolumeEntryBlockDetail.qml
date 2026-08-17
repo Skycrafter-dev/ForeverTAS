@@ -3,15 +3,24 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import ".." as ThemeControls
 
+// Detail panel for the volume-entry evaluation blocks. The cuboid and
+// polygon-volume collections act as a picker; the selected shape's
+// geometry is copied into the block's own fields and stays in sync while
+// the shape is edited. The block owns its values, so the text interchange
+// keeps working.
 ColumnLayout {
     id: root
 
-    objectName: "volumeEntryEvaluationSettings"
+    objectName: "volumeEntryBlockDetail"
     property var controller
     property var viewer
     property var viewport
+    property int blockId: 0
+    property var blockInformation: null
+    readonly property string optionId:
+        blockInformation ? blockInformation.optionId : ""
     readonly property bool customActive:
-        controller.evaluationTargetId === "custom-volume-entry-time"
+        optionId === "custom-volume-entry-time"
     readonly property var activeModel:
         customActive ? controller.customVolumeTargets
                      : controller.cuboidTargets
@@ -43,6 +52,77 @@ ColumnLayout {
         : controller.cuboidTargets.selectedIndex
     spacing: 8
 
+    function applySelectedShape() {
+        if (!controller)
+            return
+        if (customActive) {
+            const target = controller.customVolumeTargets.selectedTarget
+            if (!target)
+                return
+            controller.setBlockField(blockId, "plane",
+                                     target.plane ?? "xz")
+            controller.setBlockField(blockId, "originX",
+                                     String(target.originX ?? 0))
+            controller.setBlockField(blockId, "originY",
+                                     String(target.originY ?? 0))
+            controller.setBlockField(blockId, "originZ",
+                                     String(target.originZ ?? 0))
+            controller.setBlockField(blockId, "depth",
+                                     String(target.depth ?? 5))
+            const vertices = target.vertices ?? []
+            const polygon = vertices
+                    .map(vertex => String(vertex.u) + "," + String(vertex.v))
+                    .join(";")
+            controller.setBlockField(blockId, "polygon", polygon)
+        } else {
+            const target = controller.cuboidTargets.selectedTarget
+            if (!target)
+                return
+            controller.setBlockField(blockId, "centerX",
+                                     String(target.centerX ?? 0))
+            controller.setBlockField(blockId, "centerY",
+                                     String(target.centerY ?? 0))
+            controller.setBlockField(blockId, "centerZ",
+                                     String(target.centerZ ?? 0))
+            controller.setBlockField(blockId, "sizeX",
+                                     String(target.sizeX ?? 10))
+            controller.setBlockField(blockId, "sizeY",
+                                     String(target.sizeY ?? 10))
+            controller.setBlockField(blockId, "sizeZ",
+                                     String(target.sizeZ ?? 10))
+        }
+    }
+
+    Component.onCompleted: applySelectedShape()
+
+    Connections {
+        target: root.controller
+
+        function onBlockUpdated(updatedBlockId) {
+            if (updatedBlockId === root.blockId)
+                root.blockInformation = root.controller.blockData(
+                            root.blockId)
+        }
+    }
+
+    Connections {
+        target: root.controller.cuboidTargets
+
+        function onSelectedTargetChanged() {
+            if (!root.customActive)
+                root.applySelectedShape()
+        }
+    }
+
+    Connections {
+        target: root.controller.customVolumeTargets
+
+        function onSelectedTargetChanged() {
+            if (root.customActive)
+                root.applySelectedShape()
+        }
+    }
+
     function synchronizeTargetSelector() {
         if (!controller)
             return
@@ -73,12 +153,14 @@ ColumnLayout {
                 if (option.kind === "custom") {
                     root.controller.customVolumeTargets.selectTarget(
                         option.index)
-                    root.controller.evaluationTargetId =
-                        "custom-volume-entry-time"
+                    root.controller.setEvaluatorBlock(
+                        "evaluate/prism-entry-time")
                 } else {
                     root.controller.cuboidTargets.selectTarget(option.index)
-                    root.controller.evaluationTargetId = "volume-entry-time"
+                    root.controller.setEvaluatorBlock(
+                        "evaluate/box-entry-time")
                 }
+                Qt.callLater(root.applySelectedShape)
             }
         }
 
@@ -116,8 +198,8 @@ ColumnLayout {
                                            ?? root.selected.center
                         root.controller.cuboidTargets.addTarget(
                             position.x, position.y, position.z)
-                        root.controller.evaluationTargetId =
-                            "volume-entry-time"
+                        root.controller.setEvaluatorBlock(
+                            "evaluate/volume-entry-time")
                     }
                 }
                 ThemeControls.ThemedMenuItem {
@@ -132,8 +214,8 @@ ColumnLayout {
                                            ?? root.selected.center
                         root.controller.customVolumeTargets.addTarget(
                             "xz", position.x, position.y, position.z)
-                        root.controller.evaluationTargetId =
-                            "custom-volume-entry-time"
+                        root.controller.setEvaluatorBlock(
+                            "evaluate/custom-volume-entry-time")
                     }
                 }
             }

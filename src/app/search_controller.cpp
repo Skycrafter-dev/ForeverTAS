@@ -147,11 +147,11 @@ QString BackendId(PhysicsBackend backend) {
 
 SearchController::SearchController(QObject *parent)
     : QObject(parent),
-      cuboidTargets_(configuration_.evaluationTargetSettingsFor(
+      cuboidTargets_(configuration_.legacyEvaluationSettings(
               QString::fromLatin1(kVolumeEntryEvaluationId))),
-      customVolumeTargets_(configuration_.evaluationTargetSettingsFor(
+      customVolumeTargets_(configuration_.legacyEvaluationSettings(
               QString::fromLatin1(kCustomVolumeEntryEvaluationId))),
-      poseTargets_(configuration_.evaluationTargetSettingsFor(
+      poseTargets_(configuration_.legacyEvaluationSettings(
               QString::fromLatin1(kPoseTargetEvaluationId))) {
     initialize(nullptr);
 }
@@ -159,11 +159,11 @@ SearchController::SearchController(QObject *parent)
 SearchController::SearchController(const QStringList &packsSearchPatterns,
                                    QObject *parent)
     : QObject(parent),
-      cuboidTargets_(configuration_.evaluationTargetSettingsFor(
+      cuboidTargets_(configuration_.legacyEvaluationSettings(
               QString::fromLatin1(kVolumeEntryEvaluationId))),
-      customVolumeTargets_(configuration_.evaluationTargetSettingsFor(
+      customVolumeTargets_(configuration_.legacyEvaluationSettings(
               QString::fromLatin1(kCustomVolumeEntryEvaluationId))),
-      poseTargets_(configuration_.evaluationTargetSettingsFor(
+      poseTargets_(configuration_.legacyEvaluationSettings(
               QString::fromLatin1(kPoseTargetEvaluationId))) {
     initialize(&packsSearchPatterns);
 }
@@ -171,14 +171,24 @@ SearchController::SearchController(const QStringList &packsSearchPatterns,
 void SearchController::initialize(const QStringList *packsSearchPatterns) {
     qRegisterMetaType<SearchCompletionPtr>();
     qRegisterMetaType<SearchImprovementPtr>();
+    connect(&configuration_, &BlockProgramModel::structureChanged, this,
+            &SearchController::publishConfigurationChange);
+    connect(&configuration_, &BlockProgramModel::blockChanged, this,
+            [this](int blockId) {
+                emit blockUpdated(blockId);
+                emit programTextChanged();
+                refreshValidation();
+            });
+    // Target collections feed the block program's mirrored fields at
+    // compile time, so selection changes only need revalidation.
     connect(&cuboidTargets_,
             &CuboidTargetModel::selectedTargetChanged,
             this,
-            &SearchController::synchronizeSelectedCuboid);
+            &SearchController::refreshValidation);
     connect(&customVolumeTargets_,
             &CustomVolumeTargetModel::selectedTargetChanged,
             this,
-            &SearchController::synchronizeSelectedCustomVolume);
+            &SearchController::refreshValidation);
     connect(&customVolumeTargets_,
             &CustomVolumeTargetModel::drawingChanged,
             this,
@@ -186,7 +196,7 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     connect(&poseTargets_,
             &PoseTargetModel::selectedTargetChanged,
             this,
-            &SearchController::synchronizeSelectedPoseTarget);
+            &SearchController::refreshValidation);
     packsDirectory_ = StoredValue(kPacksDirectoryKey, {});
     replayPath_ = StoredValue(kReplayPathKey, {});
     baseInputScript_ = StoredValue(kBaseInputScriptKey, {});
@@ -280,9 +290,6 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
                 BackendId(simulationBackend_));
     }
     scheduleAutoDetectPacksDirectory(packsSearchPatterns);
-    synchronizeSelectedCuboid();
-    synchronizeSelectedCustomVolume();
-    synchronizeSelectedPoseTarget();
     refreshValidation();
 }
 
@@ -430,36 +437,24 @@ bool SearchController::darkMode() const {
     return darkMode_;
 }
 
-QVariantList SearchController::searchAlgorithmOptions() const {
-    return configuration_.searchAlgorithmOptions();
+QVariantList SearchController::blockPalette() const {
+    return configuration_.palette();
 }
 
-QVariantList SearchController::modifierOptions() const {
-    return configuration_.modifierOptions();
+QVariantMap SearchController::blockScript() const {
+    return configuration_.scriptSummary();
 }
 
-QVariantList SearchController::evaluationTargetOptions() const {
-    return configuration_.evaluationTargetOptions();
+QString SearchController::programText() const {
+    return configuration_.programText();
 }
 
-QString SearchController::searchAlgorithmId() const {
-    return configuration_.searchAlgorithmId();
+QString SearchController::programTextError() const {
+    return programTextError_;
 }
 
 QString SearchController::evaluationTargetId() const {
     return configuration_.evaluationTargetId();
-}
-
-QVariantMap SearchController::searchAlgorithmSettings() const {
-    return configuration_.searchAlgorithmSettings();
-}
-
-QVariantList SearchController::modifierPasses() const {
-    return configuration_.modifierPasses();
-}
-
-QVariantMap SearchController::evaluationTargetSettings() const {
-    return configuration_.evaluationTargetSettings();
 }
 
 CuboidTargetModel *SearchController::cuboidTargets() {
@@ -581,13 +576,6 @@ bool SearchController::undoBaseInputScript() {
     return true;
 }
 
-void SearchController::setSearchAlgorithmId(const QString &value) {
-    if (!configuration_.setSearchAlgorithmId(value)) return;
-    emit searchAlgorithmIdChanged();
-    emit searchAlgorithmSettingsChanged();
-    refreshValidation();
-}
-
 void SearchController::setSimulationBackendId(const QString &value) {
     const std::optional<PhysicsBackend> parsed =
             ParsePhysicsBackend(value.toStdString());
@@ -692,111 +680,60 @@ void SearchController::setDarkMode(bool value) {
 }
 
 void SearchController::setEvaluationTargetId(const QString &value) {
-    if (!configuration_.setEvaluationTargetId(value)) return;
-    emit evaluationTargetIdChanged();
-    emit evaluationTargetSettingsChanged();
-    synchronizeSelectedCuboid();
-    synchronizeSelectedCustomVolume();
-    synchronizeSelectedPoseTarget();
-    refreshValidation();
+    setEvaluatorBlock(QStringLiteral("evaluate/") + value);
 }
 
-void SearchController::setSearchAlgorithmSetting(const QString &key,
-                                                 const QString &value) {
-    if (!configuration_.setSearchAlgorithmSetting(key, value)) return;
-    emit searchAlgorithmSettingsChanged();
-    refreshValidation();
+QVariantMap SearchController::blockData(int blockId) const {
+    return configuration_.blockData(blockId);
 }
 
-void SearchController::addModifierPass(const QString &id) {
-    if (!configuration_.addModifierPass(id)) return;
-    emit modifierPassesChanged();
-    refreshValidation();
+bool SearchController::addBlock(const QString &definitionId) {
+    return configuration_.addBlock(definitionId);
 }
 
-void SearchController::removeModifierPass(int index) {
-    if (!configuration_.removeModifierPass(index)) return;
-    emit modifierPassesChanged();
-    refreshValidation();
+bool SearchController::removeBlock(int blockId) {
+    return configuration_.removeBlock(blockId);
 }
 
-void SearchController::moveModifierPass(int fromIndex, int toIndex) {
-    if (!configuration_.moveModifierPass(fromIndex, toIndex)) return;
-    emit modifierPassesChanged();
-    refreshValidation();
+bool SearchController::setBlockField(int blockId,
+                                     const QString &key,
+                                     const QString &value) {
+    return configuration_.setBlockField(blockId, key, value);
 }
 
-void SearchController::setModifierPassId(int index, const QString &id) {
-    if (!configuration_.setModifierPassId(index, id)) return;
-    emit modifierPassesChanged();
-    refreshValidation();
+int SearchController::attachReporter(int blockId,
+                                     const QString &key,
+                                     const QString &reporterDefinitionId) {
+    return configuration_.attachReporter(
+            blockId, key, reporterDefinitionId);
 }
 
-void SearchController::setModifierPassSetting(int index,
-                                              const QString &key,
-                                              const QString &value) {
-    if (!configuration_.setModifierPassSetting(index, key, value)) return;
-    emit modifierPassesChanged();
-    refreshValidation();
+bool SearchController::detachReporter(int blockId, const QString &key) {
+    return configuration_.detachReporter(blockId, key);
 }
 
-void SearchController::setEvaluationTargetSetting(const QString &key,
-                                                  const QString &value) {
-    const bool isCuboid = configuration_.evaluationTargetId() ==
-            QString::fromLatin1(kVolumeEntryEvaluationId);
-    if (!configuration_.setEvaluationTargetSetting(
-                key, value, !isCuboid)) {
-        return;
-    }
-    if (isCuboid) {
-        synchronizeCuboidSetting(key, value);
-    } else if (configuration_.evaluationTargetId() ==
-               QString::fromLatin1(kCustomVolumeEntryEvaluationId)) {
-        synchronizeCustomVolumeSetting(key, value);
-    } else if (configuration_.evaluationTargetId() ==
-               QString::fromLatin1(kPoseTargetEvaluationId)) {
-        synchronizePoseTargetSetting(key, value);
-    }
-    emit evaluationTargetSettingsChanged();
-    refreshValidation();
+bool SearchController::moveBlock(int blockId, int toIndex) {
+    return configuration_.moveBlock(blockId, toIndex);
 }
 
-void SearchController::synchronizeSelectedCuboid() {
-    if (configuration_.evaluationTargetId() !=
-        QString::fromLatin1(kVolumeEntryEvaluationId)) {
-        return;
-    }
-    const QVariantMap target = cuboidTargets_.selectedTarget();
-    bool changed = false;
-    constexpr const char *keys[] = {
-            "centerX", "centerY", "centerZ", "sizeX", "sizeY", "sizeZ"};
-    for (const char *const key : keys) {
-        const QString qKey = QString::fromLatin1(key);
-        changed |= configuration_.setEvaluationTargetSetting(
-                qKey, target.value(qKey).toString(), false);
-    }
-    if (changed) {
-        emit evaluationTargetSettingsChanged();
-        refreshValidation();
-    }
+bool SearchController::setBlockPosition(int blockId, double x, double y) {
+    return configuration_.setBlockPosition(blockId, x, y);
 }
 
-void SearchController::synchronizeCuboidSetting(const QString &key,
-                                                const QString &value) {
-    const int index = cuboidTargets_.selectedIndex();
-    if (key == QStringLiteral("centerX")) {
-        cuboidTargets_.setCenterComponent(index, QStringLiteral("x"), value);
-    } else if (key == QStringLiteral("centerY")) {
-        cuboidTargets_.setCenterComponent(index, QStringLiteral("y"), value);
-    } else if (key == QStringLiteral("centerZ")) {
-        cuboidTargets_.setCenterComponent(index, QStringLiteral("z"), value);
-    } else if (key == QStringLiteral("sizeX")) {
-        cuboidTargets_.setSizeComponent(index, QStringLiteral("x"), value);
-    } else if (key == QStringLiteral("sizeY")) {
-        cuboidTargets_.setSizeComponent(index, QStringLiteral("y"), value);
-    } else if (key == QStringLiteral("sizeZ")) {
-        cuboidTargets_.setSizeComponent(index, QStringLiteral("z"), value);
-    }
+bool SearchController::setEvaluatorBlock(const QString &definitionId) {
+    return configuration_.setEvaluator(definitionId);
+}
+
+void SearchController::resetBlocks() {
+    configuration_.resetToDefault();
+}
+
+bool SearchController::applyProgramText(const QString &text) {
+    QString error;
+    const bool applied = configuration_.setProgramText(text, &error);
+    programTextError_ = applied ? QString() : error;
+    emit programTextChanged();
+    return applied;
 }
 
 void SearchController::focusSelectedCuboid() {
@@ -810,47 +747,7 @@ void SearchController::focusSelectedCuboid() {
             center.value<QVector3D>(), size.value<QVector3D>());
 }
 
-void SearchController::synchronizeSelectedCustomVolume() {
-    if (configuration_.evaluationTargetId() !=
-        QString::fromLatin1(kCustomVolumeEntryEvaluationId)) {
-        return;
-    }
-    const QVariantMap target = customVolumeTargets_.selectedTarget();
-    bool changed = false;
-    constexpr const char *keys[] = {
-            "plane", "originX", "originY", "originZ", "depth", "polygon"};
-    for (const char *const key : keys) {
-        const QString qKey = QString::fromLatin1(key);
-        changed |= configuration_.setEvaluationTargetSetting(
-                qKey, target.value(qKey).toString());
-    }
-    if (changed) {
-        emit evaluationTargetSettingsChanged();
-        refreshValidation();
-    }
-}
 
-void SearchController::synchronizeCustomVolumeSetting(
-        const QString &key,
-        const QString &value) {
-    const int index = customVolumeTargets_.selectedIndex();
-    if (key == QStringLiteral("plane")) {
-        customVolumeTargets_.setPlane(index, value);
-    } else if (key == QStringLiteral("originX")) {
-        customVolumeTargets_.setOriginComponent(
-                index, QStringLiteral("x"), value);
-    } else if (key == QStringLiteral("originY")) {
-        customVolumeTargets_.setOriginComponent(
-                index, QStringLiteral("y"), value);
-    } else if (key == QStringLiteral("originZ")) {
-        customVolumeTargets_.setOriginComponent(
-                index, QStringLiteral("z"), value);
-    } else if (key == QStringLiteral("depth")) {
-        customVolumeTargets_.setDepth(index, value);
-    } else if (key == QStringLiteral("polygon")) {
-        customVolumeTargets_.setPolygon(index, value);
-    }
-}
 
 void SearchController::focusSelectedCustomVolume() {
     const QVariantMap target = customVolumeTargets_.selectedTarget();
@@ -874,45 +771,7 @@ void SearchController::cancelCustomVolumeDrawing() {
     customVolumeTargets_.cancelDrawing();
 }
 
-void SearchController::synchronizeSelectedPoseTarget() {
-    if (configuration_.evaluationTargetId() !=
-        QString::fromLatin1(kPoseTargetEvaluationId)) {
-        return;
-    }
-    const QVariantMap target = poseTargets_.selectedTarget();
-    bool changed = false;
-    constexpr const char *keys[] = {
-            "x", "y", "z", "yawDegrees", "pitchDegrees", "rollDegrees"};
-    for (const char *const key : keys) {
-        const QString qKey = QString::fromLatin1(key);
-        changed |= configuration_.setEvaluationTargetSetting(
-                qKey, target.value(qKey).toString());
-    }
-    if (changed) {
-        emit evaluationTargetSettingsChanged();
-        refreshValidation();
-    }
-}
 
-void SearchController::synchronizePoseTargetSetting(
-        const QString &key,
-        const QString &value) {
-    const int index = poseTargets_.selectedIndex();
-    if (key == QStringLiteral("x") ||
-        key == QStringLiteral("y") ||
-        key == QStringLiteral("z")) {
-        poseTargets_.setPositionComponent(index, key, value);
-    } else if (key == QStringLiteral("yawDegrees")) {
-        poseTargets_.setRotationComponent(
-                index, QStringLiteral("yaw"), value);
-    } else if (key == QStringLiteral("pitchDegrees")) {
-        poseTargets_.setRotationComponent(
-                index, QStringLiteral("pitch"), value);
-    } else if (key == QStringLiteral("rollDegrees")) {
-        poseTargets_.setRotationComponent(
-                index, QStringLiteral("roll"), value);
-    }
-}
 
 void SearchController::focusSelectedPoseTarget() {
     const QVariantMap target = poseTargets_.selectedTarget();
@@ -1036,9 +895,8 @@ void SearchController::startSearch() {
         return;
     }
     if (randomizeSeedsOnStart_ &&
-        configuration_.randomizeModifierSeeds(
+        configuration_.randomizeSeeds(
                 QRandomGenerator::system()->generate())) {
-        emit modifierPassesChanged();
         validation = validate();
         if (!validation.request) {
             refreshValidation();
@@ -1171,6 +1029,17 @@ void SearchController::stopSearch() {
     setStatusText(QStringLiteral("Stopping after current iteration..."));
 }
 
+void SearchController::publishConfigurationChange() {
+    const QString evaluationId = configuration_.evaluationTargetId();
+    if (evaluationId != publishedEvaluationTargetId_) {
+        publishedEvaluationTargetId_ = evaluationId;
+        emit evaluationTargetIdChanged();
+    }
+    emit blockStructureChanged();
+    emit programTextChanged();
+    refreshValidation();
+}
+
 SearchController::ValidationResult SearchController::validate() const {
     const QFileInfo packsInfo(packsDirectory_);
     if (packsDirectory_.isEmpty()) {
@@ -1209,15 +1078,14 @@ SearchController::ValidationResult SearchController::validate() const {
     }
     const std::uint32_t simulationHorizonMs =
             static_cast<std::uint32_t>(horizonValue);
-    const SearchConfigurationValidation configurationValidation =
+    const BlockConfigurationValidation configurationValidation =
             configuration_.validate(
                     kSearchTickDurationMs,
                     simulationHorizonMs);
     if (!configurationValidation.configuration) {
         return {{}, configurationValidation.error};
     }
-    const SearchComponentConfiguration &configuration =
-            *configurationValidation.configuration;
+    const auto &configuration = *configurationValidation.configuration;
     ConditionVariables conditionVariables;
     if (configuration.evaluationTarget.id == kPointTargetEvaluationId) {
         const OptionSettings &settings =

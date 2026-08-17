@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQml.Models
 import QtQuick3D
+import "blocks" as Blocks
 import "settings"
 import ForeverTAS.Viewer 1.0
 
@@ -4359,59 +4360,18 @@ ApplicationWindow {
                     }
 
                     ConfigurationSection {
-                        objectName: "evaluationSection"
+                        objectName: "blocksSection"
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
-                        title: qsTr("Evaluation")
+                        title: qsTr("Search blocks")
 
-                        AlgorithmSelector {
-                            objectName: "evaluationTargetSelector"
+                        Blocks.BlockWorkspace {
+                            objectName: "blockWorkspace"
                             Layout.fillWidth: true
-                            title: qsTr("Target")
-                            comboObjectName: "evaluationTargetCombo"
-                            options: window.controller.evaluationTargetOptions
-                            selectedId: window.controller.evaluationTargetId
                             controller: window.controller
                             viewer: window.viewer
                             viewport: viewport
-                            onSelectionRequested: id =>
-                                window.controller.evaluationTargetId = id
-                        }
-                    }
-
-                    ConfigurationSection {
-                        objectName: "modifierSection"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        title: qsTr("Input modifiers")
-
-                        ModifierComposition {
-                            Layout.fillWidth: true
-                            controller: window.controller
-                            options: window.controller.modifierOptions
-                            passes: window.controller.modifierPasses
-                        }
-                    }
-
-                    ConfigurationSection {
-                        objectName: "searchSection"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        title: qsTr("Search")
-
-                        AlgorithmSelector {
-                            objectName: "searchAlgorithmSelector"
-                            Layout.fillWidth: true
-                            title: qsTr("Algorithm")
-                            comboObjectName: "searchAlgorithmCombo"
-                            options: window.controller.searchAlgorithmOptions
-                            selectedId: window.controller.searchAlgorithmId
-                            controller: window.controller
-                            onSelectionRequested: id =>
-                                window.controller.searchAlgorithmId = id
                         }
                     }
 

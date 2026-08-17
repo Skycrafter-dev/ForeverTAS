@@ -74,6 +74,21 @@ std::optional<PointSettings> ParseSettings(const OptionSettings &settings) {
 
 }  // namespace
 
+OptionFieldList PointTargetOptionFields() {
+    OptionFieldList fields;
+    AppendWindowFields(fields, "1000", "6000");
+    OptionField x = NumberField("x", "X", "0");
+    x.group = "Target point";
+    fields.push_back(x);
+    OptionField y = NumberField("y", "Y", "0");
+    y.group = "Target point";
+    fields.push_back(y);
+    OptionField z = NumberField("z", "Z", "0");
+    z.group = "Target point";
+    fields.push_back(z);
+    return fields;
+}
+
 OptionSettings DefaultPointTargetOptionSettings() {
     return {{"minTimeMs", "1000"},
             {"maxTimeMs", "6000"},

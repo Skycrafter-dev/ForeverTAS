@@ -37,6 +37,13 @@ RandomSteeringSettings DefaultRandomSteeringSettings() {
     return {1000, 5990, 1179926867u};
 }
 
+OptionFieldList RandomSteeringOptionFields() {
+    OptionFieldList fields;
+    AppendWindowFields(fields, "1000", "5990");
+    AppendSeedField(fields);
+    return fields;
+}
+
 OptionSettings DefaultRandomSteeringOptionSettings() {
     const RandomSteeringSettings defaults = DefaultRandomSteeringSettings();
     return {{"minTimeMs", std::to_string(defaults.minimumTimeMs)},
