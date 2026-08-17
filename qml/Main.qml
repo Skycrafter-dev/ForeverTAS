@@ -4561,10 +4561,6 @@ ApplicationWindow {
                                     cudaSessionSpecializationSwitch
                                         .synchronize()
                                 }
-                                function onCudaFastModeAvailableChanged() {
-                                    cudaSessionSpecializationSwitch
-                                        .synchronize()
-                                }
                             }
                             onToggled: window.controller
                                 .cudaSessionSpecializationEnabled = checked

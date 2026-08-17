@@ -617,7 +617,8 @@ bool BlockProgramModel::setBlockPosition(int blockId, double x, double y) {
     node->x = x;
     node->y = y;
     persist();
-    emit blockChanged(blockId);
+    // Positions live on the canvas summary, so re-read the structure.
+    emit structureChanged();
     return true;
 }
 

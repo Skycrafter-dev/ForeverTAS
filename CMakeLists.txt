@@ -373,9 +373,13 @@ qt_add_qml_module(forevertas
         qml/ThemedToolButton.qml
         qml/WhiteboardOverlay.qml
         qml/WhiteboardPlanes.qml
+        qml/blocks/BlockCanvas.qml
+        qml/blocks/BlockSequence.qml
         qml/blocks/BlockSlot.qml
+        qml/blocks/BlockStack.qml
         qml/blocks/BlockView.qml
         qml/blocks/BlockWorkspace.qml
+        qml/blocks/HatSockets.qml
         qml/blocks/PoseTargetBlockDetail.qml
         qml/blocks/VolumeEntryBlockDetail.qml
         qml/settings/ConfigurationSection.qml
