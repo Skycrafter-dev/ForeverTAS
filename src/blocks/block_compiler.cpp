@@ -196,6 +196,13 @@ std::optional<std::string> ValidateSearchComponents(
                " ms precedes the first modifier time at " +
                std::to_string(earliestMutationTimeMs) + " ms.";
     }
+    if (plan.endTimeMs < plan.startTimeMs) {
+        return "Evaluation maximum time " + std::to_string(plan.endTimeMs) +
+               " ms precedes the first modifier time at " +
+               std::to_string(earliestMutationTimeMs) +
+               " ms; move the evaluation window's To time past the "
+               "mutation window's From time.";
+    }
     if (plan.endTimeMs > simulationHorizonMs) {
         return "Evaluation maximum time " + std::to_string(plan.endTimeMs) +
                " ms exceeds the Simulation horizon of " +

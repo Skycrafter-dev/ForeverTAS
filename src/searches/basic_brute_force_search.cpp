@@ -913,7 +913,11 @@ SearchResult RunCudaBasicBruteForce(
     reportLive(true);
     if (!best.evaluation || !best.snapshot) {
         throw std::runtime_error(
-                "no iteration satisfied the selected evaluation target");
+                "no iteration satisfied the selected evaluation target: "
+                "the target condition never became true within the "
+                "Simulation horizon (for example the car never entered "
+                "the target volume, never reached the evaluated speed, "
+                "or every tick was excluded by the Conditions script)");
     }
     if (!SameState(best.snapshot->View(), best.view)) {
         throw std::runtime_error(
@@ -1292,7 +1296,11 @@ SearchResult BasicBruteForceSearch::Run(
     reportLive(true);
     if (!best.evaluation || !best.snapshot) {
         throw std::runtime_error(
-                "no iteration satisfied the selected evaluation target");
+                "no iteration satisfied the selected evaluation target: "
+                "the target condition never became true within the "
+                "Simulation horizon (for example the car never entered "
+                "the target volume, never reached the evaluated speed, "
+                "or every tick was excluded by the Conditions script)");
     }
     const PhysicsSandboxStateView restored = Require(
             context.sandbox.RestoreState(*best.snapshot),

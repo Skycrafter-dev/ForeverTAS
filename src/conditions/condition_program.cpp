@@ -431,6 +431,36 @@ ConditionCompileResult CompileConditionScript(
         if (result.cuda.instructions.size() > 256u) return {{}, "Condition script exceeds the 256-instruction limit"};
     }
     if (count == 0u) return {std::nullopt, std::nullopt};
+    // Reject statically-too-deep expressions at compile time; the
+    // runtime guard would otherwise silently evaluate them to false.
+    {
+        std::size_t depth = 0u;
+        std::size_t deepest = 0u;
+        for (const auto &instruction : result.cuda.instructions) {
+            const auto opcode = instruction.opcode;
+            if (opcode == PhysicsSandboxCudaConditionOpcode::Constant ||
+                opcode == PhysicsSandboxCudaConditionOpcode::ConstantVector ||
+                opcode == PhysicsSandboxCudaConditionOpcode::Scalar ||
+                opcode == PhysicsSandboxCudaConditionOpcode::Vector) {
+                ++depth;
+            } else if (opcode ==
+                               PhysicsSandboxCudaConditionOpcode::
+                                       KilometersPerHour ||
+                       opcode ==
+                               PhysicsSandboxCudaConditionOpcode::Degrees) {
+                // net stack effect zero
+            } else {
+                if (depth < 2u) return {{}, "Condition script is malformed"};
+                --depth;
+            }
+            deepest = std::max(deepest, depth);
+        }
+        if (deepest > 32u) {
+            return {{},
+                    "Condition line nesting exceeds the 32-value stack "
+                    "limit"};
+        }
+    }
     return {std::move(result), std::nullopt};
 }
 

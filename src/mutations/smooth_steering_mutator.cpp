@@ -15,6 +15,7 @@ struct Settings {
     std::int64_t radiusMs = 100;
     AnalogInputState amplitudeMinimum = 0;
     AnalogInputState amplitudeMaximum = 0;
+    std::uint32_t tickDurationMs = 10u;
 };
 
 std::optional<Settings> ParseSettings(const OptionSettings &settings) {
@@ -62,6 +63,8 @@ public:
             const std::int64_t end = std::min(
                     settings_.window.maximumTimeMs,
                     center + settings_.radiusMs);
+            bool pushed = false;
+            AnalogInputState lastPushed = 0;
             for (std::int64_t time = AlignInputTime(start, tick);
                  time <= end;
                  time += tick) {
@@ -74,13 +77,35 @@ public:
                                   static_cast<double>(settings_.radiusMs)));
                 const std::int64_t weightedDelta = std::llround(
                         static_cast<double>(amplitude) * weight);
+                // Read the unmutated baseline: accumulating deltas onto
+                // the already-deformed stream turned the bump into a
+                // ramp that saturated at full steering lock.
                 const AnalogInputState value = SaturateAnalogInputState(
                         static_cast<std::int64_t>(
-                                SteeringStateAt(inputs, time)) +
+                                SteeringStateAt(request.baselineInputs,
+                                                time)) +
                         weightedDelta);
                 inputs.push_back(AnalogEvent(time,
                                              SandboxInputAction::Steer,
                                              value));
+                pushed = true;
+                lastPushed = value;
+            }
+            // A bump cut off by the window edge must not leak its last
+            // value past the deformed span; restore the baseline state
+            // on the first tick after it. AlignInputTime floors, so the
+            // next tick boundary is computed explicitly.
+            if (pushed) {
+                const std::int64_t restoreTime =
+                        (end / tick) * tick + tick;
+                const AnalogInputState baselineAfter =
+                        SteeringStateAt(request.baselineInputs,
+                                        restoreTime);
+                if (baselineAfter != lastPushed) {
+                    inputs.push_back(AnalogEvent(restoreTime,
+                                                 SandboxInputAction::Steer,
+                                                 baselineAfter));
+                }
             }
             NormalizeMutableInputEvents(inputs,
                                     request.baselineInputs,
@@ -96,9 +121,14 @@ public:
     }
 
     MutationTimeRange AffectedTimeRange() const override {
+        // The baseline-restore event after a window-clamped bump lands
+        // one tick past the window, so the declared range must include
+        // it for window-patch composition to stay equivalent.
         return MutationTimeRange{
                 settings_.window.minimumTimeMs,
-                settings_.window.maximumTimeMs};
+                settings_.window.maximumTimeMs
+                        + static_cast<std::int64_t>(
+                                  settings_.tickDurationMs)};
     }
 
 private:
@@ -156,7 +186,9 @@ std::unique_ptr<InputMutator> CreateSmoothSteeringMutator(
         std::uint32_t tickDurationMs) {
     if (const auto error = ValidateSmoothSteeringSettings(
                 settings, tickDurationMs)) throw std::invalid_argument(*error);
-    return std::make_unique<SmoothSteeringMutator>(*ParseSettings(settings));
+    Settings parsed = *ParseSettings(settings);
+    parsed.tickDurationMs = tickDurationMs;
+    return std::make_unique<SmoothSteeringMutator>(parsed);
 }
 
 }  // namespace forevertas

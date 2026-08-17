@@ -38,6 +38,12 @@ bool IsValidBareword(const std::string &text) {
             return false;
         }
     }
+    // Words the text parser treats as structure would be misparsed as
+    // slot values; they must print quoted.
+    if (text == "evaluate" || text == "mutate" || text == "op" ||
+        text == "min" || text == "max") {
+        return false;
+    }
     return true;
 }
 

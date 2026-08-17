@@ -2,6 +2,7 @@
 
 #include "blocks/block_value.h"
 
+#include <cmath>
 #include <vector>
 
 namespace forevertas::blocks {
@@ -63,6 +64,9 @@ std::optional<std::string> EvaluateReporter(const BlockProgram &program,
     else {
         return std::nullopt;
     }
+    // Overflow to infinity must surface as an invalid expression, not
+    // format as a silent "0" that the search then runs against.
+    if (!std::isfinite(result)) return std::nullopt;
     return FormatNumberValue(result);
 }
 

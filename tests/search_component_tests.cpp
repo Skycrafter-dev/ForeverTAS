@@ -722,6 +722,77 @@ bool TestModifierDeterminism() {
     return okay;
 }
 
+bool TestSmoothSteeringBumpShape() {
+    const auto *const registration = forevertas::FindModifier(
+            forevertas::kSmoothSteeringModifierId);
+    if (registration == nullptr) {
+        return Check(false, "smooth steering modifier was not registered");
+    }
+    const std::vector<SandboxInputEvent> baseline{Steering(0, 10000)};
+
+    // A one-tick window clamps the bump to a single sample regardless of
+    // the seed, pinning both the amplitude and the post-window restore.
+    OptionSettings pinned = registration->defaultSettings;
+    pinned["minTimeMs"] = "500";
+    pinned["maxTimeMs"] = "500";
+    pinned["deformationCount"] = "1";
+    pinned["radiusMs"] = "200";
+    pinned["amplitudeMin"] = "0.5";
+    pinned["amplitudeMax"] = "0.5";
+    std::unique_ptr<InputMutator> pinnedModifier =
+            registration->create(pinned, 10u);
+    const MutationResult pinnedResult =
+            pinnedModifier->Mutate({baseline, 3u, 0u, 10u});
+    bool okay = Check(forevertas::SteeringStateAt(pinnedResult.inputs, 510) ==
+                              10000 + 65536 / 2,
+                      "smooth steering did not offset the baseline by the "
+                      "configured amplitude");
+    okay &= Check(forevertas::SteeringStateAt(pinnedResult.inputs, 520) ==
+                          10000,
+                  "a window-clamped smooth steering bump leaked its value "
+                  "past the window end");
+
+    // A wide window with full amplitude: the deformation must stay a
+    // bump around the baseline, never a cumulative ramp that saturates.
+    OptionSettings wide = registration->defaultSettings;
+    wide["minTimeMs"] = "1000";
+    wide["maxTimeMs"] = "1400";
+    wide["deformationCount"] = "1";
+    wide["radiusMs"] = "200";
+    wide["amplitudeMin"] = "0.5";
+    wide["amplitudeMax"] = "0.5";
+    std::unique_ptr<InputMutator> wideModifier =
+            registration->create(wide, 10u);
+    for (std::uint64_t iteration = 0u; iteration < 16u; ++iteration) {
+        const MutationResult result =
+                wideModifier->Mutate({baseline, iteration, 0u, 10u});
+        bool withinBump = true;
+        bool bumped = false;
+        for (const auto &event : result.inputs) {
+            if (event.timeMs < 1010 || event.timeMs > 1410 ||
+                event.action != SandboxInputAction::Steer) {
+                continue;
+            }
+            if (event.value.analog > 10000 + 65536 / 2 + 1 ||
+                event.value.analog < 10000 - 65536 / 2 - 1) {
+                withinBump = false;
+            }
+            if (event.value.analog > 10000) bumped = true;
+        }
+        okay &= Check(withinBump,
+                      "smooth steering accumulated beyond the configured "
+                      "amplitude");
+        okay &= Check(bumped,
+                      "smooth steering produced no positive deformation");
+        okay &= Check(forevertas::SteeringStateAt(result.inputs, 1420) ==
+                              10000,
+                      "smooth steering left a permanent offset after the "
+                      "window");
+        if (!okay) break;
+    }
+    return okay;
+}
+
 bool TestExistingEventWindowPatchParity() {
     const auto *const registration = forevertas::FindModifier(
             forevertas::kExistingEventPerturbationModifierId);
@@ -2163,6 +2234,7 @@ int main() {
             TestEvaluationTargets() &&
             TestModifierComposition() &&
             TestModifierDeterminism() &&
+            TestSmoothSteeringBumpShape() &&
             TestExistingEventWindowPatchParity() &&
             TestAllModifierWindowPatchParity() &&
             TestEveryOrderedModifierPairWindowPatchParity() &&
