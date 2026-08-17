@@ -58,3 +58,20 @@ execute_process(
 if(NOT smoke_result EQUAL 0)
     message(FATAL_ERROR "Installed application smoke test failed: ${smoke_result}")
 endif()
+
+# The application must keep running after startup: a runtime-broken QML
+# component (for example an attached control) can make the process exit
+# itself quietly, which the immediate-quit smoke flag above cannot
+# catch. Success here is being killed by the timeout while still alive.
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env
+        QT_QPA_PLATFORM=offscreen
+        QSG_RHI_BACKEND=software
+        "${executable}"
+    RESULT_VARIABLE alive_result
+    TIMEOUT 8)
+if(NOT alive_result STREQUAL "Process terminated due to timeout")
+    message(FATAL_ERROR
+        "Application exited on its own after startup "
+        "(result: ${alive_result})")
+endif()
