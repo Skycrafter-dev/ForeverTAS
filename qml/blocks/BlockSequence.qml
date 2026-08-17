@@ -21,6 +21,9 @@ Item {
     property string emptyHint: ""
     property int ownerBlockId: 0
     property bool ownerIsHat: false
+    // True only when the owning block actually renders this substack;
+    // hidden sequences (atoms, reporters) must never be drop targets.
+    property bool dropTarget: false
 
     objectName: "blockSequence"
     implicitWidth: sequenceColumn.implicitWidth

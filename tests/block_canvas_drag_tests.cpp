@@ -10,6 +10,7 @@
 #include <QQuickStyle>
 #include <QStandardPaths>
 #include <QSettings>
+#include <QThread>
 #include <QTimer>
 
 #include <cmath>
@@ -133,30 +134,37 @@ bool RunCanvasDragChecks() {
             &engine,
             QUrl::fromLocalFile(QStringLiteral(
                     FOREVERTAS_SOURCE_DIR
-                    "/qml/blocks/BlockCanvas.qml")));
+                    "/qml/blocks/BlockWorkspace.qml")));
     if (!component.isReady()) {
         for (const QQmlError &error : component.errors()) {
             std::cerr << error.toString().toStdString() << '\n';
         }
         return false;
     }
-    QScopedPointer<QObject> canvasObject(component.createWithInitialProperties(
-            {{QStringLiteral("controller"),
-              QVariant::fromValue(static_cast<QObject *>(&controller))}}));
-    auto *const canvas = qobject_cast<QQuickItem *>(canvasObject.data());
-    if (canvas == nullptr)
-        return Check(false, "canvas component did not create an item");
-    canvas->setWidth(640);
-    canvas->setHeight(680);
+    QScopedPointer<QObject> workspaceObject(
+            component.createWithInitialProperties(
+                    {{QStringLiteral("controller"),
+                      QVariant::fromValue(static_cast<QObject *>(
+                              &controller))}}));
+    auto *const workspace = qobject_cast<QQuickItem *>(workspaceObject.data());
+    if (workspace == nullptr)
+        return Check(false, "workspace component did not create an item");
+    workspace->setWidth(640);
+    workspace->setHeight(680);
+    auto *const canvas = FindItem(workspace,
+                                  QStringLiteral("blockScript"));
+    if (!Check(canvas != nullptr, "canvas not found inside workspace"))
+        return false;
 
     QQuickWindow window;
-    canvas->setParentItem(window.contentItem());
-    window.resize(660, 700);
+    workspace->setParentItem(window.contentItem());
+    window.resize(1700, 900);
     window.show();
     for (int step = 0; step < 10; ++step)
         QCoreApplication::processEvents();
 
-    auto *const world = FindItem(canvas, QStringLiteral("blockWorld"));
+    auto *const world = FindItem(workspace,
+                                 QStringLiteral("blockWorld"));
     if (!Check(world != nullptr, "canvas world item not found"))
         return false;
 
@@ -268,6 +276,87 @@ bool RunCanvasDragChecks() {
                                   .toList()
                                   .size() == 1,
                           "grafting disturbed the script structure");
+        }
+    }
+
+    // 4) Drag a palette atom straight into the window's atom gap.
+    auto *const paletteStack = FindItem(
+            workspace, QStringLiteral("paletteStack"));
+    okay &= Check(paletteStack != nullptr, "palette stack not found");
+    if (paletteStack != nullptr) {
+        paletteStack->setProperty("currentIndex", 2);
+        for (int step = 0; step < 10; ++step) {
+            QCoreApplication::processEvents();
+            QThread::msleep(5);
+        }
+        auto *const brakeButton = FindItem(
+                workspace,
+                QStringLiteral("paletteBlock_mutate_press-brake"));
+        okay &= Check(brakeButton != nullptr,
+                      "press-brake palette button not found");
+        QQuickItem *const atomSequence = [&]() {
+            const auto candidates = FindItemsNamed(
+                    workspace, QStringLiteral("blockSequence"));
+            for (QQuickItem *const candidate : candidates) {
+                if (candidate->property("ownerBlockId").toInt() ==
+                        windowId &&
+                    !candidate->property("ownerIsHat").toBool()) {
+                    return candidate;
+                }
+            }
+            return static_cast<QQuickItem *>(nullptr);
+        }();
+        okay &= Check(atomSequence != nullptr,
+                      "window atom sequence not found");
+        if (brakeButton != nullptr && atomSequence != nullptr) {
+            const int atomsBefore = controller.blockScript()
+                    .value(QStringLiteral("groups"))
+                    .toList()
+                    .front()
+                    .toMap()
+                    .value(QStringLiteral("atoms"))
+                    .toList()
+                    .size();
+            const QPointF buttonCenter(brakeButton->width() * 0.5,
+                                       brakeButton->height() * 0.5);
+            const QPointF pressScene =
+                    brakeButton->mapToScene(buttonCenter);
+            auto sendEvent = [&](QEvent::Type type,
+                                 const QPointF &scene,
+                                 Qt::MouseButton button,
+                                 Qt::MouseButtons buttons) {
+                const QPoint global = window.mapToGlobal(scene.toPoint());
+                QMouseEvent event(type, scene, scene, global, button,
+                                  buttons, Qt::NoModifier);
+                QCoreApplication::sendEvent(&window, &event);
+                QCoreApplication::processEvents();
+            };
+            const QPointF gapWorld = world->mapFromItem(
+                    atomSequence,
+                    QPointF(atomSequence->width() * 0.5, 4.0));
+            const QPointF gapScene = world->mapToScene(gapWorld);
+            sendEvent(QEvent::MouseButtonPress, pressScene,
+                      Qt::LeftButton, Qt::LeftButton);
+            for (int step = 1; step <= 6; ++step) {
+                const QPointF cursor = pressScene
+                        + (gapScene - pressScene)
+                                * (static_cast<qreal>(step) / 6.0);
+                sendEvent(QEvent::MouseMove, cursor, Qt::NoButton,
+                          Qt::LeftButton);
+            }
+            sendEvent(QEvent::MouseButtonRelease, gapScene,
+                      Qt::LeftButton, Qt::NoButton);
+            const int atomsAfter = controller.blockScript()
+                    .value(QStringLiteral("groups"))
+                    .toList()
+                    .front()
+                    .toMap()
+                    .value(QStringLiteral("atoms"))
+                    .toList()
+                    .size();
+            okay &= Check(atomsAfter == atomsBefore + 1,
+                          "palette drag did not drop the atom into the "
+                          "window");
         }
     }
 

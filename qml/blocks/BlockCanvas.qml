@@ -67,6 +67,71 @@ Rectangle {
 
     // ---- Drag lifecycle (driven by every block's card drag area) ----
 
+    // Palette drags fabricate the same state as card drags but create the
+    // block only when the gesture ends.
+    function beginPaletteDrag(block, accent, sourceItem) {
+        if (!editingEnabled)
+            return
+        const origin = mapPosition(sourceItem, 0, 0)
+        const cursor = mapPosition(sourceItem,
+                                   sourceItem.width * 0.5, 8)
+        dragState = {
+            blockId: 0,
+            fromPalette: true,
+            definitionId: block.id,
+            shape: block.shape,
+            optionKind: block.optionKind,
+            label: block.label,
+            color: accent,
+            width: Math.max(170, sourceItem.width),
+            grabDX: cursor.x - origin.x,
+            grabDY: cursor.y - origin.y,
+            started: true,
+            target: null
+        }
+        draggingBlockId = 0
+        dragGhost.label = block.label
+        dragGhost.accent = accent
+        dragGhost.width = dragState.width
+        dragGhost.x = origin.x
+        dragGhost.y = origin.y
+        dragGhost.visible = true
+    }
+
+    function movePaletteDrag(sourceItem, x, y) {
+        if (!dragState || !dragState.fromPalette)
+            return
+        const cursor = mapPosition(sourceItem, x, y)
+        dragGhost.x = cursor.x - dragState.grabDX
+        dragGhost.y = cursor.y - dragState.grabDY
+        updateSnapTarget()
+    }
+
+    function endPaletteDrag() {
+        if (!dragState || !dragState.fromPalette)
+            return
+        const state = dragState
+        dragState = null
+        clearHighlights()
+        dragGhost.visible = false
+        const created = controller.addLooseBlock(
+                    state.definitionId, dragGhost.x, dragGhost.y)
+        if (created === 0)
+            return
+        if (!state.target)
+            return
+        if (state.target.type === "insert") {
+            controller.attachBlock(state.target.parentId,
+                                   state.target.index, created)
+        } else if (state.target.type === "slot") {
+            controller.graftReporterBlock(
+                        state.target.blockId, state.target.key, created,
+                        dragGhost.x + dragGhost.width + 16, dragGhost.y)
+        } else if (state.target.type === "evaluator") {
+            controller.setEvaluatorBlockId(created)
+        }
+    }
+
     function dragPressed(view, area, mouse) {
         if (!editingEnabled || !view.blockInformation)
             return
@@ -168,10 +233,10 @@ Rectangle {
     }
 
     function updateSnapTarget() {
-        clearHighlights()
-        dragState.target = null
         if (!dragState)
             return
+        clearHighlights()
+        dragState.target = null
         const centerX = dragGhost.x + dragGhost.width / 2
         const centerY = dragGhost.y + dragGhost.height / 2
         if (dragState.shape === "reporter") {
@@ -185,7 +250,8 @@ Rectangle {
         let best = null
         if (dragState.optionKind === "evaluation") {
             walkItems(stackLayer, (item) => {
-                if (item.objectName !== "hatSockets" || best !== null)
+                if (item.objectName !== "hatSockets"
+                        || !item.dropTarget || best !== null)
                     return
                 const origin = mapPosition(item, 0, 0)
                 if (centerX >= origin.x - 8
@@ -233,7 +299,8 @@ Rectangle {
         const containerDrag = dragState.shape === "container"
         let best = null
         walkItems(stackLayer, (item) => {
-            if (item.objectName !== "blockSequence" || item.canvas !== root)
+            if (item.objectName !== "blockSequence" || item.canvas !== root
+                    || !item.dropTarget)
                 return
             if (item.ownerIsHat !== containerDrag)
                 return

@@ -268,6 +268,7 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.leftMargin: 12
         canvas: root.canvas
+        dropTarget: root.isScriptHat
         controller: root.controller
         viewer: root.viewer
         viewport: root.viewport
@@ -292,6 +293,7 @@ ColumnLayout {
         canvas: root.canvas
         ownerBlockId: root.blockId
         ownerIsHat: root.isScriptHat
+        dropTarget: root.isScriptHat || root.isContainer
         controller: root.controller
         viewer: root.viewer
         viewport: root.viewport

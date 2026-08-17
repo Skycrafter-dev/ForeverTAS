@@ -17,6 +17,11 @@ ColumnLayout {
     property var controller
     property var viewer
     property var viewport
+    // Full-window composition mode; the workspace reparents over the
+    // whole window while expanded.
+    property bool expanded: false
+
+    signal expansionRequested(bool expanded)
 
     readonly property var paletteModel: controller ? controller.blockPalette : []
     property var armedSlot: null
@@ -110,6 +115,17 @@ ColumnLayout {
                     onClicked: paletteStack.currentIndex = index
                 }
             }
+
+            ThemeControls.ThemedToolButton {
+                objectName: "blockWorkspaceExpandButton"
+                text: root.expanded ? "\u2715" : "\u26f6"
+                enabled: !root.controller.running
+                onClicked: root.expansionRequested(!root.expanded)
+                ToolTip.visible: hovered
+                ToolTip.text: root.expanded
+                                ? qsTr("Exit full-screen composition")
+                                : qsTr("Compose on the full window")
+            }
         }
 
         StackLayout {
@@ -133,6 +149,8 @@ ColumnLayout {
                         model: modelData.blocks
 
                         delegate: ThemeControls.ThemedButton {
+                            id: paletteDragButton
+
                             required property var modelData
 
                             objectName: "paletteBlock_"
@@ -142,6 +160,57 @@ ColumnLayout {
                             enabled: !root.controller.running
                             onClicked: root.activatePaletteBlock(
                                            modelData)
+
+                            // Press-drag drops the block straight onto
+                            // the canvas; a plain click keeps the
+                            // smart-attach behavior.
+                            MouseArea {
+                                id: paletteDragArea
+
+                                anchors.fill: parent
+                                enabled: !root.controller.running
+                                preventStealing: true
+                                hoverEnabled: enabled
+
+                                property point pressPoint
+                                property bool moved: false
+
+                                onPressed: (mouse) => {
+                                    pressPoint = Qt.point(mouse.x, mouse.y)
+                                    moved = false
+                                }
+                                onPositionChanged: (mouse) => {
+                                    if (!pressed)
+                                        return
+                                    if (!moved) {
+                                        if (Math.abs(mouse.x - pressPoint.x) < 5
+                                                && Math.abs(mouse.y - pressPoint.y) < 5)
+                                            return
+                                        moved = true
+                                        canvas.beginPaletteDrag(
+                                                    paletteDragButton
+                                                            .modelData,
+                                                    paletteCategoryFlow
+                                                            .modelData.color,
+                                                    paletteDragArea)
+                                    }
+                                    canvas.movePaletteDrag(
+                                                paletteDragArea, mouse.x,
+                                                mouse.y)
+                                }
+                                onReleased: {
+                                    if (moved)
+                                        canvas.endPaletteDrag()
+                                    else
+                                        root.activatePaletteBlock(
+                                                    paletteDragButton
+                                                            .modelData)
+                                }
+                                onCanceled: {
+                                    if (moved)
+                                        canvas.endPaletteDrag()
+                                }
+                            }
 
                             Rectangle {
                                 anchors.left: parent.left
@@ -178,7 +247,7 @@ ColumnLayout {
         Layout.fillWidth: true
         Layout.fillHeight: true
         Layout.minimumHeight: 340
-        Layout.preferredHeight: 460
+        Layout.preferredHeight: root.expanded ? -1 : 460
         controller: root.controller
         viewer: root.viewer
         viewport: root.viewport

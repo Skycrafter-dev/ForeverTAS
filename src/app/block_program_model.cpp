@@ -668,12 +668,12 @@ bool BlockProgramModel::attachBlock(int parentId, int index, int childId) {
     // atoms under windows, nothing else.
     if (parentDefinition->shape == blocks::BlockShape::Hat) {
         if (childDefinition->shape != blocks::BlockShape::Container) {
-            return false;
+                return false;
         }
     } else if (parentDefinition->shape == blocks::BlockShape::Container) {
         if (childDefinition->shape != blocks::BlockShape::Stack ||
             childDefinition->optionKind != "mutation") {
-            return false;
+                return false;
         }
     } else {
         return false;

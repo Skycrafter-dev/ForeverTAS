@@ -19,6 +19,9 @@ Item {
     property var hatInformation: null
 
     objectName: "hatSockets"
+    // True only for the script hat's socket; hidden copies inside other
+    // blocks must never be drop targets.
+    property bool dropTarget: false
     implicitWidth: socketColumn.implicitWidth
     implicitHeight: socketColumn.implicitHeight
 

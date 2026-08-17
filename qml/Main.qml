@@ -20,6 +20,7 @@ ApplicationWindow {
             window.controller.renderMode = renderMode
     }
     property bool codeEditorExpanded: false
+    property bool blockWorkspaceExpanded: false
     readonly property bool rayTracingEnabled:
         renderMode === "textured-rt"
     property real measuredFps: 0
@@ -441,6 +442,7 @@ ApplicationWindow {
             SplitView.fillWidth: true
             SplitView.minimumWidth: 680
             visible: !window.codeEditorExpanded
+                     && !window.blockWorkspaceExpanded
             color: AppTheme.window
 
             RowLayout {
@@ -3820,11 +3822,17 @@ ApplicationWindow {
 
             objectName: "settingsPanel"
             SplitView.fillWidth: window.codeEditorExpanded
+                                 || window.blockWorkspaceExpanded
             SplitView.preferredWidth: window.codeEditorExpanded
+                                      || window.blockWorkspaceExpanded
                                       ? window.width : 390
-            SplitView.minimumWidth: window.codeEditorExpanded ? 0 : 340
-            SplitView.maximumWidth: window.codeEditorExpanded
-                                    ? window.width : 480
+            SplitView.minimumWidth:
+                window.codeEditorExpanded
+                || window.blockWorkspaceExpanded ? 0 : 340
+            SplitView.maximumWidth:
+                window.codeEditorExpanded
+                || window.blockWorkspaceExpanded
+                ? window.width : 480
             color: AppTheme.panel
 
             ScrollView {
@@ -4516,12 +4524,40 @@ ApplicationWindow {
                         Layout.rightMargin: 20
                         title: qsTr("Search blocks")
 
-                        Blocks.BlockWorkspace {
-                            objectName: "blockWorkspace"
+                        Item {
+                            id: blockWorkspaceHome
+
                             Layout.fillWidth: true
-                            controller: window.controller
-                            viewer: window.viewer
-                            viewport: viewport
+                            implicitHeight: blockWorkspace.implicitHeight
+
+                            Blocks.BlockWorkspace {
+                                id: blockWorkspace
+
+                                objectName: "blockWorkspace"
+                                parent: window.blockWorkspaceExpanded
+                                        ? settingsPanel
+                                        : blockWorkspaceHome
+                                anchors.fill: parent
+                                z: window.blockWorkspaceExpanded ? 10 : 0
+                                expanded: window.blockWorkspaceExpanded
+                                controller: window.controller
+                                viewer: window.viewer
+                                viewport: viewport
+                                onExpansionRequested: {
+                                    (expanded) => {
+                                        window.blockWorkspaceExpanded = expanded
+                                        if (!expanded) {
+                                            Qt.callLater(function() {
+                                                settingsScroll.contentItem
+                                                    .contentY = Math.max(
+                                                        0,
+                                                        blockWorkspaceHome.y
+                                                        - toolTabs.height - 18)
+                                            })
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
 
