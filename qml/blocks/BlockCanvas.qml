@@ -5,7 +5,12 @@ import "." as Blocks
 
 // Free-form block canvas. The search script and every loose block live
 // at positions the user chooses: drag the background to pan, Ctrl+wheel
-// to zoom, and drag a loose block by its card to move it.
+// to zoom, and drag any block by its card to move it. Statements snap
+// into compatible stacks, number reporters snap into number slots, and
+// evaluation reporters snap into the hat's evaluator socket; dropping on
+// empty space parks the block as a loose draft. The model is only
+// touched when a drag ends, so a gesture never destroys the item that
+// started it.
 Rectangle {
     id: root
 
@@ -29,6 +34,15 @@ Rectangle {
     // New loose blocks cascade so repeated drops stay distinguishable.
     property int dropCascade: 0
 
+    // Active drag state (JS object), plus published highlights the
+    // targets render: the insertion caret, the glowing slot, and the
+    // evaluator socket.
+    property var dragState: null
+    property int draggingBlockId: 0
+    property var insertHighlight: null
+    property var slotHighlight: null
+    property bool evaluatorHighlight: false
+
     function mapPosition(item, x, y) {
         return world.mapFromItem(item, x, y)
     }
@@ -49,6 +63,219 @@ Rectangle {
 
     function clamp(value, minimum, maximum) {
         return Math.max(minimum, Math.min(maximum, value))
+    }
+
+    // ---- Drag lifecycle (driven by every block's card drag area) ----
+
+    function dragPressed(view, area, mouse) {
+        if (!editingEnabled || !view.blockInformation)
+            return
+        const origin = mapPosition(area, 0, 0)
+        const cursor = mapPosition(area, mouse.x, mouse.y)
+        dragState = {
+            blockId: view.blockId,
+            shape: view.blockInformation.shape,
+            optionKind: view.blockInformation.optionKind,
+            label: view.headerText,
+            color: view.blockInformation.color,
+            width: Math.max(170, view.width),
+            originX: origin.x,
+            originY: origin.y,
+            grabDX: cursor.x - origin.x,
+            grabDY: cursor.y - origin.y,
+            cursorX: cursor.x,
+            cursorY: cursor.y,
+            wasLoose: view.canvasIsLoose,
+            started: false,
+            target: null
+        }
+    }
+
+    function dragMoved(area, mouse) {
+        if (!dragState)
+            return
+        const cursor = mapPosition(area, mouse.x, mouse.y)
+        if (!dragState.started) {
+            if (Math.abs(cursor.x - dragState.cursorX) < 5
+                    && Math.abs(cursor.y - dragState.cursorY) < 5)
+                return
+            dragState.started = true
+            draggingBlockId = dragState.blockId
+            dragGhost.label = dragState.label
+            dragGhost.accent = dragState.color
+            dragGhost.width = dragState.width
+            dragGhost.x = dragState.originX
+            dragGhost.y = dragState.originY
+            dragGhost.visible = true
+        }
+        dragGhost.x = cursor.x - dragState.grabDX
+        dragGhost.y = cursor.y - dragState.grabDY
+        updateSnapTarget()
+    }
+
+    function dragReleased() {
+        if (!dragState)
+            return
+        const state = dragState
+        dragState = null
+        draggingBlockId = 0
+        clearHighlights()
+        dragGhost.visible = false
+        if (!state.started)
+            return
+        if (state.target) {
+            if (state.target.type === "insert") {
+                // The gap index counts the substack as currently shown;
+                // attachBlock indexes it after the child is detached.
+                let index = state.target.index
+                const ids = state.target.sequence.blockIds
+                const current = ids.indexOf(state.blockId)
+                if (current !== -1 && current < index)
+                    index -= 1
+                controller.attachBlock(state.target.parentId, index,
+                                       state.blockId)
+            } else if (state.target.type === "slot") {
+                // A displaced chip is parked beside the slot.
+                controller.graftReporterBlock(
+                            state.target.blockId, state.target.key,
+                            state.blockId,
+                            dragGhost.x + dragGhost.width + 16, dragGhost.y)
+            } else if (state.target.type === "evaluator") {
+                controller.setEvaluatorBlockId(state.blockId)
+            }
+            return
+        }
+        if (state.shape === "hat" || state.wasLoose)
+            controller.setBlockPosition(state.blockId, dragGhost.x,
+                                        dragGhost.y)
+        else
+            controller.detachBlockToCanvas(state.blockId, dragGhost.x,
+                                           dragGhost.y)
+    }
+
+    function clearHighlights() {
+        insertHighlight = null
+        slotHighlight = null
+        evaluatorHighlight = false
+    }
+
+    // ---- Snap detection: walk the live item tree ----
+
+    function walkItems(item, visit) {
+        visit(item)
+        for (let index = 0; index < item.children.length; ++index)
+            walkItems(item.children[index], visit)
+    }
+
+    function updateSnapTarget() {
+        clearHighlights()
+        dragState.target = null
+        if (!dragState)
+            return
+        const centerX = dragGhost.x + dragGhost.width / 2
+        const centerY = dragGhost.y + dragGhost.height / 2
+        if (dragState.shape === "reporter") {
+            updateReporterTarget(centerX, centerY)
+            return
+        }
+        updateStatementTarget(centerX, centerY)
+    }
+
+    function updateReporterTarget(centerX, centerY) {
+        let best = null
+        if (dragState.optionKind === "evaluation") {
+            walkItems(stackLayer, (item) => {
+                if (item.objectName !== "hatSockets" || best !== null)
+                    return
+                const origin = mapPosition(item, 0, 0)
+                if (centerX >= origin.x - 8
+                        && centerX <= origin.x + item.width + 8
+                        && centerY >= origin.y - 8
+                        && centerY <= origin.y + item.height + 8)
+                    best = { type: "evaluator" }
+            })
+            if (best !== null)
+                evaluatorHighlight = true
+            dragState.target = best
+            return
+        }
+        if (dragState.optionKind !== "")
+            return
+        walkItems(stackLayer, (item) => {
+            if (!item.objectName
+                    || item.objectName.substring(0, 9) !== "blockSlot"
+                    || item.canvas !== root
+                    || item.fieldKind !== "number"
+                    || item.blockId === dragState.blockId)
+                return
+            const origin = mapPosition(item, 0, 0)
+            if (centerX < origin.x - 6
+                    || centerX > origin.x + item.width + 6
+                    || centerY < origin.y - 6
+                    || centerY > origin.y + item.height + 6)
+                return
+            const distance = (centerX - (origin.x + item.width / 2)) ** 2
+                    + (centerY - (origin.y + item.height / 2)) ** 2
+            if (best === null || distance < best.distance)
+                best = {
+                    type: "slot",
+                    blockId: item.blockId,
+                    key: item.fieldKey,
+                    distance: distance
+                }
+        })
+        if (best !== null)
+            slotHighlight = { blockId: best.blockId, key: best.key }
+        dragState.target = best
+    }
+
+    function updateStatementTarget(centerX, centerY) {
+        const containerDrag = dragState.shape === "container"
+        let best = null
+        walkItems(stackLayer, (item) => {
+            if (item.objectName !== "blockSequence" || item.canvas !== root)
+                return
+            if (item.ownerIsHat !== containerDrag)
+                return
+            if (item.ownerBlockId === dragState.blockId)
+                return
+            const origin = mapPosition(item, 0, 0)
+            const overlap = Math.min(dragGhost.x + dragGhost.width,
+                                     origin.x + item.width)
+                    - Math.max(dragGhost.x, origin.x)
+            if (overlap < 24)
+                return
+            const gaps = item.gapList()
+            for (let index = 0; index < gaps.length; ++index) {
+                const worldGap = mapPosition(item, 0, gaps[index])
+                const distance = Math.abs(centerY - worldGap.y)
+                if (distance > 44)
+                    continue
+                const score = distance - overlap * 0.1
+                if (best === null || score < best.score)
+                    best = {
+                        type: "insert",
+                        parentId: item.ownerBlockId,
+                        index: index,
+                        sequence: item,
+                        localY: gaps[index],
+                        score: score
+                    }
+            }
+        })
+        if (best !== null) {
+            insertHighlight = {
+                sequence: best.sequence,
+                localY: best.localY,
+                color: dragState.color
+            }
+            dragState.target = {
+                type: "insert",
+                parentId: best.parentId,
+                index: best.index,
+                sequence: best.sequence
+            }
+        }
     }
 
     function recomputeBounds() {
@@ -132,6 +359,7 @@ Rectangle {
         Item {
             id: world
 
+            objectName: "blockWorld"
             property real contentRight: 480
             property real contentBottom: 360
 
@@ -177,6 +405,43 @@ Rectangle {
                         onArmRequested: (blockId, key) =>
                             root.armRequested(blockId, key)
                     }
+                }
+            }
+
+            // Drag ghost: follows the cursor while a block is lifted.
+            Rectangle {
+                id: dragGhost
+
+                objectName: "blockDragGhost"
+                visible: false
+                z: 1000
+                height: 36
+                radius: 8
+                opacity: 0.92
+                color: ThemeControls.AppTheme.surface
+                border.width: 1
+
+                property string label: ""
+                property color accent: ThemeControls.AppTheme.border
+
+                Rectangle {
+                    anchors.left: parent.left
+                    anchors.leftMargin: 1
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: 4
+                    radius: 2
+                    color: dragGhost.accent
+                }
+
+                Label {
+                    anchors.fill: parent
+                    anchors.leftMargin: 12
+                    anchors.rightMargin: 8
+                    verticalAlignment: Text.AlignVCenter
+                    text: dragGhost.label
+                    elide: Text.ElideRight
+                    font.weight: Font.DemiBold
                 }
             }
         }

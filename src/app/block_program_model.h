@@ -66,7 +66,13 @@ public:
     Q_INVOKABLE bool detachBlockToCanvas(int blockId, double x, double y);
     Q_INVOKABLE bool graftReporterBlock(int blockId,
                                         const QString &key,
-                                        int reporterId);
+                                        int reporterId,
+                                        double x,
+                                        double y);
+    Q_INVOKABLE bool detachReporterToCanvas(int blockId,
+                                            const QString &key,
+                                            double x,
+                                            double y);
     Q_INVOKABLE bool setEvaluatorBlockId(int blockId);
 
     // Text interchange for tests and interchange with other tools.

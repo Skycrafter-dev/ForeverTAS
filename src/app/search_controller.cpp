@@ -771,8 +771,18 @@ bool SearchController::detachBlockToCanvas(int blockId, double x, double y) {
 
 bool SearchController::graftReporterBlock(int blockId,
                                           const QString &key,
-                                          int reporterId) {
-    return configuration_.graftReporterBlock(blockId, key, reporterId);
+                                          int reporterId,
+                                          double x,
+                                          double y) {
+    return configuration_.graftReporterBlock(blockId, key, reporterId,
+                                             x, y);
+}
+
+bool SearchController::detachReporterToCanvas(int blockId,
+                                              const QString &key,
+                                              double x,
+                                              double y) {
+    return configuration_.detachReporterToCanvas(blockId, key, x, y);
 }
 
 bool SearchController::setEvaluatorBlockId(int blockId) {

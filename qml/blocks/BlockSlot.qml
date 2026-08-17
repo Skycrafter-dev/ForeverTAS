@@ -13,10 +13,23 @@ Item {
     id: root
 
     property var controller
+    property var canvas: null
     property int blockId: 0
     property var fieldData: null
     property bool compact: false
     property var armedSlot: null
+
+    // Drop-target metadata read by the canvas while a number reporter is
+    // dragged.
+    objectName: "blockSlot"
+    readonly property string fieldKey:
+        fieldData ? fieldData.key : ""
+    readonly property string fieldKind:
+        fieldData ? fieldData.kind : ""
+    readonly property bool highlighted:
+        canvas !== null && canvas.slotHighlight !== null
+        && canvas.slotHighlight.blockId === root.blockId
+        && canvas.slotHighlight.key === root.fieldKey
 
     signal armRequested(int blockId, string key)
 
@@ -33,6 +46,18 @@ Item {
     visible: !mirrored && fieldData !== null
     implicitHeight: visible ? slotRow.implicitHeight : 0
     implicitWidth: slotRow.implicitWidth
+
+    // Glow while a number reporter hovers this slot.
+    Rectangle {
+        anchors.fill: parent
+        anchors.margins: -3
+        z: -1
+        radius: 8
+        visible: root.highlighted
+        color: "transparent"
+        border.width: 2
+        border.color: ThemeControls.AppTheme.focus
+    }
 
     RowLayout {
         id: slotRow
@@ -259,8 +284,24 @@ Item {
                                 + (root.fieldData ? root.fieldData.key : "")
                     text: "×"
                     enabled: !root.controller.running
-                    onClicked: root.controller.detachReporter(
-                                   root.blockId, root.fieldData.key)
+                    onClicked: {
+                        // Park the chip beside its slot instead of
+                        // deleting it; it can be deleted once loose.
+                        if (root.canvas) {
+                            const spot = root.canvas.mapPosition(
+                                        reporterChip, 0,
+                                        reporterChip.height + 10)
+                            root.controller.detachReporterToCanvas(
+                                        root.blockId, root.fieldData.key,
+                                        spot.x, spot.y)
+                        } else {
+                            root.controller.detachReporter(
+                                        root.blockId, root.fieldData.key)
+                        }
+                    }
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Unplug this value block onto the "
+                                       + "canvas")
                 }
             }
         }

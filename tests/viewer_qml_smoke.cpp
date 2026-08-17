@@ -2639,26 +2639,154 @@ int main(int argc, char **argv) {
                                     .toBool() &&
                             enumCombo->property("slotStyled")
                                     .toBool();
+                    // Reordering is drag-driven; the card keeps its
+                    // remove control.
                     const bool modifierPassLayoutValid =
                             firstMutatorId != 0 &&
-                            FindBlockControl(
-                                    rootItem,
-                                    QStringLiteral("blockUp") +
-                                            QString::number(
-                                                    firstMutatorId)) !=
-                                    nullptr &&
-                            FindBlockControl(
-                                    rootItem,
-                                    QStringLiteral("blockDown") +
-                                            QString::number(
-                                                    firstMutatorId)) !=
-                                    nullptr &&
                             FindBlockControl(
                                     rootItem,
                                     QStringLiteral("blockRemove") +
                                             QString::number(
                                                     firstMutatorId)) !=
                                     nullptr;
+                    // Drag the mutation window out onto empty canvas
+                    // space, then drag it back over the hat's window gap:
+                    // exercises the full card-drag -> detach -> gap snap
+                    // -> attach pipeline end to end.
+                    const bool canvasDragValid = [&]() {
+                        if (firstMutatorId == 0 || rootItem == nullptr)
+                            return false;
+                        auto *const quickWindow = qobject_cast<QQuickWindow *>(
+                                root);
+                        auto *const worldItem = qobject_cast<QQuickItem *>(
+                                root->findChild<QObject *>(
+                                        QStringLiteral("blockWorld")));
+                        if (quickWindow == nullptr || worldItem == nullptr)
+                            return false;
+                        auto mapToCanvas = [&](QQuickItem *const item,
+                                               const QPointF &local) {
+                            return worldItem->mapFromItem(item, local);
+                        };
+                        auto sendEvent = [&](QEvent::Type type,
+                                             const QPointF &scene,
+                                             Qt::MouseButton button,
+                                             Qt::MouseButtons buttons) {
+                            const QPoint global = quickWindow->mapToGlobal(
+                                    scene.toPoint());
+                            QMouseEvent event(type,
+                                              scene,
+                                              scene,
+                                              global,
+                                              button,
+                                              buttons,
+                                              Qt::NoModifier);
+                            QCoreApplication::sendEvent(quickWindow, &event);
+                            QCoreApplication::processEvents();
+                        };
+                        auto itemView = [&](const QString &name) {
+                            return qobject_cast<QQuickItem *>(
+                                    FindBlockControl(rootItem, name));
+                        };
+                        auto dragCardTo = [&](QQuickItem *const view,
+                                              const QPointF &cursorWorld) {
+                            const QPointF grabLocal(view->width() * 0.3, 8.0);
+                            const QPointF originWorld =
+                                    mapToCanvas(view, QPointF(0, 0));
+                            const QPointF cursorPressWorld =
+                                    mapToCanvas(view, grabLocal);
+                            const QPointF grabOffset(
+                                    cursorPressWorld - originWorld);
+                            QPointF pressScene =
+                                    worldItem->mapToScene(
+                                            cursorPressWorld);
+                            sendEvent(QEvent::MouseButtonPress, pressScene,
+                                      Qt::LeftButton, Qt::LeftButton);
+                            const QPointF start =
+                                    mapToCanvas(
+                                            view,
+                                            QPointF(view->width() * 0.3,
+                                                    8.0));
+                            for (int step = 1; step <= 6; ++step) {
+                                const QPointF cursor =
+                                        start + (cursorWorld - start) *
+                                                (static_cast<qreal>(step)
+                                                 / 6.0);
+                                sendEvent(QEvent::MouseMove,
+                                          worldItem->mapToScene(cursor),
+                                          Qt::NoButton, Qt::LeftButton);
+                            }
+                            sendEvent(QEvent::MouseButtonRelease,
+                                      worldItem->mapToScene(cursorWorld),
+                                      Qt::LeftButton, Qt::NoButton);
+                        };
+
+                        const QVariantList canvasBefore =
+                                controller.blockCanvas();
+                        const int atomBefore = FirstWindowAtomId(controller);
+                        QQuickItem *const windowView = itemView(
+                                QStringLiteral("blockView") +
+                                QString::number(firstMutatorId));
+                        if (windowView == nullptr)
+                            return false;
+
+                        // 1) Drag the window out to empty canvas space.
+                        const QPointF parkWorld(
+                                worldItem->width() * 0.55 + 80, 60);
+                        dragCardTo(windowView, parkWorld);
+                        const QVariantList canvasDetached =
+                                controller.blockCanvas();
+                        bool detachedOnCanvas = canvasDetached.size() ==
+                                canvasBefore.size() + 1;
+                        for (const QVariant &entry : canvasDetached) {
+                            if (entry.toMap()
+                                        .value(QStringLiteral("blockId"))
+                                        .toInt() == firstMutatorId &&
+                                entry.toMap()
+                                        .value(QStringLiteral("isScript"))
+                                        .toBool()) {
+                                detachedOnCanvas = false;
+                            }
+                        }
+                        if (!WindowIds(controller).isEmpty())
+                            detachedOnCanvas = false;
+
+                        // 2) Drag it back over the hat's window gap.
+                        QQuickItem *const hatSequence = [&]() {
+                            const auto candidates = rootItem->findChildren<
+                                    QQuickItem *>(
+                                    QStringLiteral("blockSequence"));
+                            for (QQuickItem *const candidate : candidates) {
+                                if (candidate->property("ownerIsHat")
+                                            .toBool())
+                                    return candidate;
+                            }
+                            return static_cast<QQuickItem *>(nullptr);
+                        }();
+                        if (hatSequence == nullptr || !detachedOnCanvas)
+                            return false;
+                        QQuickItem *const looseView = itemView(
+                                QStringLiteral("blockView") +
+                                QString::number(firstMutatorId));
+                        if (looseView == nullptr)
+                            return false;
+                        const qreal ghostWidth =
+                                qMax<qreal>(170.0, looseView->width());
+                        const QPointF gapWorld = mapToCanvas(
+                                hatSequence,
+                                QPointF(hatSequence->width() * 0.5, 4.0));
+                        const QPointF dropCursor(
+                                gapWorld.x() - ghostWidth / 2 + 40,
+                                gapWorld.y() + 12);
+                        dragCardTo(looseView, dropCursor);
+                        QCoreApplication::processEvents();
+
+                        return controller.blockCanvas().size() ==
+                                canvasBefore.size() &&
+                                WindowIds(controller).size() == 1 &&
+                                FirstWindowAtomId(controller) ==
+                                        atomBefore;
+                    }();
+
                     const bool debuggerSourceTreeScrollable = [&]() {
                         if (simulationSourceTree == nullptr ||
                             simulationSourceTreeScrollBar == nullptr) {
@@ -4276,7 +4404,8 @@ int main(int argc, char **argv) {
                             targetLayoutUpdatesImmediately &&
                             configurationSectionsValid &&
                             comboSlotsStyled && settingComboTextValid &&
-                            modifierPassLayoutValid && debuggerUiValid &&
+                            modifierPassLayoutValid && canvasDragValid &&
+                            debuggerUiValid &&
                             wheelScrollingValid &&
                             dropdownStateUpdates &&
                             perturbationSliderEditorsValid &&
@@ -4362,6 +4491,7 @@ int main(int argc, char **argv) {
                                 << ", comboStyle=" << comboSlotsStyled
                                 << ", comboText=" << settingComboTextValid
                                 << ", passLayout=" << modifierPassLayoutValid
+                                << ", canvasDrag=" << canvasDragValid
                                 << ", debugger=" << debuggerUiValid
                                 << "/" << codeExpansionValid
                                 << ", wheel=" << wheelScrollingValid

@@ -17,21 +17,18 @@ ColumnLayout {
     property var viewport
     property int blockId: 0
     property var armedSlot: null
-    property int moveIndex: -1
-    property int moveCount: 0
     // Canvas state: only the script hat renders the evaluator socket;
     // loose blocks (parked on the canvas, not wired into the script)
     // render muted and drag by their card.
     property bool isScriptHat: false
     property bool canvasLoose: false
-    property bool canvasDraggable: false
+    property bool canvasIsLoose: false
+    // The owning canvas; wired through sequences, sockets, and slots so
+    // drags and drop highlighting work at any depth.
+    property var canvas: null
 
     // Emitted when a slot wants to (dis)arm for reporter attachment.
     signal armRequested(int blockId, string key)
-    // Emitted by the card drag underlay while the owning stack drags.
-    signal canvasDragPressed(var area, var mouse)
-    signal canvasDragMoved(var area, var mouse)
-    signal canvasDragReleased()
 
     property var blockInformation: null
 
@@ -45,9 +42,18 @@ ColumnLayout {
 
     readonly property string shape: blockInformation
                                      ? blockInformation.shape : ""
-    readonly property bool isStack: shape === "stack"
+    readonly property string headerText: {
+        if (!blockInformation)
+            return ""
+        if (shape === "hat")
+            return qsTr("search: %1").arg(blockInformation.label)
+        if (shape === "container")
+            return qsTr("mutate %1").arg(blockInformation.label)
+        if (shape === "stack")
+            return qsTr("op: %1").arg(blockInformation.label)
+        return qsTr("evaluate: %1").arg(blockInformation.label)
+    }
     readonly property bool isContainer: shape === "container"
-    readonly property bool movable: isStack || isContainer
     readonly property int evaluatorId: blockInformation
                                       ? blockInformation.evaluator : 0
     readonly property var substackIds: blockInformation
@@ -89,13 +95,16 @@ ColumnLayout {
         root.armRequested(blockId, key)
     }
 
+    readonly property real dragOpacity:
+        canvas && canvas.draggingBlockId === root.blockId ? 0.0 : 1.0
+
     Rectangle {
         id: blockCard
 
         Layout.fillWidth: true
         implicitHeight: headerRow.implicitHeight + 12
         radius: 10
-        opacity: root.canvasLoose ? 0.85 : 1.0
+        opacity: (root.canvasLoose ? 0.85 : 1.0) * root.dragOpacity
         color: ThemeControls.AppTheme.surface
         border.width: 1
         border.color: {
@@ -113,8 +122,8 @@ ColumnLayout {
             id: cardDragArea
 
             anchors.fill: parent
-            enabled: root.canvasDraggable && root.controller
-                      && !root.controller.running
+            enabled: root.canvas !== null && root.controller
+                      && !root.controller.running && root.blockId !== 0
             preventStealing: true
             cursorShape: enabled ? Qt.SizeAllCursor : Qt.ArrowCursor
             hoverEnabled: enabled
@@ -123,20 +132,25 @@ ColumnLayout {
 
             onPressed: (mouse) => {
                 moved = false
-                root.canvasDragPressed(cardDragArea, mouse)
+                if (root.canvas)
+                    root.canvas.dragPressed(root, cardDragArea, mouse)
             }
             onPositionChanged: (mouse) => {
-                if (!pressed)
+                if (!pressed || !root.canvas)
                     return
                 moved = true
-                root.canvasDragMoved(cardDragArea, mouse)
+                root.canvas.dragMoved(cardDragArea, mouse)
             }
             onReleased: {
-                if (moved)
-                    root.canvasDragReleased()
+                if (moved && root.canvas)
+                    root.canvas.dragReleased()
                 moved = false
             }
-            onCanceled: moved = false
+            onCanceled: {
+                if (moved && root.canvas)
+                    root.canvas.dragReleased()
+                moved = false
+            }
         }
 
         HoverHandler {
@@ -174,17 +188,7 @@ ColumnLayout {
                 id: blockHeaderLabel
 
                 Layout.fillWidth: true
-                text: {
-                    if (!root.blockInformation)
-                        return ""
-                    if (root.shape === "hat")
-                        return qsTr("search: %1").arg(root.blockInformation.label)
-                    if (root.shape === "container")
-                        return qsTr("mutate %1").arg(root.blockInformation.label)
-                    if (root.shape === "stack")
-                        return qsTr("op: %1").arg(root.blockInformation.label)
-                    return qsTr("evaluate: %1").arg(root.blockInformation.label)
-                }
+                text: root.headerText
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
 
@@ -195,33 +199,6 @@ ColumnLayout {
                 ToolTip.delay: 350
                 ToolTip.text: root.blockInformation
                               ? root.blockInformation.label : ""
-            }
-
-            ThemeControls.ThemedToolButton {
-                objectName: "blockUp" + root.blockId
-                visible: root.movable
-                text: "↑"
-                enabled: !root.controller.running && root.moveIndex > 0
-                onClicked: root.controller.moveBlock(root.blockId,
-                                                     root.moveIndex - 1)
-                ToolTip.visible: hovered
-                ToolTip.text: root.isContainer
-                              ? qsTr("Run this window earlier")
-                              : qsTr("Run this operation earlier")
-            }
-
-            ThemeControls.ThemedToolButton {
-                objectName: "blockDown" + root.blockId
-                visible: root.movable
-                text: "↓"
-                enabled: !root.controller.running
-                         && root.moveIndex + 1 < root.moveCount
-                onClicked: root.controller.moveBlock(root.blockId,
-                                                     root.moveIndex + 1)
-                ToolTip.visible: hovered
-                ToolTip.text: root.isContainer
-                              ? qsTr("Run this window later")
-                              : qsTr("Run this operation later")
             }
 
             ThemeControls.ThemedToolButton {
@@ -270,6 +247,7 @@ ColumnLayout {
                             required property var modelData
 
                             controller: root.controller
+                            canvas: root.canvas
                             blockId: root.blockId
                             fieldData: modelData
                             armedSlot: root.armedSlot
@@ -289,6 +267,7 @@ ColumnLayout {
         visible: root.isScriptHat
         Layout.fillWidth: true
         Layout.leftMargin: 12
+        canvas: root.canvas
         controller: root.controller
         viewer: root.viewer
         viewport: root.viewport
@@ -310,6 +289,9 @@ ColumnLayout {
         visible: root.isScriptHat || root.isContainer
         Layout.fillWidth: true
         Layout.leftMargin: root.isScriptHat ? 12 : 28
+        canvas: root.canvas
+        ownerBlockId: root.blockId
+        ownerIsHat: root.isScriptHat
         controller: root.controller
         viewer: root.viewer
         viewport: root.viewport

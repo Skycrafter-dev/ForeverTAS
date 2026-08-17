@@ -221,7 +221,13 @@ public slots:
     Q_INVOKABLE bool detachBlockToCanvas(int blockId, double x, double y);
     Q_INVOKABLE bool graftReporterBlock(int blockId,
                                         const QString &key,
-                                        int reporterId);
+                                        int reporterId,
+                                        double x,
+                                        double y);
+    Q_INVOKABLE bool detachReporterToCanvas(int blockId,
+                                            const QString &key,
+                                            double x,
+                                            double y);
     Q_INVOKABLE bool setEvaluatorBlockId(int blockId);
     Q_INVOKABLE bool setEvaluatorBlock(const QString &definitionId);
     Q_INVOKABLE void resetBlocks();

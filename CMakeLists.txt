@@ -643,6 +643,17 @@ if(BUILD_TESTING)
         forevertas_gui
         Qt6::Gui)
 
+    add_executable(forevertas-block-canvas-drag-tests
+        tests/block_canvas_drag_tests.cpp)
+    target_compile_definitions(forevertas-block-canvas-drag-tests PRIVATE
+        FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    target_link_libraries(forevertas-block-canvas-drag-tests PRIVATE
+        forevertas_gui
+        Qt6::Gui
+        Qt6::Qml
+        Qt6::Quick
+        Qt6::QuickControls2)
+
     add_executable(forevertas-whiteboard-tests
         tests/whiteboard_tests.cpp)
     target_compile_definitions(forevertas-whiteboard-tests PRIVATE
@@ -689,6 +700,11 @@ if(BUILD_TESTING)
         RESOURCE_LOCK controller-settings)
     add_test(NAME forevertas-renderer
              COMMAND forevertas-renderer-tests)
+    add_test(NAME forevertas-block-canvas-drag
+             COMMAND forevertas-block-canvas-drag-tests)
+    set_tests_properties(forevertas-block-canvas-drag PROPERTIES
+        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
+        RESOURCE_LOCK controller-settings)
     add_test(NAME forevertas-whiteboard
              COMMAND forevertas-whiteboard-tests)
     set_tests_properties(forevertas-renderer PROPERTIES

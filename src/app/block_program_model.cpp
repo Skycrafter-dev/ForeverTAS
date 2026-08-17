@@ -710,13 +710,30 @@ bool BlockProgramModel::detachBlockToCanvas(int blockId, double x, double y) {
 
 bool BlockProgramModel::graftReporterBlock(int blockId,
                                            const QString &key,
-                                           int reporterId) {
+                                           int reporterId,
+                                           double x,
+                                           double y) {
     const blocks::BlockId ownerId = static_cast<blocks::BlockId>(blockId);
     const blocks::BlockId graftId = static_cast<blocks::BlockId>(reporterId);
     if (ownerId == graftId) return false;
     if (IsWithinSubtree(program_, graftId, ownerId)) return false;
+    blocks::BlockNode *const owner = program_.find(ownerId);
     blocks::BlockNode *const reporter = program_.find(graftId);
-    if (reporter == nullptr) return false;
+    if (owner == nullptr || reporter == nullptr) return false;
+    // A displaced reporter is parked on the canvas at (x, y) instead of
+    // being deleted, so swapping chips never loses work. Parking happens
+    // before the graft: the core garbage-collects reporters that became
+    // unreachable when their slot was overwritten.
+    const auto oldReporter = owner->reporters.find(key.toStdString());
+    const blocks::BlockId displaced =
+            oldReporter == owner->reporters.end() ? 0 : oldReporter->second;
+    if (displaced != 0 && displaced != graftId) {
+        blocks::BlockNode *const displacedNode = program_.find(displaced);
+        if (displacedNode != nullptr && program_.makeTopLevel(displaced)) {
+            displacedNode->x = x;
+            displacedNode->y = y;
+        }
+    }
     if (!program_.graftReporter(ownerId, key.toStdString(), graftId)) {
         return false;
     }
@@ -725,6 +742,26 @@ bool BlockProgramModel::graftReporterBlock(int blockId,
     persist();
     // The reporter may have moved from the canvas or another slot, so the
     // whole structure is re-read.
+    emit structureChanged();
+    return true;
+}
+
+bool BlockProgramModel::detachReporterToCanvas(int blockId,
+                                               const QString &key,
+                                               double x,
+                                               double y) {
+    const blocks::BlockNode *const owner =
+            program_.find(static_cast<blocks::BlockId>(blockId));
+    if (owner == nullptr) return false;
+    const auto found = owner->reporters.find(key.toStdString());
+    if (found == owner->reporters.end()) return false;
+    const blocks::BlockId reporterId = found->second;
+    blocks::BlockNode *const reporter = program_.find(reporterId);
+    if (reporter == nullptr) return false;
+    if (!program_.makeTopLevel(reporterId)) return false;
+    reporter->x = x;
+    reporter->y = y;
+    persist();
     emit structureChanged();
     return true;
 }

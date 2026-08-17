@@ -1599,7 +1599,8 @@ bool TestBlockCanvasEditing(const QString &packsDirectory,
     controller.setBlockField(graftedId, QStringLiteral("value"),
                              QStringLiteral("1500"));
     okay &= Check(controller.graftReporterBlock(
-                          windowId, QStringLiteral("minTimeMs"), graftedId) &&
+                          windowId, QStringLiteral("minTimeMs"), graftedId,
+                          0, 0) &&
                           !CanvasHasEntry(controller, graftedId),
                   "grafting a loose reporter did not remove it from the canvas");
     {
@@ -1623,7 +1624,8 @@ bool TestBlockCanvasEditing(const QString &packsDirectory,
                       "grafted reporter is not exposed on its slot");
     }
     okay &= Check(!controller.graftReporterBlock(
-                          graftedId, QStringLiteral("value"), graftedId),
+                          graftedId, QStringLiteral("value"), graftedId,
+                          0, 0),
                   "grafting a block into its own slot was accepted");
     const int parentOpId =
             controller.addLooseBlock(QStringLiteral("values/add"), 6, 6);
@@ -1633,8 +1635,30 @@ bool TestBlockCanvasEditing(const QString &packsDirectory,
     okay &= Check(nestedId != 0 &&
                           !controller.graftReporterBlock(
                                   nestedId, QStringLiteral("right"),
-                                  parentOpId),
+                                  parentOpId, 0, 0),
                   "grafting a reporter into its own descendant was accepted");
+
+    // Swapping chips parks the displaced reporter on the canvas.
+    const int replacementId = controller.addLooseBlock(
+            QStringLiteral("values/number"), 7, 7);
+    okay &= Check(controller.graftReporterBlock(
+                          windowId, QStringLiteral("minTimeMs"),
+                          replacementId, 210, 190) &&
+                          CanvasHasEntry(controller, graftedId) &&
+                          CanvasEntry(controller, graftedId)
+                                  .value(QStringLiteral("x"))
+                                  .toDouble() == 210.0 &&
+                          !CanvasHasEntry(controller, replacementId),
+                  "displaced reporter was deleted instead of parked");
+
+    // Detaching a chip pulls the reporter back onto the canvas.
+    okay &= Check(controller.detachReporterToCanvas(
+                          windowId, QStringLiteral("minTimeMs"), 150, 260) &&
+                          CanvasHasEntry(controller, replacementId) &&
+                          CanvasEntry(controller, replacementId)
+                                  .value(QStringLiteral("y"))
+                                  .toDouble() == 260.0,
+                  "detaching a chip did not park the reporter on the canvas");
 
     // Evaluation reporters snap into the evaluator socket and back out.
     const int stuntId = controller.addLooseBlock(
