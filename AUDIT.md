@@ -36,6 +36,20 @@ section records what was done.
   key migration persists forward; dropped persisted targets warn; moveBlock
   rejects negative indices; draw-polygon instructions; menu checkmarks; dead
   code removed.
+- `a554272` — **B10 (model half)**: canvas data (`blockCanvas()`, positions,
+  substacks, evaluators in `blockData()`) and policy-checked structural ops
+  (`attachBlock`/`detachBlockToCanvas`/`graftReporterBlock`/
+  `setEvaluatorBlockId`), each covered by controller tests including cycle
+  and shape rejections.
+- `60d888e` — **B10 (canvas)**: the fixed block template is replaced by a
+  free pannable/zoomable canvas; loose blocks are visible, movable,
+  deletable drafts — no more invisible undeletable dead data.
+- `e1f5dca` — **B10 (wiring)**: drag-and-drop with snapping (statement gaps,
+  number slots, evaluator socket); displaced reporters are parked on the
+  canvas, never silently deleted.
+- `e27d919` — **B10 (palette)**: palette entries drag straight onto the
+  canvas (click keeps smart-add); full-window compose mode; snap walks only
+  consider rendered drop targets.
 
 ## A. Critical UI state bugs (wrong data shown / silent data loss)
 
@@ -179,8 +193,9 @@ section records what was done.
   improved error messaging instead of semantic change).
 - **B9** script time ceil-rounding on unaligned origins (latent — needs an
   unaligned-origin replay fixture to validate a change).
-- **B10** loose reporter blocks: the palette no longer creates them silently
-  (hint instead); the underlying canvas affordance is future work.
+- **B10** loose reporter blocks: resolved — the palette places them as
+  visible loose drafts on the free canvas, where they can be dragged into
+  slots or deleted (`a554272`–`e27d919`).
 - **B11** unbounded destructor wait / packs-detection cancellation plumbing.
 - **B12** portal dialog timeout/parenting and silent no-op when the portal is
   unavailable (platform work).

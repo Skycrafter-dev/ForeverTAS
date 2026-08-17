@@ -269,6 +269,47 @@ bool TestAutomaticSeedRandomization() {
     return okay;
 }
 
+bool TestLayoutPersistence() {
+    QSettings().clear();
+    {
+        SearchController controller;
+        if (!Check(qFuzzyCompare(controller.layoutSettingsPanelWidth(),
+                                 390.0) &&
+                           qFuzzyCompare(controller.layoutTimelineWidth(),
+                                         252.0),
+                   "layout widths did not default to the designed sizes")) {
+            return false;
+        }
+        controller.setLayoutSettingsPanelWidth(455.5);
+        controller.setLayoutTimelineWidth(240.0);
+        // Out-of-range values (corrupted storage, tiny windows) clamp to
+        // the ranges the views enforce instead of breaking the layout.
+        controller.setLayoutSettingsPanelWidth(5000.0);
+        controller.setLayoutTimelineWidth(10.0);
+    }
+    {
+        SearchController restored;
+        if (!Check(qFuzzyCompare(restored.layoutSettingsPanelWidth(),
+                                 480.0) &&
+                           qFuzzyCompare(restored.layoutTimelineWidth(),
+                                         220.0),
+                   "clamped layout widths were not restored")) {
+            return false;
+        }
+        restored.setLayoutTimelineWidth(300.0);
+        restored.setLayoutTimelineWidth(300.0);
+        if (!Check(QSettings()
+                           .value(QStringLiteral("layout/timelineWidth"))
+                           .toDouble() <= 300.0,
+                   "layout width storage exceeded the maximum")) {
+            return false;
+        }
+    }
+
+    QSettings().clear();
+    return true;
+}
+
 bool TestTargetVisibilityPersistence() {
     QSettings().clear();
     {
@@ -2454,6 +2495,7 @@ int main(int argc, char **argv) {
 
     bool okay = TestCompactNumberFormatting() &&
             TestAutomaticSeedRandomization() &&
+            TestLayoutPersistence() &&
             TestTargetVisibilityPersistence() &&
             TestAbsoluteTargetPlacement() &&
             TestCuboidTargetModel() &&

@@ -46,6 +46,8 @@ constexpr char kDrawTargetsThroughBlocksKey[] =
         "viewer/drawTargetsThroughBlocks";
 constexpr char kRenderModeKey[] = "viewer/renderMode";
 constexpr char kDarkModeKey[] = "appearance/darkMode";
+constexpr char kLayoutSettingsPanelWidthKey[] = "layout/settingsPanelWidth";
+constexpr char kLayoutTimelineWidthKey[] = "layout/timelineWidth";
 std::atomic_bool gAutomaticPacksSearchScheduled{false};
 
 void ApplyApplicationPalette(bool dark) {
@@ -288,6 +290,20 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             .value(QLatin1String(kRenderModeKey),
                    QStringLiteral("textured"))
             .toString();
+    layoutSettingsPanelWidth_ = qBound(
+            340.0,
+            QSettings()
+                    .value(QLatin1String(kLayoutSettingsPanelWidthKey),
+                           layoutSettingsPanelWidth_)
+                    .toDouble(),
+            480.0);
+    layoutTimelineWidth_ = qBound(
+            220.0,
+            QSettings()
+                    .value(QLatin1String(kLayoutTimelineWidthKey),
+                           layoutTimelineWidth_)
+                    .toDouble(),
+            300.0);
     ApplyApplicationPalette(darkMode_);
     const QString storedBackend = StoredValue(
             kSimulationBackendKey,
@@ -457,6 +473,14 @@ QString SearchController::renderMode() const {
 
 bool SearchController::darkMode() const {
     return darkMode_;
+}
+
+double SearchController::layoutSettingsPanelWidth() const {
+    return layoutSettingsPanelWidth_;
+}
+
+double SearchController::layoutTimelineWidth() const {
+    return layoutTimelineWidth_;
 }
 
 QVariantList SearchController::blockPalette() const {
@@ -699,6 +723,27 @@ void SearchController::setDarkMode(bool value) {
     QSettings().setValue(QLatin1String(kDarkModeKey), value);
     ApplyApplicationPalette(value);
     emit darkModeChanged();
+}
+
+void SearchController::setLayoutSettingsPanelWidth(double value) {
+    const double clamped = qBound(340.0, value, 480.0);
+    if (qFuzzyCompare(layoutSettingsPanelWidth_, clamped)) {
+        return;
+    }
+    layoutSettingsPanelWidth_ = clamped;
+    QSettings().setValue(
+            QLatin1String(kLayoutSettingsPanelWidthKey), clamped);
+    emit layoutSettingsPanelWidthChanged();
+}
+
+void SearchController::setLayoutTimelineWidth(double value) {
+    const double clamped = qBound(220.0, value, 300.0);
+    if (qFuzzyCompare(layoutTimelineWidth_, clamped)) {
+        return;
+    }
+    layoutTimelineWidth_ = clamped;
+    QSettings().setValue(QLatin1String(kLayoutTimelineWidthKey), clamped);
+    emit layoutTimelineWidthChanged();
 }
 
 void SearchController::setRenderMode(const QString &value) {

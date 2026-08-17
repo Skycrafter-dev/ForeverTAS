@@ -445,18 +445,29 @@ ApplicationWindow {
                      && !window.blockWorkspaceExpanded
             color: AppTheme.window
 
-            RowLayout {
+            SplitView {
+                id: workspaceSplit
+
                 anchors.fill: parent
+                orientation: Qt.Horizontal
                 spacing: 0
+
+                handle: Rectangle {
+                    implicitWidth: 1
+                    color: AppTheme.border
+                }
 
                 Rectangle {
                     id: timelinePanel
                     objectName: "timelinePanel"
-                    Layout.preferredWidth: 252
-                    Layout.minimumWidth: 220
-                    Layout.maximumWidth: 300
-                    Layout.fillHeight: true
+                    SplitView.preferredWidth: window.controller
+                                               .layoutTimelineWidth
+                    SplitView.minimumWidth: 220
+                    SplitView.maximumWidth: 300
+                    SplitView.fillHeight: true
                     color: AppTheme.panel
+                    onWidthChanged: window.controller
+                                    .setLayoutTimelineWidth(width)
 
                     ColumnLayout {
                         anchors.fill: parent
@@ -561,17 +572,11 @@ ApplicationWindow {
                     }
                 }
 
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.fillHeight: true
-                    color: AppTheme.border
-                }
-
                 Item {
                     id: viewport
                     objectName: "raceViewport"
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
+                    SplitView.fillWidth: true
+                    SplitView.fillHeight: true
 
                     property real orbitYaw: 35
                     property real orbitPitch: -20
@@ -3825,7 +3830,9 @@ ApplicationWindow {
                                  || window.blockWorkspaceExpanded
             SplitView.preferredWidth: window.codeEditorExpanded
                                       || window.blockWorkspaceExpanded
-                                      ? window.width : 390
+                                      ? window.width
+                                      : window.controller
+                                        .layoutSettingsPanelWidth
             SplitView.minimumWidth:
                 window.codeEditorExpanded
                 || window.blockWorkspaceExpanded ? 0 : 340
@@ -3834,6 +3841,12 @@ ApplicationWindow {
                 || window.blockWorkspaceExpanded
                 ? window.width : 480
             color: AppTheme.panel
+            onWidthChanged: {
+                if (!(window.codeEditorExpanded
+                      || window.blockWorkspaceExpanded)) {
+                    window.controller.setLayoutSettingsPanelWidth(width)
+                }
+            }
 
             ScrollView {
                 id: settingsScroll

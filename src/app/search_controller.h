@@ -78,6 +78,14 @@ class SearchController final : public QObject {
                        darkModeChanged)
     Q_PROPERTY(QString renderMode READ renderMode WRITE setRenderMode NOTIFY
                        renderModeChanged)
+    // User-adjusted panel widths, restored on the next launch. Setters
+    // clamp to the same ranges the views enforce so a stale or corrupted
+    // stored value cannot break the layout.
+    Q_PROPERTY(double layoutSettingsPanelWidth READ layoutSettingsPanelWidth
+                   WRITE setLayoutSettingsPanelWidth NOTIFY
+                       layoutSettingsPanelWidthChanged)
+    Q_PROPERTY(double layoutTimelineWidth READ layoutTimelineWidth WRITE
+                   setLayoutTimelineWidth NOTIFY layoutTimelineWidthChanged)
     Q_PROPERTY(QVariantList blockPalette READ blockPalette CONSTANT)
     Q_PROPERTY(QVariantMap blockScript READ blockScript NOTIFY
                        blockStructureChanged)
@@ -154,6 +162,8 @@ public:
     bool drawTargetsThroughBlocks() const;
     bool darkMode() const;
     QString renderMode() const;
+    double layoutSettingsPanelWidth() const;
+    double layoutTimelineWidth() const;
     QVariantList blockPalette() const;
     QVariantMap blockScript() const;
     QVariantList blockCanvas() const;
@@ -194,6 +204,8 @@ public slots:
     void setDrawTargetsThroughBlocks(bool value);
     void setDarkMode(bool value);
     void setRenderMode(const QString &value);
+    void setLayoutSettingsPanelWidth(double value);
+    void setLayoutTimelineWidth(double value);
     void setEvaluationTargetId(const QString &value);
 
     Q_INVOKABLE void browseForPacksDirectory();
@@ -258,6 +270,8 @@ signals:
     void drawTargetsThroughBlocksChanged();
     void darkModeChanged();
     void renderModeChanged();
+    void layoutSettingsPanelWidthChanged();
+    void layoutTimelineWidthChanged();
     void blockStructureChanged();
     void blockUpdated(int blockId);
     void programTextChanged();
@@ -337,6 +351,8 @@ private:
     bool drawTargetsThroughBlocks_ = false;
     bool darkMode_ = false;
     QString renderMode_;
+    double layoutSettingsPanelWidth_ = 390.0;
+    double layoutTimelineWidth_ = 252.0;
     BlockProgramModel configuration_;
     QString programTextError_;
     QString publishedEvaluationTargetId_;
