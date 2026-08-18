@@ -7,6 +7,7 @@
 #include "evaluators/pose_target_evaluator.h"
 #include "evaluators/stunt_points_evaluator.h"
 #include "evaluators/velocity_evaluator.h"
+#include "evaluators/visual_expression_evaluator.h"
 #include "evaluators/volume_entry_evaluator.h"
 #include "mutations/existing_event_perturbation_mutator.h"
 #include "mutations/input_deletion_mutator.h"
@@ -309,6 +310,19 @@ const ModifierRegistration *FindModifier(
 
 const EvaluationTargetRegistration *FindEvaluationTarget(
         const std::string &id) {
+    if (id == kVisualExpressionEvaluationId) {
+        static const EvaluationTargetRegistration internal{
+                kVisualExpressionEvaluationId,
+                {},
+                "Visual expression",
+                "",
+                {},
+                DefaultVisualExpressionOptionSettings(),
+                {},
+                &ValidateVisualExpressionOptionSettings,
+                &CreateVisualExpressionEvaluator};
+        return &internal;
+    }
     return FindRegistration(EvaluationTargetRegistry(), id);
 }
 

@@ -12,6 +12,7 @@ ApplicationWindow {
 
     required property var controller
     required property var viewer
+    required property var blockEditorBridge
 
     property string renderMode: "textured"
 
@@ -21,6 +22,7 @@ ApplicationWindow {
     }
     property bool codeEditorExpanded: false
     property bool blockWorkspaceExpanded: false
+    property string pendingViewerPointPickBlockId: ""
     readonly property bool rayTracingEnabled:
         renderMode === "textured-rt"
     property real measuredFps: 0
@@ -32,6 +34,15 @@ ApplicationWindow {
         target: AppTheme
         property: "dark"
         value: window.controller.darkMode
+    }
+
+    Connections {
+        target: window.blockEditorBridge
+
+        function onViewerPointPickRequested(blockId) {
+            window.pendingViewerPointPickBlockId = blockId
+            manualInputFocus.forceActiveFocus()
+        }
     }
 
     FrameAnimation {
@@ -2116,7 +2127,12 @@ ApplicationWindow {
                         id: rasterMapView
                         objectName: "rasterMapView"
                         anchors.fill: parent
+                        // Keep the raster scene alive underneath the GPU ray
+                        // tracer while a Blockly point pick is armed. Quick3D
+                        // then provides an exact scenePosition without adding
+                        // a second CPU/GPU ray-intersection implementation.
                         visible: !window.rayTracingEnabled
+                                 || window.pendingViewerPointPickBlockId.length > 0
                         camera: viewCamera
 
                         environment: SceneEnvironment {
@@ -2289,18 +2305,21 @@ ApplicationWindow {
                         CuboidEditorScene {
                             objectName: "rasterCuboidEditorScene"
                             visible: !window.controller.drawTargetsThroughBlocks
+                                     && window.pendingViewerPointPickBlockId.length === 0
                             interactive: true
                         }
 
                         CustomVolumeEditorScene {
                             objectName: "rasterCustomVolumeEditorScene"
                             visible: !window.controller.drawTargetsThroughBlocks
+                                     && window.pendingViewerPointPickBlockId.length === 0
                             interactive: true
                         }
 
                         PoseTargetEditorScene {
                             objectName: "rasterPoseTargetEditorScene"
                             visible: !window.controller.drawTargetsThroughBlocks
+                                     && window.pendingViewerPointPickBlockId.length === 0
                             interactive: true
                         }
 
@@ -2697,6 +2716,19 @@ ApplicationWindow {
                             previousX = mouse.x
                             previousY = mouse.y
                             viewport.beginViewRotation()
+                            if (window.pendingViewerPointPickBlockId.length > 0) {
+                                const picked = rasterMapView.pick(mouse.x, mouse.y)
+                                if (picked.objectHit) {
+                                    const point = picked.scenePosition
+                                    const blockId =
+                                        window.pendingViewerPointPickBlockId
+                                    window.pendingViewerPointPickBlockId = ""
+                                    window.blockEditorBridge.completeViewerPointPick(
+                                        blockId, point.x, point.y, point.z)
+                                    viewport.cuboidPointerCaptured = true
+                                }
+                                return
+                            }
                             if (window.controller.customVolumeDrawing) {
                                 const point = viewport.customPlanePoint(
                                     mouse.x, mouse.y)
@@ -2734,8 +2766,10 @@ ApplicationWindow {
                                        === 0) {
                                     window.controller.poseTargets
                                           .selectTarget(hit.targetIndex)
-                                    window.controller.evaluationTargetId =
-                                        "pose-target"
+                                    if (settingsPanel.panelPage !== 1) {
+                                        window.controller.evaluationTargetId =
+                                            "pose-target"
+                                    }
                                     viewport.beginPoseInteraction(
                                         hit.editorKind,
                                         hit.editorAxis,
@@ -2746,8 +2780,10 @@ ApplicationWindow {
                                        === 0) {
                                     window.controller.customVolumeTargets
                                           .selectTarget(hit.targetIndex)
-                                    window.controller.evaluationTargetId =
-                                        "custom-volume-entry-time"
+                                    if (settingsPanel.panelPage !== 1) {
+                                        window.controller.evaluationTargetId =
+                                            "custom-volume-entry-time"
+                                    }
                                     if (hit.editorKind === "custom-plane") {
                                         window.controller.customVolumeTargets
                                               .setPlane(
@@ -2762,8 +2798,10 @@ ApplicationWindow {
                                 } else {
                                     window.controller.cuboidTargets
                                           .selectTarget(hit.targetIndex)
-                                    window.controller.evaluationTargetId =
-                                        "volume-entry-time"
+                                    if (settingsPanel.panelPage !== 1) {
+                                        window.controller.evaluationTargetId =
+                                            "volume-entry-time"
+                                    }
                                 }
                                 if (hit.editorKind === "move"
                                     || hit.editorKind === "resize") {
@@ -3826,25 +3864,126 @@ ApplicationWindow {
             id: settingsPanel
 
             objectName: "settingsPanel"
+            property int panelPage: 0
+            readonly property real blocksPreferredWidth:
+                Math.min(760, Math.max(520, window.width * 0.48))
+
+            function showPage(page) {
+                if (panelPage === page)
+                    return
+                if (page !== 1)
+                    window.blockWorkspaceExpanded = false
+                panelPage = page
+                if (page === 3) {
+                    if (window.viewer.loaded)
+                        window.viewer.startSimulationDebugger()
+                } else {
+                    window.codeEditorExpanded = false
+                    window.viewer.stopSimulationDebugger()
+                }
+            }
+
             SplitView.fillWidth: window.codeEditorExpanded
                                  || window.blockWorkspaceExpanded
             SplitView.preferredWidth: window.codeEditorExpanded
                                       || window.blockWorkspaceExpanded
                                       ? window.width
+                                      : panelPage === 1
+                                        ? blocksPreferredWidth
                                       : window.controller
                                         .layoutSettingsPanelWidth
             SplitView.minimumWidth:
-                window.codeEditorExpanded
-                || window.blockWorkspaceExpanded ? 0 : 340
+                window.codeEditorExpanded || window.blockWorkspaceExpanded ? 0
+                : panelPage === 1 ? 500 : 340
             SplitView.maximumWidth:
-                window.codeEditorExpanded
-                || window.blockWorkspaceExpanded
-                ? window.width : 480
+                window.codeEditorExpanded || window.blockWorkspaceExpanded
+                  ? window.width
+                : panelPage === 1
+                  ? Math.max(500, window.width - 680)
+                  : 480
             color: AppTheme.panel
             onWidthChanged: {
-                if (!(window.codeEditorExpanded
-                      || window.blockWorkspaceExpanded)) {
+                if (!window.codeEditorExpanded && panelPage !== 1) {
                     window.controller.setLayoutSettingsPanelWidth(width)
+                }
+            }
+
+            Rectangle {
+                id: rightPanelHeader
+
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: parent.top
+                height: 44
+                color: AppTheme.panelAlternate
+                border.width: 1
+                border.color: AppTheme.border
+                z: 2
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 7
+                    anchors.rightMargin: 7
+                    anchors.topMargin: 3
+                    anchors.bottomMargin: 3
+                    spacing: 5
+
+                    TabBar {
+                        id: rightPanelTabs
+
+                        objectName: "toolTabs"
+                        Layout.fillWidth: true
+                        currentIndex: settingsPanel.panelPage < 3
+                                      ? settingsPanel.panelPage : -1
+                        onCurrentIndexChanged: {
+                            if (currentIndex >= 0 && currentIndex < 3
+                                    && currentIndex !== settingsPanel.panelPage)
+                                settingsPanel.showPage(currentIndex)
+                        }
+
+                        ThemedTabButton {
+                            objectName: "setupTab"
+                            text: qsTr("Setup")
+                        }
+
+                        ThemedTabButton {
+                            objectName: "bruteforceTab"
+                            text: qsTr("Blocks")
+                        }
+
+                        ThemedTabButton {
+                            objectName: "runTab"
+                            text: qsTr("Run")
+                        }
+                    }
+
+                    ThemedToolButton {
+                        objectName: "expandBlocksButton"
+                        visible: settingsPanel.panelPage === 1
+                        Layout.preferredWidth: 36
+                        Layout.preferredHeight: 36
+                        text: window.blockWorkspaceExpanded ? "↙" : "⛶"
+                        font.pixelSize: 13
+                        onClicked: window.blockWorkspaceExpanded =
+                                       !window.blockWorkspaceExpanded
+                        ToolTip.visible: hovered
+                        ToolTip.text: window.blockWorkspaceExpanded
+                                      ? qsTr("Restore block workspace")
+                                      : qsTr("Expand block workspace")
+                    }
+
+                    ThemedToolButton {
+                        objectName: "codeDebuggerTab"
+                        Layout.preferredWidth: 36
+                        Layout.preferredHeight: 36
+                        text: "</>"
+                        font.pixelSize: 9
+                        highlighted: settingsPanel.panelPage === 3
+                        enabled: !window.controller.running
+                        onClicked: settingsPanel.showPage(3)
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("Code debugger")
+                    }
                 }
             }
 
@@ -3852,15 +3991,20 @@ ApplicationWindow {
                 id: settingsScroll
 
                 objectName: "settingsScroll"
-                anchors.fill: parent
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: rightPanelHeader.bottom
+                anchors.bottom: parent.bottom
                 clip: true
                 contentWidth: availableWidth
+                visible: settingsPanel.panelPage !== 1
                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                 PanelWheelRedirector {
                     id: settingsWheelRedirector
                     objectName: "settingsWheelRedirector"
                     parent: settingsScroll.parent
                     anchors.fill: parent
+                    visible: settingsScroll.visible
                     flickable: settingsScroll.contentItem
                 }
 
@@ -3875,6 +4019,7 @@ ApplicationWindow {
 
                     ColumnLayout {
                         objectName: "packsDirectorySection"
+                        visible: settingsPanel.panelPage === 0
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -3990,6 +4135,7 @@ ApplicationWindow {
                         id: replaySection
 
                         objectName: "replaySection"
+                        visible: settingsPanel.panelPage === 0
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4093,6 +4239,7 @@ ApplicationWindow {
 
                     ConfigurationSection {
                         objectName: "baseInputScriptSection"
+                        visible: settingsPanel.panelPage === 0
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4206,6 +4353,7 @@ ApplicationWindow {
                         id: appearanceControls
 
                         objectName: "appearanceControls"
+                        visible: settingsPanel.panelPage === 0
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4245,47 +4393,17 @@ ApplicationWindow {
                         }
                     }
 
-                    TabBar {
-                        id: toolTabs
-
-                        objectName: "toolTabs"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        onCurrentIndexChanged: {
-                            if (currentIndex === 1) {
-                                if (window.viewer.loaded)
-                                    window.viewer.startSimulationDebugger()
-                            } else {
-                                window.codeEditorExpanded = false
-                                window.viewer.stopSimulationDebugger()
-                            }
-                        }
-
-                        ThemedTabButton {
-                            id: bruteforceTabButton
-                            objectName: "bruteforceTab"
-                            text: qsTr("Bruteforce")
-
-                        }
-
-                        ThemedTabButton {
-                            id: codeTabButton
-                            objectName: "codeDebuggerTab"
-                            text: qsTr("Code")
-
-                        }
-                    }
-
                     ColumnLayout {
                         id: bruteforceTabContent
 
                         objectName: "bruteforceTabContent"
                         Layout.fillWidth: true
-                        visible: toolTabs.currentIndex === 0
+                        visible: settingsPanel.panelPage === 0
+                                 || settingsPanel.panelPage === 2
                         spacing: 14
 
                     ColumnLayout {
+                        visible: settingsPanel.panelPage === 0
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4474,6 +4592,7 @@ ApplicationWindow {
                     }
 
                     Rectangle {
+                        visible: settingsPanel.panelPage === 0
                         Layout.fillWidth: true
                         Layout.preferredHeight: 1
                         Layout.leftMargin: 20
@@ -4483,6 +4602,7 @@ ApplicationWindow {
 
                     ConfigurationSection {
                         objectName: "conditionsSection"
+                        visible: false
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4531,56 +4651,13 @@ ApplicationWindow {
                     }
 
                     ConfigurationSection {
-                        objectName: "blocksSection"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        title: qsTr("Search blocks")
-
-                        Item {
-                            id: blockWorkspaceHome
-
-                            Layout.fillWidth: true
-                            implicitHeight: blockWorkspace.implicitHeight
-
-                            Blocks.BlockWorkspace {
-                                id: blockWorkspace
-
-                                objectName: "blockWorkspace"
-                                parent: window.blockWorkspaceExpanded
-                                        ? settingsPanel
-                                        : blockWorkspaceHome
-                                anchors.fill: parent
-                                z: window.blockWorkspaceExpanded ? 10 : 0
-                                expanded: window.blockWorkspaceExpanded
-                                controller: window.controller
-                                viewer: window.viewer
-                                viewport: viewport
-                                onExpansionRequested: {
-                                    (expanded) => {
-                                        window.blockWorkspaceExpanded = expanded
-                                        if (!expanded) {
-                                            Qt.callLater(function() {
-                                                settingsScroll.contentItem
-                                                    .contentY = Math.max(
-                                                        0,
-                                                        blockWorkspaceHome.y
-                                                        - toolTabs.height - 18)
-                                            })
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    ConfigurationSection {
                         objectName: "cudaSessionSpecializationSection"
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
-                        visible: window.controller.simulationBackendId
-                                 === "cuda"
+                        visible: settingsPanel.panelPage === 0
+                                 && window.controller.simulationBackendId
+                                    === "cuda"
                         title: qsTr("CUDA fast mode")
 
                         ThemedSwitch {
@@ -4638,7 +4715,9 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
-                        visible: text.length > 0 && !window.controller.running
+                        visible: settingsPanel.panelPage === 2
+                                 && text.length > 0
+                                 && !window.controller.running
                         text: window.controller.validationMessage
                         color: AppTheme.error
                         wrapMode: Text.WordWrap
@@ -4649,7 +4728,8 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
-                        visible: window.controller.running
+                        visible: settingsPanel.panelPage === 2
+                                 && window.controller.running
                         wrapMode: Text.WordWrap
                         text: qsTr("The search runs with the configuration "
                                    + "from its Start; edits made now apply "
@@ -4659,6 +4739,7 @@ ApplicationWindow {
                     }
 
                     RowLayout {
+                        visible: settingsPanel.panelPage === 2
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4687,6 +4768,7 @@ ApplicationWindow {
                     }
 
                     Rectangle {
+                        visible: settingsPanel.panelPage === 2
                         Layout.fillWidth: true
                         Layout.preferredHeight: 1
                         Layout.leftMargin: 20
@@ -4695,6 +4777,7 @@ ApplicationWindow {
                     }
 
                     ColumnLayout {
+                        visible: settingsPanel.panelPage === 2
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4928,8 +5011,8 @@ ApplicationWindow {
                         Layout.rightMargin: 20
                         Layout.preferredHeight: Math.max(
                                                     simulationDebuggerPanel.implicitHeight,
-                                                    settingsScroll.height - 185)
-                        visible: toolTabs.currentIndex === 1
+                                                    settingsScroll.height - 40)
+                        visible: settingsPanel.panelPage === 3
                                  && !window.codeEditorExpanded
 
                         SimulationDebuggerPanel {
@@ -4941,7 +5024,7 @@ ApplicationWindow {
                                     : simulationDebuggerPanelHost
                             anchors.fill: parent
                             z: window.codeEditorExpanded ? 10 : 0
-                            visible: toolTabs.currentIndex === 1
+                            visible: settingsPanel.panelPage === 3
                             expanded: window.codeEditorExpanded
                             viewer: window.viewer
                             onExpansionRequested: function(expanded) {
@@ -4952,7 +5035,7 @@ ApplicationWindow {
                                             Math.max(
                                                 0,
                                                 simulationDebuggerPanelHost.y
-                                                - toolTabs.height - 18)
+                                                - 8)
                                     })
                                 }
                             }
@@ -4964,6 +5047,18 @@ ApplicationWindow {
                         Layout.preferredHeight: 16
                     }
                 }
+            }
+
+            Blocks.BlocklyWorkspace {
+                id: blockWorkspace
+
+                objectName: "blockWorkspace"
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.top: rightPanelHeader.bottom
+                anchors.bottom: parent.bottom
+                visible: settingsPanel.panelPage === 1
+                bridge: window.blockEditorBridge
             }
         }
     }

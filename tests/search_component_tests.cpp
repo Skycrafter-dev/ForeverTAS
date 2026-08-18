@@ -1,5 +1,6 @@
 #include "app/rolling_throughput.h"
 #include "evaluators/iteration_evaluator.h"
+#include "evaluators/visual_expression_evaluator.h"
 #include "input_timeline_time.h"
 #include "mutations/composite_input_mutator.h"
 #include "mutations/input_event_formatter.h"
@@ -624,6 +625,61 @@ bool TestEvaluationTargets() {
         okay &= Check(
                 registration->validateSettings(settings, 10u).has_value(),
                 "stunt target accepted a time between physics ticks");
+    }
+
+    {
+        const auto *const registration = forevertas::FindEvaluationTarget(
+                forevertas::kVisualExpressionEvaluationId);
+        okay &= Check(registration != nullptr,
+                      "generic visual expression runtime was not registered");
+        if (registration != nullptr) {
+            OptionSettings settings =
+                    forevertas::DefaultVisualExpressionOptionSettings();
+            settings["expression"] =
+                    "add magnitude carvel dot normalize carvel "
+                    "dir num 1 num 0 num 0";
+            settings["condition"] = "ge carspeed num 5";
+            auto evaluator = registration->create(settings, 10u);
+            auto session = evaluator->CreateSession();
+            PhysicsSandboxStateView state;
+            state.timeMs = 2000u;
+            state.car.rotationW = 1.0f;
+            state.car.linearSpeed = {3.0f, 4.0f, 0.0f};
+            const auto sample = session->Observe(std::nullopt, state);
+            okay &= Check(
+                    sample && std::abs(sample->score - 5.6) < 1e-9,
+                    "generic vector expression evaluated incorrectly");
+            state.car.linearSpeed = {1.0f, 0.0f, 0.0f};
+            okay &= Check(!session->Observe(std::nullopt, state),
+                          "generic expression condition did not gate scoring");
+
+            settings["direction"] = "minimize";
+            settings["condition"] = "bool 1";
+            settings["expression"] =
+                    "blend distance carpos vec num 3 num 4 num 0 "
+                    "rotdistance carrot rot num 0 num 0 num 0 num 50";
+            evaluator = registration->create(settings, 10u);
+            session = evaluator->CreateSession();
+            state.car.position = {0.0f, 0.0f, 0.0f};
+            state.car.rotationX = 0.0f;
+            state.car.rotationY = 0.0f;
+            state.car.rotationZ = 0.0f;
+            state.car.rotationW = 1.0f;
+            const auto poseBlend = session->Observe(std::nullopt, state);
+            okay &= Check(
+                    poseBlend && std::abs(poseBlend->score - 2.5) < 1e-9,
+                    "generic distance/rotation blend evaluated incorrectly");
+            const EvaluationSample better{2.0, 2000.0, {}};
+            okay &= Check(
+                    poseBlend && evaluator->IsBetter(better, *poseBlend),
+                    "generic minimize direction ranked scores incorrectly");
+
+            settings["expression"] = "div num 1 num 0";
+            evaluator = registration->create(settings, 10u);
+            okay &= Check(
+                    !evaluator->CreateSession()->Observe(std::nullopt, state),
+                    "generic expression produced a non-finite divide-by-zero score");
+        }
     }
 
     return okay;
@@ -2058,6 +2114,25 @@ bool TestCudaConfigurationCoverage() {
                 false,
                 "unsupported CUDA evaluator did not produce an error");
     } catch (const std::invalid_argument &) {
+    }
+    try {
+        const auto evaluator = forevertas::BuildCudaEvaluator(
+                {forevertas::kVisualExpressionEvaluationId,
+                 forevertas::DefaultVisualExpressionOptionSettings()},
+                10u);
+        const auto *const expression =
+                evaluator
+                        ? std::get_if<forevervalidator::experimental::
+                                              PhysicsSandboxCudaExpressionEvaluator>(
+                                  &*evaluator)
+                        : nullptr;
+        okay &= Check(
+                expression != nullptr && !expression->score.empty() &&
+                        !expression->condition.empty(),
+                "generic visual expression did not compile to CUDA bytecode");
+    } catch (...) {
+        okay &= Check(false,
+                      "generic visual expression was rejected by CUDA");
     }
     return okay;
 }

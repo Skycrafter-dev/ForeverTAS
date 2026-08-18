@@ -48,6 +48,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Quick
     Quick3D
     QuickControls2
+    WebChannelQuick
+    WebEngineQuick
     Widgets)
 if(UNIX AND NOT APPLE)
     find_package(Qt6 6.5 REQUIRED COMPONENTS DBus)
@@ -71,7 +73,7 @@ set(FOREVERVALIDATOR_ENABLE_CUDA ${FOREVERTAS_ENABLE_CUDA} CACHE BOOL
 FetchContent_Declare(
     ForeverValidator
     GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-    GIT_TAG 92734f3dada703393690b9870e9fb343904f06d3
+    GIT_TAG 45ff66567c3b4520c072bd5e45cefc3cd1efb834
     GIT_SHALLOW FALSE)
 FetchContent_MakeAvailable(ForeverValidator)
 
@@ -94,6 +96,8 @@ add_library(forevertas_core STATIC
     src/evaluators/stunt_points_evaluator.h
     src/evaluators/velocity_evaluator.cpp
     src/evaluators/velocity_evaluator.h
+    src/evaluators/visual_expression_evaluator.cpp
+    src/evaluators/visual_expression_evaluator.h
     src/evaluators/volume_entry_evaluator.cpp
     src/evaluators/volume_entry_evaluator.h
     src/mutations/composite_input_mutator.cpp
@@ -130,6 +134,12 @@ add_library(forevertas_core STATIC
     src/blocks/block_program.h
     src/blocks/block_program_io.cpp
     src/blocks/block_program_io.h
+    src/blocks/visual_catalog.cpp
+    src/blocks/visual_catalog.h
+    src/blocks/visual_compiler.cpp
+    src/blocks/visual_compiler.h
+    src/blocks/visual_program.cpp
+    src/blocks/visual_program.h
     src/blocks/block_value.cpp
     src/blocks/block_value.h
     src/searches/algorithm_registry.cpp
@@ -183,6 +193,10 @@ add_library(forevertas_gui STATIC
     src/viewer/whiteboard_model.h
     src/app/block_program_model.cpp
     src/app/block_program_model.h
+    src/app/block_editor_bridge.cpp
+    src/app/block_editor_bridge.h
+    src/app/visual_program_json.cpp
+    src/app/visual_program_json.h
     src/app/option_settings_store.h
     src/app/cuboid_target_model.cpp
     src/app/cuboid_target_model.h
@@ -251,6 +265,7 @@ target_link_libraries(forevertas_gui PUBLIC
     Qt6::Gui
     Qt6::Quick
     Qt6::Quick3D
+    Qt6::WebChannelQuick
     Qt6::Widgets)
 if(UNIX AND NOT APPLE)
     target_link_libraries(forevertas_gui PUBLIC Qt6::DBus)
@@ -334,6 +349,20 @@ qt_add_resources(forevertas "forevertas_app_resources"
     PREFIX "/"
     FILES "${forevertas_icon_svg}")
 
+file(GLOB FOREVERTAS_BLOCKLY_MEDIA CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/blockly/media/*")
+set(FOREVERTAS_BLOCKLY_RESOURCE_FILES
+    assets/blockly/index.html
+    assets/blockly/editor.css
+    assets/blockly/editor.js
+    third_party/blockly/blockly_compressed.js
+    third_party/blockly/en.js
+    ${FOREVERTAS_BLOCKLY_MEDIA})
+qt_add_resources(forevertas "blockly_editor_resources"
+    PREFIX "/blockly"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}"
+    FILES ${FOREVERTAS_BLOCKLY_RESOURCE_FILES})
+
 if(WIN32)
     configure_file(
         packaging/windows/forevertas.rc.in
@@ -373,15 +402,7 @@ qt_add_qml_module(forevertas
         qml/ThemedToolButton.qml
         qml/WhiteboardOverlay.qml
         qml/WhiteboardPlanes.qml
-        qml/blocks/BlockCanvas.qml
-        qml/blocks/BlockSequence.qml
-        qml/blocks/BlockSlot.qml
-        qml/blocks/BlockStack.qml
-        qml/blocks/BlockView.qml
-        qml/blocks/BlockWorkspace.qml
-        qml/blocks/HatSockets.qml
-        qml/blocks/PoseTargetBlockDetail.qml
-        qml/blocks/VolumeEntryBlockDetail.qml
+        qml/blocks/BlocklyWorkspace.qml
         qml/settings/ConfigurationSection.qml
         qml/settings/ScrubNumberField.qml
         qml/settings/SettingCombo.qml
@@ -417,7 +438,9 @@ target_link_libraries(forevertas PRIVATE
     Qt6::Qml
     Qt6::Quick
     Qt6::Quick3D
-    Qt6::QuickControls2)
+    Qt6::QuickControls2
+    Qt6::WebChannelQuick
+    Qt6::WebEngineQuick)
 target_compile_definitions(forevertas PRIVATE
     FOREVERTAS_VERSION="${PROJECT_VERSION}")
 
@@ -558,6 +581,9 @@ install(FILES
     packaging/licenses/Qt-GPL-exception-1.0.txt
     packaging/licenses/THIRD_PARTY_NOTICES.md
     DESTINATION "${forevertas_license_destination}")
+install(FILES third_party/blockly/LICENSE
+    DESTINATION "${forevertas_license_destination}"
+    RENAME Blockly-LICENSE.txt)
 if(EXISTS "${forevervalidator_SOURCE_DIR}/LICENSE")
     install(FILES "${forevervalidator_SOURCE_DIR}/LICENSE"
         DESTINATION "${forevertas_license_destination}"
@@ -629,6 +655,15 @@ if(BUILD_TESTING)
         tests/block_program_tests.cpp)
     target_link_libraries(forevertas-block-tests PRIVATE forevertas_core)
 
+    add_executable(forevertas-visual-block-tests
+        tests/visual_program_tests.cpp)
+    target_link_libraries(forevertas-visual-block-tests PRIVATE forevertas_core)
+
+    add_executable(forevertas-block-editor-bridge-tests
+        tests/block_editor_bridge_tests.cpp)
+    target_link_libraries(forevertas-block-editor-bridge-tests PRIVATE
+        forevertas_gui)
+
     add_executable(forevertas-controller-tests
         tests/search_controller_tests.cpp)
     target_link_libraries(forevertas-controller-tests PRIVATE
@@ -642,17 +677,6 @@ if(BUILD_TESTING)
     target_link_libraries(forevertas-renderer-tests PRIVATE
         forevertas_gui
         Qt6::Gui)
-
-    add_executable(forevertas-block-canvas-drag-tests
-        tests/block_canvas_drag_tests.cpp)
-    target_compile_definitions(forevertas-block-canvas-drag-tests PRIVATE
-        FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(forevertas-block-canvas-drag-tests PRIVATE
-        forevertas_gui
-        Qt6::Gui
-        Qt6::Qml
-        Qt6::Quick
-        Qt6::QuickControls2)
 
     add_executable(forevertas-whiteboard-tests
         tests/whiteboard_tests.cpp)
@@ -670,6 +694,10 @@ if(BUILD_TESTING)
             ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-block-tests PRIVATE
             ${FOREVERTAS_WARNING_OPTIONS})
+        target_compile_options(forevertas-visual-block-tests PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
+        target_compile_options(forevertas-block-editor-bridge-tests PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-controller-tests PRIVATE
             ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-renderer-tests PRIVATE
@@ -682,6 +710,12 @@ if(BUILD_TESTING)
              COMMAND forevertas-strategy-tests)
     add_test(NAME forevertas-blocks
              COMMAND forevertas-block-tests)
+    add_test(NAME forevertas-visual-blocks
+             COMMAND forevertas-visual-block-tests)
+    add_test(NAME forevertas-block-editor-bridge
+             COMMAND forevertas-block-editor-bridge-tests)
+    set_tests_properties(forevertas-block-editor-bridge PROPERTIES
+        RESOURCE_LOCK controller-settings)
     add_test(NAME forevertas-no-replay-duration-control
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -694,17 +728,16 @@ if(BUILD_TESTING)
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_cache_control.cmake)
+    add_test(NAME forevertas-blockly-offline-control
+             COMMAND ${CMAKE_COMMAND}
+                -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/blockly_offline_control.cmake)
     add_test(NAME forevertas-controller
              COMMAND forevertas-controller-tests)
     set_tests_properties(forevertas-controller PROPERTIES
         RESOURCE_LOCK controller-settings)
     add_test(NAME forevertas-renderer
              COMMAND forevertas-renderer-tests)
-    add_test(NAME forevertas-block-canvas-drag
-             COMMAND forevertas-block-canvas-drag-tests)
-    set_tests_properties(forevertas-block-canvas-drag PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
-        RESOURCE_LOCK controller-settings)
     add_test(NAME forevertas-whiteboard
              COMMAND forevertas-whiteboard-tests)
     set_tests_properties(forevertas-renderer PROPERTIES
@@ -784,6 +817,16 @@ if(BUILD_TESTING)
                 RESOURCE_LOCK cuda
                 RUN_SERIAL TRUE
                 TIMEOUT 240)
+            add_test(NAME forevertas-cuda-expression-parity
+                     COMMAND forevertas-cuda-search-parity
+                         --expression-only
+                         "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                         "${FOREVERTAS_TEST_REPLAY}")
+            set_tests_properties(forevertas-cuda-expression-parity PROPERTIES
+                LABELS "cuda;parity;blocks;expression"
+                RESOURCE_LOCK cuda
+                RUN_SERIAL TRUE
+                TIMEOUT 600)
             add_test(NAME forevertas-cuda-precise-finish-parity
                      COMMAND forevertas-cuda-search-parity
                          --precise-finish-only
@@ -940,6 +983,11 @@ if(BUILD_TESTING)
             PREFIX "/environment"
             BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment"
             FILES ${FOREVERTAS_ENVIRONMENT_TEXTURES})
+        qt_add_resources(forevertas-viewer-qml-smoke
+            "blockly-editor-resources-test"
+            PREFIX "/blockly"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}"
+            FILES ${FOREVERTAS_BLOCKLY_RESOURCE_FILES})
         target_compile_definitions(forevertas-viewer-qml-smoke PRIVATE
             FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(forevertas-viewer-qml-smoke PRIVATE

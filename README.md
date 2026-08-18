@@ -12,7 +12,7 @@ ForeverTAS -> PhysicsSandbox -> ForeverValidator physics
 ## Dependency
 
 CMake `FetchContent` pins ForeverValidator to the exact commit
-`688071fa82c3d93b3617ac1529a24915c0fe3364`. The embedded build disables the
+`45ff66567c3b4520c072bd5e45cefc3cd1efb834`. The embedded build disables the
 ForeverValidator CLI and tests and links its native asset adapter and core
 simulation library.
 
@@ -54,15 +54,17 @@ Build and launch the Qt 6 Quick application:
 
 Select an installed TMUF `Packs` directory and either a replay or standalone
 `Challenge.Gbx`, enter a base input script, compose the search from blocks,
-then start the search. The Search blocks workspace works like a Scratch
-script: a search block holds one evaluation goal and an ordered stack of
-mutation windows chosen from the categorized palette; each window owns the
-shared from/to times and seed and holds small single-purpose mutation
-blocks (nudge steering, shift existing events, press accelerate, delete
-brake, …), every setting is a typed slot on its block, number slots accept
-value expressions, and switching a block keeps the last values used for
-that kind. The whole script is
-exchanged as a stable text format and persisted as one program.
+then start the search. The **Blocks** tab embeds a locally bundled Blockly
+editor. Search flow is explicit: the bruteforce loop owns ordered mutation,
+simulation and keep-best statements, while small typed reporter/predicate
+blocks compose values, geometry, conditions and objectives. Mutation windows
+own their shared time range and seed, and their statement stack contains
+single-purpose edits such as nudging steering, shifting events, pressing a
+button or deleting an input. The browser is only the editor: C++ parses,
+type-checks, compiles and persists the normalized version-3 program before it
+can affect runtime configuration. Supported generic objective expressions run
+with the same semantics on CPU, regular CUDA and Fast CUDA; CUDA precise finish
+time remains on its dedicated native objective.
 The Browse buttons always open the operating system's file picker rather than
 a Qt-provided dialog.
 The selected file supplies the map and scenario; only the editable script

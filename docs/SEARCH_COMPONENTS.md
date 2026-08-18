@@ -1,9 +1,19 @@
-# Search Components Architecture
+# Search Components Architecture — legacy v2 compatibility layer
 
-This document describes how ForeverTAS turns a Scratch-like block program
-into a running bruteforce search. It is the primary reference for adding
-search features without coupling the controller, the workspace UI, or the
-search engine to individual implementations.
+> **Status:** This document describes the retained version-2/native-block
+> compatibility model. It is no longer the production Blocks editor or the
+> primary visual-language architecture. New block-language/editor work must use
+> [`BLOCK_WORKBENCH_V3.md`](BLOCK_WORKBENCH_V3.md), whose normalized v3 graph,
+> Blockly/WebChannel editor bridge and generic CPU/CUDA expression lowering are
+> authoritative. The v2 components documented below remain relevant only for
+> migration, legacy edits and lossless lowering into the existing search option
+> registries.
+
+This document describes how the retained v2 compatibility model turns its
+Scratch-like block program into a running bruteforce search. It is the reference
+for changing that compatibility path without coupling the controller or search
+engine to individual implementations. It must not be used as the UI contract
+for the production Blockly workbench.
 
 ## Feature Model
 
@@ -62,7 +72,7 @@ src/
 │   └── ...
 │
 └── app/
-    ├── block_program_model.h/.cpp  # QML-facing editing model,
+    ├── block_program_model.h/.cpp  # retained v2 compatibility model,
     │                               # persistence, legacy migration
     ├── option_settings_store.h     # legacy per-option settings loader
     ├── search_controller.h/.cpp    # application coordination
@@ -71,10 +81,7 @@ src/
 qml/
 ├── Main.qml
 └── blocks/
-    ├── BlockWorkspace.qml       # palette + script column with windows
-    ├── BlockView.qml            # generic block rendering
-    ├── BlockSlot.qml            # typed value slots and reporter chips
-    └── target-picker detail components for collection-backed goals
+    └── BlocklyWorkspace.qml     # production WebEngine/WebChannel host
 ```
 
 ## Block Vocabulary
@@ -278,10 +285,12 @@ programText
 Seed randomization on Start rewrites every `isSeed` field — the windows'
 seeds, in substack order — preserving the legacy deterministic stream.
 
-## QML Ownership
+## Legacy QML Ownership
 
-`Main.qml` places one `BlockWorkspace` inside the "Search blocks"
-section. The workspace renders the palette (categories: Search,
+Historically, `Main.qml` placed one `BlockWorkspace` inside the "Search blocks"
+section. That native QML workspace has been removed from production; the
+description below documents its compatibility-era behavior only. It rendered
+the palette (categories: Search,
 Evaluate, Mutate, Values) and the script column:
 
 - Clicking a search block replaces the script hat.

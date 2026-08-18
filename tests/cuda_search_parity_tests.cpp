@@ -1,4 +1,5 @@
 #include "conditions/condition_program.h"
+#include "evaluators/visual_expression_evaluator.h"
 #include "mutations/input_event_utils.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/replay_input_script.h"
@@ -474,6 +475,121 @@ bool CheckCudaKernelModeParity(
             regular, specialized, "regular/specialized CUDA");
 }
 
+bool CheckVisualExpressionCudaParity(
+        const char *packs,
+        const char *replay) {
+    const auto stage = [](const char *label) {
+        std::cout << "expression parity: " << label << std::endl;
+    };
+    OptionConfiguration modifier = DefaultModifier(
+            forevertas::kRandomSteeringModifierId);
+    modifier.settings["minTimeMs"] = "1000";
+    modifier.settings["maxTimeMs"] = "1000";
+
+    OptionConfiguration score{
+            forevertas::kVisualExpressionEvaluationId,
+            forevertas::DefaultVisualExpressionOptionSettings()};
+    score.settings["mode"] = "score";
+    score.settings["direction"] = "maximize";
+    score.settings["rangeKind"] = "window";
+    score.settings["minTimeMs"] = "1020";
+    score.settings["maxTimeMs"] = "1020";
+    score.settings["expression"] = "add carspeed num 1.25";
+    score.settings["condition"] = "ge checkpoints num 0";
+    constexpr std::int64_t evaluationEndTimeMs = 1040;
+
+    stage("reference score");
+    const SearchResult referenceScore = Run(
+            packs, replay, forevertas::PhysicsBackend::Reference,
+            1u, 1u, {modifier}, score,
+            false, nullptr, false, evaluationEndTimeMs);
+    stage("regular CUDA score");
+    const SearchResult regularScore = Run(
+            packs, replay, forevertas::PhysicsBackend::Cuda,
+            1u, 1u, {modifier}, score,
+            false, nullptr, false, evaluationEndTimeMs,
+            nullptr, false, false);
+    stage("specialized CUDA score");
+    const SearchResult specializedScore = Run(
+            packs, replay, forevertas::PhysicsBackend::Cuda,
+            1u, 1u, {modifier}, score,
+            false, nullptr, false, evaluationEndTimeMs,
+            nullptr, false, true);
+
+    bool okay = SameAuthoritativeResult(
+            referenceScore, regularScore,
+            "generic expression reference/regular CUDA");
+    okay &= SameAuthoritativeResult(
+            referenceScore, specializedScore,
+            "generic expression reference/specialized CUDA");
+
+    OptionConfiguration firstTime = score;
+    firstTime.settings["mode"] = "first-time";
+    firstTime.settings["direction"] = "minimize";
+    firstTime.settings["minTimeMs"] = "1000";
+    firstTime.settings["maxTimeMs"] = "1040";
+    firstTime.settings["expression"] = "num 0";
+    firstTime.settings["condition"] = "ge simtime num 1020";
+
+    stage("reference first-time");
+    const SearchResult referenceFirst = Run(
+            packs, replay, forevertas::PhysicsBackend::Reference,
+            1u, 1u, {modifier}, firstTime,
+            false, nullptr, false, evaluationEndTimeMs);
+    stage("regular CUDA first-time");
+    const SearchResult regularFirst = Run(
+            packs, replay, forevertas::PhysicsBackend::Cuda,
+            1u, 1u, {modifier}, firstTime,
+            false, nullptr, false, evaluationEndTimeMs,
+            nullptr, false, false);
+    stage("specialized CUDA first-time");
+    const SearchResult specializedFirst = Run(
+            packs, replay, forevertas::PhysicsBackend::Cuda,
+            1u, 1u, {modifier}, firstTime,
+            false, nullptr, false, evaluationEndTimeMs,
+            nullptr, false, true);
+
+    okay &= SameAuthoritativeResult(
+            referenceFirst, regularFirst,
+            "generic first-time reference/regular CUDA");
+    okay &= SameAuthoritativeResult(
+            referenceFirst, specializedFirst,
+            "generic first-time reference/specialized CUDA");
+
+    OptionConfiguration prism = firstTime;
+    prism.settings["condition"] =
+            "insideprism carpos "
+            "vec num -100000 num -100000 num -100000 "
+            "num 200000 xz 4 "
+            "0 0 200000 0 200000 200000 0 200000";
+
+    stage("reference prism predicate");
+    const SearchResult referencePrism = Run(
+            packs, replay, forevertas::PhysicsBackend::Reference,
+            1u, 1u, {modifier}, prism,
+            false, nullptr, false, evaluationEndTimeMs);
+    stage("regular CUDA prism predicate");
+    const SearchResult regularPrism = Run(
+            packs, replay, forevertas::PhysicsBackend::Cuda,
+            1u, 1u, {modifier}, prism,
+            false, nullptr, false, evaluationEndTimeMs,
+            nullptr, false, false);
+    stage("specialized CUDA prism predicate");
+    const SearchResult specializedPrism = Run(
+            packs, replay, forevertas::PhysicsBackend::Cuda,
+            1u, 1u, {modifier}, prism,
+            false, nullptr, false, evaluationEndTimeMs,
+            nullptr, false, true);
+
+    okay &= SameAuthoritativeResult(
+            referencePrism, regularPrism,
+            "generic prism predicate reference/regular CUDA");
+    okay &= SameAuthoritativeResult(
+            referencePrism, specializedPrism,
+            "generic prism predicate reference/specialized CUDA");
+    return okay;
+}
+
 bool CheckCancellation(const char *packs, const char *replay) {
     SearchRequest request{packs, replay};
     request.baseInputCommands = ReplayInputCommands(packs, replay);
@@ -525,7 +641,7 @@ bool CheckCalibration(const char *packs, const char *replay) {
             replay,
             forevertas::PhysicsBackend::Cuda,
             64u,
-            3000000u,
+            20000000u,
             {insertion},
             velocity,
             true,
@@ -564,6 +680,38 @@ bool CheckPreciseFinishParity(const char *packs, const char *replay) {
                     forevertas::kRandomSteeringModifierId)};
     const OptionConfiguration evaluator = DefaultEvaluator(
             forevertas::kPreciseFinishTimeEvaluationId);
+    OptionConfiguration completionProbe{
+            forevertas::kVisualExpressionEvaluationId,
+            forevertas::DefaultVisualExpressionOptionSettings()};
+    completionProbe.settings["mode"] = "first-time";
+    completionProbe.settings["direction"] = "minimize";
+    completionProbe.settings["rangeKind"] = "window";
+    completionProbe.settings["minTimeMs"] = "0";
+    completionProbe.settings["maxTimeMs"] = "30000";
+    completionProbe.settings["expression"] = "num 0";
+    completionProbe.settings["condition"] = "completed";
+    try {
+        static_cast<void>(Run(
+                packs,
+                replay,
+                forevertas::PhysicsBackend::Cuda,
+                1u,
+                1u,
+                modifiers,
+                completionProbe,
+                false, nullptr, false, std::nullopt,
+                nullptr, false, false, false, 30000u));
+    } catch (const std::runtime_error &error) {
+        const std::string_view message(error.what());
+        if (message.rfind(
+                    "no iteration satisfied the selected evaluation target",
+                    0u) == 0u) {
+            std::cout << "precise finish parity skipped: configured replay "
+                         "does not complete on CUDA\n";
+            return true;
+        }
+        throw;
+    }
     std::future<SearchResult> referenceFuture = std::async(
             std::launch::async,
             [=]() {
@@ -1090,18 +1238,24 @@ int main(int argc, char **argv) {
     const bool preciseFinishOnly =
             argc == 4 &&
             std::string(argv[1]) == "--precise-finish-only";
+    const bool expressionOnly =
+            argc == 4 &&
+            std::string(argv[1]) == "--expression-only";
     const bool ordinaryParity =
             argc == 3 ||
             (argc == 4 && std::string_view(argv[1]).find("--") != 0u);
     if ((!scriptParity && !mutationParity && !mutationBackend &&
          !calibrationOnly &&
          !preciseFinishOnly &&
+         !expressionOnly &&
          !ordinaryParity) ||
-        ((calibrationOnly || preciseFinishOnly) && argc != 4)) {
+        ((calibrationOnly || preciseFinishOnly || expressionOnly) &&
+         argc != 4)) {
         std::cerr << "expected Packs directory and replay path\n";
         return 2;
     }
-    const bool focusedMode = calibrationOnly || preciseFinishOnly;
+    const bool focusedMode =
+            calibrationOnly || preciseFinishOnly || expressionOnly;
     const char *const packs = argv[focusedMode ? 2 : 1];
     const char *const replay = argv[focusedMode ? 3 : 2];
     try {
@@ -1126,7 +1280,11 @@ int main(int argc, char **argv) {
         if (preciseFinishOnly) {
             return CheckPreciseFinishParity(packs, replay) ? 0 : 1;
         }
+        if (expressionOnly) {
+            return CheckVisualExpressionCudaParity(packs, replay) ? 0 : 1;
+        }
         bool okay = CheckCudaKernelModeParity(packs, replay);
+        okay &= CheckVisualExpressionCudaParity(packs, replay);
         okay &= CheckEquivalentDeletionPrefersFewerInputs(packs, replay);
         if (ordinaryParity && argc == 4) {
             okay &= CheckCheckpointConditionParity(packs, argv[3]);

@@ -1,4 +1,5 @@
 #include "app/search_controller.h"
+#include "app/block_editor_bridge.h"
 #include "app/input_preview_binding.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
@@ -11,6 +12,7 @@
 #include <QQuickStyle>
 #include <QTimer>
 #include <QVariant>
+#include <QtWebEngineQuick/qtwebenginequickglobal.h>
 
 int main(int argc, char **argv) {
 #if defined(Q_OS_LINUX)
@@ -27,6 +29,7 @@ int main(int argc, char **argv) {
     }
 #endif
     QQuickStyle::setStyle(QStringLiteral("Basic"));
+    QtWebEngineQuick::initialize();
     QApplication application(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("ForeverTAS"));
     QCoreApplication::setOrganizationDomain(
@@ -38,6 +41,7 @@ int main(int argc, char **argv) {
             QIcon(QStringLiteral(":/icons/forevertas.svg")));
 
     forevertas::app::SearchController controller;
+    forevertas::app::BlockEditorBridge blockEditorBridge(&controller);
     forevertas::viewer::RaceViewerController viewer;
     forevertas::app::BindInputPreview(controller, viewer);
     QObject::connect(
@@ -70,7 +74,9 @@ int main(int argc, char **argv) {
             {QStringLiteral("controller"),
              QVariant::fromValue(static_cast<QObject *>(&controller))},
             {QStringLiteral("viewer"),
-             QVariant::fromValue(static_cast<QObject *>(&viewer))}});
+             QVariant::fromValue(static_cast<QObject *>(&viewer))},
+            {QStringLiteral("blockEditorBridge"),
+             QVariant::fromValue(static_cast<QObject *>(&blockEditorBridge))}});
     QObject::connect(
             &engine,
             &QQmlApplicationEngine::objectCreationFailed,

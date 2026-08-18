@@ -919,6 +919,28 @@ QVariantMap BlockProgramModel::legacyEvaluationSettings(
             QStringLiteral("evaluation"), *registration);
 }
 
+std::optional<blocks::SearchComponentConfiguration>
+BlockProgramModel::compiledComponents() const {
+    const blocks::CompileResult compiled = blocks::CompileProgram(program_);
+    if (!compiled.ok) return std::nullopt;
+    return compiled.configuration;
+}
+
+bool BlockProgramModel::replaceWithComponents(
+        const blocks::SearchComponentConfiguration &components) {
+    const blocks::BlockProgram replacement =
+            blocks::BuildProgramFromComponents(components);
+    const blocks::CompileResult roundTrip = blocks::CompileProgram(replacement);
+    if (!roundTrip.ok || !(roundTrip.configuration == components)) {
+        return false;
+    }
+    program_ = replacement;
+    remembered_.clear();
+    persist();
+    emit structureChanged();
+    return true;
+}
+
 BlockConfigurationValidation BlockProgramModel::validate(
         std::uint32_t tickDurationMs,
         std::uint32_t simulationHorizonMs) const {

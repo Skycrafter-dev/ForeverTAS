@@ -4,6 +4,8 @@
 #include "app/packs_directory_finder.h"
 #include "app/search_worker.h"
 #include "app/system_file_dialog.h"
+#include "blocks/block_catalog.h"
+#include "evaluators/visual_expression_evaluator.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/replay_input_script.h"
 #include "searches/algorithm_registry.h"
@@ -22,6 +24,7 @@
 #include <QTimer>
 
 #include <algorithm>
+#include <random>
 #include <utility>
 
 namespace forevertas::app {
@@ -146,6 +149,58 @@ QString BackendId(PhysicsBackend backend) {
     return QString::fromLatin1(id.data(), static_cast<qsizetype>(id.size()));
 }
 
+bool RandomizeVisualComponentSeeds(
+        blocks::SearchComponentConfiguration *configuration,
+        std::uint32_t entropy) {
+    if (configuration == nullptr) return false;
+    std::mt19937 random(entropy);
+    bool changed = false;
+    const bool haveWindowGroups =
+            configuration->modifierWindowGroups.size() ==
+            configuration->modifiers.size();
+    std::optional<std::size_t> previousGroup;
+    std::uint32_t generated = 0u;
+    for (std::size_t index = 0u; index < configuration->modifiers.size();
+         ++index) {
+        OptionConfiguration &modifier = configuration->modifiers[index];
+        const auto seed = modifier.settings.find("seed");
+        if (seed == modifier.settings.end()) continue;
+        const std::size_t group =
+                haveWindowGroups ? configuration->modifierWindowGroups[index]
+                                 : index;
+        if (!previousGroup || *previousGroup != group) {
+            generated = random();
+            previousGroup = group;
+        }
+        const std::string replacement = std::to_string(generated);
+        if (seed->second != replacement) {
+            seed->second = replacement;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+std::optional<std::string> EvaluationOptionIdForDefinition(
+        const QString &definitionId) {
+    const std::string candidate = definitionId.toStdString();
+    if (const blocks::BlockDefinition *const definition =
+                blocks::FindBlock(candidate)) {
+        if (definition->optionKind == "evaluation" &&
+            !definition->optionId.empty()) {
+            return definition->optionId;
+        }
+        return std::nullopt;
+    }
+    constexpr char prefix[] = "evaluate/";
+    if (candidate.rfind(prefix, 0u) != 0u) return std::nullopt;
+    const EvaluationTargetRegistration *const registration =
+            FindEvaluationTarget(candidate.substr(sizeof(prefix) - 1u));
+    return registration == nullptr
+            ? std::nullopt
+            : std::optional<std::string>(registration->id);
+}
+
 }  // namespace
 
 SearchController::SearchController(QObject *parent)
@@ -178,6 +233,11 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             &SearchController::publishConfigurationChange);
     connect(&configuration_, &BlockProgramModel::blockChanged, this,
             [this](int blockId) {
+                if (!applyingBlockComponents_) {
+                    visualComponents_.reset();
+                    visualCondition_.reset();
+                    visualEvaluationTargetId_.clear();
+                }
                 emit blockUpdated(blockId);
                 // A failed text apply's error is stale once the user
                 // edits the program structurally; programTextChanged
@@ -500,7 +560,29 @@ QString SearchController::programTextError() const {
 }
 
 QString SearchController::evaluationTargetId() const {
+    if (visualComponents_.has_value()) return visualEvaluationTargetId_;
     return configuration_.evaluationTargetId();
+}
+
+std::optional<blocks::SearchComponentConfiguration>
+SearchController::blockComponents() const {
+    return visualComponents_ ? visualComponents_ : configuration_.compiledComponents();
+}
+
+bool SearchController::applyBlockComponents(
+        const blocks::SearchComponentConfiguration &components,
+        std::optional<ConditionProgram> visualCondition) {
+    if (running_) return false;
+    visualComponents_ = components;
+    visualCondition_ = std::move(visualCondition);
+    visualEvaluationTargetId_ =
+            QString::fromStdString(components.evaluationTarget.id);
+    applyingBlockComponents_ = true;
+    const bool representedByLegacyModel =
+            configuration_.replaceWithComponents(components);
+    if (!representedByLegacyModel) publishConfigurationChange();
+    applyingBlockComponents_ = false;
+    return true;
 }
 
 CuboidTargetModel *SearchController::cuboidTargets() {
@@ -648,6 +730,7 @@ void SearchController::setConditionScript(const QString &value) {
     if (conditionScript_ == value) {
         return;
     }
+    if (!applyingBlockComponents_) visualCondition_.reset();
     conditionScript_ = value;
     persist(kConditionScriptKey, value);
     emit conditionScriptChanged();
@@ -831,11 +914,35 @@ bool SearchController::detachReporterToCanvas(int blockId,
 }
 
 bool SearchController::setEvaluatorBlockId(int blockId) {
-    return configuration_.setEvaluatorBlockId(blockId);
+    const QVariantMap block = configuration_.blockData(blockId);
+    const bool validEvaluation =
+            block.value(QStringLiteral("optionKind")).toString() ==
+                    QStringLiteral("evaluation") &&
+            !block.value(QStringLiteral("optionId")).toString().isEmpty();
+    const bool changed = configuration_.setEvaluatorBlockId(blockId);
+    if (!changed && validEvaluation && visualComponents_) {
+        visualComponents_.reset();
+        visualCondition_.reset();
+        visualEvaluationTargetId_.clear();
+        publishConfigurationChange();
+        return true;
+    }
+    return changed;
 }
 
 bool SearchController::setEvaluatorBlock(const QString &definitionId) {
-    return configuration_.setEvaluator(definitionId);
+    const auto requested = EvaluationOptionIdForDefinition(definitionId);
+    if (!requested) return false;
+    const bool changed = configuration_.setEvaluator(definitionId);
+    if (!changed && visualComponents_ &&
+        configuration_.evaluationTargetId().toStdString() == *requested) {
+        visualComponents_.reset();
+        visualCondition_.reset();
+        visualEvaluationTargetId_.clear();
+        publishConfigurationChange();
+        return true;
+    }
+    return changed;
 }
 
 void SearchController::resetBlocks() {
@@ -875,7 +982,7 @@ void SearchController::focusSelectedCustomVolume() {
 }
 
 void SearchController::beginCustomVolumeDrawing() {
-    if (configuration_.evaluationTargetId() ==
+    if (evaluationTargetId() ==
         QString::fromLatin1(kCustomVolumeEntryEvaluationId)) {
         customVolumeTargets_.beginDrawing();
     }
@@ -1026,9 +1133,14 @@ void SearchController::startSearch() {
         refreshValidation();
         return;
     }
-    if (randomizeSeedsOnStart_ &&
-        configuration_.randomizeSeeds(
-                QRandomGenerator::system()->generate())) {
+    bool randomizedSeeds = false;
+    if (randomizeSeedsOnStart_) {
+        const std::uint32_t entropy = QRandomGenerator::system()->generate();
+        randomizedSeeds = visualComponents_
+                ? RandomizeVisualComponentSeeds(&*visualComponents_, entropy)
+                : configuration_.randomizeSeeds(entropy);
+    }
+    if (randomizedSeeds) {
         validation = validate();
         if (!validation.request) {
             refreshValidation();
@@ -1165,7 +1277,12 @@ void SearchController::stopSearch() {
 }
 
 void SearchController::publishConfigurationChange() {
-    const QString evaluationId = configuration_.evaluationTargetId();
+    if (!applyingBlockComponents_) {
+        visualComponents_.reset();
+        visualCondition_.reset();
+        visualEvaluationTargetId_.clear();
+    }
+    const QString evaluationId = evaluationTargetId();
     if (evaluationId != publishedEvaluationTargetId_) {
         publishedEvaluationTargetId_ = evaluationId;
         emit evaluationTargetIdChanged();
@@ -1214,18 +1331,18 @@ SearchController::ValidationResult SearchController::validate() const {
     }
     const std::uint32_t simulationHorizonMs =
             static_cast<std::uint32_t>(horizonValue);
-    const BlockConfigurationValidation configurationValidation =
-            configuration_.validate(
-                    kSearchTickDurationMs,
-                    simulationHorizonMs);
-    if (!configurationValidation.configuration) {
-        return {{}, configurationValidation.error};
+    const auto configuration = blockComponents();
+    if (!configuration) {
+        return {{}, QStringLiteral("The block program does not compile.")};
     }
-    const auto &configuration = *configurationValidation.configuration;
+    if (const auto error = blocks::ValidateSearchComponents(
+                *configuration, kSearchTickDurationMs, simulationHorizonMs)) {
+        return {{}, QString::fromStdString(*error)};
+    }
     ConditionVariables conditionVariables;
-    if (configuration.evaluationTarget.id == kPointTargetEvaluationId) {
+    if (configuration->evaluationTarget.id == kPointTargetEvaluationId) {
         const OptionSettings &settings =
-                configuration.evaluationTarget.settings;
+                configuration->evaluationTarget.settings;
         try {
             conditionVariables.emplace(
                     "bf_target_point",
@@ -1240,10 +1357,16 @@ SearchController::ValidationResult SearchController::validate() const {
                                 "all be valid numbers.")};
         }
     }
-    ConditionCompileResult condition = CompileConditionScript(
-            conditionScript_.toStdString(), conditionVariables);
-    if (condition.error) {
-        return {{}, QString::fromStdString(*condition.error)};
+    std::optional<ConditionProgram> conditionProgram;
+    if (visualCondition_) {
+        conditionProgram = *visualCondition_;
+    } else {
+        ConditionCompileResult condition = CompileConditionScript(
+                conditionScript_.toStdString(), conditionVariables);
+        if (condition.error) {
+            return {{}, QString::fromStdString(*condition.error)};
+        }
+        conditionProgram = std::move(condition.program);
     }
     if (!baseInputScriptError_.isEmpty()) {
         return {{}, baseInputScriptError_};
@@ -1271,13 +1394,27 @@ SearchController::ValidationResult SearchController::validate() const {
         if (!cudaAvailable_) {
             return {{}, cudaStatusText_};
         }
-        if (configuration.evaluationTarget.id ==
+        if (configuration->evaluationTarget.id ==
             kCustomVolumeEntryEvaluationId) {
             return {
                     {},
                     QStringLiteral(
                             "Custom volume targets currently require a CPU "
                             "physics backend.")};
+        }
+        if (configuration->evaluationTarget.id == kVisualExpressionEvaluationId) {
+            std::string expressionError;
+            if (!BuildCudaVisualExpressionEvaluator(
+                        configuration->evaluationTarget.settings,
+                        kSearchTickDurationMs,
+                        &expressionError)) {
+                return {
+                        {},
+                        QString::fromStdString(
+                                expressionError.empty()
+                                        ? "CUDA could not compile the visual objective."
+                                        : expressionError)};
+            }
         }
         calibrateCudaParallelSampleCount =
                 cudaCalibrationEnabled_;
@@ -1307,14 +1444,14 @@ SearchController::ValidationResult SearchController::validate() const {
     request.parallelSampleCount = parallelSampleCount;
     request.calibrateCudaParallelSampleCount =
             calibrateCudaParallelSampleCount;
-    request.searchAlgorithm = configuration.searchAlgorithm;
-    request.modifiers = configuration.modifiers;
-    request.evaluationTarget = configuration.evaluationTarget;
+    request.searchAlgorithm = configuration->searchAlgorithm;
+    request.modifiers = configuration->modifiers;
+    request.evaluationTarget = configuration->evaluationTarget;
     request.baseInputCommands = parsedBaseInputCommands_;
     request.useCudaSessionSpecialization =
             cudaSessionSpecializationEnabled_ && cudaFastModeAvailable_;
     request.simulationHorizonMs = simulationHorizonMs;
-    request.condition = std::move(condition.program);
+    request.condition = std::move(conditionProgram);
     return {std::move(request), {}};
 }
 

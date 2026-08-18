@@ -1,6 +1,7 @@
 #include "searches/cuda_search_configuration.h"
 
 #include "input_timeline_time.h"
+#include "evaluators/visual_expression_evaluator.h"
 #include "searches/algorithm_registry.h"
 #include "searches/option_settings_utils.h"
 
@@ -239,6 +240,18 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
     }
     if (configuration.id == kStuntPointsEvaluationId) {
         return PhysicsSandboxCudaStuntPointsEvaluator{};
+    }
+    if (configuration.id == kVisualExpressionEvaluationId) {
+        std::string error;
+        const auto evaluator = BuildCudaVisualExpressionEvaluator(
+                settings, tickDurationMs, &error);
+        if (!evaluator) {
+            throw std::invalid_argument(
+                    error.empty()
+                            ? "CUDA could not compile the visual expression"
+                            : error);
+        }
+        return *evaluator;
     }
     throw std::invalid_argument(
             "CUDA does not support evaluator: " + configuration.id);

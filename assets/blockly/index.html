@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self' qrc: data:; script-src 'self' qrc: 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' qrc: data:; connect-src 'none'; object-src 'none'; frame-src 'none';">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="editor.css">
+  <script src="qrc:/blockly/third_party/blockly/blockly_compressed.js"></script>
+  <script src="qrc:/blockly/third_party/blockly/en.js"></script>
+  <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+</head>
+<body>
+  <div id="editorShell">
+    <div id="searchDock">
+      <span class="searchIcon">⌕</span>
+      <input id="blockSearch" autocomplete="off" spellcheck="false"
+             placeholder="Search blocks…" aria-label="Search blocks">
+      <button id="clearSearch" type="button" aria-label="Clear search">×</button>
+      <div id="searchResults" role="listbox"></div>
+    </div>
+    <div id="viewerPickDock" hidden>
+      <button id="viewerPickButton" type="button"></button>
+      <span id="viewerPickStatus"></span>
+    </div>
+    <div id="blocklyDiv"></div>
+    <div id="diagnostics" hidden></div>
+    <div id="readOnlyShield" hidden>
+      <div class="readOnlyNotice">Search is running · stop to edit blocks</div>
+    </div>
+    <div id="loadingState">Loading block editor…</div>
+  </div>
+  <script src="editor.js"></script>
+</body>
+</html>

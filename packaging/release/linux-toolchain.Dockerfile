@@ -40,7 +40,7 @@ RUN python3 -m pip install --no-cache-dir \
         "py7zr==1.0.0" \
     && aqt install-qt -O /opt/Qt \
         linux desktop 6.9.3 linux_gcc_64 \
-        -m qtquick3d qtshadertools
+        -m qtquick3d qtshadertools qtwebengine
 
 RUN curl --fail --location --retry 3 \
         "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \

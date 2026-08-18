@@ -170,6 +170,10 @@ public:
     QString programText() const;
     QString programTextError() const;
     QString evaluationTargetId() const;
+    std::optional<blocks::SearchComponentConfiguration> blockComponents() const;
+    bool applyBlockComponents(
+            const blocks::SearchComponentConfiguration &components,
+            std::optional<ConditionProgram> visualCondition = std::nullopt);
     CuboidTargetModel *cuboidTargets();
     CustomVolumeTargetModel *customVolumeTargets();
     bool customVolumeDrawing() const;
@@ -354,6 +358,13 @@ private:
     double layoutSettingsPanelWidth_ = 390.0;
     double layoutTimelineWidth_ = 252.0;
     BlockProgramModel configuration_;
+    // The v3 workbench can compile programs that have no lossless v2 block
+    // representation. Keep that compiled runtime snapshot separately; the
+    // semantic v3 graph remains owned/persisted by BlockEditorBridge.
+    std::optional<blocks::SearchComponentConfiguration> visualComponents_;
+    std::optional<ConditionProgram> visualCondition_;
+    QString visualEvaluationTargetId_;
+    bool applyingBlockComponents_ = false;
     QString programTextError_;
     QString publishedEvaluationTargetId_;
     CuboidTargetModel cuboidTargets_;

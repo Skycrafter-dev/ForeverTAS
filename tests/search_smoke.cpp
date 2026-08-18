@@ -363,8 +363,9 @@ bool CheckStatisticsWithoutEligibleBest(
                          forevertas::kDefaultSimulationHorizonMs,
                          &*compiled.program}));
     } catch (const std::runtime_error &error) {
-        rejectedWithoutBest = std::string_view(error.what()) ==
-                "no iteration satisfied the selected evaluation target";
+        rejectedWithoutBest = std::string_view(error.what()).rfind(
+                "no iteration satisfied the selected evaluation target", 0u) ==
+                0u;
     }
 
     if (!rejectedWithoutBest || statisticsUpdates < 2u ||

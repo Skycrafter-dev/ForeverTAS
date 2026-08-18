@@ -1,0 +1,158 @@
+:root {
+  color-scheme: light;
+  --bg: #f4f5f2;
+  --surface: #ffffff;
+  --surface2: #eef2ed;
+  --border: #cbd1c8;
+  --border-strong: #aeb8b0;
+  --text: #202421;
+  --muted: #667064;
+  --faint: #7b8278;
+  --focus: #26734d;
+  --hover: #e1e5df;
+  --picker: #e7f2eb;
+  --picker-hover: #dce9e0;
+  --flyout: #ffffff;
+  --scrollbar: #9aa49c;
+  --menu: #ffffff;
+  --error-border: #c88b86;
+  --error-bg: rgba(246,227,226,.97);
+  --error-text: #7e2929;
+  --info-border: #8eb49d;
+  --info-bg: rgba(231,242,235,.97);
+  --info-text: #285f43;
+  --readonly-bg: rgba(255,255,255,.15);
+  --shadow: rgba(24,32,27,.14);
+  font-family: Inter, "Noto Sans", system-ui, sans-serif;
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #151917;
+  --surface: #171c19;
+  --surface2: #242b27;
+  --border: #3b453f;
+  --border-strong: #59645d;
+  --text: #e9eee9;
+  --muted: #93a097;
+  --faint: #7d8981;
+  --focus: #4bc07c;
+  --hover: #29322d;
+  --picker: #26342c;
+  --picker-hover: #2c4034;
+  --flyout: #1a201c;
+  --scrollbar: #59655d;
+  --menu: #1c221e;
+  --error-border: #72524e;
+  --error-bg: rgba(52,29,27,.94);
+  --error-text: #ffd4cf;
+  --info-border: #3f5d4c;
+  --info-bg: rgba(26,43,34,.94);
+  --info-text: #cce7d4;
+  --readonly-bg: rgba(12,15,13,.08);
+  --shadow: rgba(0,0,0,.28);
+}
+* { box-sizing: border-box; }
+html, body, #editorShell, #blocklyDiv { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+body { background: var(--bg); color: var(--text); }
+#editorShell { position: relative; }
+#blocklyDiv { position: absolute; inset: 0; }
+#loadingState {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  background: var(--bg); color: var(--muted); z-index: 50;
+  font-size: 13px; letter-spacing: .01em;
+}
+#loadingState[hidden] { display: none !important; }
+#searchDock {
+  position: absolute; z-index: 90; top: 7px; left: 7px;
+  width: 142px; height: 34px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--surface); display: flex; align-items: center;
+  box-shadow: 0 4px 14px var(--shadow);
+}
+.searchIcon { width: 24px; text-align: center; color: var(--muted); font-size: 15px; }
+#blockSearch {
+  min-width: 0; flex: 1; border: 0; outline: 0; background: transparent;
+  color: var(--text); font-size: 10px; height: 30px;
+}
+#blockSearch::placeholder { color: var(--faint); }
+#clearSearch {
+  width: 22px; border: 0; background: transparent; color: var(--muted);
+  cursor: pointer; font-size: 16px; visibility: hidden;
+}
+#clearSearch:hover { color: var(--text); }
+#viewerPickDock {
+  position: absolute; z-index: 90; top: 7px; right: 7px;
+  min-height: 34px; max-width: min(440px, 46vw); display: flex;
+  align-items: center; gap: 7px; padding: 4px;
+  border: 1px solid var(--border); border-radius: 5px; background: var(--surface);
+  box-shadow: 0 4px 14px var(--shadow);
+}
+#viewerPickDock[hidden] { display: none !important; }
+#viewerPickButton {
+  min-height: 24px; border: 1px solid var(--border-strong); border-radius: 4px;
+  background: var(--picker); color: var(--text); padding: 3px 8px;
+  font: inherit; font-size: 10px; cursor: pointer; white-space: nowrap;
+}
+#viewerPickButton:hover:not(:disabled) { border-color: var(--focus); background: var(--picker-hover); }
+#viewerPickButton:disabled { cursor: not-allowed; opacity: .5; }
+#viewerPickStatus {
+  color: var(--muted); font-size: 10px; line-height: 1.2; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+#searchResults {
+  display: none; position: absolute; top: 38px; left: 0; width: 280px;
+  max-height: min(480px, 70vh); overflow: auto; background: var(--surface);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px;
+  box-shadow: 0 12px 32px var(--shadow);
+}
+#searchResults.open { display: block; }
+.searchResult {
+  display: flex; align-items: center; gap: 8px; width: 100%; border: 0;
+  background: transparent; color: var(--text); padding: 7px 8px;
+  border-radius: 4px; cursor: pointer; text-align: left; font-size: 12px;
+}
+.searchResult:hover, .searchResult:focus { background: var(--hover); outline: none; }
+.searchDot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+.searchMeta { margin-left: auto; color: var(--muted); font-size: 10px; }
+#diagnostics {
+  position: absolute; left: 224px; right: 54px; bottom: 9px; z-index: 30;
+  border-radius: 5px; border: 1px solid var(--error-border); background: var(--error-bg);
+  color: var(--error-text); padding: 7px 10px; font-size: 11px; line-height: 1.35;
+  pointer-events: none; box-shadow: 0 5px 16px var(--shadow);
+}
+#diagnostics.info { border-color: var(--info-border); background: var(--info-bg); color: var(--info-text); }
+#readOnlyShield {
+  position: absolute; inset: 0; z-index: 35; cursor: not-allowed;
+  background: var(--readonly-bg); display: grid; place-items: start center;
+  padding-top: 11px;
+}
+#readOnlyShield[hidden] { display: none !important; }
+.readOnlyNotice {
+  border: 1px solid var(--border-strong); border-radius: 5px; background: var(--surface);
+  color: var(--muted); padding: 7px 10px; font-size: 11px;
+  box-shadow: 0 5px 16px var(--shadow);
+}
+#blockSearch:disabled, #clearSearch:disabled { cursor: not-allowed; opacity: .55; }
+.blocklyToolbox {
+  z-index: 70 !important; background: var(--surface) !important;
+  border-right: 1px solid var(--border) !important; width: 156px !important;
+}
+.blocklyToolboxCategoryGroup { padding-top: 47px !important; }
+.blocklyToolboxCategoryContainer { margin: 1px 5px !important; }
+.blocklyToolboxCategory {
+  min-height: 30px !important; border-radius: 4px !important;
+  display: flex !important; align-items: center !important;
+}
+.blocklyToolboxCategory:hover, .blocklyToolboxSelected > .blocklyToolboxCategory {
+  background: var(--hover) !important;
+}
+.blocklyToolboxCategoryLabel { color: var(--text) !important; font-size: 11px !important; }
+.blocklyToolboxCategoryIcon { margin-left: 3px !important; margin-right: 7px !important; }
+.blocklyFlyout { border-right: 1px solid var(--border); }
+.blocklyFlyoutBackground { fill: var(--flyout) !important; fill-opacity: .98 !important; }
+.blocklyMainBackground { stroke: var(--border) !important; stroke-width: 1px !important; }
+.blocklyScrollbarHandle { fill: var(--scrollbar) !important; fill-opacity: .62 !important; }
+.blocklyZoom > image, .blocklyTrash > image { opacity: .82; }
+.blocklyText, .blocklyHtmlInput { font-family: Inter, "Noto Sans", system-ui, sans-serif !important; }
+.blocklyText { font-size: 11px !important; }
+.blocklyWidgetDiv .goog-menu { background: var(--menu); border-color: var(--border-strong); color: var(--text); }
+.blocklyWidgetDiv .goog-menuitem-content { color: var(--text); }

@@ -94,6 +94,15 @@ public:
                                           std::uint32_t simulationHorizonMs)
             const;
 
+    // Bridge between the compositional v3 editor and the existing optimized
+    // runtime program. The editor compiles to these category-neutral
+    // components, then this model rebuilds its compatibility program so every
+    // existing search/target/viewer path observes exactly the same settings.
+    std::optional<blocks::SearchComponentConfiguration> compiledComponents()
+            const;
+    bool replaceWithComponents(
+            const blocks::SearchComponentConfiguration &components);
+
     const blocks::BlockProgram &program() const { return program_; }
 
 signals:

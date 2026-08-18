@@ -26,12 +26,16 @@ if(WIN32)
     set(debug_worker
         "${FOREVERTAS_STAGE_DIR}/forevertas-simulation-debug-worker.exe")
     set(license "${FOREVERTAS_STAGE_DIR}/licenses/LICENSE")
+    set(blockly_license
+        "${FOREVERTAS_STAGE_DIR}/licenses/Blockly-LICENSE.txt")
 else()
     set(executable "${FOREVERTAS_STAGE_DIR}/bin/ForeverTAS")
     set(debug_worker
         "${FOREVERTAS_STAGE_DIR}/bin/forevertas-simulation-debug-worker")
     set(license
         "${FOREVERTAS_STAGE_DIR}/share/doc/ForeverTAS/licenses/LICENSE")
+    set(blockly_license
+        "${FOREVERTAS_STAGE_DIR}/share/doc/ForeverTAS/licenses/Blockly-LICENSE.txt")
     foreach(required_file IN ITEMS
         "${FOREVERTAS_STAGE_DIR}/share/applications/dev.skycrafter.forevertas.desktop"
         "${FOREVERTAS_STAGE_DIR}/share/metainfo/dev.skycrafter.forevertas.appdata.xml"
@@ -42,7 +46,11 @@ else()
     endforeach()
 endif()
 
-foreach(required_file IN ITEMS "${executable}" "${debug_worker}" "${license}")
+foreach(required_file IN ITEMS
+        "${executable}"
+        "${debug_worker}"
+        "${license}"
+        "${blockly_license}")
     if(NOT EXISTS "${required_file}")
         message(FATAL_ERROR "Missing installed file: ${required_file}")
     endif()
