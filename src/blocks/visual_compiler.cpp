@@ -106,7 +106,7 @@ std::optional<double> ConstantScalar(const VisualProgram &program,
 
 std::string CompactNumber(double value) { return FormatNumberValue(value); }
 
-std::optional<std::string> SerializePolygonLiteral(
+std::optional<std::vector<std::pair<double, double>>> ParsePolygonVertices(
     const std::string &encoded, std::vector<std::string> &errors) {
   std::vector<std::pair<double, double>> vertices;
   std::size_t position = 0u;
@@ -136,8 +136,15 @@ std::optional<std::string> SerializePolygonLiteral(
     errors.push_back("Prism polygon needs at least three vertices.");
     return std::nullopt;
   }
-  std::string result = std::to_string(vertices.size());
-  for (const auto &[x, y] : vertices) {
+  return vertices;
+}
+
+std::optional<std::string> SerializePolygonLiteral(
+    const std::string &encoded, std::vector<std::string> &errors) {
+  const auto vertices = ParsePolygonVertices(encoded, errors);
+  if (!vertices) return std::nullopt;
+  std::string result = std::to_string(vertices->size());
+  for (const auto &[x, y] : *vertices) {
     result += " " + CompactNumber(x) + " " + CompactNumber(y);
   }
   return result;
@@ -619,6 +626,9 @@ bool EmitSimulationCondition(const VisualProgram &program, const VisualNode &nod
                              ConditionProgram *condition,
                              std::vector<std::string> &errors,
                              std::size_t depth = 0u) {
+  using forevervalidator::experimental::PhysicsSandboxCudaExpressionPlane;
+  using forevervalidator::experimental::PhysicsSandboxCudaExpressionPoint2;
+  using forevervalidator::experimental::PhysicsSandboxCudaExpressionPrism;
   using forevervalidator::experimental::PhysicsSandboxCudaConditionInstruction;
   using forevervalidator::experimental::PhysicsSandboxCudaConditionOpcode;
   using forevervalidator::experimental::PhysicsSandboxCudaConditionValue;
@@ -637,10 +647,6 @@ bool EmitSimulationCondition(const VisualProgram &program, const VisualNode &nod
     output.push_back(PhysicsSandboxCudaConditionInstruction{
         Op::Constant, Value::Speed, value});
   };
-  const auto constantVector = [&output](double x, double y, double z) {
-    output.push_back(PhysicsSandboxCudaConditionInstruction{
-        Op::ConstantVector, Value::Speed, x, y, z});
-  };
   const auto source = [&output](Op opcode, Value value) {
     output.push_back(PhysicsSandboxCudaConditionInstruction{opcode, value});
   };
@@ -655,6 +661,17 @@ bool EmitSimulationCondition(const VisualProgram &program, const VisualNode &nod
   };
   const auto binary = [&](Op opcode) {
     if (!child("a") || !child("b")) return false;
+    emit(opcode);
+    return true;
+  };
+  const auto unary = [&](const char *key, Op opcode) {
+    if (!child(key)) return false;
+    emit(opcode);
+    return true;
+  };
+  const auto ternary = [&](const char *a, const char *b, const char *c,
+                           Op opcode) {
+    if (!child(a) || !child(b) || !child(c)) return false;
     emit(opcode);
     return true;
   };
@@ -688,6 +705,25 @@ bool EmitSimulationCondition(const VisualProgram &program, const VisualNode &nod
     constant(found->second == "true" ? 1.0 : 0.0);
     return true;
   }
+  if (node.definitionId == "conditions/legacy-script") {
+    const auto sourceText = node.fields.find("source");
+    if (sourceText == node.fields.end()) {
+      errors.push_back("Legacy condition block is missing its source text.");
+      return false;
+    }
+    ConditionCompileResult compiled = CompileConditionScript(sourceText->second);
+    if (compiled.error) {
+      errors.push_back(*compiled.error);
+      return false;
+    }
+    if (!compiled.program || compiled.program->cuda.instructions.empty()) {
+      errors.push_back("Nested legacy condition block cannot be empty.");
+      return false;
+    }
+    output.insert(output.end(), compiled.program->cuda.instructions.begin(),
+                  compiled.program->cuda.instructions.end());
+    return true;
+  }
 
   if (node.definitionId == "simulation/car-position") {
     source(Op::Vector, Value::Position);
@@ -705,8 +741,28 @@ bool EmitSimulationCondition(const VisualProgram &program, const VisualNode &nod
     source(Op::Scalar, Value::Speed);
     return true;
   }
+  if (node.definitionId == "simulation/car-rotation") {
+    source(Op::RotationSource, Value::CarRotation);
+    return true;
+  }
+  if (node.definitionId == "simulation/stunt-points") {
+    source(Op::Scalar, Value::StuntPoints);
+    return true;
+  }
+  if (node.definitionId == "simulation/finish-time") {
+    source(Op::Scalar, Value::FinishTime);
+    return true;
+  }
+  if (node.definitionId == "simulation/time") {
+    source(Op::Scalar, Value::SimulationTime);
+    return true;
+  }
   if (node.definitionId == "simulation/checkpoint-count") {
     source(Op::Scalar, Value::CheckpointCount);
+    return true;
+  }
+  if (node.definitionId == "simulation/race-completed") {
+    source(Op::Scalar, Value::RaceCompleted);
     return true;
   }
   if (node.definitionId == "simulation/sliding") {
@@ -719,40 +775,36 @@ bool EmitSimulationCondition(const VisualProgram &program, const VisualNode &nod
   }
 
   if (node.definitionId == "targets/point" ||
-      node.definitionId == "targets/direction" ||
-      node.definitionId == "targets/size") {
-    const VisualNode *const xNode = childNode("x");
-    const VisualNode *const yNode = childNode("y");
-    const VisualNode *const zNode = childNode("z");
-    if (xNode == nullptr || yNode == nullptr || zNode == nullptr) return false;
-    const auto x = ConstantScalar(program, *xNode, errors);
-    const auto y = ConstantScalar(program, *yNode, errors);
-    const auto z = ConstantScalar(program, *zNode, errors);
-    if (!x || !y || !z) {
-      errors.push_back(
-          "Simulation condition vectors currently need constant components.");
-      return false;
-    }
-    constantVector(*x, *y, *z);
-    return true;
-  }
+      node.definitionId == "targets/size")
+    return ternary("x", "y", "z", Op::ComposeVector);
+  if (node.definitionId == "targets/direction")
+    return ternary("x", "y", "z", Op::Direction);
+  if (node.definitionId == "targets/rotation")
+    return ternary("yaw", "pitch", "roll", Op::Rotation);
 
   if (node.definitionId == "math/add") return binary(Op::Add);
   if (node.definitionId == "math/subtract") return binary(Op::Subtract);
   if (node.definitionId == "math/multiply") return binary(Op::Multiply);
   if (node.definitionId == "math/divide") return binary(Op::Divide);
+  if (node.definitionId == "math/min") return binary(Op::Minimum);
+  if (node.definitionId == "math/max") return binary(Op::Maximum);
   if (node.definitionId == "math/distance") return binary(Op::Distance);
-  if (node.definitionId == "math/kmh") {
-    if (!child("value")) return false;
-    emit(Op::KilometersPerHour);
-    return true;
-  }
-  if (node.definitionId == "math/magnitude") {
-    if (!child("value")) return false;
-    constantVector(0.0, 0.0, 0.0);
-    emit(Op::Distance);
-    return true;
-  }
+  if (node.definitionId == "math/magnitude")
+    return unary("value", Op::Magnitude);
+  if (node.definitionId == "math/normalize")
+    return unary("value", Op::Normalize);
+  if (node.definitionId == "math/dot") return binary(Op::Dot);
+  if (node.definitionId == "math/rotation-distance")
+    return binary(Op::RotationDistance);
+  if (node.definitionId == "math/weighted-blend")
+    return ternary("a", "b", "weight", Op::WeightedBlend);
+  if (node.definitionId == "math/percent-ratio")
+    return unary("value", Op::PercentRatio);
+  if (node.definitionId == "math/kmh")
+    return unary("value", Op::KilometersPerHour);
+  if (node.definitionId == "math/abs") return unary("value", Op::Absolute);
+  if (node.definitionId == "math/clamp")
+    return ternary("value", "minimum", "maximum", Op::Clamp);
   if (node.definitionId == "conditions/less") return binary(Op::Less);
   if (node.definitionId == "conditions/less-equal")
     return binary(Op::LessOrEqual);
@@ -761,18 +813,79 @@ bool EmitSimulationCondition(const VisualProgram &program, const VisualNode &nod
     return binary(Op::GreaterOrEqual);
   if (node.definitionId == "conditions/greater") return binary(Op::Greater);
   if (node.definitionId == "conditions/and") return binary(Op::LogicalAnd);
-  if (node.definitionId == "conditions/or") {
-    if (!child("a") || !child("b")) return false;
-    emit(Op::Add);
-    constant(0.0);
-    emit(Op::Greater);
-    return true;
-  }
-  if (node.definitionId == "conditions/not") {
-    if (!child("value")) return false;
-    constant(0.0);
-    emit(Op::Equal);
-    return true;
+  if (node.definitionId == "conditions/or") return binary(Op::LogicalOr);
+  if (node.definitionId == "conditions/not")
+    return unary("value", Op::LogicalNot);
+  if (node.definitionId == "conditions/inside") {
+    if (!child("position")) return false;
+    const VisualNode *const volume = childNode("volume");
+    if (volume == nullptr) return false;
+    if (volume->definitionId == "targets/box") {
+      const VisualNode *const center = InputNode(program, *volume, "center", errors);
+      const VisualNode *const size = InputNode(program, *volume, "size", errors);
+      if (center == nullptr || size == nullptr ||
+          !EmitSimulationCondition(program, *center, condition, errors,
+                                   depth + 1u) ||
+          !EmitSimulationCondition(program, *size, condition, errors,
+                                   depth + 1u))
+        return false;
+      emit(Op::InsideBox);
+      return true;
+    }
+    if (volume->definitionId == "targets/prism") {
+      const VisualNode *const origin = InputNode(program, *volume, "origin", errors);
+      const VisualNode *const prismDepth =
+          InputNode(program, *volume, "depth", errors);
+      const VisualNode *const polygon =
+          InputNode(program, *volume, "polygon", errors);
+      if (origin == nullptr || prismDepth == nullptr || polygon == nullptr ||
+          !EmitSimulationCondition(program, *origin, condition, errors,
+                                   depth + 1u) ||
+          !EmitSimulationCondition(program, *prismDepth, condition, errors,
+                                   depth + 1u))
+        return false;
+      if (polygon->definitionId != "values/polygon") {
+        errors.push_back("Prism polygon must come from a polygon value block.");
+        return false;
+      }
+      const auto polygonValue = polygon->fields.find("value");
+      const auto plane = volume->fields.find("plane");
+      if (polygonValue == polygon->fields.end() || plane == volume->fields.end()) {
+        errors.push_back("Prism is missing its plane or polygon value.");
+        return false;
+      }
+      const auto vertices = ParsePolygonVertices(polygonValue->second, errors);
+      if (!vertices) return false;
+      PhysicsSandboxCudaExpressionPrism prism;
+      if (plane->second == "xy")
+        prism.plane = PhysicsSandboxCudaExpressionPlane::XY;
+      else if (plane->second == "xz")
+        prism.plane = PhysicsSandboxCudaExpressionPlane::XZ;
+      else if (plane->second == "yz")
+        prism.plane = PhysicsSandboxCudaExpressionPlane::YZ;
+      else {
+        errors.push_back("Prism has an invalid projection plane.");
+        return false;
+      }
+      if (condition->cuda.prisms.size() >= 256u ||
+          condition->cuda.prismVertices.size() + vertices->size() > 65536u) {
+        errors.push_back("Simulation predicate prism geometry is too large.");
+        return false;
+      }
+      prism.vertexOffset = static_cast<std::uint32_t>(
+          condition->cuda.prismVertices.size());
+      prism.vertexCount = static_cast<std::uint32_t>(vertices->size());
+      const std::size_t prismIndex = condition->cuda.prisms.size();
+      condition->cuda.prisms.push_back(prism);
+      for (const auto &[x, y] : *vertices)
+        condition->cuda.prismVertices.push_back(
+            PhysicsSandboxCudaExpressionPoint2{x, y});
+      output.push_back(PhysicsSandboxCudaConditionInstruction{
+          Op::InsidePrism, Value::Speed, static_cast<double>(prismIndex)});
+      return true;
+    }
+    errors.push_back("Inside expects a box or prism volume.");
+    return false;
   }
 
   errors.push_back("Block '" + node.definitionId +

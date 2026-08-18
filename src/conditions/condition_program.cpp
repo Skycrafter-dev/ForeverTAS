@@ -14,12 +14,37 @@ namespace {
 
 using namespace forevervalidator::experimental;
 
+enum class ValueKind { Scalar, Vector, Rotation };
+
 struct Value {
     double x = 0.0;
     double y = 0.0;
     double z = 0.0;
-    bool vector = false;
+    double w = 0.0;
+    ValueKind kind = ValueKind::Scalar;
+    bool valid = true;
 };
+
+Value Scalar(double value) {
+    return {value, 0.0, 0.0, 0.0, ValueKind::Scalar, std::isfinite(value)};
+}
+
+Value Vector(double x, double y, double z) {
+    return {x, y, z, 0.0, ValueKind::Vector,
+            std::isfinite(x) && std::isfinite(y) && std::isfinite(z)};
+}
+
+Value Rotation(double x, double y, double z, double w) {
+    return {x, y, z, w, ValueKind::Rotation,
+            std::isfinite(x) && std::isfinite(y) && std::isfinite(z) &&
+                    std::isfinite(w)};
+}
+
+Value InvalidValue() {
+    Value result;
+    result.valid = false;
+    return result;
+}
 
 std::string Lower(std::string value) {
     std::transform(value.begin(), value.end(), value.begin(),
@@ -316,15 +341,26 @@ Value Angles(float x, float y, float z, float w) {
     const double sinp = 2.0 * (w * y - z * x);
     const double siny = 2.0 * (w * z + x * y);
     const double cosy = 1.0 - 2.0 * (y * y + z * z);
-    return {std::atan2(siny, cosy), std::abs(sinp) >= 1.0 ? std::copysign(1.5707963267948966, sinp) : std::asin(sinp), std::atan2(sinr, cosr), true};
+    return Vector(
+            std::atan2(siny, cosy),
+            std::abs(sinp) >= 1.0
+                    ? std::copysign(1.5707963267948966, sinp)
+                    : std::asin(sinp),
+            std::atan2(sinr, cosr));
 }
 
 Value Source(PhysicsSandboxCudaConditionValue source,
              const PhysicsSandboxStateView &previous,
              const PhysicsSandboxStateView &current,
              const ConditionExecutionContext &context) {
-    const auto vec = [](const forevervalidator::Vector3 &v) { return Value{v.x, v.y, v.z, true}; };
-    const auto length = [](const forevervalidator::Vector3 &v) { return std::sqrt(static_cast<double>(v.x)*v.x + static_cast<double>(v.y)*v.y + static_cast<double>(v.z)*v.z); };
+    const auto vec = [](const forevervalidator::Vector3 &v) {
+        return Vector(v.x, v.y, v.z);
+    };
+    const auto length = [](const forevervalidator::Vector3 &v) {
+        return std::sqrt(static_cast<double>(v.x) * v.x +
+                         static_cast<double>(v.y) * v.y +
+                         static_cast<double>(v.z) * v.z);
+    };
     switch (source) {
     case PhysicsSandboxCudaConditionValue::Position: return vec(current.car.position);
     case PhysicsSandboxCudaConditionValue::PreviousPosition: return vec(previous.car.position);
@@ -334,39 +370,170 @@ Value Source(PhysicsSandboxCudaConditionValue source,
     case PhysicsSandboxCudaConditionValue::PreviousLocalVelocity: return vec(previous.car.localSpeed);
     case PhysicsSandboxCudaConditionValue::AngularVelocity: return vec(current.car.angularSpeed);
     case PhysicsSandboxCudaConditionValue::PreviousAngularVelocity: return vec(previous.car.angularSpeed);
-    case PhysicsSandboxCudaConditionValue::Yaw: return {Angles(current.car.rotationX,current.car.rotationY,current.car.rotationZ,current.car.rotationW).x};
-    case PhysicsSandboxCudaConditionValue::Pitch: return {Angles(current.car.rotationX,current.car.rotationY,current.car.rotationZ,current.car.rotationW).y};
-    case PhysicsSandboxCudaConditionValue::Roll: return {Angles(current.car.rotationX,current.car.rotationY,current.car.rotationZ,current.car.rotationW).z};
-    case PhysicsSandboxCudaConditionValue::PreviousYaw: return {Angles(previous.car.rotationX,previous.car.rotationY,previous.car.rotationZ,previous.car.rotationW).x};
-    case PhysicsSandboxCudaConditionValue::PreviousPitch: return {Angles(previous.car.rotationX,previous.car.rotationY,previous.car.rotationZ,previous.car.rotationW).y};
-    case PhysicsSandboxCudaConditionValue::PreviousRoll: return {Angles(previous.car.rotationX,previous.car.rotationY,previous.car.rotationZ,previous.car.rotationW).z};
-    case PhysicsSandboxCudaConditionValue::Speed: return {length(current.car.linearSpeed)};
-    case PhysicsSandboxCudaConditionValue::PreviousSpeed: return {length(previous.car.linearSpeed)};
-    case PhysicsSandboxCudaConditionValue::LocalSpeed: return {length(current.car.localSpeed)};
-    case PhysicsSandboxCudaConditionValue::PreviousLocalSpeed: return {length(previous.car.localSpeed)};
-    case PhysicsSandboxCudaConditionValue::FreeWheeling: return {current.car.freeWheeling ? 1.0 : 0.0};
-    case PhysicsSandboxCudaConditionValue::LateralContact: return {current.car.lateralContact ? 1.0 : 0.0};
-    case PhysicsSandboxCudaConditionValue::Sliding: return {current.car.sliding ? 1.0 : 0.0};
-    case PhysicsSandboxCudaConditionValue::Gear: return {static_cast<double>(current.car.gear)};
-    case PhysicsSandboxCudaConditionValue::Rpm: return {current.car.rpm};
-    case PhysicsSandboxCudaConditionValue::TurningRate: return {current.car.turningRate};
-    case PhysicsSandboxCudaConditionValue::TurboType: return {static_cast<double>(current.car.turboType)};
-    case PhysicsSandboxCudaConditionValue::TurboBoostFactor: return {current.car.turboBoostFactor};
-    case PhysicsSandboxCudaConditionValue::Iterations: return {static_cast<double>(context.iterations)};
-    case PhysicsSandboxCudaConditionValue::LastImprovementTime: return {context.lastImprovementTimeSeconds};
-    case PhysicsSandboxCudaConditionValue::LastRestartTime: return {context.lastRestartTimeSeconds};
-    case PhysicsSandboxCudaConditionValue::CurrentTime: return {context.currentTimeSeconds};
-    case PhysicsSandboxCudaConditionValue::CheckpointCount: return {static_cast<double>(current.checkpointsCollected)};
+    case PhysicsSandboxCudaConditionValue::Yaw:
+        return Scalar(Angles(current.car.rotationX, current.car.rotationY,
+                             current.car.rotationZ, current.car.rotationW).x);
+    case PhysicsSandboxCudaConditionValue::Pitch:
+        return Scalar(Angles(current.car.rotationX, current.car.rotationY,
+                             current.car.rotationZ, current.car.rotationW).y);
+    case PhysicsSandboxCudaConditionValue::Roll:
+        return Scalar(Angles(current.car.rotationX, current.car.rotationY,
+                             current.car.rotationZ, current.car.rotationW).z);
+    case PhysicsSandboxCudaConditionValue::PreviousYaw:
+        return Scalar(Angles(previous.car.rotationX, previous.car.rotationY,
+                             previous.car.rotationZ, previous.car.rotationW).x);
+    case PhysicsSandboxCudaConditionValue::PreviousPitch:
+        return Scalar(Angles(previous.car.rotationX, previous.car.rotationY,
+                             previous.car.rotationZ, previous.car.rotationW).y);
+    case PhysicsSandboxCudaConditionValue::PreviousRoll:
+        return Scalar(Angles(previous.car.rotationX, previous.car.rotationY,
+                             previous.car.rotationZ, previous.car.rotationW).z);
+    case PhysicsSandboxCudaConditionValue::Speed:
+        return Scalar(length(current.car.linearSpeed));
+    case PhysicsSandboxCudaConditionValue::PreviousSpeed:
+        return Scalar(length(previous.car.linearSpeed));
+    case PhysicsSandboxCudaConditionValue::LocalSpeed:
+        return Scalar(length(current.car.localSpeed));
+    case PhysicsSandboxCudaConditionValue::PreviousLocalSpeed:
+        return Scalar(length(previous.car.localSpeed));
+    case PhysicsSandboxCudaConditionValue::FreeWheeling:
+        return Scalar(current.car.freeWheeling ? 1.0 : 0.0);
+    case PhysicsSandboxCudaConditionValue::LateralContact:
+        return Scalar(current.car.lateralContact ? 1.0 : 0.0);
+    case PhysicsSandboxCudaConditionValue::Sliding:
+        return Scalar(current.car.sliding ? 1.0 : 0.0);
+    case PhysicsSandboxCudaConditionValue::Gear:
+        return Scalar(static_cast<double>(current.car.gear));
+    case PhysicsSandboxCudaConditionValue::Rpm: return Scalar(current.car.rpm);
+    case PhysicsSandboxCudaConditionValue::TurningRate:
+        return Scalar(current.car.turningRate);
+    case PhysicsSandboxCudaConditionValue::TurboType:
+        return Scalar(static_cast<double>(current.car.turboType));
+    case PhysicsSandboxCudaConditionValue::TurboBoostFactor:
+        return Scalar(current.car.turboBoostFactor);
+    case PhysicsSandboxCudaConditionValue::Iterations:
+        return Scalar(static_cast<double>(context.iterations));
+    case PhysicsSandboxCudaConditionValue::LastImprovementTime:
+        return Scalar(context.lastImprovementTimeSeconds);
+    case PhysicsSandboxCudaConditionValue::LastRestartTime:
+        return Scalar(context.lastRestartTimeSeconds);
+    case PhysicsSandboxCudaConditionValue::CurrentTime:
+        return Scalar(context.currentTimeSeconds);
+    case PhysicsSandboxCudaConditionValue::CheckpointCount:
+        return Scalar(static_cast<double>(current.checkpointsCollected));
+    case PhysicsSandboxCudaConditionValue::StuntPoints:
+        return Scalar(static_cast<double>(current.stuntsScore.value_or(0u)));
+    case PhysicsSandboxCudaConditionValue::FinishTime:
+        if (!current.raceCompleted || !current.finishTime ||
+            !current.finishTime->IsValid())
+            return InvalidValue();
+        return Scalar(static_cast<double>(current.finishTime->upperBoundNs) /
+                      1.0e6);
+    case PhysicsSandboxCudaConditionValue::SimulationTime:
+        return Scalar(static_cast<double>(current.timeMs));
+    case PhysicsSandboxCudaConditionValue::RaceCompleted:
+        return Scalar(current.raceCompleted ? 1.0 : 0.0);
+    case PhysicsSandboxCudaConditionValue::CarRotation:
+        return Rotation(current.car.rotationX, current.car.rotationY,
+                        current.car.rotationZ, current.car.rotationW);
     default: break;
     }
     const std::uint32_t raw = static_cast<std::uint32_t>(source);
     const std::uint32_t ground = static_cast<std::uint32_t>(PhysicsSandboxCudaConditionValue::WheelGroundContact0);
     const std::uint32_t sliding = static_cast<std::uint32_t>(PhysicsSandboxCudaConditionValue::WheelSliding0);
     const std::uint32_t surface = static_cast<std::uint32_t>(PhysicsSandboxCudaConditionValue::WheelSurface0);
-    if (raw >= ground && raw < ground + 4u) return {current.car.wheelContact[raw-ground] ? 1.0 : 0.0};
-    if (raw >= sliding && raw < sliding + 4u) return {current.car.wheelSliding[raw-sliding] ? 1.0 : 0.0};
-    if (raw >= surface && raw < surface + 4u) return {static_cast<double>(current.car.wheelSurface[raw-surface])};
-    return {};
+    if (raw >= ground && raw < ground + 4u)
+        return Scalar(current.car.wheelContact[raw-ground] ? 1.0 : 0.0);
+    if (raw >= sliding && raw < sliding + 4u)
+        return Scalar(current.car.wheelSliding[raw-sliding] ? 1.0 : 0.0);
+    if (raw >= surface && raw < surface + 4u)
+        return Scalar(static_cast<double>(current.car.wheelSurface[raw-surface]));
+    return InvalidValue();
+}
+
+double ValueLength(const Value &value) {
+    return std::sqrt(value.x * value.x + value.y * value.y +
+                     value.z * value.z);
+}
+
+bool NormalizeVector(Value *value) {
+    const double length = ValueLength(*value);
+    if (!std::isfinite(length)) return false;
+    if (length <= 1e-12) {
+        value->x = value->y = value->z = 0.0;
+    } else {
+        value->x /= length;
+        value->y /= length;
+        value->z /= length;
+    }
+    return true;
+}
+
+bool NormalizeRotation(Value *value) {
+    const double length = std::sqrt(value->x * value->x + value->y * value->y +
+                                    value->z * value->z + value->w * value->w);
+    if (!std::isfinite(length) || length <= 1e-12) return false;
+    value->x /= length;
+    value->y /= length;
+    value->z /= length;
+    value->w /= length;
+    return true;
+}
+
+bool PointOnSegment(double px, double py, double ax, double ay,
+                    double bx, double by) {
+    constexpr double tolerance = 1e-9;
+    const double cross = (px - ax) * (by - ay) - (py - ay) * (bx - ax);
+    if (std::abs(cross) > tolerance) return false;
+    return px >= std::min(ax, bx) - tolerance &&
+           px <= std::max(ax, bx) + tolerance &&
+           py >= std::min(ay, by) - tolerance &&
+           py <= std::max(ay, by) + tolerance;
+}
+
+bool ContainsPrism(const PhysicsSandboxCudaExpressionPrism &prism,
+                   const std::vector<PhysicsSandboxCudaExpressionPoint2> &vertices,
+                   const Value &position, const Value &origin, double depth) {
+    if (prism.vertexCount < 3u || !std::isfinite(depth) || depth <= 0.0 ||
+        static_cast<std::uint64_t>(prism.vertexOffset) + prism.vertexCount >
+                vertices.size())
+        return false;
+    double planeX = 0.0;
+    double planeY = 0.0;
+    double normal = 0.0;
+    switch (prism.plane) {
+    case PhysicsSandboxCudaExpressionPlane::XY:
+        planeX = position.x - origin.x;
+        planeY = position.y - origin.y;
+        normal = position.z - origin.z;
+        break;
+    case PhysicsSandboxCudaExpressionPlane::XZ:
+        planeX = position.x - origin.x;
+        planeY = position.z - origin.z;
+        normal = position.y - origin.y;
+        break;
+    case PhysicsSandboxCudaExpressionPlane::YZ:
+        planeX = position.y - origin.y;
+        planeY = position.z - origin.z;
+        normal = position.x - origin.x;
+        break;
+    }
+    if (normal < 0.0 || normal > depth) return false;
+    bool inside = false;
+    std::uint32_t previous = prism.vertexCount - 1u;
+    for (std::uint32_t index = 0u; index < prism.vertexCount;
+         previous = index++) {
+        const auto &a = vertices[prism.vertexOffset + previous];
+        const auto &b = vertices[prism.vertexOffset + index];
+        if (PointOnSegment(planeX, planeY, a.x, a.y, b.x, b.y)) return true;
+        const bool crosses = (a.y > planeY) != (b.y > planeY);
+        if (crosses) {
+            const double crossingX =
+                    (b.x - a.x) * (planeY - a.y) / (b.y - a.y) + a.x;
+            if (planeX < crossingX) inside = !inside;
+        }
+    }
+    return inside;
 }
 
 }  // namespace
@@ -375,42 +542,234 @@ bool ConditionProgram::Evaluate(
         const PhysicsSandboxStateView &previous,
         const PhysicsSandboxStateView &current,
         const ConditionExecutionContext &context) const {
+    using Op = PhysicsSandboxCudaConditionOpcode;
     std::vector<Value> stack;
     stack.reserve(32u);
+    const auto push = [&](Value value) {
+        if (!value.valid || stack.size() >= 32u) return false;
+        stack.push_back(value);
+        return true;
+    };
+    const auto pop = [&](ValueKind kind, Value *value) {
+        if (stack.empty() || stack.back().kind != kind || !stack.back().valid)
+            return false;
+        *value = stack.back();
+        stack.pop_back();
+        return true;
+    };
     for (const auto &instruction : cuda.instructions) {
-        if (instruction.opcode == PhysicsSandboxCudaConditionOpcode::Constant) stack.push_back({instruction.x});
-        else if (instruction.opcode == PhysicsSandboxCudaConditionOpcode::ConstantVector) stack.push_back({instruction.x,instruction.y,instruction.z,true});
-        else if (instruction.opcode == PhysicsSandboxCudaConditionOpcode::Scalar || instruction.opcode == PhysicsSandboxCudaConditionOpcode::Vector) {
-            Value value = Source(instruction.value, previous, current, context);
-            if (instruction.opcode == PhysicsSandboxCudaConditionOpcode::Scalar && value.vector) {
-                const int component = static_cast<int>(instruction.x);
-                value = {component == 1 ? value.x : component == 2 ? value.y : component == 3 ? value.z : 0.0};
-            }
-            stack.push_back(value);
-        } else if (instruction.opcode == PhysicsSandboxCudaConditionOpcode::KilometersPerHour || instruction.opcode == PhysicsSandboxCudaConditionOpcode::Degrees) {
-            if (stack.empty() || stack.back().vector) return false;
-            stack.back().x *= instruction.opcode == PhysicsSandboxCudaConditionOpcode::KilometersPerHour ? 3.6 : 57.29577951308232;
-        } else {
-            if (stack.size() < 2u) return false;
-            Value right = stack.back(); stack.pop_back(); Value &left = stack.back();
-            switch (instruction.opcode) {
-            case PhysicsSandboxCudaConditionOpcode::Distance: left = {std::sqrt((left.x-right.x)*(left.x-right.x)+(left.y-right.y)*(left.y-right.y)+(left.z-right.z)*(left.z-right.z))}; break;
-            case PhysicsSandboxCudaConditionOpcode::Add: left.x += right.x; break;
-            case PhysicsSandboxCudaConditionOpcode::Subtract: left.x -= right.x; break;
-            case PhysicsSandboxCudaConditionOpcode::Multiply: left.x *= right.x; break;
-            case PhysicsSandboxCudaConditionOpcode::Divide: left.x = right.x == 0.0 ? 0.0 : left.x/right.x; break;
-            case PhysicsSandboxCudaConditionOpcode::Greater: left={left.x>right.x?1.0:0.0}; break;
-            case PhysicsSandboxCudaConditionOpcode::Less: left={left.x<right.x?1.0:0.0}; break;
-            case PhysicsSandboxCudaConditionOpcode::GreaterOrEqual: left={left.x>=right.x?1.0:0.0}; break;
-            case PhysicsSandboxCudaConditionOpcode::LessOrEqual: left={left.x<=right.x?1.0:0.0}; break;
-            case PhysicsSandboxCudaConditionOpcode::Equal: left={left.x==right.x?1.0:0.0}; break;
-            case PhysicsSandboxCudaConditionOpcode::LogicalAnd: left={left.x!=0.0&&right.x!=0.0?1.0:0.0}; break;
-            default: return false;
-            }
+        if (instruction.opcode == Op::Constant) {
+            if (!push(Scalar(instruction.x))) return false;
+            continue;
         }
-        if (stack.size() > 32u) return false;
+        if (instruction.opcode == Op::ConstantVector) {
+            if (!push(Vector(instruction.x, instruction.y, instruction.z)))
+                return false;
+            continue;
+        }
+        if (instruction.opcode == Op::Scalar || instruction.opcode == Op::Vector ||
+            instruction.opcode == Op::RotationSource) {
+            Value value = Source(instruction.value, previous, current, context);
+            if (!value.valid) return false;
+            if (instruction.opcode == Op::Scalar && value.kind == ValueKind::Vector) {
+                const int component = static_cast<int>(instruction.x);
+                value = Scalar(component == 1 ? value.x
+                               : component == 2 ? value.y
+                               : component == 3 ? value.z : 0.0);
+            }
+            if ((instruction.opcode == Op::Scalar &&
+                 value.kind != ValueKind::Scalar) ||
+                (instruction.opcode == Op::Vector &&
+                 value.kind != ValueKind::Vector) ||
+                (instruction.opcode == Op::RotationSource &&
+                 value.kind != ValueKind::Rotation) ||
+                !push(value))
+                return false;
+            continue;
+        }
+        if (instruction.opcode == Op::KilometersPerHour ||
+            instruction.opcode == Op::Degrees ||
+            instruction.opcode == Op::PercentRatio ||
+            instruction.opcode == Op::Absolute ||
+            instruction.opcode == Op::LogicalNot) {
+            if (stack.empty() || stack.back().kind != ValueKind::Scalar)
+                return false;
+            if (instruction.opcode == Op::LogicalNot) {
+                stack.back().x = stack.back().x == 0.0 ? 1.0 : 0.0;
+                continue;
+            }
+            if (instruction.opcode == Op::KilometersPerHour)
+                stack.back().x *= 3.6;
+            else if (instruction.opcode == Op::Degrees)
+                stack.back().x *= 57.29577951308232;
+            else if (instruction.opcode == Op::PercentRatio)
+                stack.back().x *= 0.01;
+            else
+                stack.back().x = std::abs(stack.back().x);
+            if (!std::isfinite(stack.back().x)) return false;
+            continue;
+        }
+        if (instruction.opcode == Op::ComposeVector ||
+            instruction.opcode == Op::Direction ||
+            instruction.opcode == Op::Rotation) {
+            Value z;
+            Value y;
+            Value x;
+            if (!pop(ValueKind::Scalar, &z) || !pop(ValueKind::Scalar, &y) ||
+                !pop(ValueKind::Scalar, &x))
+                return false;
+            if (instruction.opcode == Op::Rotation) {
+                constexpr double degreesToRadians =
+                        3.14159265358979323846 / 180.0;
+                const double hy = x.x * degreesToRadians * 0.5;
+                const double hp = y.x * degreesToRadians * 0.5;
+                const double hr = z.x * degreesToRadians * 0.5;
+                const double cy = std::cos(hy);
+                const double sy = std::sin(hy);
+                const double cp = std::cos(hp);
+                const double sp = std::sin(hp);
+                const double cr = std::cos(hr);
+                const double sr = std::sin(hr);
+                Value rotation = Rotation(
+                        sr * cp * cy - cr * sp * sy,
+                        cr * sp * cy + sr * cp * sy,
+                        cr * cp * sy - sr * sp * cy,
+                        cr * cp * cy + sr * sp * sy);
+                if (!NormalizeRotation(&rotation) || !push(rotation)) return false;
+                continue;
+            }
+            Value vector = Vector(x.x, y.x, z.x);
+            if (instruction.opcode == Op::Direction && !NormalizeVector(&vector))
+                return false;
+            if (!push(vector)) return false;
+            continue;
+        }
+        if (instruction.opcode == Op::Magnitude ||
+            instruction.opcode == Op::Normalize) {
+            Value value;
+            if (!pop(ValueKind::Vector, &value)) return false;
+            if (instruction.opcode == Op::Magnitude) {
+                if (!push(Scalar(ValueLength(value)))) return false;
+            } else {
+                if (!NormalizeVector(&value) || !push(value)) return false;
+            }
+            continue;
+        }
+        if (instruction.opcode == Op::Distance || instruction.opcode == Op::Dot) {
+            Value right;
+            Value left;
+            if (!pop(ValueKind::Vector, &right) ||
+                !pop(ValueKind::Vector, &left))
+                return false;
+            const double value = instruction.opcode == Op::Distance
+                    ? std::sqrt((left.x - right.x) * (left.x - right.x) +
+                                (left.y - right.y) * (left.y - right.y) +
+                                (left.z - right.z) * (left.z - right.z))
+                    : left.x * right.x + left.y * right.y + left.z * right.z;
+            if (!push(Scalar(value))) return false;
+            continue;
+        }
+        if (instruction.opcode == Op::RotationDistance) {
+            Value right;
+            Value left;
+            if (!pop(ValueKind::Rotation, &right) ||
+                !pop(ValueKind::Rotation, &left) ||
+                !NormalizeRotation(&left) || !NormalizeRotation(&right))
+                return false;
+            const double dot = std::clamp(
+                    std::abs(left.x * right.x + left.y * right.y +
+                             left.z * right.z + left.w * right.w),
+                    0.0, 1.0);
+            if (!push(Scalar(2.0 * std::acos(dot)))) return false;
+            continue;
+        }
+        if (instruction.opcode == Op::InsideBox ||
+            instruction.opcode == Op::InsidePrism) {
+            if (instruction.opcode == Op::InsideBox) {
+                Value size;
+                Value center;
+                Value position;
+                if (!pop(ValueKind::Vector, &size) ||
+                    !pop(ValueKind::Vector, &center) ||
+                    !pop(ValueKind::Vector, &position) || size.x <= 0.0 ||
+                    size.y <= 0.0 || size.z <= 0.0)
+                    return false;
+                const bool inside =
+                        std::abs(position.x - center.x) <= size.x * 0.5 &&
+                        std::abs(position.y - center.y) <= size.y * 0.5 &&
+                        std::abs(position.z - center.z) <= size.z * 0.5;
+                if (!push(Scalar(inside ? 1.0 : 0.0))) return false;
+                continue;
+            }
+            Value depth;
+            Value origin;
+            Value position;
+            if (!pop(ValueKind::Scalar, &depth) ||
+                !pop(ValueKind::Vector, &origin) ||
+                !pop(ValueKind::Vector, &position) ||
+                !std::isfinite(instruction.x) || instruction.x < 0.0 ||
+                instruction.x >= static_cast<double>(cuda.prisms.size()))
+                return false;
+            const auto prismIndex = static_cast<std::size_t>(instruction.x);
+            const bool inside = ContainsPrism(cuda.prisms[prismIndex],
+                                              cuda.prismVertices, position,
+                                              origin, depth.x);
+            if (!push(Scalar(inside ? 1.0 : 0.0))) return false;
+            continue;
+        }
+        if (instruction.opcode == Op::Clamp ||
+            instruction.opcode == Op::WeightedBlend) {
+            Value c;
+            Value b;
+            Value a;
+            if (!pop(ValueKind::Scalar, &c) || !pop(ValueKind::Scalar, &b) ||
+                !pop(ValueKind::Scalar, &a))
+                return false;
+            if (instruction.opcode == Op::Clamp) {
+                if (b.x > c.x) return false;
+                a.x = std::clamp(a.x, b.x, c.x);
+            } else {
+                const double weight = c.x / 100.0;
+                a.x = a.x * (1.0 - weight) + b.x * weight;
+            }
+            if (!push(a)) return false;
+            continue;
+        }
+        if (stack.size() < 2u) return false;
+        Value right = stack.back();
+        stack.pop_back();
+        Value &left = stack.back();
+        if (left.kind != ValueKind::Scalar || right.kind != ValueKind::Scalar ||
+            !left.valid || !right.valid)
+            return false;
+        switch (instruction.opcode) {
+        case Op::Add: left.x += right.x; break;
+        case Op::Subtract: left.x -= right.x; break;
+        case Op::Multiply: left.x *= right.x; break;
+        case Op::Divide: left.x = right.x == 0.0 ? 0.0 : left.x / right.x; break;
+        case Op::Minimum: left.x = std::min(left.x, right.x); break;
+        case Op::Maximum: left.x = std::max(left.x, right.x); break;
+        case Op::Greater: left = Scalar(left.x > right.x ? 1.0 : 0.0); break;
+        case Op::Less: left = Scalar(left.x < right.x ? 1.0 : 0.0); break;
+        case Op::GreaterOrEqual:
+            left = Scalar(left.x >= right.x ? 1.0 : 0.0);
+            break;
+        case Op::LessOrEqual:
+            left = Scalar(left.x <= right.x ? 1.0 : 0.0);
+            break;
+        case Op::Equal: left = Scalar(left.x == right.x ? 1.0 : 0.0); break;
+        case Op::LogicalAnd:
+            left = Scalar(left.x != 0.0 && right.x != 0.0 ? 1.0 : 0.0);
+            break;
+        case Op::LogicalOr:
+            left = Scalar(left.x != 0.0 || right.x != 0.0 ? 1.0 : 0.0);
+            break;
+        default: return false;
+        }
+        if (!std::isfinite(left.x)) return false;
     }
-    return stack.size() == 1u && !stack[0].vector && stack[0].x != 0.0;
+    return stack.size() == 1u && stack[0].valid &&
+           stack[0].kind == ValueKind::Scalar && stack[0].x != 0.0;
 }
 
 ConditionCompileResult CompileConditionScript(

@@ -6,6 +6,7 @@
 #include "searches/algorithm_registry.h"
 
 #include <algorithm>
+#include <functional>
 #include <iostream>
 #include <string>
 
@@ -92,6 +93,35 @@ VisualNodeId AddSimulationStep(Builder &b, VisualNodeId search,
 void SetIterationPipeline(Builder &b, VisualNodeId search, VisualNodeId mutation,
                           VisualNodeId simulate, VisualNodeId choose) {
   b.program.find(search)->statements["body"] = {mutation, simulate, choose};
+}
+
+VisualProgram SimulationPredicateProgram(
+    const std::function<VisualNodeId(Builder &)> &buildPredicate) {
+  Builder b;
+  const VisualNodeId where = buildPredicate(b);
+  const VisualNodeId start = b.add("flow/when-start");
+  b.top(start);
+  const VisualNodeId search = AddSearchPolicy(b, start);
+
+  const VisualNodeId choose = b.add("flow/set-objective");
+  const VisualNodeId maximize = b.add("objective/maximize");
+  b.statement(search, "body", choose);
+  b.input(choose, "score", maximize);
+  b.input(maximize, "value", b.add("simulation/car-speed"));
+  b.input(maximize, "range", b.add("time/all"));
+
+  const VisualNodeId window = b.add("flow/mutation-window");
+  const VisualNodeId range = b.add("time/range");
+  b.statement(search, "body", window);
+  b.input(range, "from", b.literal("values/milliseconds", "100"));
+  b.input(range, "to", b.literal("values/milliseconds", "990"));
+  b.input(window, "range", range);
+  b.input(window, "seed", b.literal("values/integer", "42"));
+  b.statement(window, "body", b.add("mutate/reroll-steering"));
+
+  const VisualNodeId simulate = AddSimulationStep(b, search, "1000", where);
+  SetIterationPipeline(b, search, window, simulate, choose);
+  return std::move(b.program);
 }
 
 bool TestCatalogIsPrimitive() {
@@ -807,6 +837,293 @@ bool TestIterationOrderRejected() {
                "compiler accepted iteration steps in a dishonest visual order");
 }
 
+bool TestSimulationPredicateSupportsComposedGeometryAndRotation() {
+  const VisualProgram program = SimulationPredicateProgram([](Builder &b) {
+    const auto point = [&](const std::string &x, const std::string &y,
+                           const std::string &z) {
+      const VisualNodeId result = b.add("targets/point");
+      b.input(result, "x", b.literal("values/meters", x));
+      b.input(result, "y", b.literal("values/meters", y));
+      b.input(result, "z", b.literal("values/meters", z));
+      return result;
+    };
+
+    const VisualNodeId origin = point("0", "0", "0");
+    const VisualNodeId dynamicX = b.add("math/distance");
+    b.input(dynamicX, "a", b.add("simulation/car-position"));
+    b.input(dynamicX, "b", origin);
+    const VisualNodeId center = b.add("targets/point");
+    b.input(center, "x", dynamicX);
+    b.input(center, "y", b.literal("values/meters", "0"));
+    b.input(center, "z", b.literal("values/meters", "0"));
+    const VisualNodeId size = b.add("targets/size");
+    b.input(size, "x", b.literal("values/meters", "4"));
+    b.input(size, "y", b.literal("values/meters", "4"));
+    b.input(size, "z", b.literal("values/meters", "4"));
+    const VisualNodeId box = b.add("targets/box");
+    b.input(box, "center", center);
+    b.input(box, "size", size);
+    const VisualNodeId inside = b.add("conditions/inside");
+    b.input(inside, "position", b.add("simulation/car-position"));
+    b.input(inside, "volume", box);
+
+    const VisualNodeId normalized = b.add("math/normalize");
+    b.input(normalized, "value", b.add("simulation/car-velocity"));
+    const VisualNodeId direction = b.add("targets/direction");
+    b.input(direction, "x", b.literal("values/number", "1"));
+    b.input(direction, "y", b.literal("values/number", "0"));
+    b.input(direction, "z", b.literal("values/number", "0"));
+    const VisualNodeId dot = b.add("math/dot");
+    b.input(dot, "a", normalized);
+    b.input(dot, "b", direction);
+    const VisualNodeId facing = b.add("conditions/greater-equal");
+    b.input(facing, "a", dot);
+    b.input(facing, "b", b.literal("values/number", "0.9"));
+
+    const VisualNodeId targetRotation = b.add("targets/rotation");
+    b.input(targetRotation, "yaw", b.literal("values/degrees", "0"));
+    b.input(targetRotation, "pitch", b.literal("values/degrees", "0"));
+    b.input(targetRotation, "roll", b.literal("values/degrees", "0"));
+    const VisualNodeId rotationDistance = b.add("math/rotation-distance");
+    b.input(rotationDistance, "a", b.add("simulation/car-rotation"));
+    b.input(rotationDistance, "b", targetRotation);
+    const VisualNodeId rotationClose = b.add("conditions/less");
+    b.input(rotationClose, "a", rotationDistance);
+    b.input(rotationClose, "b", b.literal("values/number", "0.1"));
+
+    const VisualNodeId geometryAndFacing = b.add("conditions/and");
+    b.input(geometryAndFacing, "a", inside);
+    b.input(geometryAndFacing, "b", facing);
+    const VisualNodeId result = b.add("conditions/and");
+    b.input(result, "a", geometryAndFacing);
+    b.input(result, "b", rotationClose);
+    return result;
+  });
+
+  const VisualProgramValidation validation = ValidateVisualProgram(program);
+  bool okay = Check(validation.ok,
+                    "advanced simulate-where geometry did not type-check");
+  if (!validation.ok) {
+    for (const auto &error : validation.errors) std::cerr << error << '\n';
+    return false;
+  }
+  const CompileResult compiled = CompileVisualProgram(
+      program,
+      {DefaultSearchAlgorithmConfiguration(), DefaultModifierConfigurations(),
+       DefaultEvaluationTargetConfiguration()});
+  okay &= Check(compiled.ok,
+                "advanced simulate-where geometry did not compile");
+  if (!compiled.ok) {
+    for (const auto &error : compiled.errors) std::cerr << error << '\n';
+    return false;
+  }
+  if (!Check(compiled.conditionProgram.has_value(),
+             "advanced simulate-where lost its condition program"))
+    return false;
+
+  using Op = forevervalidator::experimental::PhysicsSandboxCudaConditionOpcode;
+  const auto &instructions = compiled.conditionProgram->cuda.instructions;
+  const auto has = [&](Op opcode) {
+    return std::any_of(instructions.begin(), instructions.end(),
+                       [opcode](const auto &instruction) {
+                         return instruction.opcode == opcode;
+                       });
+  };
+  okay &= Check(has(Op::ComposeVector) && has(Op::Direction) &&
+                    has(Op::Normalize) && has(Op::Dot) && has(Op::InsideBox) &&
+                    has(Op::RotationSource) && has(Op::Rotation) &&
+                    has(Op::RotationDistance),
+                "advanced simulate-where omitted typed condition opcodes");
+
+  forevervalidator::experimental::PhysicsSandboxStateView previous;
+  forevervalidator::experimental::PhysicsSandboxStateView current;
+  ConditionExecutionContext context;
+  current.car.position = {1.0f, 0.0f, 0.0f};
+  current.car.linearSpeed = {10.0f, 0.0f, 0.0f};
+  current.car.rotationW = 1.0f;
+  okay &= Check(compiled.conditionProgram->Evaluate(previous, current, context),
+                "advanced simulate-where rejected a matching state");
+  current.car.linearSpeed = {-10.0f, 0.0f, 0.0f};
+  okay &= Check(!compiled.conditionProgram->Evaluate(previous, current, context),
+                "normalize/dot predicate accepted the opposite direction");
+  current.car.linearSpeed = {10.0f, 0.0f, 0.0f};
+  current.car.rotationY = 0.70710677f;
+  current.car.rotationW = 0.70710677f;
+  okay &= Check(!compiled.conditionProgram->Evaluate(previous, current, context),
+                "rotation-distance predicate ignored car rotation");
+  return okay;
+}
+
+bool TestSimulationPredicateSupportsPrismsAndScalarLanguage() {
+  const VisualProgram program = SimulationPredicateProgram([](Builder &b) {
+    const VisualNodeId origin = b.add("targets/point");
+    b.input(origin, "x", b.literal("values/meters", "0"));
+    b.input(origin, "y", b.literal("values/meters", "0"));
+    b.input(origin, "z", b.literal("values/meters", "0"));
+    const VisualNodeId polygon =
+        b.literal("values/polygon", "-2,-2;2,-2;2,2;-2,2");
+    const VisualNodeId prism = b.add("targets/prism");
+    b.input(prism, "origin", origin);
+    b.input(prism, "depth", b.literal("values/meters", "5"));
+    b.input(prism, "polygon", polygon);
+    b.program.find(prism)->fields["plane"] = "xz";
+    const VisualNodeId inside = b.add("conditions/inside");
+    b.input(inside, "position", b.add("simulation/car-position"));
+    b.input(inside, "volume", prism);
+
+    const VisualNodeId blend = b.add("math/weighted-blend");
+    b.input(blend, "a", b.add("simulation/stunt-points"));
+    b.input(blend, "b", b.add("simulation/time"));
+    b.input(blend, "weight", b.literal("values/percent", "50"));
+    const VisualNodeId ratio = b.add("math/percent-ratio");
+    b.input(ratio, "value", b.literal("values/percent", "50"));
+    const VisualNodeId multiply = b.add("math/multiply");
+    b.input(multiply, "a", blend);
+    b.input(multiply, "b", ratio);
+    const VisualNodeId subtract = b.add("math/subtract");
+    b.input(subtract, "a", multiply);
+    b.input(subtract, "b", b.literal("values/number", "10"));
+    const VisualNodeId absolute = b.add("math/abs");
+    b.input(absolute, "value", subtract);
+    const VisualNodeId clamp = b.add("math/clamp");
+    b.input(clamp, "value", absolute);
+    b.input(clamp, "minimum", b.literal("values/number", "0"));
+    b.input(clamp, "maximum", b.literal("values/number", "10"));
+    const VisualNodeId minimum = b.add("math/min");
+    b.input(minimum, "a", clamp);
+    b.input(minimum, "b", b.add("simulation/checkpoint-count"));
+    const VisualNodeId maximum = b.add("math/max");
+    b.input(maximum, "a", minimum);
+    b.input(maximum, "b", b.literal("values/number", "1"));
+    const VisualNodeId scalarOkay = b.add("conditions/greater-equal");
+    b.input(scalarOkay, "a", maximum);
+    b.input(scalarOkay, "b", b.literal("values/number", "2"));
+
+    const VisualNodeId localMagnitude = b.add("math/magnitude");
+    b.input(localMagnitude, "value", b.add("simulation/car-local-velocity"));
+    const VisualNodeId moving = b.add("conditions/greater");
+    b.input(moving, "a", localMagnitude);
+    b.input(moving, "b", b.literal("values/number", "0"));
+    const VisualNodeId finishPositive = b.add("conditions/greater");
+    b.input(finishPositive, "a", b.add("simulation/finish-time"));
+    b.input(finishPositive, "b", b.literal("values/milliseconds", "0"));
+    const VisualNodeId completed = b.add("conditions/and");
+    b.input(completed, "a", b.add("simulation/race-completed"));
+    b.input(completed, "b", finishPositive);
+    const VisualNodeId notFreewheeling = b.add("conditions/not");
+    b.input(notFreewheeling, "value", b.add("simulation/freewheeling"));
+    const VisualNodeId completionOrGrip = b.add("conditions/or");
+    b.input(completionOrGrip, "a", completed);
+    b.input(completionOrGrip, "b", notFreewheeling);
+
+    const VisualNodeId first = b.add("conditions/and");
+    b.input(first, "a", inside);
+    b.input(first, "b", scalarOkay);
+    const VisualNodeId second = b.add("conditions/and");
+    b.input(second, "a", moving);
+    b.input(second, "b", completionOrGrip);
+    const VisualNodeId result = b.add("conditions/and");
+    b.input(result, "a", first);
+    b.input(result, "b", second);
+    return result;
+  });
+
+  const VisualProgramValidation validation = ValidateVisualProgram(program);
+  bool okay = Check(validation.ok,
+                    "prism/scalar simulate-where did not type-check");
+  if (!validation.ok) {
+    for (const auto &error : validation.errors) std::cerr << error << '\n';
+    return false;
+  }
+  const CompileResult compiled = CompileVisualProgram(
+      program,
+      {DefaultSearchAlgorithmConfiguration(), DefaultModifierConfigurations(),
+       DefaultEvaluationTargetConfiguration()});
+  okay &= Check(compiled.ok, "prism/scalar simulate-where did not compile");
+  if (!compiled.ok) {
+    for (const auto &error : compiled.errors) std::cerr << error << '\n';
+    return false;
+  }
+  if (!Check(compiled.conditionProgram.has_value(),
+             "prism/scalar simulate-where lost its condition program"))
+    return false;
+  const ConditionProgram &condition = *compiled.conditionProgram;
+  okay &= Check(condition.cuda.prisms.size() == 1u &&
+                    condition.cuda.prismVertices.size() == 4u,
+                "simulate-where prism geometry was not lowered");
+  using Op = forevervalidator::experimental::PhysicsSandboxCudaConditionOpcode;
+  const auto has = [&](Op opcode) {
+    return std::any_of(condition.cuda.instructions.begin(),
+                       condition.cuda.instructions.end(),
+                       [opcode](const auto &instruction) {
+                         return instruction.opcode == opcode;
+                       });
+  };
+  okay &= Check(has(Op::InsidePrism) && has(Op::WeightedBlend) &&
+                    has(Op::PercentRatio) && has(Op::Absolute) &&
+                    has(Op::Clamp) && has(Op::Minimum) && has(Op::Maximum) &&
+                    has(Op::Magnitude) && has(Op::LogicalOr) &&
+                    has(Op::LogicalNot),
+                "prism/scalar simulate-where omitted composed opcodes");
+
+  forevervalidator::experimental::PhysicsSandboxStateView previous;
+  forevervalidator::experimental::PhysicsSandboxStateView current;
+  ConditionExecutionContext context;
+  current.car.position = {0.0f, 1.0f, 0.0f};
+  current.car.localSpeed = {1.0f, 0.0f, 0.0f};
+  current.stuntsScore = 10u;
+  current.timeMs = 20u;
+  current.checkpointsCollected = 4u;
+  current.raceCompleted = true;
+  current.finishTimeMs = 100u;
+  current.finishTime = forevervalidator::FinishTimeEstimate{
+      99999999u, 100000000u, 100000000u};
+  okay &= Check(condition.Evaluate(previous, current, context),
+                "prism/scalar simulate-where rejected a matching state");
+  current.car.position.y = 6.0f;
+  okay &= Check(!condition.Evaluate(previous, current, context),
+                "simulate-where prism accepted a point beyond its depth");
+  current.car.position.y = 1.0f;
+  current.car.localSpeed = {};
+  okay &= Check(!condition.Evaluate(previous, current, context),
+                "simulate-where magnitude predicate ignored zero local speed");
+  return okay;
+}
+
+bool TestNestedLegacyConditionRemainsComposable() {
+  const VisualProgram program = SimulationPredicateProgram([](Builder &b) {
+    const VisualNodeId legacy = b.add("conditions/legacy-script");
+    b.program.find(legacy)->fields["source"] = "car.speed >= 1";
+    const VisualNodeId result = b.add("conditions/and");
+    b.input(result, "a", legacy);
+    b.input(result, "b", b.literal("values/boolean", "true"));
+    return result;
+  });
+  const CompileResult compiled = CompileVisualProgram(
+      program,
+      {DefaultSearchAlgorithmConfiguration(), DefaultModifierConfigurations(),
+       DefaultEvaluationTargetConfiguration()});
+  bool okay = Check(compiled.ok,
+                    "nested migrated legacy condition did not compile");
+  if (!compiled.ok) {
+    for (const auto &error : compiled.errors) std::cerr << error << '\n';
+    return false;
+  }
+  if (!Check(compiled.conditionProgram.has_value(),
+             "nested legacy condition lost its runtime program"))
+    return false;
+  forevervalidator::experimental::PhysicsSandboxStateView previous;
+  forevervalidator::experimental::PhysicsSandboxStateView current;
+  ConditionExecutionContext context;
+  current.car.linearSpeed = {2.0f, 0.0f, 0.0f};
+  okay &= Check(compiled.conditionProgram->Evaluate(previous, current, context),
+                "nested legacy condition rejected matching state");
+  current.car.linearSpeed = {};
+  okay &= Check(!compiled.conditionProgram->Evaluate(previous, current, context),
+                "nested legacy condition ignored migrated script");
+  return okay;
+}
+
 bool TestVisualExpressionCompilesToCudaBytecode() {
   OptionSettings settings = DefaultVisualExpressionOptionSettings();
   settings["direction"] = "minimize";
@@ -888,6 +1205,9 @@ int main() {
   okay &= TestInvalidFieldRejected();
   okay &= TestStatementFamilyMismatchRejected();
   okay &= TestIterationOrderRejected();
+  okay &= TestSimulationPredicateSupportsComposedGeometryAndRotation();
+  okay &= TestSimulationPredicateSupportsPrismsAndScalarLanguage();
+  okay &= TestNestedLegacyConditionRemainsComposable();
   okay &= TestVisualExpressionCompilesToCudaBytecode();
   okay &= TestVisualExpressionCudaFirstTimeAndLimits();
   return okay ? 0 : 1;

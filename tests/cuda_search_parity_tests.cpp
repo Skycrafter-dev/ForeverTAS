@@ -89,7 +89,8 @@ SearchResult Run(const char *packs,
                  std::uint32_t simulationHorizonMs =
                          forevertas::kDefaultSimulationHorizonMs,
                  const std::string &conditionScript = {},
-                 std::uint64_t *winnerResolutionCount = nullptr) {
+                 std::uint64_t *winnerResolutionCount = nullptr,
+                 const forevertas::ConditionProgram *conditionProgram = nullptr) {
     SearchRequest request{packs, replay};
     request.baseInputCommands = ReplayInputCommands(packs, replay);
     request.backend = backend;
@@ -101,12 +102,16 @@ SearchResult Run(const char *packs,
             autoPromoteBest ? "true" : "false";
     request.modifiers = std::move(modifiers);
     request.evaluationTarget = std::move(evaluator);
-    const forevertas::ConditionCompileResult condition =
-            forevertas::CompileConditionScript(conditionScript);
-    if (condition.error) {
-        throw std::runtime_error(*condition.error);
+    if (conditionProgram != nullptr) {
+        request.condition = *conditionProgram;
+    } else {
+        const forevertas::ConditionCompileResult condition =
+                forevertas::CompileConditionScript(conditionScript);
+        if (condition.error) {
+            throw std::runtime_error(*condition.error);
+        }
+        request.condition = condition.program;
     }
-    request.condition = condition.program;
     forevertas::SearchRunControl control;
     control.iterationLimit = iterations;
     control.sampleBestTimeline = sampleBestTimeline;
@@ -587,6 +592,93 @@ bool CheckVisualExpressionCudaParity(
     okay &= SameAuthoritativeResult(
             referencePrism, specializedPrism,
             "generic prism predicate reference/specialized CUDA");
+    return okay;
+}
+
+forevertas::ConditionProgram TypedSimulationCondition() {
+    using Op = forevervalidator::experimental::
+            PhysicsSandboxCudaConditionOpcode;
+    using Source = forevervalidator::experimental::
+            PhysicsSandboxCudaConditionValue;
+    using Plane = forevervalidator::experimental::
+            PhysicsSandboxCudaExpressionPlane;
+
+    forevertas::ConditionProgram condition;
+    condition.cuda.prisms.push_back({Plane::XZ, 0u, 4u});
+    condition.cuda.prismVertices = {
+            {0.0, 0.0},
+            {200000.0, 0.0},
+            {200000.0, 200000.0},
+            {0.0, 200000.0}};
+    auto &instructions = condition.cuda.instructions;
+
+    instructions.push_back({Op::Vector, Source::Position});
+    instructions.push_back(
+            {Op::ConstantVector, Source::Speed,
+             -100000.0, -100000.0, -100000.0});
+    instructions.push_back({Op::Constant, Source::Speed, 200000.0});
+    instructions.push_back({Op::InsidePrism, Source::Speed, 0.0});
+
+    instructions.push_back({Op::Vector, Source::Velocity});
+    instructions.push_back({Op::Magnitude});
+    instructions.push_back({Op::Constant, Source::Speed, 0.0});
+    instructions.push_back({Op::GreaterOrEqual});
+    instructions.push_back({Op::LogicalAnd});
+
+    instructions.push_back({Op::RotationSource, Source::CarRotation});
+    instructions.push_back({Op::RotationSource, Source::CarRotation});
+    instructions.push_back({Op::RotationDistance});
+    instructions.push_back({Op::Constant, Source::Speed, 0.0});
+    instructions.push_back({Op::LessOrEqual});
+    instructions.push_back({Op::LogicalAnd});
+    return condition;
+}
+
+bool CheckTypedSimulationConditionCudaParity(
+        const char *packs,
+        const char *replay) {
+    OptionConfiguration modifier = DefaultModifier(
+            forevertas::kRandomSteeringModifierId);
+    modifier.settings["minTimeMs"] = "1000";
+    modifier.settings["maxTimeMs"] = "1000";
+    OptionConfiguration evaluator = DefaultEvaluator(
+            forevertas::kVelocityEvaluationId);
+    evaluator.settings["minTimeMs"] = "1020";
+    evaluator.settings["maxTimeMs"] = "1020";
+    constexpr std::int64_t evaluationEndTimeMs = 1040;
+    const forevertas::ConditionProgram condition = TypedSimulationCondition();
+
+    std::cout << "typed simulate-where parity: reference" << std::endl;
+    const SearchResult reference = Run(
+            packs, replay, forevertas::PhysicsBackend::Reference,
+            1u, 1u, {modifier}, evaluator,
+            false, nullptr, false, evaluationEndTimeMs,
+            nullptr, false, true, false,
+            forevertas::kDefaultSimulationHorizonMs,
+            {}, nullptr, &condition);
+    std::cout << "typed simulate-where parity: regular CUDA" << std::endl;
+    const SearchResult regular = Run(
+            packs, replay, forevertas::PhysicsBackend::Cuda,
+            1u, 1u, {modifier}, evaluator,
+            false, nullptr, false, evaluationEndTimeMs,
+            nullptr, false, false, false,
+            forevertas::kDefaultSimulationHorizonMs,
+            {}, nullptr, &condition);
+    std::cout << "typed simulate-where parity: specialized CUDA" << std::endl;
+    const SearchResult specialized = Run(
+            packs, replay, forevertas::PhysicsBackend::Cuda,
+            1u, 1u, {modifier}, evaluator,
+            false, nullptr, false, evaluationEndTimeMs,
+            nullptr, false, true, false,
+            forevertas::kDefaultSimulationHorizonMs,
+            {}, nullptr, &condition);
+
+    bool okay = SameAuthoritativeResult(
+            reference, regular,
+            "typed simulate-where reference/regular CUDA");
+    okay &= SameAuthoritativeResult(
+            reference, specialized,
+            "typed simulate-where reference/specialized CUDA");
     return okay;
 }
 
@@ -1281,10 +1373,13 @@ int main(int argc, char **argv) {
             return CheckPreciseFinishParity(packs, replay) ? 0 : 1;
         }
         if (expressionOnly) {
-            return CheckVisualExpressionCudaParity(packs, replay) ? 0 : 1;
+            return CheckVisualExpressionCudaParity(packs, replay) &&
+                            CheckTypedSimulationConditionCudaParity(packs, replay)
+                    ? 0 : 1;
         }
         bool okay = CheckCudaKernelModeParity(packs, replay);
         okay &= CheckVisualExpressionCudaParity(packs, replay);
+        okay &= CheckTypedSimulationConditionCudaParity(packs, replay);
         okay &= CheckEquivalentDeletionPrefersFewerInputs(packs, replay);
         if (ordinaryParity && argc == 4) {
             okay &= CheckCheckpointConditionParity(packs, argv[3]);
