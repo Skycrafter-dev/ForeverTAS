@@ -226,7 +226,8 @@ VisualProgram SimulationPredicateProgram(
 }
 
 CompileResult CompileCatalogProgram(Builder &b, VisualNodeId score,
-                                    VisualNodeId mutationCommand = 0) {
+                                    VisualNodeId mutationCommand = 0,
+                                    VisualNodeId simulationWhere = 0) {
   const VisualNodeId start = b.add("flow/when-start");
   b.top(start);
   const VisualNodeId search = AddSearchPolicy(b, start);
@@ -241,7 +242,8 @@ CompileResult CompileCatalogProgram(Builder &b, VisualNodeId score,
     mutationCommand = AddCatalogDefaultBlock(b, "mutate/reroll-steering");
   b.statement(mutation, "body", mutationCommand);
 
-  const VisualNodeId simulate = AddSimulationStep(b, search, "1000");
+  const VisualNodeId simulate =
+      AddSimulationStep(b, search, "1000", simulationWhere);
   const VisualNodeId choose = b.add("flow/set-objective");
   b.input(choose, "score", score);
   SetIterationPipeline(b, search, mutation, simulate, choose);
@@ -249,6 +251,60 @@ CompileResult CompileCatalogProgram(Builder &b, VisualNodeId score,
       b.program,
       {DefaultSearchAlgorithmConfiguration(), DefaultModifierConfigurations(),
        DefaultEvaluationTargetConfiguration()});
+}
+
+VisualNodeId PredicateForCatalogValue(Builder &b,
+                                      const VisualBlockDefinition &definition,
+                                      VisualNodeId value) {
+  const auto compareNonNegative = [&](VisualNodeId scalar) {
+    const VisualNodeId predicate = b.add("conditions/greater-equal");
+    b.input(predicate, "a", scalar);
+    b.input(predicate, "b", b.literal("values/number", "0"));
+    return predicate;
+  };
+
+  if (definition.outputType == VisualValueType::Boolean)
+    return value;
+  if (VisualTypeCompatible(definition.outputType, VisualValueType::Scalar))
+    return compareNonNegative(value);
+  if (definition.outputType == VisualValueType::Position3) {
+    const VisualNodeId distance = b.add("math/distance");
+    b.input(distance, "a", value);
+    b.input(distance, "b", AddCatalogDefaultBlock(b, "targets/point"));
+    return compareNonNegative(distance);
+  }
+  if (definition.outputType == VisualValueType::Vector3 ||
+      definition.outputType == VisualValueType::Direction3) {
+    const VisualNodeId magnitude = b.add("math/magnitude");
+    b.input(magnitude, "value", value);
+    return compareNonNegative(magnitude);
+  }
+  if (definition.outputType == VisualValueType::Rotation3) {
+    const VisualNodeId distance = b.add("math/rotation-distance");
+    b.input(distance, "a", value);
+    b.input(distance, "b", AddCatalogDefaultBlock(b, "targets/rotation"));
+    return compareNonNegative(distance);
+  }
+  if (definition.outputType == VisualValueType::Volume) {
+    const VisualNodeId inside = b.add("conditions/inside");
+    b.input(inside, "position", b.add("simulation/car-position"));
+    b.input(inside, "volume", value);
+    return inside;
+  }
+  if (definition.outputType == VisualValueType::Polygon2) {
+    const VisualNodeId prism =
+        AddCatalogDefaultBlock(b, "targets/prism", "polygon", value);
+    const VisualNodeId inside = b.add("conditions/inside");
+    b.input(inside, "position", b.add("simulation/car-position"));
+    b.input(inside, "volume", prism);
+    return inside;
+  }
+  if (definition.outputType == VisualValueType::Percent) {
+    const VisualNodeId ratio = b.add("math/percent-ratio");
+    b.input(ratio, "value", value);
+    return compareNonNegative(ratio);
+  }
+  return 0;
 }
 
 VisualNodeId ScoreForCatalogValue(Builder &b,
@@ -473,6 +529,39 @@ bool TestEveryToolboxBlockHasExecutableDefaults() {
     if (!compiled.ok) {
       std::cerr << "toolbox value block '" << definition.id
                 << "' failed with its catalog defaults:\n";
+      for (const auto &error : compiled.errors)
+        std::cerr << "  " << error << '\n';
+      okay = false;
+    }
+  }
+  return okay;
+}
+
+bool TestEveryPredicateComposableToolboxBlockCompilesInSimulationWhere() {
+  bool okay = true;
+  for (const VisualBlockDefinition &definition : VisualBlockCatalog()) {
+    if (!definition.toolboxVisible ||
+        (definition.shape != VisualBlockShape::Reporter &&
+         definition.shape != VisualBlockShape::Predicate))
+      continue;
+
+    Builder b;
+    const VisualNodeId value = AddCatalogDefaultBlock(b, definition.id);
+    if (value == 0) {
+      std::cerr << "could not instantiate simulation-predicate block '"
+                << definition.id << "' from catalog defaults\n";
+      okay = false;
+      continue;
+    }
+    const VisualNodeId predicate = PredicateForCatalogValue(b, definition, value);
+    if (predicate == 0)
+      continue;
+
+    const VisualNodeId score = AddCatalogDefaultBlock(b, "objective/maximize");
+    const CompileResult compiled = CompileCatalogProgram(b, score, 0, predicate);
+    if (!compiled.ok) {
+      std::cerr << "toolbox block '" << definition.id
+                << "' failed inside simulate where:\n";
       for (const auto &error : compiled.errors)
         std::cerr << "  " << error << '\n';
       okay = false;
@@ -1496,6 +1585,7 @@ int main() {
   bool okay = true;
   okay &= TestCatalogIsPrimitive();
   okay &= TestEveryToolboxBlockHasExecutableDefaults();
+  okay &= TestEveryPredicateComposableToolboxBlockCompilesInSimulationWhere();
   okay &= TestPointObjectiveLowersToNativeEvaluator();
   okay &= TestGenericObjectiveFallsBackToCpuExpressionEvaluator();
   okay &= TestGenericFirstTimePredicateFallsBackToCpuExpressionEvaluator();

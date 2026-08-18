@@ -67,8 +67,9 @@ as a plan:
   retains its native keyboard navigation/editing commands;
 - every toolbox-visible reporter/predicate and mutation atom has a native
   catalog-contract regression that instantiates its declared defaults and
-  compiles it through a valid executable consumer, preventing editor-visible
-  blocks from drifting away from compiler/runtime support;
+  compiles it through a valid executable consumer; every predicate-composable
+  toolbox value is additionally routed through `simulate ... where`, preventing
+  editor-visible blocks from drifting away from compiler/runtime support;
 - portable-package smoke tests assert the deployed WebEngine helper, libraries,
   resource packs and locales, then start ForeverTAS and require the bundled
   JavaScript editor to reach `BlockEditorBridge::editorReady()` through
