@@ -102,6 +102,8 @@ portable layout.
 `packaging/release/local-release.py` reads `packaging/release/manifest.json`
 and coordinates exact-source Linux and Windows builds. Run the two platform
 builds sequentially so they do not compete for host CPU and memory.
+The manifest is release provenance: advance it when preparing that release,
+not merely because a development branch temporarily pins a newer dependency.
 
 The Linux build reuses a content-addressed toolchain image from
 `packaging/release/linux-toolchain.Dockerfile`. The image pins Ubuntu 22.04, CUDA
