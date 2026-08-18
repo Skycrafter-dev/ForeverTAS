@@ -86,9 +86,31 @@ int main(int argc, char **argv) {
     engine.loadFromModule(QStringLiteral("ForeverTAS"),
                           QStringLiteral("Main"));
 
-    if (application.arguments().contains(
-                QStringLiteral("--qml-smoke-test"))) {
+    const QStringList arguments = application.arguments();
+    if (arguments.contains(QStringLiteral("--qml-smoke-test"))) {
         QTimer::singleShot(0, &application, &QCoreApplication::quit);
+    } else if (arguments.contains(QStringLiteral("--blockly-smoke-test"))) {
+        const auto roots = engine.rootObjects();
+        QObject *const root = roots.isEmpty() ? nullptr : roots.front();
+        QObject *const settingsPanel =
+                root != nullptr
+                        ? root->findChild<QObject *>(
+                                  QStringLiteral("settingsPanel"))
+                        : nullptr;
+        if (settingsPanel == nullptr) {
+            QTimer::singleShot(0, &application,
+                               []() { QCoreApplication::exit(2); });
+        } else {
+            QObject::connect(
+                    &blockEditorBridge,
+                    &forevertas::app::BlockEditorBridge::editorReadyChanged,
+                    &application,
+                    []() { QCoreApplication::exit(0); },
+                    Qt::SingleShotConnection);
+            settingsPanel->setProperty("panelPage", 1);
+            QTimer::singleShot(30000, &application,
+                               []() { QCoreApplication::exit(3); });
+        }
     }
     return application.exec();
 }

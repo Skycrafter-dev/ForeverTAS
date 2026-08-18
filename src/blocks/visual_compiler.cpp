@@ -1344,25 +1344,37 @@ CompileMutationWindow(const VisualProgram &program, const VisualNode &window,
           }
           const auto minimum = valueNode->fields.find("minimum");
           const auto maximum = valueNode->fields.find("maximum");
-          const auto minimumValue = minimum == valueNode->fields.end()
-                                        ? std::nullopt
-                                        : ParseNumberValue(minimum->second);
-          const auto maximumValue = maximum == valueNode->fields.end()
-                                        ? std::nullopt
-                                        : ParseNumberValue(maximum->second);
-          if (!minimumValue || !maximumValue ||
-              !std::isfinite(*minimumValue) || !std::isfinite(*maximumValue) ||
-              *minimumValue > *maximumValue ||
-              (integerRange &&
-               (std::floor(*minimumValue) != *minimumValue ||
-                std::floor(*maximumValue) != *maximumValue))) {
+          if (minimum == valueNode->fields.end() ||
+              maximum == valueNode->fields.end()) {
             errors.push_back("Mutation range parameter '" + input.key +
                              "' contains an invalid min/max pair.");
             valid = false;
             continue;
           }
-          values[input.nativeSettingKeys[0]] = CompactNumber(*minimumValue);
-          values[input.nativeSettingKeys[1]] = CompactNumber(*maximumValue);
+          const std::optional<double> parsedMinimum =
+              ParseNumberValue(minimum->second);
+          const std::optional<double> parsedMaximum =
+              ParseNumberValue(maximum->second);
+          if (!parsedMinimum.has_value() || !parsedMaximum.has_value()) {
+            errors.push_back("Mutation range parameter '" + input.key +
+                             "' contains an invalid min/max pair.");
+            valid = false;
+            continue;
+          }
+          const double minimumValue = parsedMinimum.value();
+          const double maximumValue = parsedMaximum.value();
+          if (!std::isfinite(minimumValue) || !std::isfinite(maximumValue) ||
+              minimumValue > maximumValue ||
+              (integerRange &&
+               (std::floor(minimumValue) != minimumValue ||
+                std::floor(maximumValue) != maximumValue))) {
+            errors.push_back("Mutation range parameter '" + input.key +
+                             "' contains an invalid min/max pair.");
+            valid = false;
+            continue;
+          }
+          values[input.nativeSettingKeys[0]] = CompactNumber(minimumValue);
+          values[input.nativeSettingKeys[1]] = CompactNumber(maximumValue);
           continue;
         }
         const auto value = ConstantSettingValue(program, *valueNode, errors);

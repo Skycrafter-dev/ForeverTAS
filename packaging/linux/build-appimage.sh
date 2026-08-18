@@ -264,6 +264,29 @@ done
 test -f "${extracted_appdir}/usr/plugins/wayland-shell-integration/libxdg-shell.so"
 test -f "${extracted_appdir}/usr/plugins/wayland-graphics-integration-client/libqt-plugin-wayland-egl.so"
 test -f "${extracted_appdir}/usr/plugins/wayland-decoration-client/libadwaita.so"
+
+require_packaged_file() {
+    local description="$1"
+    local name="$2"
+    if ! find "${extracted_appdir}" -type f -name "${name}" -print -quit |
+            grep -q .; then
+        echo "Missing packaged ${description}: ${name}" >&2
+        exit 1
+    fi
+}
+
+require_packaged_file "Qt WebEngine helper" "QtWebEngineProcess"
+require_packaged_file "Qt WebChannel runtime" "libQt6WebChannel.so.6"
+require_packaged_file "Qt WebEngine Core runtime" "libQt6WebEngineCore.so.6"
+require_packaged_file "Qt WebEngine Quick runtime" "libQt6WebEngineQuick.so.6"
+require_packaged_file "Qt WebEngine resources" "qtwebengine_resources.pak"
+require_packaged_file "Qt WebEngine 100% resources" "qtwebengine_resources_100p.pak"
+require_packaged_file "Qt WebEngine 200% resources" "qtwebengine_resources_200p.pak"
+if ! find "${extracted_appdir}" -type f \
+        -path '*/qtwebengine_locales/en-US.pak' -print -quit | grep -q .; then
+    echo "Missing packaged Qt WebEngine en-US locale" >&2
+    exit 1
+fi
 if [[ "${FOREVERTAS_ENABLE_CUDA:-OFF}" == "ON" ]]; then
     test -f "${extracted_appdir}/usr/lib/libnvrtc-builtins.so.12.8"
 fi
@@ -302,9 +325,10 @@ fi
 
 QT_QPA_PLATFORM=offscreen \
 QSG_RHI_BACKEND=software \
+QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu \
 APPIMAGE_EXTRACT_AND_RUN=1 \
-    "${output}" --qml-smoke-test
-echo "Validated AppImage startup without requiring an NVIDIA driver."
+    "${output}" --blockly-smoke-test
+echo "Validated AppImage Blockly/WebEngine startup without requiring an NVIDIA driver."
 rm -rf "${smoke_root}"
 trap - EXIT
 

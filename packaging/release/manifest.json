@@ -12,7 +12,7 @@
     },
     "forevervalidator": {
       "repository": "https://github.com/Skycrafter-dev/ForeverValidator.git",
-      "commit": "92734f3dada703393690b9870e9fb343904f06d3",
+      "commit": "20fd361695e6a5a949cacc9bceec6ef64f18aa9f",
       "version": "0.2.3",
       "tag": "v0.2.3"
     }
@@ -25,7 +25,7 @@
     "architecture_key": "sm50-sm52-sm61-sm70-sm75-sm86-sm89-sm120-ptx120",
     "split_compile_jobs": 4,
     "search_object_architecture_jobs": 2,
-    "search_object_source_commit": "92734f3dada703393690b9870e9fb343904f06d3",
+    "search_object_source_commit": "20fd361695e6a5a949cacc9bceec6ef64f18aa9f",
     "search_object_output_neutral_paths": []
   },
   "toolchains": {

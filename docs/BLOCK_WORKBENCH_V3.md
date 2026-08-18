@@ -1,8 +1,11 @@
 # Block Workbench v3 architecture
 
-Status: implemented and validated on the `scratch-blocks` worktree. The v3
-block-workbench scope described by this document is complete; normal product
-release packaging/QA remains part of the wider ForeverTAS release process.
+Status: implemented, package-verified and validated on the `scratch-blocks`
+worktree. The v3 block-workbench scope described by this document is complete.
+Clean Linux AppImage and Windows portable builds both verify the deployed Qt
+WebEngine/WebChannel runtime and execute the bundled Blockly editor through its
+native `editorReady()` handshake. Broader product release QA remains part of
+the wider ForeverTAS release process.
 
 ## Current implementation checkpoint
 
@@ -60,6 +63,12 @@ as a plan:
   catalog-contract regression that instantiates its declared defaults and
   compiles it through a valid executable consumer, preventing editor-visible
   blocks from drifting away from compiler/runtime support;
+- portable-package smoke tests assert the deployed WebEngine helper, libraries,
+  resource packs and locales, then start ForeverTAS and require the bundled
+  JavaScript editor to reach `BlockEditorBridge::editorReady()` through
+  QWebChannel. This is verified in a clean Ubuntu 22.04 AppImage build and an
+  MSVC Windows portable build, both against pinned ForeverValidator commit
+  `20fd361695e6a5a949cacc9bceec6ef64f18aa9f`;
 - final verification is green on the 13-test non-CUDA matrix, the 24-test
   CUDA-enabled ForeverTAS matrix, the 23-test ForeverValidator CUDA matrix, and
   Reference/regular-CUDA/Fast-CUDA parity for generic objectives and typed
@@ -421,14 +430,23 @@ small as their inline content, and no card-with-form treatment.
 
 ## Build and packaging
 
-- Add Qt WebEngineQuick and WebChannel as required GUI dependencies.
-- Initialize Qt WebEngine before QApplication construction.
-- Bundle Blockly locally and add its Apache-2.0 notice/source-version metadata.
-- Extend Linux aqt module installation with `qtwebengine` and required runtime
-  dependencies.
-- Extend Windows deployment smoke tests to assert WebEngine/WebChannel DLLs,
-  resources/locales and the QtWebEngineProcess helper are present.
-- Keep a `BLOCKLY_VERSION`/lockfile so release builds are reproducible.
+- Qt WebEngineQuick and WebChannel are required GUI dependencies, with Qt
+  WebEngine initialized before QApplication construction.
+- Blockly is bundled locally with its Apache-2.0 notice and pinned
+  source/version metadata.
+- The clean Ubuntu 22.04 release toolchain explicitly installs
+  `qtpositioning`, `qtserialport`, `qtwebchannel`, `qtwebengine`, the existing
+  Quick3D/shader modules, and the native NSS/NSPR, ALSA and X11 dependencies
+  required by Qt WebEngine deployment.
+- Linux AppImage validation asserts QtWebEngineProcess, WebEngine/WebChannel
+  libraries, resource packs/locales and platform plugins, rejects a bundled or
+  startup-linked NVIDIA driver, then executes `--blockly-smoke-test` from the
+  portable image.
+- Windows portable validation asserts the corresponding WebEngine/WebChannel
+  DLLs, QtWebEngineProcess and resource packs/locales, checks dependency
+  closure, then executes the same real Blockly/WebChannel smoke path.
+- Blockly source/version metadata remains pinned so release builds are
+  reproducible.
 
 ## Test strategy
 

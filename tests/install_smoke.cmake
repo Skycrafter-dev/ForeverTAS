@@ -67,6 +67,19 @@ if(NOT smoke_result EQUAL 0)
     message(FATAL_ERROR "Installed application smoke test failed: ${smoke_result}")
 endif()
 
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" -E env
+        QT_QPA_PLATFORM=offscreen
+        QSG_RHI_BACKEND=software
+        QTWEBENGINE_CHROMIUM_FLAGS=--disable-gpu
+        "${executable}" --blockly-smoke-test
+    RESULT_VARIABLE blockly_smoke_result
+    TIMEOUT 60)
+if(NOT blockly_smoke_result EQUAL 0)
+    message(FATAL_ERROR
+        "Installed Blockly/WebEngine smoke test failed: ${blockly_smoke_result}")
+endif()
+
 # The application must keep running after startup: a runtime-broken QML
 # component (for example an attached control) can make the process exit
 # itself quietly, which the immediate-quit smoke flag above cannot

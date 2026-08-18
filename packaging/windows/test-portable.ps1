@@ -21,6 +21,7 @@ $OriginalEnvironment = @{
     QML_IMPORT_PATH = $env:QML_IMPORT_PATH
     QT_QPA_PLATFORM = $env:QT_QPA_PLATFORM
     QSG_RHI_BACKEND = $env:QSG_RHI_BACKEND
+    QTWEBENGINE_CHROMIUM_FLAGS = $env:QTWEBENGINE_CHROMIUM_FLAGS
 }
 
 function Restore-Environment {
@@ -52,9 +53,18 @@ try {
         "Qt6Gui.dll",
         "Qt6Qml.dll",
         "Qt6Quick.dll",
+        "Qt6WebChannel.dll",
+        "Qt6WebEngineCore.dll",
+        "Qt6WebEngineQuick.dll",
+        "QtWebEngineProcess.exe",
         "qt.conf",
         "plugins\platforms\qwindows.dll",
-        "qml\QtQuick\qtquick2plugin.dll"
+        "qml\QtQuick\qtquick2plugin.dll",
+        "resources\icudtl.dat",
+        "resources\qtwebengine_resources.pak",
+        "resources\qtwebengine_resources_100p.pak",
+        "resources\qtwebengine_resources_200p.pak",
+        "translations\qtwebengine_locales\en-US.pak"
     )) {
         $FullPath = Join-Path $ApplicationDirectory $RequiredPath
         if (-not (Test-Path $FullPath -PathType Leaf)) {
@@ -111,10 +121,11 @@ try {
     Remove-Item Env:QML_IMPORT_PATH -ErrorAction SilentlyContinue
     $env:QT_QPA_PLATFORM = "windows"
     $env:QSG_RHI_BACKEND = "software"
+    $env:QTWEBENGINE_CHROMIUM_FLAGS = "--disable-gpu"
 
     $ProcessStartInfo = [Diagnostics.ProcessStartInfo]::new()
     $ProcessStartInfo.FileName = $Executable.FullName
-    $ProcessStartInfo.Arguments = "--qml-smoke-test"
+    $ProcessStartInfo.Arguments = "--blockly-smoke-test"
     $ProcessStartInfo.WorkingDirectory = $ApplicationDirectory
     $ProcessStartInfo.UseShellExecute = $false
     $ProcessStartInfo.RedirectStandardOutput = $true
@@ -141,7 +152,7 @@ try {
         throw "Packaged application exited with $($Process.ExitCode).`n$Output`n$ErrorOutput"
     }
 
-    Write-Host "Portable ZIP dependency closure and QML startup test passed."
+    Write-Host "Portable ZIP dependency closure and Blockly/WebEngine startup test passed."
 } finally {
     Restore-Environment
     if ($RemoveWorkingDirectory) {

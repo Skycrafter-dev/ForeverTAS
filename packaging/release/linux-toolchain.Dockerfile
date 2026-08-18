@@ -9,13 +9,15 @@ ARG CUDA_KEYRING_SHA256=d93190d50b98ad4699ff40f4f7af50f16a76dac3bb8da1eaaf366d47
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         appstream build-essential ca-certificates curl desktop-file-utils \
-        file git libdbus-1-3 libegl1 libfontconfig1 libfuse2 \
+        file git libasound2-dev libdbus-1-3 libegl1 libfontconfig1 libfuse2 \
         libgl1-mesa-dev libgstreamer-gl1.0-0 libpulse-dev libssl-dev \
+        libnspr4-dev libnss3-dev libxcomposite-dev libxdamage-dev \
         libx11-xcb1 libxcb-cursor0 libxcb-glx0 libxcb-icccm4 \
         libxcb-image0 libxcb-keysyms1 libxcb-randr0 libxcb-render-util0 \
         libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-util1 \
         libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb-dev libxcb-xkb1 libxcb1 \
-        libxi6 libxkbcommon-dev libxkbcommon-x11-0 libxrender1 locales \
+        libxi6 libxkbcommon-dev libxkbcommon-x11-0 libxkbfile-dev \
+        libxrandr-dev libxrender1 libxtst-dev locales \
         ninja-build p7zip-full patchelf pkg-config python3 python3-pip \
         software-properties-common wget xz-utils zlib1g-dev \
     && locale-gen de_DE.UTF-8 \
@@ -40,7 +42,8 @@ RUN python3 -m pip install --no-cache-dir \
         "py7zr==1.0.0" \
     && aqt install-qt -O /opt/Qt \
         linux desktop 6.9.3 linux_gcc_64 \
-        -m qtquick3d qtshadertools qtwebengine
+        -m qtpositioning qtquick3d qtserialport qtshadertools qtwebchannel \
+           qtwebengine
 
 RUN curl --fail --location --retry 3 \
         "https://github.com/mozilla/sccache/releases/download/v${SCCACHE_VERSION}/sccache-v${SCCACHE_VERSION}-x86_64-unknown-linux-musl.tar.gz" \
