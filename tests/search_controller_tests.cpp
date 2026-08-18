@@ -246,20 +246,31 @@ bool TestAutomaticSeedRandomization() {
             return false;
         }
         const QString after = configuration.programText();
-        bool okay = Check(after != before,
-                          "program text did not reflect seed changes");
+        if (!Check(after != before,
+                   "program text did not reflect seed changes")) {
+            return false;
+        }
         const QRegularExpression seedExpression(
                 QStringLiteral("seed = (\\d+)"));
         QRegularExpressionMatchIterator beforeMatches =
                 seedExpression.globalMatch(before);
         QRegularExpressionMatchIterator afterMatches =
                 seedExpression.globalMatch(after);
+        int matchedSeeds = 0;
         while (beforeMatches.hasNext() && afterMatches.hasNext()) {
             const QString beforeSeed = beforeMatches.next()
                     .captured(1);
             const QString afterSeed = afterMatches.next().captured(1);
-            okay &= Check(beforeSeed != afterSeed,
-                          "a modifier seed did not change");
+            ++matchedSeeds;
+            if (!Check(beforeSeed != afterSeed,
+                       "a modifier seed did not change")) {
+                return false;
+            }
+        }
+        if (!Check(matchedSeeds > 0 && !beforeMatches.hasNext() &&
+                           !afterMatches.hasNext(),
+                   "seed comparison did not cover the same non-empty seed set")) {
+            return false;
         }
     }
     BlockProgramModel restored;

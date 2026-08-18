@@ -79,7 +79,8 @@ as a plan:
 - final verification is green on the 13-test non-CUDA matrix, the 24-test
   CUDA-enabled ForeverTAS matrix, the 23-test ForeverValidator CUDA matrix, and
   Reference/regular-CUDA/Fast-CUDA parity for generic objectives and typed
-  `simulate ... where` predicates, including prism membership.
+  `simulate ... where` predicates, including prism membership; the complete
+  13-test non-CUDA matrix also passes under Clang 22 ASan+UBSan.
 - `BLOCK_WORKBENCH_GUIDE.md` documents the production editing flow and concrete
   mutation, objective, predicate and geometry compositions for users.
 
