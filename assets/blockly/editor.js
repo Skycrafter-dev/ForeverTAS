@@ -473,6 +473,14 @@
     updateSearch();
     search.focus();
   });
+  document.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && !event.altKey
+        && event.key.toLowerCase() === 'f') {
+      event.preventDefault();
+      search.focus();
+      search.select();
+    }
+  });
   viewerPickButton.addEventListener('click', () => {
     if (!bridge?.editable) return;
     const block = selectedBlock();

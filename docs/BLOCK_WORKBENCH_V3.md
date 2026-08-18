@@ -59,6 +59,12 @@ as a plan:
   unreachable historical smoke-test body has been deleted;
 - a 500-block bridge/parse/validate/compile/apply/persist stress regression is
   part of the native test suite;
+- semantic v3 persistence has deterministic corruption-corpus coverage and an
+  end-to-end startup recovery regression that preserves the unreadable source
+  before regenerating an executable workspace;
+- the embedded editor exposes labelled search/status regions, keyboard-tab
+  focus at the WebEngine boundary and Ctrl/Cmd+F block search, while Blockly
+  retains its native keyboard navigation/editing commands;
 - every toolbox-visible reporter/predicate and mutation atom has a native
   catalog-contract regression that instantiates its declared defaults and
   compiles it through a valid executable consumer, preventing editor-visible
@@ -73,6 +79,8 @@ as a plan:
   CUDA-enabled ForeverTAS matrix, the 23-test ForeverValidator CUDA matrix, and
   Reference/regular-CUDA/Fast-CUDA parity for generic objectives and typed
   `simulate ... where` predicates, including prism membership.
+- `BLOCK_WORKBENCH_GUIDE.md` documents the production editing flow and concrete
+  mutation, objective, predicate and geometry compositions for users.
 
 ## Goal
 

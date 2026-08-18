@@ -541,6 +541,93 @@ bool TestVisualProgramPersistence() {
   return okay;
 }
 
+bool TestVisualProgramCorruptionCorpus() {
+  const QString valid = PrintVisualProgramJson(PersistenceFixture());
+  static constexpr char kReplacements[] = "{}[],:\"09az-_";
+  bool okay = true;
+  for (int index = 0; index < 256; ++index) {
+    QString mutated = valid;
+    const qsizetype position = static_cast<qsizetype>(
+        (static_cast<qulonglong>(index) * 2654435761ULL + 17ULL) %
+        static_cast<qulonglong>(mutated.size()));
+    mutated[position] =
+        QLatin1Char(kReplacements[index % (sizeof(kReplacements) - 1u)]);
+
+    const VisualProgramJson parsed = ParseVisualProgramJson(mutated);
+    if (!parsed.program) {
+      okay &= Check(!parsed.error.isEmpty(),
+                    "corrupt v3 document was rejected without a diagnostic");
+      continue;
+    }
+    const QString canonical = PrintVisualProgramJson(*parsed.program);
+    const VisualProgramJson reparsed = ParseVisualProgramJson(canonical);
+    okay &= Check(reparsed.program.has_value() &&
+                      PrintVisualProgramJson(*reparsed.program) == canonical,
+                  "accepted mutated v3 document was not canonically stable");
+  }
+
+  const QString oversized(4 * 1024 * 1024 + 1, QLatin1Char('x'));
+  const VisualProgramJson tooLarge = ParseVisualProgramJson(oversized);
+  okay &= Check(!tooLarge.program.has_value() && !tooLarge.error.isEmpty(),
+                "v3 parser accepted a document beyond its size limit");
+  return okay;
+}
+
+bool TestCorruptSemanticPersistenceIsBackedUpAndRecovered() {
+  QSettings().clear();
+  SearchController controller;
+  const QString corrupt = QStringLiteral(
+      R"({"version":3,"topLevel":["1"],"nodes":[{"id":"1","definitionId":"flow/when-start","fields":{},"inputs":{"bad":"999"},"statements":{},"x":0,"y":0}]})");
+  QSettings settings;
+  settings.setValue(QStringLiteral("blockEditor/v3Program"), corrupt);
+  settings.setValue(QStringLiteral("blockEditor/v3Workspace"),
+                    QStringLiteral("also corrupt"));
+
+  BlockEditorBridge bridge(&controller);
+  bool okay =
+      Check(QSettings()
+                    .value(QStringLiteral("blockEditor/v3ProgramCorruptBackup"))
+                    .toString() == corrupt,
+            "corrupt semantic v3 program was not preserved before recovery");
+  const QString recovered =
+      QSettings().value(QStringLiteral("blockEditor/v3Program")).toString();
+  const VisualProgramJson parsed = ParseVisualProgramJson(recovered);
+  okay &=
+      Check(parsed.program.has_value(),
+            "corrupt semantic v3 program did not recover to valid defaults");
+  okay &= Check(!bridge.workspaceJson().isEmpty() &&
+                    bridge.workspaceJson() != QStringLiteral("also corrupt"),
+                "corrupt Blockly cache was reused during semantic recovery");
+  okay &= Check(bridge.applyWorkspace(bridge.workspaceJson(),
+                                      bridge.workspaceRevision() + 1),
+                "recovered semantic workspace was not executable");
+
+  QSettings().clear();
+  SearchController semanticController;
+  VisualProgram dishonestOrder = PersistenceFixture();
+  dishonestOrder.find(14)->statements["body"] = {2, 6, 18};
+  const QString compileInvalid = PrintVisualProgramJson(dishonestOrder);
+  const VisualProgramJson structurallyValid =
+      ParseVisualProgramJson(compileInvalid);
+  okay &= Check(structurallyValid.program.has_value(),
+                "compile-invalid recovery fixture was rejected too early");
+  QSettings semanticSettings;
+  semanticSettings.setValue(QStringLiteral("blockEditor/v3Program"),
+                            compileInvalid);
+  BlockEditorBridge semanticBridge(&semanticController);
+  okay &= Check(
+      QSettings()
+              .value(QStringLiteral("blockEditor/v3ProgramCorruptBackup"))
+              .toString() == compileInvalid,
+      "semantically uncompilable v3 program was replaced without a backup");
+  const VisualProgramJson semanticRecovered = ParseVisualProgramJson(
+      QSettings().value(QStringLiteral("blockEditor/v3Program")).toString());
+  okay &= Check(semanticRecovered.program.has_value() &&
+                    !semanticBridge.workspaceJson().isEmpty(),
+                "compile-invalid semantic v3 program did not recover safely");
+  return okay;
+}
+
 bool TestSemanticPersistenceRestoresWithoutBlocklyCache() {
   QSettings().clear();
   SearchController controller;
@@ -716,6 +803,8 @@ int main(int argc, char **argv) {
   okay &= TestCatalogPublishesViewerPickers(bridge);
   okay &= TestViewerTargetBridge(&controller, &bridge);
   okay &= TestVisualProgramPersistence();
+  okay &= TestVisualProgramCorruptionCorpus();
+  okay &= TestCorruptSemanticPersistenceIsBackedUpAndRecovered();
   okay &= TestSemanticPersistenceRestoresWithoutBlocklyCache();
   okay &= TestGenericSemanticPersistenceOwnsRuntimeConfiguration();
   okay &= TestLegacyEditReplacesGenericRuntimeAuthority();

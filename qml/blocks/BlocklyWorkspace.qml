@@ -43,6 +43,9 @@ Item {
                     url: "qrc:///blockly/assets/blockly/index.html"
                     backgroundColor: ThemeControls.AppTheme.panel
                     focus: true
+                    activeFocusOnTab: true
+                    Accessible.name: qsTr("Visual search block editor")
+                    Accessible.description: qsTr("Blockly editor for composing search logic")
 
                     onNavigationRequested: request => {
                         const target = request.url.toString()

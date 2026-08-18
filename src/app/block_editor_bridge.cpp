@@ -414,7 +414,9 @@ QJsonObject BlocklyNodeForProgram(const blocks::VisualProgram &program,
     return {};
 
   QJsonObject fields;
-  for (const auto &[key, storedValue] : node->fields) {
+  for (const auto &entry : node->fields) {
+    const std::string &key = entry.first;
+    const std::string &storedValue = entry.second;
     QString value = ToQString(storedValue);
     const auto field =
         std::find_if(definition->fields.begin(), definition->fields.end(),
@@ -765,6 +767,10 @@ BlockEditorBridge::BlockEditorBridge(SearchController *controller,
           if (workspaceJson_.isEmpty())
             workspaceJson_ = WorkspaceForProgram(*persisted.program);
         }
+      }
+      if (workspaceJson_.isEmpty()) {
+        settings.setValue(QString::fromLatin1(kCorruptProgramBackupKey),
+                          storedProgram);
       }
     }
   }

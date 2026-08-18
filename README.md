@@ -12,7 +12,7 @@ ForeverTAS -> PhysicsSandbox -> ForeverValidator physics
 ## Dependency
 
 CMake `FetchContent` pins ForeverValidator to the exact commit
-`45ff66567c3b4520c072bd5e45cefc3cd1efb834`. The embedded build disables the
+`20fd361695e6a5a949cacc9bceec6ef64f18aa9f`. The embedded build disables the
 ForeverValidator CLI and tests and links its native asset adapter and core
 simulation library.
 
@@ -65,6 +65,8 @@ type-checks, compiles and persists the normalized version-3 program before it
 can affect runtime configuration. Supported generic objective expressions run
 with the same semantics on CPU, regular CUDA and Fast CUDA; CUDA precise finish
 time remains on its dedicated native objective.
+See [docs/BLOCK_WORKBENCH_GUIDE.md](docs/BLOCK_WORKBENCH_GUIDE.md) for a
+practical visual-search tutorial and composition examples.
 The Browse buttons always open the operating system's file picker rather than
 a Qt-provided dialog.
 The selected file supplies the map and scenario; only the editable script

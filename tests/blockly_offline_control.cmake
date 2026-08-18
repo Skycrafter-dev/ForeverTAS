@@ -22,6 +22,11 @@ if(NOT html MATCHES "connect-src 'none'" OR
    NOT html MATCHES "frame-src 'none'")
     message(FATAL_ERROR "Blockly editor CSP does not enforce offline isolation")
 endif()
+if(NOT html MATCHES "aria-label=\"Block search\"" OR
+   NOT html MATCHES "aria-live=\"polite\"" OR
+   NOT html MATCHES "role=\"alert\"")
+    message(FATAL_ERROR "Blockly editor accessibility status/search semantics regressed")
+endif()
 
 foreach(source IN ITEMS
         "${editor_dir}/index.html"
@@ -38,6 +43,16 @@ file(READ "${FOREVERTAS_SOURCE_DIR}/qml/blocks/BlocklyWorkspace.qml" host)
 if(NOT host MATCHES "qrc:///blockly/assets/blockly/index.html" OR
    NOT host MATCHES "request.reject\\(\\)")
     message(FATAL_ERROR "Blockly WebEngine host does not reject external navigation")
+endif()
+if(NOT host MATCHES "activeFocusOnTab: true" OR
+   NOT host MATCHES "Accessible.name")
+    message(FATAL_ERROR "Blockly WebEngine host is not keyboard/accessibility reachable")
+endif()
+
+file(READ "${editor_dir}/editor.js" editor_js)
+if(NOT editor_js MATCHES "event.ctrlKey \\|\\| event.metaKey" OR
+   NOT editor_js MATCHES "search.select\\(\\)")
+    message(FATAL_ERROR "Blockly keyboard search shortcut regressed")
 endif()
 
 file(READ "${FOREVERTAS_SOURCE_DIR}/CMakeLists.txt" cmake_source)

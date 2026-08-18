@@ -120,7 +120,9 @@ VisualProgramValidation ValidateVisualProgram(const VisualProgram &program,
                               "' has an invalid canvas position.");
     }
 
-    for (const auto &[key, value] : node.fields) {
+    for (const auto &entry : node.fields) {
+      const std::string &key = entry.first;
+      const std::string &value = entry.second;
       const auto field =
           std::find_if(definition->fields.begin(), definition->fields.end(),
                        [&key](const VisualFieldDefinition &candidate) {
@@ -173,7 +175,9 @@ VisualProgramValidation ValidateVisualProgram(const VisualProgram &program,
         break;
       }
     }
-    for (const auto &[key, childId] : node.inputs) {
+    for (const auto &entry : node.inputs) {
+      const std::string &key = entry.first;
+      const VisualNodeId childId = entry.second;
       const VisualNode *const child = program.find(childId);
       if (child == nullptr) {
         result.errors.push_back("Block '" + definition->label +
@@ -204,7 +208,9 @@ VisualProgramValidation ValidateVisualProgram(const VisualProgram &program,
         result.errors.push_back("A block cannot be connected to two parents.");
       }
     }
-    for (const auto &[key, children] : node.statements) {
+    for (const auto &entry : node.statements) {
+      const std::string &key = entry.first;
+      const std::vector<VisualNodeId> &children = entry.second;
       const auto statement = std::find_if(
           definition->statements.begin(), definition->statements.end(),
           [&key](const VisualStatementDefinition &candidate) {
