@@ -68,6 +68,107 @@ private:
   VisualNodeId next_ = 1;
 };
 
+std::string DefaultBlockForType(VisualValueType type) {
+  switch (type) {
+  case VisualValueType::Scalar:
+  case VisualValueType::Number:
+    return "values/number";
+  case VisualValueType::Integer:
+    return "values/integer";
+  case VisualValueType::NumberRange:
+    return "values/number-range";
+  case VisualValueType::IntegerRange:
+    return "values/integer-range";
+  case VisualValueType::Milliseconds:
+    return "values/milliseconds";
+  case VisualValueType::Meters:
+    return "values/meters";
+  case VisualValueType::MetersPerSecond:
+    return "simulation/car-speed";
+  case VisualValueType::Degrees:
+    return "values/degrees";
+  case VisualValueType::Percent:
+    return "values/percent";
+  case VisualValueType::Boolean:
+    return "values/boolean";
+  case VisualValueType::Vector3:
+    return "targets/size";
+  case VisualValueType::Position3:
+    return "targets/point";
+  case VisualValueType::Direction3:
+    return "targets/direction";
+  case VisualValueType::Rotation3:
+    return "targets/rotation";
+  case VisualValueType::Volume:
+    return "targets/box";
+  case VisualValueType::Polygon2:
+    return "values/polygon";
+  case VisualValueType::TimeRange:
+    return "time/all";
+  case VisualValueType::Score:
+    return "objective/maximize";
+  case VisualValueType::None:
+    break;
+  }
+  return {};
+}
+
+VisualNodeId AddCatalogDefaultBlock(Builder &b, const std::string &definitionId,
+                                    const std::string &overrideKey = {},
+                                    VisualNodeId overrideNode = 0,
+                                    std::size_t depth = 0u) {
+  if (depth > 32u)
+    return 0;
+  const VisualBlockDefinition *const definition =
+      FindVisualBlock(definitionId);
+  if (definition == nullptr)
+    return 0;
+  const VisualNodeId id = b.add(definitionId);
+  VisualNode *const node = b.program.find(id);
+  for (const VisualFieldDefinition &field : definition->fields)
+    node->fields[field.key] = field.defaultValue;
+  for (const VisualInputDefinition &input : definition->inputs) {
+    if (input.key == overrideKey && overrideNode != 0) {
+      b.input(id, input.key, overrideNode);
+      continue;
+    }
+    const std::string childDefinition = input.defaultBlockId.empty()
+                                            ? DefaultBlockForType(input.type)
+                                            : input.defaultBlockId;
+    if (childDefinition.empty())
+      continue;
+    const VisualNodeId child =
+        AddCatalogDefaultBlock(b, childDefinition, {}, 0, depth + 1u);
+    if (child == 0)
+      continue;
+    if (!input.defaultValue.empty()) {
+      VisualNode *const childNode = b.program.find(child);
+      const VisualBlockDefinition *const childDefinitionInfo =
+          FindVisualBlock(childDefinition);
+      if (childDefinitionInfo != nullptr) {
+        const auto valueField = std::find_if(
+            childDefinitionInfo->fields.begin(), childDefinitionInfo->fields.end(),
+            [](const VisualFieldDefinition &field) {
+              return field.key == "value";
+            });
+        if (valueField != childDefinitionInfo->fields.end()) {
+          childNode->fields["value"] = input.defaultValue;
+        } else {
+          const std::size_t comma = input.defaultValue.find(',');
+          if (comma != std::string::npos &&
+              childNode->fields.count("minimum") != 0u &&
+              childNode->fields.count("maximum") != 0u) {
+            childNode->fields["minimum"] = input.defaultValue.substr(0, comma);
+            childNode->fields["maximum"] = input.defaultValue.substr(comma + 1u);
+          }
+        }
+      }
+    }
+    b.input(id, input.key, child);
+  }
+  return id;
+}
+
 VisualNodeId AddSearchPolicy(Builder &b, VisualNodeId start,
                              bool autoPromote = false) {
   const VisualNodeId search = b.add("search/basic-brute-force");
@@ -124,6 +225,113 @@ VisualProgram SimulationPredicateProgram(
   return std::move(b.program);
 }
 
+CompileResult CompileCatalogProgram(Builder &b, VisualNodeId score,
+                                    VisualNodeId mutationCommand = 0) {
+  const VisualNodeId start = b.add("flow/when-start");
+  b.top(start);
+  const VisualNodeId search = AddSearchPolicy(b, start);
+
+  const VisualNodeId mutation = b.add("flow/mutation-window");
+  const VisualNodeId range = b.add("time/range");
+  b.input(range, "from", b.literal("values/milliseconds", "100"));
+  b.input(range, "to", b.literal("values/milliseconds", "990"));
+  b.input(mutation, "range", range);
+  b.input(mutation, "seed", b.literal("values/integer", "42"));
+  if (mutationCommand == 0)
+    mutationCommand = AddCatalogDefaultBlock(b, "mutate/reroll-steering");
+  b.statement(mutation, "body", mutationCommand);
+
+  const VisualNodeId simulate = AddSimulationStep(b, search, "1000");
+  const VisualNodeId choose = b.add("flow/set-objective");
+  b.input(choose, "score", score);
+  SetIterationPipeline(b, search, mutation, simulate, choose);
+  return CompileVisualProgram(
+      b.program,
+      {DefaultSearchAlgorithmConfiguration(), DefaultModifierConfigurations(),
+       DefaultEvaluationTargetConfiguration()});
+}
+
+VisualNodeId ScoreForCatalogValue(Builder &b,
+                                  const VisualBlockDefinition &definition,
+                                  VisualNodeId value) {
+  if (definition.outputType == VisualValueType::Score)
+    return value;
+  if (VisualTypeCompatible(definition.outputType, VisualValueType::Scalar)) {
+    const VisualNodeId score = b.add("objective/maximize");
+    b.input(score, "value", value);
+    b.input(score, "range", b.add("time/all"));
+    return score;
+  }
+  if (definition.outputType == VisualValueType::Boolean) {
+    const VisualNodeId score = b.add("objective/first-time");
+    b.input(score, "condition", value);
+    b.input(score, "range", b.add("time/all"));
+    return score;
+  }
+  if (definition.outputType == VisualValueType::Position3) {
+    const VisualNodeId distance = b.add("math/distance");
+    b.input(distance, "a", value);
+    b.input(distance, "b", AddCatalogDefaultBlock(b, "targets/point"));
+    const VisualNodeId score = b.add("objective/minimize");
+    b.input(score, "value", distance);
+    b.input(score, "range", b.add("time/all"));
+    return score;
+  }
+  if (definition.outputType == VisualValueType::Vector3 ||
+      definition.outputType == VisualValueType::Direction3) {
+    const VisualNodeId magnitude = b.add("math/magnitude");
+    b.input(magnitude, "value", value);
+    const VisualNodeId score = b.add("objective/maximize");
+    b.input(score, "value", magnitude);
+    b.input(score, "range", b.add("time/all"));
+    return score;
+  }
+  if (definition.outputType == VisualValueType::Rotation3) {
+    const VisualNodeId distance = b.add("math/rotation-distance");
+    b.input(distance, "a", value);
+    b.input(distance, "b", AddCatalogDefaultBlock(b, "targets/rotation"));
+    const VisualNodeId score = b.add("objective/minimize");
+    b.input(score, "value", distance);
+    b.input(score, "range", b.add("time/all"));
+    return score;
+  }
+  if (definition.outputType == VisualValueType::Volume) {
+    const VisualNodeId inside = b.add("conditions/inside");
+    b.input(inside, "position", b.add("simulation/car-position"));
+    b.input(inside, "volume", value);
+    const VisualNodeId score = b.add("objective/first-time");
+    b.input(score, "condition", inside);
+    b.input(score, "range", b.add("time/all"));
+    return score;
+  }
+  if (definition.outputType == VisualValueType::Polygon2) {
+    const VisualNodeId prism =
+        AddCatalogDefaultBlock(b, "targets/prism", "polygon", value);
+    const VisualNodeId inside = b.add("conditions/inside");
+    b.input(inside, "position", b.add("simulation/car-position"));
+    b.input(inside, "volume", prism);
+    const VisualNodeId score = b.add("objective/first-time");
+    b.input(score, "condition", inside);
+    b.input(score, "range", b.add("time/all"));
+    return score;
+  }
+  if (definition.outputType == VisualValueType::TimeRange) {
+    const VisualNodeId score = b.add("objective/maximize");
+    b.input(score, "value", b.add("simulation/car-speed"));
+    b.input(score, "range", value);
+    return score;
+  }
+  if (definition.outputType == VisualValueType::Percent) {
+    const VisualNodeId ratio = b.add("math/percent-ratio");
+    b.input(ratio, "value", value);
+    const VisualNodeId score = b.add("objective/maximize");
+    b.input(score, "value", ratio);
+    b.input(score, "range", b.add("time/all"));
+    return score;
+  }
+  return 0;
+}
+
 bool TestCatalogIsPrimitive() {
   bool okay = true;
   okay &= Check(FindVisualBlock("math/distance") != nullptr,
@@ -174,6 +382,101 @@ bool TestCatalogIsPrimitive() {
                       radius->type == VisualValueType::Milliseconds &&
                       radius->defaultBlockId == "values/milliseconds",
                   "mutation duration is not a millisecond reporter socket");
+  }
+  return okay;
+}
+
+bool TestEveryToolboxBlockHasExecutableDefaults() {
+  bool okay = true;
+  for (const VisualBlockDefinition &definition : VisualBlockCatalog()) {
+    if (!definition.toolboxVisible)
+      continue;
+
+    if (definition.statementFamily == "mutation-command") {
+      Builder b;
+      const VisualNodeId mutation = AddCatalogDefaultBlock(b, definition.id);
+      const VisualNodeId score = AddCatalogDefaultBlock(b, "objective/maximize");
+      const CompileResult compiled = CompileCatalogProgram(b, score, mutation);
+      if (!compiled.ok) {
+        std::cerr << "toolbox mutation '" << definition.id
+                  << "' failed with its catalog defaults:\n";
+        for (const auto &error : compiled.errors)
+          std::cerr << "  " << error << '\n';
+        okay = false;
+      }
+      continue;
+    }
+
+    if (definition.shape != VisualBlockShape::Reporter &&
+        definition.shape != VisualBlockShape::Predicate)
+      continue;
+
+    Builder b;
+    const VisualNodeId value = AddCatalogDefaultBlock(b, definition.id);
+    if (value == 0) {
+      std::cerr << "could not instantiate toolbox block '" << definition.id
+                << "' from catalog defaults\n";
+      okay = false;
+      continue;
+    }
+
+    if (definition.outputType == VisualValueType::NumberRange ||
+        definition.outputType == VisualValueType::IntegerRange) {
+      const VisualBlockDefinition *consumer = nullptr;
+      const VisualInputDefinition *consumerInput = nullptr;
+      for (const VisualBlockDefinition &candidate : VisualBlockCatalog()) {
+        if (!candidate.toolboxVisible ||
+            candidate.statementFamily != "mutation-command")
+          continue;
+        const auto input = std::find_if(
+            candidate.inputs.begin(), candidate.inputs.end(),
+            [&definition](const VisualInputDefinition &candidateInput) {
+              return VisualTypeCompatible(definition.outputType,
+                                          candidateInput.type);
+            });
+        if (input != candidate.inputs.end()) {
+          consumer = &candidate;
+          consumerInput = &*input;
+          break;
+        }
+      }
+      if (consumer == nullptr || consumerInput == nullptr) {
+        std::cerr << "toolbox range block '" << definition.id
+                  << "' has no executable mutation consumer\n";
+        okay = false;
+        continue;
+      }
+      const VisualNodeId mutation = AddCatalogDefaultBlock(
+          b, consumer->id, consumerInput->key, value);
+      const VisualNodeId score = AddCatalogDefaultBlock(b, "objective/maximize");
+      const CompileResult compiled = CompileCatalogProgram(b, score, mutation);
+      if (!compiled.ok) {
+        std::cerr << "toolbox range block '" << definition.id
+                  << "' failed through mutation consumer '" << consumer->id
+                  << "':\n";
+        for (const auto &error : compiled.errors)
+          std::cerr << "  " << error << '\n';
+        okay = false;
+      }
+      continue;
+    }
+
+    const VisualNodeId score = ScoreForCatalogValue(b, definition, value);
+    if (score == 0) {
+      std::cerr << "toolbox value block '" << definition.id << "' of type '"
+                << VisualValueTypeName(definition.outputType)
+                << "' has no executable catalog test context\n";
+      okay = false;
+      continue;
+    }
+    const CompileResult compiled = CompileCatalogProgram(b, score);
+    if (!compiled.ok) {
+      std::cerr << "toolbox value block '" << definition.id
+                << "' failed with its catalog defaults:\n";
+      for (const auto &error : compiled.errors)
+        std::cerr << "  " << error << '\n';
+      okay = false;
+    }
   }
   return okay;
 }
@@ -1192,6 +1495,7 @@ bool TestVisualExpressionCudaFirstTimeAndLimits() {
 int main() {
   bool okay = true;
   okay &= TestCatalogIsPrimitive();
+  okay &= TestEveryToolboxBlockHasExecutableDefaults();
   okay &= TestPointObjectiveLowersToNativeEvaluator();
   okay &= TestGenericObjectiveFallsBackToCpuExpressionEvaluator();
   okay &= TestGenericFirstTimePredicateFallsBackToCpuExpressionEvaluator();

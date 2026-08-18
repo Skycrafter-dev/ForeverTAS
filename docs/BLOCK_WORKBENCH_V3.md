@@ -24,8 +24,10 @@ as a plan:
   simulation horizon and its per-tick predicate are parameters of the
   simulation step rather than hidden setup state;
 - visual simulation predicates compile directly to the shared CPU/CUDA
-  condition bytecode. Existing text condition scripts migrate losslessly via
-  a hidden compatibility node that is not offered in the toolbox;
+  condition bytecode, including the same composed scalar/vector/rotation math,
+  Boolean logic, state reporters and box/prism containment exposed by the
+  predicate socket. Existing text condition scripts migrate losslessly via a
+  hidden compatibility node that is not offered in the toolbox;
 - current native evaluator shapes still lower to their existing optimized CPU/
   CUDA implementations where possible;
 - a generic expression runtime handles compositional scalar/vector/rotation
@@ -54,10 +56,14 @@ as a plan:
   unreachable historical smoke-test body has been deleted;
 - a 500-block bridge/parse/validate/compile/apply/persist stress regression is
   part of the native test suite;
-- final verification after the prism/layout changes is green on the 13-test
-  non-CUDA matrix, the 24-test CUDA-enabled ForeverTAS matrix, the 22-test
-  ForeverValidator CUDA matrix, and Reference/regular-CUDA/Fast-CUDA generic
-  expression parity including prism membership.
+- every toolbox-visible reporter/predicate and mutation atom has a native
+  catalog-contract regression that instantiates its declared defaults and
+  compiles it through a valid executable consumer, preventing editor-visible
+  blocks from drifting away from compiler/runtime support;
+- final verification is green on the 13-test non-CUDA matrix, the 24-test
+  CUDA-enabled ForeverTAS matrix, the 23-test ForeverValidator CUDA matrix, and
+  Reference/regular-CUDA/Fast-CUDA parity for generic objectives and typed
+  `simulate ... where` predicates, including prism membership.
 
 ## Goal
 
