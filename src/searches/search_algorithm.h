@@ -22,6 +22,7 @@ namespace forevertas {
 enum class SearchWinnerSource : std::uint8_t {
     Baseline,
     Mutation,
+    Program,
 };
 
 enum class SearchIterationPhase : std::uint8_t {
@@ -43,6 +44,7 @@ enum class SearchProgressStage : std::uint8_t {
     Mutations,
     FinalSamplingSetup,
     FinalSampling,
+    VisualProgram,
 };
 
 struct SearchProgress {

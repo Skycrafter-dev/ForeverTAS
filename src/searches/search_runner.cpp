@@ -1,4 +1,6 @@
 #include "searches/search_runner.h"
+#include "blocks/visual_runtime.h"
+#include "blocks/block_value.h"
 
 #include "input_timeline_time.h"
 #include "mutations/composite_input_mutator.h"
@@ -1310,12 +1312,166 @@ SearchResult RunMultiThreadedCpuSearch(
     return result;
 }
 
+class VisualPhysicsHost final : public blocks::VisualSimulationHost {
+public:
+    struct Snapshot final : blocks::VisualHostSnapshot {
+        forevervalidator::experimental::PhysicsSandboxState state;
+        explicit Snapshot(forevervalidator::experimental::PhysicsSandboxState value)
+            : state(std::move(value)) {}
+    };
+    using Sandbox = forevervalidator::experimental::PhysicsSandbox;
+    using Factory = std::function<Sandbox()>;
+    VisualPhysicsHost(Sandbox &sandbox, Factory factory, std::uint32_t horizon)
+        : sandbox_(sandbox), factory_(std::move(factory)), horizon_(horizon) {}
+    VisualPhysicsHost(std::unique_ptr<Sandbox> sandbox, Factory factory, std::uint32_t horizon)
+        : owned_(std::move(sandbox)), sandbox_(*owned_), factory_(std::move(factory)), horizon_(horizon) {}
+    std::unique_ptr<blocks::VisualSimulationHost> fork() const override {
+        // The engine has a prepared-scene clone for optimized CPU. Reference
+        // and CUDA branches load the same scenario on the same backend.
+        auto clone = sandbox_.Backend() == forevervalidator::SimulationBackend::OptimizedCpu
+                ? Require(ClonePhysicsSandbox(sandbox_), "cloning simulation branch") : factory_();
+        Require(clone.SetSimulationHorizonMs(horizon_), "setting branch horizon");
+        Require(clone.RestoreState(Require(sandbox_.CaptureState(), "capturing branch")), "restoring cloned branch");
+        return std::make_unique<VisualPhysicsHost>(std::make_unique<Sandbox>(std::move(clone)), factory_, horizon_);
+    }
+    blocks::VisualState read() const override { return Require(sandbox_.ReadState(), "reading simulation state"); }
+    blocks::VisualState advance() override { return Require(sandbox_.AdvanceTicks(1), "advancing simulation"); }
+    std::shared_ptr<const blocks::VisualHostSnapshot> capture() const override {
+        return std::make_shared<Snapshot>(Require(sandbox_.CaptureState(), "saving simulation"));
+    }
+    blocks::VisualState restore(const blocks::VisualHostSnapshot &snapshot) override {
+        const auto *native = dynamic_cast<const Snapshot *>(&snapshot);
+        if (!native) throw std::invalid_argument("Snapshot belongs to another simulation host.");
+        return Require(sandbox_.RestoreState(native->state), "restoring simulation");
+    }
+    blocks::VisualInputs inputs() const override { return Require(sandbox_.ReadInputs(), "reading inputs"); }
+    void replaceInputs(blocks::VisualInputs inputs) override {
+        Require(sandbox_.ReplaceInputs(std::move(inputs)), "replacing inputs");
+    }
+    blocks::VisualState setHorizon(std::uint32_t milliseconds) override {
+        const auto state=Require(sandbox_.SetSimulationHorizonMs(milliseconds), "setting simulation horizon");
+        horizon_=milliseconds;
+        return state;
+    }
+private:
+    std::unique_ptr<Sandbox> owned_;
+    forevervalidator::experimental::PhysicsSandbox &sandbox_;
+    Factory factory_;
+    std::uint32_t horizon_;
+};
+
+std::vector<SearchTimelineFrame> VisualTimeline(const blocks::VisualSnapshot &snapshot) {
+    std::vector<SearchTimelineFrame> frames;
+    frames.reserve(snapshot.history->size());
+    for (const auto &state : *snapshot.history) frames.push_back(ToTimelineFrame(state));
+    return frames;
+}
+
+SearchResult RunVisualSearch(const SearchRequest &request, const SearchRunControl *control) {
+    using namespace forevervalidator;
+    using namespace forevervalidator::experimental;
+    const auto validation = blocks::ValidateExecutableVisualProgram(*request.executable);
+    if (!validation.ok) throw std::invalid_argument(validation.errors.front());
+    if (request.simulationHorizonMs < kSearchTickDurationMs || request.simulationHorizonMs > kMaximumSimulationHorizonMs ||
+        request.simulationHorizonMs % kSearchTickDurationMs)
+        throw std::invalid_argument("Invalid block program simulation horizon.");
+    CheckCancellation(control);
+    ReportProgress(control, SearchProgressStage::OpeningPacksDirectory, 0, 0);
+    auto source = Require(OpenInstalledPackDirectory(request.packDirectory), "opening packs");
+    CheckCancellation(control);
+    ReportProgress(control, SearchProgressStage::ReadingScenario, 0, 0);
+    const ReplayIdentity identity{request.replayPath};
+    auto replay = Require(ReadReplayFileUtf8(request.replayPath, identity), "reading scenario");
+    ReportProgress(control, SearchProgressStage::CreatingSimulation, 0, 0);
+    auto sandbox = Require(CreatePhysicsSandbox(std::move(source),
+        CanonicalOptions(request, ToForeverValidatorBackend(request.backend))), "creating simulation");
+    CheckCancellation(control);
+    ReportProgress(control, SearchProgressStage::LoadingScenario, 0, 0);
+    Require(sandbox.LoadScenario({replay.data(), replay.size()}, identity), "loading scenario");
+    Require(sandbox.ReplaceInputs(BuildBaselineOrThrow(request,
+        Require(sandbox.ReadInputs(), "reading scenario inputs"))), "applying starting inputs");
+    CheckCancellation(control);
+    if (control && control->beginIteration && !control->beginIteration()) throw SearchCancelled();
+    ReportProgress(control, SearchProgressStage::VisualProgram, 0, 0);
+    VisualPhysicsHost host(sandbox, [&] {
+        CheckCancellation(control);
+        auto branch = Require(CreatePhysicsSandbox(
+            Require(OpenInstalledPackDirectory(request.packDirectory), "opening branch packs"),
+            CanonicalOptions(request, ToForeverValidatorBackend(request.backend))), "creating branch");
+        Require(branch.LoadScenario({replay.data(), replay.size()}, identity), "loading branch scenario");
+        return branch;
+    }, request.simulationHorizonMs);
+    blocks::VisualRuntimeControl runtime;
+    runtime.horizonMs = request.simulationHorizonMs;
+    runtime.tickMs = kSearchTickDurationMs;
+    runtime.workerCount = request.backend == PhysicsBackend::Reference || request.backend == PhysicsBackend::OptimizedCpu
+            ? 1u : request.parallelSampleCount;
+    runtime.debugger = request.debugger;
+    if (control) runtime.candidateLimit = control->iterationLimit;
+    const auto started = std::chrono::steady_clock::now();
+    auto lastStatistics = started;
+    std::mutex statisticsMutex;
+    std::optional<std::chrono::steady_clock::duration> lastPublication;
+    std::uint64_t publications = 0, candidates = 0;
+    runtime.candidateCountChanged = [&](std::uint64_t count) { candidates = count; };
+    runtime.stopRequested = [&] {
+        CheckCancellation(control);
+        std::lock_guard<std::mutex> lock(statisticsMutex);
+        const auto now = std::chrono::steady_clock::now();
+        if (control && control->statisticsChanged && now-lastStatistics >= std::chrono::milliseconds(100)) {
+            control->statisticsChanged({candidates, now-started});
+            lastStatistics = now;
+        }
+        return control && control->stopRequested && control->stopRequested();
+    };
+    runtime.published = [&](const blocks::VisualPublishedRun &published) {
+        ++publications;
+        lastPublication = std::chrono::steady_clock::now()-started;
+        if (!control || !control->liveChanged) return;
+        SearchLiveUpdate live;
+        live.winnerSource = SearchWinnerSource::Program;
+        if (published.candidate) live.winningIterationIndex = published.candidate-1;
+        live.bestScore = published.score;
+        live.bestState = published.evaluationState;
+        live.bestEvaluationTimeMs = static_cast<double>(published.evaluationState.timeMs);
+        live.bestEvaluationDescription = "Program-selected score: " + blocks::FormatNumberValue(published.score);
+        live.bestInputs = published.snapshot->inputs;
+        live.iterations = candidates;
+        live.evaluatorCalls = publications;
+        live.mutationImprovementCount = publications;
+        live.elapsed = *lastPublication;
+        live.lastImprovementElapsed = lastPublication;
+        if (control->sampleImprovementTimelines) live.bestTimeline = VisualTimeline(*published.snapshot);
+        control->liveChanged(live);
+    };
+    const auto execution = blocks::ExecuteVisualProgram(*request.executable, host, runtime);
+    CheckCancellation(control);
+    const auto selected = execution.published ? execution.published->snapshot : execution.finalSnapshot;
+    const auto evaluationState = execution.published ? execution.published->evaluationState : selected->state;
+    const double score = execution.published ? execution.published->score : 0;
+    const auto elapsed = std::chrono::steady_clock::now()-started;
+    if (control && control->statisticsChanged) control->statisticsChanged({execution.candidates, elapsed});
+    auto timeline = !control || control->sampleBestTimeline ? VisualTimeline(*selected) : std::vector<SearchTimelineFrame>{};
+    const auto *physical = dynamic_cast<const VisualPhysicsHost::Snapshot *>(selected->native.get());
+    if (!physical) throw std::runtime_error("Missing physical snapshot after block execution.");
+    return {SearchWinnerSource::Program,
+            execution.published && execution.published->candidate
+                ? std::optional<std::uint64_t>(execution.published->candidate-1) : std::nullopt,
+            0, score, static_cast<double>(evaluationState.timeMs),
+            execution.published ? "Program-selected score: " + blocks::FormatNumberValue(score)
+                                : "Program ended without keeping a result; showing its final simulation state.",
+            evaluationState, selected->inputs, std::move(timeline), execution.candidates,
+            publications, publications, 0, elapsed, lastPublication, physical->state};
+}
+
 }  // namespace
 
 SearchResult RunSearch(const SearchRequest &request,
                        const SearchRunControl *control) {
     using namespace forevervalidator;
     using namespace forevervalidator::experimental;
+
+    if (request.executable) return RunVisualSearch(request, control);
 
     const SearchAlgorithmRegistration *const searchRegistration =
             FindSearchAlgorithm(request.searchAlgorithm.id);

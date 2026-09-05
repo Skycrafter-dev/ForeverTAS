@@ -171,9 +171,15 @@ public:
     QString programTextError() const;
     QString evaluationTargetId() const;
     std::optional<blocks::SearchComponentConfiguration> blockComponents() const;
+    const blocks::VisualProgram *executableBlockProgram() const { return visualExecutable_.get(); }
+    bool applyBlockProgram(std::shared_ptr<const blocks::VisualProgram> program);
+    std::shared_ptr<blocks::VisualDebugger> blockDebugger() const { return visualDebugger_; }
+    void startBlockProgram(bool pauseAtStart);
+    void setBlockProgramError(const QString &error);
     bool applyBlockComponents(
             const blocks::SearchComponentConfiguration &components,
-            std::optional<ConditionProgram> visualCondition = std::nullopt);
+            std::optional<ConditionProgram> visualCondition = std::nullopt,
+            std::shared_ptr<const blocks::VisualProgram> executable = {});
     CuboidTargetModel *cuboidTargets();
     CustomVolumeTargetModel *customVolumeTargets();
     bool customVolumeDrawing() const;
@@ -258,6 +264,7 @@ public slots:
     Q_INVOKABLE void stopSearch();
 
 signals:
+    void blockDebugChanged(const QString &snapshot);
     void packsDirectoryChanged();
     void autoDetectedPacksDirectoryChanged();
     void replayPathChanged();
@@ -362,6 +369,10 @@ private:
     // representation. Keep that compiled runtime snapshot separately; the
     // semantic v3 graph remains owned/persisted by BlockEditorBridge.
     std::optional<blocks::SearchComponentConfiguration> visualComponents_;
+    std::shared_ptr<const blocks::VisualProgram> visualExecutable_;
+    std::shared_ptr<blocks::VisualDebugger> visualDebugger_;
+    bool pauseBlockAtStart_ = false;
+    QString visualProgramError_;
     std::optional<ConditionProgram> visualCondition_;
     QString visualEvaluationTargetId_;
     bool applyingBlockComponents_ = false;

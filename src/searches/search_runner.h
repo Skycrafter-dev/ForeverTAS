@@ -2,6 +2,7 @@
 #define FOREVERTAS_SEARCHES_SEARCH_RUNNER_H
 
 #include "input_timeline_time.h"
+#include "blocks/visual_program.h"
 #include "conditions/condition_program.h"
 #include "mutations/input_event_formatter.h"
 #include "physics_backend.h"
@@ -51,6 +52,8 @@ struct SearchRequest {
     bool useCudaSessionSpecialization = true;
     std::uint32_t simulationHorizonMs = kDefaultSimulationHorizonMs;
     std::optional<ConditionProgram> condition;
+    std::shared_ptr<const blocks::VisualProgram> executable;
+    std::shared_ptr<blocks::VisualDebugger> debugger;
 };
 
 SearchResult RunSearch(

@@ -136,7 +136,15 @@ add_library(forevertas_core STATIC
     src/blocks/block_program_io.h
     src/blocks/visual_catalog.cpp
     src/blocks/visual_catalog.h
+    src/blocks/visual_macros.cpp
+    src/blocks/visual_macros.h
     src/blocks/visual_compiler.cpp
+    src/blocks/visual_runtime.h
+    src/blocks/visual_runtime.cpp
+    src/blocks/visual_runtime_state.cpp
+    src/blocks/visual_runtime_validation.cpp
+    src/blocks/visual_debugger.h
+    src/blocks/visual_debugger.cpp
     src/blocks/visual_compiler.h
     src/blocks/visual_program.cpp
     src/blocks/visual_program.h
@@ -355,6 +363,7 @@ set(FOREVERTAS_BLOCKLY_RESOURCE_FILES
     assets/blockly/index.html
     assets/blockly/editor.css
     assets/blockly/editor.js
+    assets/blockly/examples.js
     third_party/blockly/blockly_compressed.js
     third_party/blockly/en.js
     ${FOREVERTAS_BLOCKLY_MEDIA})
@@ -659,6 +668,10 @@ if(BUILD_TESTING)
         tests/visual_program_tests.cpp)
     target_link_libraries(forevertas-visual-block-tests PRIVATE forevertas_core)
 
+    add_executable(forevertas-visual-runtime-tests
+        tests/visual_runtime_tests.cpp)
+    target_link_libraries(forevertas-visual-runtime-tests PRIVATE forevertas_core)
+
     add_executable(forevertas-block-editor-bridge-tests
         tests/block_editor_bridge_tests.cpp)
     target_link_libraries(forevertas-block-editor-bridge-tests PRIVATE
@@ -696,6 +709,8 @@ if(BUILD_TESTING)
             ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-visual-block-tests PRIVATE
             ${FOREVERTAS_WARNING_OPTIONS})
+        target_compile_options(forevertas-visual-runtime-tests PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-block-editor-bridge-tests PRIVATE
             ${FOREVERTAS_WARNING_OPTIONS})
         target_compile_options(forevertas-controller-tests PRIVATE
@@ -712,10 +727,21 @@ if(BUILD_TESTING)
              COMMAND forevertas-block-tests)
     add_test(NAME forevertas-visual-blocks
              COMMAND forevertas-visual-block-tests)
+    add_test(NAME forevertas-visual-runtime
+             COMMAND forevertas-visual-runtime-tests)
     add_test(NAME forevertas-block-editor-bridge
              COMMAND forevertas-block-editor-bridge-tests)
     set_tests_properties(forevertas-block-editor-bridge PROPERTIES
         RESOURCE_LOCK controller-settings)
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    find_program(FOREVERTAS_TEST_CHROMIUM NAMES chromium chromium-browser google-chrome)
+    if(Python3_Interpreter_FOUND AND FOREVERTAS_TEST_CHROMIUM)
+        add_test(NAME forevertas-blockly-browser
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/blockly_runtime_browser.py
+                ${CMAKE_CURRENT_SOURCE_DIR} $<TARGET_FILE:forevertas-block-editor-bridge-tests>
+                ${FOREVERTAS_TEST_CHROMIUM})
+        set_tests_properties(forevertas-blockly-browser PROPERTIES TIMEOUT 60)
+    endif()
     add_test(NAME forevertas-no-replay-duration-control
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -767,6 +793,21 @@ if(BUILD_TESTING)
     set(FOREVERTAS_TEST_CHALLENGE "" CACHE FILEPATH
         "Standalone Challenge.Gbx used by optional scenario tests")
     if(FOREVERTAS_TEST_PACK_DIRECTORY AND FOREVERTAS_TEST_REPLAY)
+        add_test(NAME forevertas-block-program-physics
+            COMMAND forevertas-visual-runtime-tests
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-debugger
+            COMMAND forevertas-block-editor-bridge-tests --debug-runtime
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-block-program-physics forevertas-block-debugger PROPERTIES
+            TIMEOUT 90 RESOURCE_LOCK cuda)
+        if(Python3_Interpreter_FOUND AND FOREVERTAS_TEST_CHROMIUM)
+            add_test(NAME forevertas-block-program-examples
+                COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/blockly_runtime_browser.py"
+                    "${CMAKE_CURRENT_SOURCE_DIR}" "$<TARGET_FILE:forevertas-block-editor-bridge-tests>"
+                    "${FOREVERTAS_TEST_CHROMIUM}" "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+            set_tests_properties(forevertas-block-program-examples PROPERTIES TIMEOUT 90)
+        endif()
         add_executable(forevertas-search-smoke
             tests/search_smoke.cpp)
         target_link_libraries(forevertas-search-smoke PRIVATE

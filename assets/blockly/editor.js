@@ -10,6 +10,116 @@
   let lastSelectedBlockId = '';
   const definitionsByType = new Map();
   const categoriesById = new Map();
+  let syncingProcedures = false;
+  let debugSnapshot = {};
+  let lastDebugBlock = '';
+  const breakpoints = new Set();
+
+  function parameterNames(text) {
+    return text === '' ? [] : String(text).split(',').map(name => name.trim());
+  }
+
+  function isProcedureCall(block) {
+    const id = definitionsByType.get(block.type)?.id;
+    return id === 'procedures/call' || id === 'procedures/value';
+  }
+
+  function procedureChoices() {
+    const block = this.getSourceBlock();
+    if (!block) return [['my block', 'my block']];
+    const owner = block.workspace.targetWorkspace || block.workspace;
+    const names = new Set([block.getFieldValue('name') || 'my block', block.loadingProcedureName_]);
+    for (const candidate of owner.getAllBlocks(false))
+      if (definitionsByType.get(candidate.type)?.id === 'procedures/define') names.add(candidate.getFieldValue('name'));
+    return [...names].filter(Boolean).map(name => [name, name]);
+  }
+
+  class ProcedureNameField extends Blockly.FieldDropdown {
+    constructor() { super(procedureChoices); }
+    doClassValidation_(value) {
+      // Blockly otherwise validates against the options cached before the
+      // field was attached. New/renamed/deserialized procedures are dynamic.
+      this.getOptions(false);
+      return super.doClassValidation_(value);
+    }
+  }
+
+  function updateArguments(text) {
+    const names = parameterNames(text);
+    if (names.length > 64) return; // The native validator reports the limit.
+    const old = this.parameterNames_ || [];
+    if (JSON.stringify(old) === JSON.stringify(names)) return;
+    const saved = old.map((name, index) => {
+      const child = this.getInputTargetBlock(`arg${index}`);
+      const shadow = this.getInput(`arg${index}`).connection.getShadowState(true);
+      const connection = child && !child.isShadow() ? child.outputConnection : null;
+      if (connection) child.unplug(false);
+      this.removeInput(`arg${index}`);
+      return {name, connection, shadow, used: false};
+    });
+    const numberType = catalog.blocks.find(block => block.id === 'values/number').type;
+    names.forEach((name, index) => {
+      const socket = this.appendValueInput(`arg${index}`).appendField(name || 'parameter');
+      // Reordering keeps arguments attached to their names. A rename keeps the
+      // positional value without stealing a surviving parameter's connection.
+      let argument = saved.find(item => item.name === name && !item.used);
+      if (!argument && saved[index] && !saved[index].used && !names.includes(saved[index].name)) argument = saved[index];
+      if (argument) argument.used = true;
+      socket.connection.setShadowState(argument?.shadow || {type: numberType, fields: {value: 0}});
+      if (argument?.connection) socket.connection.connect(argument.connection);
+    });
+    this.parameterNames_ = names;
+  }
+
+  function syncProcedures(event) {
+    if (syncingProcedures) return;
+    syncingProcedures = true;
+    const group = Blockly.Events.getGroup();
+    if (event?.group) Blockly.Events.setGroup(event.group);
+    try {
+      const blocks = workspace.getAllBlocks(false);
+      const changed = event?.blockId && workspace.getBlockById(event.blockId);
+      const renamed = changed && definitionsByType.get(changed.type)?.id === 'procedures/define'
+        && event.element === 'field' && event.name === 'name';
+      const parametersChanged = changed && definitionsByType.get(changed.type)?.id === 'procedures/define'
+        && event.element === 'field' && event.name === 'parameters';
+      if (parametersChanged) {
+        const before = parameterNames(event.oldValue), after = parameterNames(event.newValue);
+        const renamedParameters = new Map();
+        before.forEach((name, index) => {
+          if (!after.includes(name) && after[index] && !before.includes(after[index])) renamedParameters.set(name, after[index]);
+        });
+        for (const child of changed.getDescendants(false)) {
+          const id = definitionsByType.get(child.type)?.id;
+          if (!['data/get', 'data/set', 'data/change', 'data/local', 'flow/for-each', 'flow/try'].includes(id)) continue;
+          const name = renamedParameters.get(child.getFieldValue('name'));
+          if (name) child.setFieldValue(name, 'name');
+        }
+      }
+      const definitions = new Map(blocks.filter(block => definitionsByType.get(block.type)?.id === 'procedures/define')
+        .map(block => [block.getFieldValue('name'), block]));
+      for (const call of blocks.filter(block => isProcedureCall(block) || definitionsByType.get(block.type)?.id === 'procedures/reference')) {
+        if (renamed && call.getFieldValue('name') === event.oldValue) call.setFieldValue(event.newValue, 'name');
+        if (!isProcedureCall(call)) continue;
+        const definition = definitions.get(call.getFieldValue('name'));
+        if (!definition) continue;
+        const parameters = definition.getFieldValue('parameters');
+        if (call.getFieldValue('parameters') !== parameters) call.setFieldValue(parameters, 'parameters');
+      }
+    } finally { Blockly.Events.setGroup(group); syncingProcedures = false; }
+  }
+
+  function procedureContextMenu(options) {
+    for (const [id, label] of [['procedures/call', 'Create command call'], ['procedures/value', 'Create reporter call'], ['procedures/reference', 'Use this block as a value']]) {
+      options.push({text: label, enabled: !!bridge?.editable, callback: () => {
+        const type = catalog.blocks.find(block => block.id === id).type;
+        const call = workspace.newBlock(type);
+        call.setFieldValue(this.getFieldValue('name'), 'name');
+        if (call.getField('parameters')) call.setFieldValue(this.getFieldValue('parameters'), 'parameters');
+        centerNewBlock(call);
+      }});
+    }
+  }
 
   const search = document.getElementById('blockSearch');
   const clearSearch = document.getElementById('clearSearch');
@@ -80,7 +190,16 @@
             for (const field of definition.fields) {
               if (!header) header = this.appendDummyInput('header');
               if (field.label) header.appendField(field.label);
-              header.appendField(fieldFor(field), field.key);
+              const call = definition.id === 'procedures/call' || definition.id === 'procedures/value';
+              const editor = (call || definition.id === 'procedures/reference') && field.key === 'name' ? new ProcedureNameField() : fieldFor(field);
+              header.appendField(editor, field.key);
+              if (call && field.key === 'parameters') {
+                editor.setVisible(false);
+                editor.setValidator(function(text) {
+                  this.getSourceBlock().updateArguments(text);
+                  return text;
+                });
+              }
             }
             definition.inputs.forEach((input, index) => {
               const socket = this.appendValueInput(input.key);
@@ -98,30 +217,108 @@
           }
 
           if (definition.shape === 'reporter' || definition.shape === 'predicate') {
-            this.setOutput(true, definition.outputChecks || null);
+            this.setOutput(true, definition.outputChecks?.length ? definition.outputChecks : null);
           } else if (definition.shape === 'command' || definition.shape === 'control') {
             const checks = definition.statementChecks?.length ? definition.statementChecks : null;
             this.setPreviousStatement(true, checks);
             this.setNextStatement(true, checks);
           }
           this.setTooltip(definition.label || definition.id);
+          if (definition.id === 'procedures/define') {
+            this.customContextMenu = procedureContextMenu;
+            this.setTooltip('Name this block and list its parameter names, separated by commas. Right-click to create a call. Use local variables and return inside the body.');
+          }
+          if (definition.shape === 'command' || definition.shape === 'control') {
+            this.customContextMenu = options => options.push({
+              text: breakpoints.has(this.id) ? 'Remove breakpoint' : 'Break before this block',
+              enabled: true,
+              callback: () => {
+                if (breakpoints.has(this.id)) breakpoints.delete(this.id); else breakpoints.add(this.id);
+                this.setWarningText(breakpoints.has(this.id) ? 'Breakpoint' : null, 'breakpoint');
+                bridge.setBreakpoints([...breakpoints]);
+                document.getElementById('inspectProgram').checked = true;
+                bridge.inspectProgram(true);
+              }
+            });
+          }
         }
       };
+      if (definition.id === 'procedures/call' || definition.id === 'procedures/value' || definition.id === 'procedures/reference') {
+        Object.assign(Blockly.Blocks[definition.type], {
+          updateArguments,
+          saveExtraState() { return {name: this.getFieldValue('name'), parameters: this.getFieldValue('parameters') || ''}; },
+          loadExtraState(state) {
+            this.loadingProcedureName_ = state.name || 'my block';
+            this.setFieldValue(this.loadingProcedureName_, 'name');
+            this.loadingProcedureName_ = null;
+            if (this.getField('parameters')) this.setFieldValue(state.parameters || '', 'parameters');
+          }
+        });
+      }
     }
   }
 
   function toolbox() {
     return {
       kind: 'categoryToolbox',
-      contents: catalog.categories.map(category => ({
+      contents: [...catalog.categories.map(category => ({
         kind: 'category',
         name: category.label,
         colour: category.color,
         contents: catalog.blocks
           .filter(block => block.category === category.id && block.toolboxVisible !== false)
           .map(block => ({kind: 'block', type: block.type}))
-      }))
+      })), {
+        kind: 'category', name: 'Macroblocks', colour: '#bc6a36',
+        contents: [...new Set((catalog.macros || []).map(macro => macro.category))].map(category => ({
+          kind: 'category', name: category, colour: '#bc6a36',
+          contents: [
+            {kind: 'label', text: 'Insert an editable sequence'},
+            ...(catalog.macros || []).filter(macro => macro.category === category)
+              .map(macro => ({kind: 'button', text: macro.label, callbackKey: `macro:${macro.id}`}))
+          ]
+        }))
+      }]
     };
+  }
+
+  function insertMacro(macro) {
+    if (!workspace || !bridge?.editable) return;
+    const source = JSON.parse(JSON.stringify(macro.stack));
+    const walk = (node, visit) => {
+      if (!node) return;
+      visit(node);
+      for (const input of Object.values(node.inputs || {})) {
+        walk(input.block, visit);
+        walk(input.shadow, visit);
+      }
+      walk(node.next?.block, visit);
+    };
+    const variable = type => ['ft_data_get', 'ft_data_set', 'ft_data_change', 'ft_data_local', 'ft_flow_for_each'].includes(type);
+    const used = new Set(workspace.getAllBlocks(false).filter(block => variable(block.type)).map(block => block.getFieldValue('name')));
+    for (const block of workspace.getAllBlocks(false))
+      if (definitionForBlock(block)?.id === 'procedures/define')
+        for (const name of parameterNames(block.getFieldValue('parameters'))) used.add(name);
+    const names = new Set();
+    walk(source, node => { if (variable(node.type)) names.add(node.fields.name); });
+    let suffix = '';
+    for (let number = 2; [...names].some(name => used.has(name + suffix)); ++number) suffix = ` ${number}`;
+    walk(source, node => {
+      delete node.id;
+      delete node.x;
+      delete node.y;
+      if (variable(node.type)) node.fields.name += suffix;
+    });
+    const previousGroup = Blockly.Events.getGroup();
+    Blockly.Events.setGroup(true);
+    try {
+      const first = Blockly.serialization.blocks.append(source, workspace, {recordUndo: true});
+      first.setCommentText(`${macro.label}\n${macro.description}\nAll steps below are ordinary blocks. Temporary variables${suffix ? ` use suffix ${suffix.trim()}` : ' can be renamed'}.`);
+      centerNewBlock(first);
+    } finally {
+      Blockly.Events.setGroup(previousGroup);
+    }
+    commitWorkspace();
   }
 
   const themes = new Map();
@@ -179,11 +376,14 @@
       theme: makeTheme(Boolean(bridge?.darkMode)),
       media: 'qrc:/blockly/third_party/blockly/media/',
       trashcan: true,
+      disable: true,
       sounds: false,
       move: {scrollbars: true, drag: true, wheel: true},
       zoom: {controls: true, wheel: true, startScale: 0.82, maxScale: 1.8, minScale: 0.45, scaleSpeed: 1.08, pinch: true},
       grid: {spacing: 24, length: 2, colour: '#354039', snap: false}
     });
+    for (const macro of catalog.macros || [])
+      workspace.registerButtonCallback(`macro:${macro.id}`, () => insertMacro(macro));
     workspace.addChangeListener(onWorkspaceEvent);
     window.addEventListener('resize', () => Blockly.svgResize(workspace));
   }
@@ -309,14 +509,29 @@
         && setLiteralInput(size, 'z', data.sizeZ);
     }
     if (kind === 'prism') {
+      const points = String(data.polygon || '').split(';').map(pair => pair.split(',').map(Number));
+      if (points.length < 3 || points.some(point => point.length !== 2 || point.some(value => !Number.isFinite(value)))) return false;
       const origin = ensureDefaultInputBlock(block, 'origin');
       if (!origin) return false;
       block.setFieldValue(String(data.plane), 'plane');
+      const source = (id, inputs = {}, fields = {}) => ({
+        type: catalog.blocks.find(item => item.id === id).type, fields,
+        inputs: Object.fromEntries(Object.entries(inputs).map(([key, value]) => [key, {block: value}]))
+      });
+      const number = value => source('values/number', {}, {value});
+      let list = source('data/list');
+      for (const [x, y] of points) list = source('data/append', {
+        list, value: source('targets/point', {x: number(x), y: number(y), z: number(0)})
+      });
+      const socket = block.getInput('polygon').connection;
+      socket.setShadowState(null);
+      socket.targetBlock()?.dispose();
+      const polygon = Blockly.serialization.blocks.append(source('targets/polygon-from-points', {points: list}), workspace, {recordUndo: true});
+      socket.connect(polygon.outputConnection);
       return setLiteralInput(origin, 'x', data.originX)
         && setLiteralInput(origin, 'y', data.originY)
         && setLiteralInput(origin, 'z', data.originZ)
-        && setLiteralInput(block, 'depth', data.depth)
-        && setLiteralInput(block, 'polygon', data.polygon);
+        && setLiteralInput(block, 'depth', data.depth);
     }
     return false;
   }
@@ -347,6 +562,7 @@
     try {
       workspace.clear();
       Blockly.serialization.workspaces.load(state, workspace);
+      syncProcedures();
       for (const block of workspace.getAllBlocks(false)) addDefaultShadows(block);
       Blockly.svgResize(workspace);
       lastSelectedBlockId = '';
@@ -364,6 +580,7 @@
       return;
     }
     if (event && (event.isUiEvent || event.type === Blockly.Events.VIEWPORT_CHANGE || event.type === Blockly.Events.TOOLBOX_ITEM_SELECT)) return;
+    syncProcedures(event);
     if (event && event.type === Blockly.Events.BLOCK_CREATE) {
       for (const id of event.ids || []) {
         const block = workspace.getBlockById(id);
@@ -381,8 +598,128 @@
     ++revision;
     bridge.applyWorkspace(json, revision, accepted => {
       if (accepted === false) renderDiagnostics();
+      else if (breakpoints.size) bridge.setBreakpoints([...breakpoints]);
+      renderRuntime();
     });
   }
+
+  function renderRuntime() {
+    if (!bridge || !workspace) return;
+    const running = Boolean(bridge.running), paused = running && debugSnapshot.paused;
+    const program = workspace.getTopBlocks(false).some(block =>
+      definitionForBlock(block)?.id === 'flow/when-start');
+    document.getElementById('runProgram').disabled = running;
+    document.getElementById('debugProgram').disabled = running || !program;
+    document.getElementById('debugProgram').title = program ? 'Start paused before the first block' : 'Choose block program in the start hat';
+    document.getElementById('pauseProgram').disabled = !running || paused || !program;
+    document.getElementById('inspectProgram').disabled = !program;
+    document.getElementById('resumeProgram').disabled = !paused;
+    document.getElementById('stepProgram').disabled = !paused;
+    document.getElementById('stopProgram').disabled = !running;
+    document.getElementById('runtimeStatus').textContent = (paused ? 'Paused' : running ? 'Running' : debugSnapshot.finished ? 'Finished' : '')
+      + (debugSnapshot.timeMs === undefined ? '' : ` · ${debugSnapshot.timeMs} ms`);
+    workspace.highlightBlock(paused ? debugSnapshot.block || null : null);
+    if (paused && debugSnapshot.block && debugSnapshot.block !== lastDebugBlock && workspace.getBlockById(debugSnapshot.block))
+      workspace.centerOnBlock(debugSnapshot.block);
+    lastDebugBlock = paused ? debugSnapshot.block : '';
+    const inspector = document.getElementById('runtimeInspector');
+    inspector.hidden = !document.getElementById('inspectProgram').checked && !paused;
+    const values = document.getElementById('runtimeValues');
+    const open = new Map([...values.querySelectorAll('details')].map(item => [item.dataset.key, item.open]));
+    values.replaceChildren();
+    const filter = document.getElementById('watchFilter').value.toLowerCase();
+    const section = (key, title, rows, defaultOpen = false) => {
+      const detail = document.createElement('details'); detail.dataset.key = key;
+      detail.open = open.has(key) ? open.get(key) : defaultOpen;
+      const summary = document.createElement('summary'); summary.textContent = title; detail.append(summary);
+      for (const row of rows || []) {
+        if (!`${row.name} ${row.value}`.toLowerCase().includes(filter)) continue;
+        const div = document.createElement('div'); div.className = 'runtimeValue';
+        const name = document.createElement('span'); name.textContent = row.name;
+        const value = document.createElement('code'); value.textContent = row.value;
+        div.append(name, value); detail.append(div);
+      }
+      values.append(detail);
+    };
+    section('globals', 'Program variables', debugSnapshot.variables, true);
+    (debugSnapshot.frames || []).forEach((frame, i) => section(`frame${i}`, `${i + 1}. ${frame.name}`, frame.locals, true));
+    section('state', 'Simulation state', debugSnapshot.state);
+  }
+
+  for (const [id, debug] of [['runProgram', false], ['debugProgram', true]]) {
+    document.getElementById(id).addEventListener('click', () => {
+      if (!bridge?.editable) return;
+      clearTimeout(saveTimer);
+      const json = JSON.stringify(Blockly.serialization.workspaces.save(workspace));
+      if (debug) document.getElementById('inspectProgram').checked = true;
+      bridge.runWorkspace(json, ++revision, debug, accepted => {
+        if (!accepted) renderDiagnostics();
+        if (accepted && breakpoints.size) bridge.setBreakpoints([...breakpoints]);
+      });
+    });
+  }
+  document.getElementById('pauseProgram').addEventListener('click', () => bridge.pauseProgram());
+  document.getElementById('resumeProgram').addEventListener('click', () => bridge.resumeProgram('run'));
+  document.getElementById('stepProgram').addEventListener('click', () => bridge.resumeProgram(document.getElementById('stepKind').value));
+  document.getElementById('stopProgram').addEventListener('click', () => bridge.stopProgram());
+  document.getElementById('inspectProgram').addEventListener('change', event => {
+    bridge.inspectProgram(event.target.checked); renderRuntime();
+  });
+  document.getElementById('watchFilter').addEventListener('input', renderRuntime);
+
+  function replaceProgram(state) {
+    if (!bridge?.editable) return;
+    // Keep the previous program in the undo history rather than discarding it
+    // while switching examples or loading a file.
+    Blockly.Events.setGroup(true);
+    try {
+      workspace.clear();
+      for (const script of state.blocks?.blocks || []) Blockly.serialization.blocks.append(script, workspace, {recordUndo: true});
+      syncProcedures();
+      for (const item of workspace.getAllBlocks(false)) addDefaultShadows(item);
+    } finally { Blockly.Events.setGroup(false); }
+    breakpoints.clear(); bridge.setBreakpoints([]);
+    clearTimeout(saveTimer); commitWorkspace();
+    workspace.zoomToFit();
+  }
+
+  document.getElementById('projectAction').addEventListener('change', event => {
+    const action = event.target.value; event.target.value = '';
+    if (!bridge?.editable || !action) return;
+    if (action === 'save') {
+      bridge.saveProject(JSON.stringify(Blockly.serialization.workspaces.save(workspace)), () => {});
+      return;
+    }
+    if (action === 'open' || action === 'library') {
+      bridge.openProject(text => {
+        if (!text || !bridge.editable) return;
+        const state = JSON.parse(text);
+        if (action === 'open') { replaceProgram(state); return; }
+        const scripts = state.blocks?.blocks || [];
+        const names = new Set(workspace.getAllBlocks(false)
+          .filter(b => b.type === 'ft_procedures_define').map(b => b.getFieldValue('name')));
+        const definitions = scripts.filter(b => b.type === 'ft_procedures_define');
+        const conflict = definitions.find(b => names.has(b.fields?.name));
+        if (conflict || !definitions.length) {
+          diagnostics.textContent = conflict ? `A block named “${conflict.fields.name}” already exists.` : 'This file contains no reusable block definitions.';
+          diagnostics.hidden = false; return;
+        }
+        const removeIds = value => {
+          if (!value || typeof value !== 'object') return;
+          if (value.type) delete value.id;
+          Object.values(value).forEach(removeIds);
+        };
+        Blockly.Events.setGroup(true);
+        try {
+          for (const definition of definitions) { removeIds(definition); Blockly.serialization.blocks.append(definition, workspace, {recordUndo: true}); }
+          syncProcedures();
+        } finally { Blockly.Events.setGroup(false); }
+        clearTimeout(saveTimer); commitWorkspace();
+      });
+      return;
+    }
+    replaceProgram(window.foreverBlockExample(action === 'new' ? 'empty' : action));
+  });
 
   function renderDiagnostics() {
     if (!bridge) return;
@@ -422,10 +759,9 @@
       searchResults.classList.remove('open');
       return;
     }
-    const matches = catalog.blocks
-      .filter(block => block.toolboxVisible !== false)
-      .filter(block => block.shape !== 'hat')
-      .filter(block => `${block.label} ${block.id}`.toLowerCase().includes(query))
+    const matches = [...catalog.blocks.filter(block => block.toolboxVisible !== false),
+      ...(catalog.macros || []).map(macro => ({...macro, isMacro: true}))]
+      .filter(block => `${block.label} ${block.id} ${block.isMacro ? 'macroblock ' + block.description : ''}`.toLowerCase().includes(query))
       .slice(0, 30);
     for (const definition of matches) {
       const category = categoriesById.get(definition.category);
@@ -439,12 +775,13 @@
       label.textContent = definition.label;
       const meta = document.createElement('span');
       meta.className = 'searchMeta';
-      meta.textContent = category?.label || '';
+      meta.textContent = definition.isMacro ? `Macro · ${definition.category}` : category?.label || '';
+      if (definition.isMacro) button.title = definition.description;
       button.append(dot, label, meta);
       button.addEventListener('click', () => {
         if (!bridge?.editable) return;
-        const block = workspace.newBlock(definition.type);
-        centerNewBlock(block);
+        if (definition.isMacro) insertMacro(definition);
+        else centerNewBlock(workspace.newBlock(definition.type));
         search.value = '';
         updateSearch();
         workspace.getToolbox()?.clearSelection?.();
@@ -507,11 +844,14 @@
   function setEditableState() {
     if (!bridge) return;
     const editable = Boolean(bridge.editable);
+    workspace.setIsReadOnly(!editable);
     readOnlyShield.hidden = editable;
     search.disabled = !editable;
+    document.getElementById('projectAction').disabled = !editable;
     clearSearch.disabled = !editable;
     updateViewerPicker();
     if (!editable) searchResults.classList.remove('open');
+    renderRuntime();
   }
 
   function boot(channel) {
@@ -532,6 +872,8 @@
       });
       bridge.diagnosticsJsonChanged.connect(renderDiagnostics);
       bridge.editableChanged.connect(setEditableState);
+      debugSnapshot = parseJson(bridge.debugJson, {});
+      bridge.debugChanged.connect(() => { debugSnapshot = parseJson(bridge.debugJson, {}); renderRuntime(); });
       bridge.darkModeChanged.connect(() => applyTheme(Boolean(bridge.darkMode)));
       bridge.viewerPointPicked.connect((blockId, x, y, z) => {
         const block = workspace?.getBlockById(String(blockId));

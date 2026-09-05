@@ -628,7 +628,11 @@ forevertas::ConditionProgram TypedSimulationCondition() {
     instructions.push_back({Op::RotationSource, Source::CarRotation});
     instructions.push_back({Op::RotationSource, Source::CarRotation});
     instructions.push_back({Op::RotationDistance});
-    instructions.push_back({Op::Constant, Source::Speed, 0.0});
+    // Quaternion normalization can put the self-dot a few ulps below one;
+    // acos then produces a tiny positive self-distance. This fixture should
+    // accept the same rotation on every track, not depend on exact zero.
+    // Authoritative CPU/CUDA result comparisons below remain exact.
+    instructions.push_back({Op::Constant, Source::Speed, 1e-6});
     instructions.push_back({Op::LessOrEqual});
     instructions.push_back({Op::LogicalAnd});
     return condition;

@@ -14,9 +14,6 @@ struct VisualInputDefinition {
     VisualValueType type = VisualValueType::None;
     std::string defaultBlockId;
     std::string defaultValue;
-    // Normally an input lowers back to its own key. Range parameters use two
-    // native setting keys so one compact reporter can replace min/max sockets.
-    std::vector<std::string> nativeSettingKeys;
 };
 
 struct VisualFieldDefinition {
@@ -42,8 +39,7 @@ struct VisualBlockDefinition {
     std::string label;
     VisualBlockShape shape = VisualBlockShape::Reporter;
     VisualValueType outputType = VisualValueType::None;
-    // Migration-only compatibility nodes may exist in persisted workspaces
-    // without being offered to users as part of the new visual language.
+    // Whether to offer this primitive in the editor toolbox.
     bool toolboxVisible = true;
     // Multi-parameter process/objective blocks can deliberately use separate
     // compact rows instead of forcing nested reporters into one very wide row.
@@ -71,6 +67,12 @@ const VisualBlockDefinition *FindVisualBlock(const std::string &id);
 const VisualBlockDefinition *FindVisualBlockByBlocklyType(const std::string &type);
 
 std::string VisualBlocklyType(const std::string &definitionId);
+
+// Calls have one socket per named parameter, rather than a fixed argument
+// count. The signature is stored with the call so disconnected calls remain
+// editable; executable validation checks it against the definition.
+std::vector<std::string> VisualProcedureParameters(const VisualNode &node);
+std::vector<VisualInputDefinition> VisualInputsForNode(const VisualNode &node);
 
 }  // namespace forevertas::blocks
 

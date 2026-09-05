@@ -8,11 +8,19 @@
 #include <vector>
 
 namespace forevertas::blocks {
+class VisualDebugger;
 
 using VisualNodeId = std::uint64_t;
 
 enum class VisualValueType {
   None,
+  Any,
+  Text,
+  List,
+  State,
+  Snapshot,
+  Inputs,
+  Procedure,
   Scalar,
   Number,
   Integer,
@@ -31,7 +39,6 @@ enum class VisualValueType {
   Volume,
   Polygon2,
   TimeRange,
-  Score,
 };
 
 enum class VisualBlockShape {
@@ -50,6 +57,7 @@ struct VisualNode {
   std::map<std::string, std::vector<VisualNodeId>> statements;
   double x = 0.0;
   double y = 0.0;
+  bool enabled = true;
 };
 
 struct VisualProgram {
@@ -62,7 +70,7 @@ struct VisualProgram {
 
 // Structural validation is deliberately separate from Blockly. The browser is
 // an editor, not a trust boundary: all workspace snapshots pass these checks
-// again in C++ before they may affect a search configuration.
+// again in C++ before they may execute or affect a search configuration.
 struct VisualProgramValidation {
   bool ok = false;
   std::vector<std::string> errors;

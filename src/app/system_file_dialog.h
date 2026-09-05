@@ -16,6 +16,8 @@ QString OpenSystemDirectoryDialog(const QString &title,
                                   const QString &initialDirectory);
 QString OpenSystemFileDialog(const QString &title,
                              const QString &initialPath);
+QString SaveSystemFileDialog(const QString &title,
+                            const QString &initialPath);
 
 }  // namespace forevertas::app
 

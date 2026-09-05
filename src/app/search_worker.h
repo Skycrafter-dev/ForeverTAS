@@ -36,6 +36,7 @@ public slots:
     void run();
 
 signals:
+    void blockDebugChanged(const QString &snapshot);
     void stageChanged(const QString &status, bool indeterminate);
     void progressChanged(double value, const QString &status);
     void metricsChanged(const QString &iterationCountText,

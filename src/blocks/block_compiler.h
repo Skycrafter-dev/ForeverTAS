@@ -2,7 +2,6 @@
 #define FOREVERTAS_BLOCKS_BLOCK_COMPILER_H
 
 #include "blocks/block_program.h"
-#include "conditions/condition_program.h"
 #include "searches/option_configuration.h"
 
 #include <cstddef>
@@ -13,10 +12,9 @@
 
 namespace forevertas::blocks {
 
-// The compiled, category-neutral search description consumed by the
-// application and RunSearch. Atomic blocks lower to registered options on
-// the way out (see block_lowering.h); this is the only shape the engine
-// ever sees.
+// The native-search description consumed by the application and RunSearch.
+// Atomic blocks lower to registered options here (see block_lowering.h).
+// General block programs instead retain their executable VisualProgram graph.
 struct SearchComponentConfiguration {
     SearchComponentConfiguration() = default;
     SearchComponentConfiguration(
@@ -49,14 +47,6 @@ inline bool operator==(const SearchComponentConfiguration &lhs,
 struct CompileResult {
     bool ok = false;
     SearchComponentConfiguration configuration;
-    // Visual-language execution metadata that is not a registered search
-    // component. The v3 editor uses this so process steps such as simulation
-    // are explicit in the program instead of remaining hidden app settings.
-    std::optional<std::string> simulationHorizonMs;
-    // Per-tick filter owned by the visual simulate step. It is compiled
-    // directly to the shared CPU/CUDA condition bytecode instead of being
-    // round-tripped through the legacy condition-script text format.
-    std::optional<ConditionProgram> conditionProgram;
     std::vector<std::string> errors;
 };
 

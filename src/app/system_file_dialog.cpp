@@ -67,7 +67,7 @@ QByteArray PortalPathBytes(const QString &path) {
 
 QString OpenPortalDialog(const QString &title,
                          const QString &initialPath,
-                         bool directory) {
+                         bool directory, bool save = false) {
     QDBusConnection connection = QDBusConnection::sessionBus();
     if (!connection.isConnected()) return {};
 
@@ -103,6 +103,7 @@ QString OpenPortalDialog(const QString &title,
     options.insert(QStringLiteral("modal"), true);
     options.insert(QStringLiteral("multiple"), false);
     options.insert(QStringLiteral("directory"), directory);
+    if (save) options.insert(QStringLiteral("current_name"), initial.fileName());
     if (!initialDirectory.isEmpty()) {
         options.insert(QStringLiteral("current_folder"),
                        PortalPathBytes(initialDirectory));
@@ -112,7 +113,7 @@ QString OpenPortalDialog(const QString &title,
             kPortalService,
             kPortalPath,
             kFileChooserInterface,
-            QStringLiteral("OpenFile"));
+            save ? QStringLiteral("SaveFile") : QStringLiteral("OpenFile"));
     message << PortalParentWindow() << title << options;
     const QDBusMessage reply = connection.call(message);
     if (reply.type() == QDBusMessage::ErrorMessage ||
@@ -176,6 +177,10 @@ QString OpenSystemFileDialog(const QString &title,
     return OpenPortalDialog(title, initialPath, false);
 }
 
+QString SaveSystemFileDialog(const QString &title, const QString &initialPath) {
+    return OpenPortalDialog(title, initialPath, false, true);
+}
+
 }  // namespace forevertas::app
 
 #include "system_file_dialog.moc"
@@ -190,14 +195,14 @@ namespace {
 
 QString OpenWindowsDialog(const QString &title,
                           const QString &initialPath,
-                          bool directory) {
+                          bool directory, bool save = false) {
     const HRESULT initialized = CoInitializeEx(
             nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     const bool uninitialize = SUCCEEDED(initialized);
 
-    IFileOpenDialog *dialog = nullptr;
+    IFileDialog *dialog = nullptr;
     HRESULT result = CoCreateInstance(
-            CLSID_FileOpenDialog,
+            save ? CLSID_FileSaveDialog : CLSID_FileOpenDialog,
             nullptr,
             CLSCTX_INPROC_SERVER,
             IID_PPV_ARGS(&dialog));
@@ -212,11 +217,12 @@ QString OpenWindowsDialog(const QString &title,
     result = dialog->GetOptions(&options);
     if (SUCCEEDED(result)) {
         options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
-        options |= directory ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST;
+        options |= directory ? FOS_PICKFOLDERS : save ? FOS_OVERWRITEPROMPT : FOS_FILEMUSTEXIST;
         result = dialog->SetOptions(options);
     }
 
     const QFileInfo initial(initialPath);
+    if (save) dialog->SetFileName(reinterpret_cast<const wchar_t *>(initial.fileName().utf16()));
     const QString initialDirectory = directory
             ? initialPath
             : (initial.isDir() ? initial.absoluteFilePath()
@@ -267,6 +273,10 @@ QString OpenSystemDirectoryDialog(const QString &title,
 QString OpenSystemFileDialog(const QString &title,
                              const QString &initialPath) {
     return OpenWindowsDialog(title, initialPath, false);
+}
+
+QString SaveSystemFileDialog(const QString &title, const QString &initialPath) {
+    return OpenWindowsDialog(title, initialPath, false, true);
 }
 
 }  // namespace forevertas::app

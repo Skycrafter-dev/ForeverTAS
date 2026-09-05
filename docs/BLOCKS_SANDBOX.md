@@ -1,0 +1,89 @@
+# Blocks simulation sandbox
+
+Choose **Program… → New program** and attach commands under `when run starts`. Commands execute in visual order; there is no required bruteforce, mutation, simulation, or objective stage. A program may step the simulation, implement feedback control, explore saved branches, or run its own search. Reference, Optimized CPU, parallel CPU, and CUDA physics are supported; CUDA requires a CUDA-enabled build and a compatible device.
+
+Blocks has one execution model: the visible source graph. There is no native-search selector, shape-based lowering, required search phase, or registry-derived mutation block. The separate native search settings/engine remain independent of this editor.
+
+## Macroblocks
+
+**Macroblocks → Inputs / Conditions / Targets / Search** inserts ordinary editable command sequences. The same templates appear in block search. Connect the inserted stack under an entry hat, inside a loop, or inside your own procedure. They do not add new executable block types, call hidden mutation/evaluation handlers, or remain linked to a template after insertion. Every loop, random draw, input edit, comparison and result publication is visible and can be changed or deleted. Insertion is one undoable action; it allocates fresh node IDs and collision-free temporary variable names, including avoiding procedure parameters.
+
+Inputs provides existing-event mutation, input deletion, input insertion/holds, steering rerolls and smooth steering deformation. Existing-event mutation visibly builds an eligible-index list, samples without replacement, edits each timestamp/value, resolves duplicate time/action keys with a reverse loop, and sorts. Deletion draws each channel's count and repeatedly removes one selected record. Holds explicitly remove intervening events, insert the new value and restore the original value at the end. Smooth steering calculates each cosine-weighted sample from the original sequence rather than accumulating a ramp. Enable flags, limits, windows, amplitudes, and modes are ordinary variable initializers, not opaque block options. The templates reproduce these operations and controls; their explicit random draws are not a bit-for-bit replay of the old native random-number schedule.
+
+Conditions provides time-window, checkpoint/lap, wheel-contact/surface, and per-tick rejection sequences. Their result is an ordinary boolean variable. Targets provides maximum speed, directional speed, closest point, weighted position/rotation, first box/prism entry, precise finish time, and stunt points. Each target sequence constructs its values, advances one tick at a time, compares samples and saves the selected snapshot explicitly. Scores remain ordinary numbers: higher-is-better targets compare with greater-than, without silently negating the score. The final publication command can be removed to return the computed score/snapshot from a custom operation instead.
+
+Search provides a finite brute-force example: seed, repeat, restore, edit one input, advance, compare, publish, and optionally promote the selected input sequence. Replace its one steering edit with any input sequence, or replace its evaluation loop with a target sequence. The template is not an implicit native baseline evaluation or native performance fast path.
+
+The source templates live in `src/blocks/visual_macros.cpp`. They build the same validated `VisualProgram` nodes as hand-authored workspaces. There is no macro dispatcher in the interpreter.
+
+## Programming
+
+Flow provides if/else, repeat, while, repeat-until, forever, for-each, break, continue, and stop. Boolean and/or short-circuit. Reporters evaluate at execution time, including mutation parameters, loop counts, time windows, worker counts, target coordinates, and simulation horizons. Numeric/unit sockets accept calculations; consumers check whole numbers, bounds, and tick alignment rather than rounding silently. `try / on error` exposes a failed operation's block diagnostic in a named variable. It does not roll back earlier changes; restore a saved snapshot explicitly when recovery requires it. Stop and cancellation are not swallowed by error handlers.
+
+Variables hold numbers, booleans, text, vectors, rotations, ranges, polygons, volumes, states, input sequences, lists, snapshots, and procedure references. Lists and input sequences are values: use `set items to (append … to items)` rather than relying on aliasing. Indices start at 1. `numbers from … to … step …` creates an inclusive numeric sequence; a bound already past the end gives an empty list, while a zero step is an error. Optional state such as finish time is absent until available; test `has value` before using it in arithmetic, or compare against `no value`. Equality compares ordinary structured values recursively; unlike zero, absent is its own value. Snapshot equality means the same saved snapshot handle. Rotation equality compares quaternion components exactly; use rotation distance to compare equivalent orientations.
+
+In **My Blocks**, place a definition, name it, and enter comma-separated parameter names. Right-click the definition to create a command call, reporter call, or reference to the block as a value. Fixed calls have one socket per parameter. Parameters and explicitly local variables belong to that call; at entry level a local declaration creates a program variable; other variables are shared by the program. Procedures may call other procedures or themselves, and return any runtime value. Reporter calls must return a value. `call block … arguments …` and its command equivalent accept a procedure value and an argument list, so custom operations can receive other custom operations. These references name workspace definitions; they do not capture a caller's local variables. Renaming and reordering parameters preserve call arguments, and parameter renames update references inside the definition body. Signatures survive undo/redo and save/load.
+
+## Simulation and search
+
+`advance one tick` performs exactly one 10 ms simulation tick. Repeat it with ordinary loops to advance further, check conditions, run feedback control, or sample scores. The simulation horizon and tick duration have reporter blocks. Reaching the configured horizon produces an error, not an infinite no-progress loop. Finishing a race does not implicitly end the program; use the finish event or `race completed` predicate to choose what happens next.
+
+A simulation snapshot contains physical state, input sequence, previous state, observed history, and horizon. Save snapshots in variables, return them from procedures, or keep a population in a list. Restoring one restores that branch, but does not reset program variables, random draws, or the global candidate counter. `restart` returns physics to its initial state while keeping the current input sequence and horizon. Snapshots are in-process values, not portable saved-game files.
+
+Input blocks read, upsert, change one value, change one timestamp, or remove one indexed event. Changing a timestamp does not sort or merge the sequence; sorting is its own explicit operation. Applying an unsorted sequence or duplicate time/action keys produces an error rather than silently normalizing them. `held input value` reads the selected channel at a requested time, using the last event at or before that time. Times use the same user timeline as the input editor. Steering uses integer analog units from -65536 to 65536; button values are 0 or 1. Editing an already-simulated prefix requires restoring an earlier snapshot first. Runtime checks prevent pairing edited past inputs with an incompatible current physical state.
+
+`read … of state` exposes the public sandbox state, including linear/angular velocity, forces, torque, gear/RPM, wheel contacts/surfaces/sliding, controls, checkpoints, laps, respawns, stunt score, and precise finish-time bounds. The same accessor works on current, previous, saved, or historical states. Targets and ranges can be computed. `polygon from points` builds a polygon from a list of vectors, using each vector's x/y components as coordinates in the prism's selected plane. Polygon text literals have been removed; importing a drawn prism inserts an ordinary point-list expression. Rotations follow the viewer's Y-up convention: yaw about Y, pitch about X, roll about Z. Rotation-distance results are radians.
+
+The program decides when a candidate begins (`count candidate`), what its score means, and when to publish it. `keep this result` publishes the current branch unconditionally; `keep saved result` publishes an explicitly supplied snapshot and score. Neither enforces improvement. To select a sample, save its score and snapshot in ordinary variables inside your loop. Later simulation steps cannot change that saved snapshot's input sequence or physical state. The old sampled-objective value type, keep-best wrapper, simulate/filter wrapper, mutation windows and native mutation/search wrappers have been deleted.
+
+## Events
+
+Event hats run after each tick, on checkpoint collection, on the finish transition, when a predicate changes from false to true across a tick, or when a named message is broadcast. `broadcast and wait` carries an arbitrary value. `event value` and `event state` read that event's payload and captured state, including inside nested calls. Each handler has its own local frame; program variables remain shared within that simulation branch.
+
+Dispatch is synchronous and deterministic, not concurrent access to the same physics object. After a tick, tick handlers run first, followed by checkpoint, finish, and rising-predicate handlers. Handlers of the same kind run in workspace top-level order. A handler may call other blocks, broadcast, edit future inputs, restore a branch, or advance physics; nested events obey the recursion limit. The recorded event state remains the state that triggered that event even when an earlier handler changes the current simulation.
+
+## Parallel reusable operations
+
+`map independent branches` calls a one-parameter reporter procedure for every item in a list and returns its results in input order. The procedure itself can contain arbitrary blocks, including loops, calls, events, individual input edits, and custom selection. It is not a native search policy.
+
+Each job starts from the same simulation snapshot and a value-copy of the program variables. Jobs do not modify the parent variables, inputs, state, or selected result. Return snapshots, scores, lists, or any other value and combine them explicitly in the parent. Saving a snapshot inside a job and restoring it in the parent is supported on every backend.
+
+The workers socket is evaluated at execution time and accepts 1–256. Its default reporter uses the selected backend's worker count: Reference and Optimized CPU default to one, parallel CPU uses the configured CPU count, and CUDA uses the host's default CPU worker count to submit independent CUDA simulations. An explicit socket value can override the default. Nested maps reuse their existing worker instead of multiplying the thread count. Debug/inspection mode entered before a map evaluates its jobs serially for reproducible stepping.
+
+Random seeds are allocated in input order before scheduling. The same program seed and input list give the same per-job random streams whether one or many workers execute them. Job failures cancel sibling work and propagate the responsible block diagnostic; the parent branch is restored even when a serial job fails. Program operation budgets are shared across jobs.
+
+CUDA mode uses the CUDA physics backend for the simulation operations. General control flow remains in the host interpreter; it is not compiled wholesale into a GPU search kernel. This supports custom behavior without falling back to CPU physics, but does not promise the throughput of the separate native batched-search path. Reference and CUDA branches load independent same-backend sessions; Optimized CPU uses the engine's prepared-scene clone.
+
+## Editable examples
+
+**Program… → Example: feedback control** builds a procedure that steers toward a computed coordinate, observes the simulation after individual ticks, and records checkpoint events. **Example: parallel branches** maps a user-defined driving procedure over a list of steering values, returns snapshots, and selects a winner in an ordinary for-each loop. Both examples are editable visual programs in `assets/blockly/examples.js`, not hidden C++ implementations.
+
+Under `when run starts`, save a starting snapshot and initialize a list of candidates. Repeat: count a candidate, restore the starting snapshot, choose steering, then repeat `step 1 tick` and adjust steering using the observed position or velocity. Append the resulting snapshot to the list. Compute a score from the state and publish only when your own acceptance condition passes. This is exercised by `FeedbackSearch` in `tests/visual_runtime_tests.cpp`; there is no native search, mutation, or evaluation component in that program.
+
+## Debugging and project files
+
+**Run** applies and executes the visible graph. **Debug** starts paused before its first executable block. **Pause**, **Continue**, and **Stop** operate on the running interpreter. Step modes are **Into** (next expression/command), **Over** (next point at the same or shallower execution depth), **Out** (leave the current call), and **Tick** (next change of the simulation tick). A `pause here` command and command-block context-menu breakpoints are also available. Breakpoints belong to the current editor session, not the project file.
+
+The inspector shows live program variables, call-local variables, call frames, and public simulation state. Its text filter searches the displayed names and values. Large values are summarized and variable lists are capped at 256 displayed entries; execution values are not truncated. Running updates are throttled, while pause snapshots highlight and center the corresponding source block. Both pointer and keyboard editing are locked while the program runs; Stop remains usable while paused. Starting a map with inspection enabled serializes its jobs. Enabling inspection during an already parallel map pauses workers at their next checkpoints; their arrival order is scheduling-dependent.
+
+**Program… → Save program** writes semantic JSON atomically through the platform's native save dialog. **Open program** restores the visual program. **Add block library** imports all procedure definitions from a program file, retaining references between them and rejecting name collisions. New/open/example/library changes are undoable. Project files contain source graphs, not live native snapshots; re-running recreates runtime values.
+
+Disabled command blocks and event hats do not execute. Their state survives both project export/import and application restarts. Disabled reporters in active sockets must be replaced or enabled. 
+
+## Validation and runtime boundaries
+
+Incomplete drafts are retained across restarts. An invalid visible workspace disables Run instead of executing the last valid program. Correcting the draft re-enables execution. Errors include the responsible block where possible. Stop is checked in expressions, commands, loop back-edges, and physics ticks, including an empty forever loop.
+
+The workspace limit is 4096 nodes and 128 structural nesting levels. Runtime calls, event recursion, and nested lists are limited to 64 levels; individual collections/history are limited to one million items. Parallel maps accept at most 256 workers and nested maps run serially inside a worker. These are safety bounds, not native search phases. Large interpreted programs and retained histories can still be expensive.
+
+Physics remains the native engine. Blocks expose its public stepping, input, snapshot, and state APIs, not arbitrary writes into private engine structures or a replacement physics implementation. Scripts control the simulation at the public tick boundary; internal collision/integration substeps remain the engine's responsibility. The visual compiler never converts these operations into native search settings.
+
+## Verification
+
+`forevertas-visual-runtime` covers general control, recursive and higher-order procedures, events, state/input snapshots, feedback-driven search, explicit target selection, runtime reporters, expanded input macroblocks, saved-result provenance, disabled blocks, parallel branch isolation and deterministic random streams, debugger stepping, cancellation, and invalid inputs. `forevertas-block-editor-bridge` covers executable persistence, project round-trips, source mapping, and incomplete drafts. With Python and Chromium installed, `forevertas-blockly-browser` exercises the bundled editor, examples, and inspector, and sends serialized workspaces back through the C++ bridge.
+
+With `FOREVERTAS_TEST_PACK_DIRECTORY` and `FOREVERTAS_TEST_REPLAY` configured, CTest also registers `forevertas-block-program-physics`, `forevertas-block-debugger`, and (when Chromium is available) `forevertas-block-program-examples`. These execute real simulations, including returned parallel snapshots and Qt worker pause/step/stop. The physics test exercises Reference, Optimized CPU, parallel CPU, and CUDA when compiled in. The examples test executes the actual browser-authored graphs, not separately reconstructed substitutes.
+
+### Removed-block projects
+
+Programs referring to deleted wrapper types or the old execution selector are rejected; they are not guessed into a different algorithm. During startup, incompatible persisted source is preserved under `blockEditor/v3ProgramCorruptBackup` and/or `blockEditor/v3WorkspaceRetiredBackup` in application settings, and the editor reports the recovery. Rebuild these operations from Macroblocks. Failed project imports do not replace the current workspace.

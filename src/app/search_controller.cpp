@@ -1,4 +1,6 @@
 #include "app/search_controller.h"
+#include "blocks/visual_runtime.h"
+#include "blocks/visual_debugger.h"
 
 #include "app/compact_number_format.h"
 #include "app/packs_directory_finder.h"
@@ -227,6 +229,7 @@ SearchController::SearchController(const QStringList &packsSearchPatterns,
 }
 
 void SearchController::initialize(const QStringList *packsSearchPatterns) {
+    visualDebugger_ = std::make_shared<blocks::VisualDebugger>();
     qRegisterMetaType<SearchCompletionPtr>();
     qRegisterMetaType<SearchImprovementPtr>();
     connect(&configuration_, &BlockProgramModel::structureChanged, this,
@@ -235,6 +238,7 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             [this](int blockId) {
                 if (!applyingBlockComponents_) {
                     visualComponents_.reset();
+                    visualExecutable_.reset();
                     visualCondition_.reset();
                     visualEvaluationTargetId_.clear();
                 }
@@ -569,19 +573,41 @@ SearchController::blockComponents() const {
     return visualComponents_ ? visualComponents_ : configuration_.compiledComponents();
 }
 
+void SearchController::setBlockProgramError(const QString &error) {
+    if (visualProgramError_ == error) return;
+    visualProgramError_ = error;
+    refreshValidation();
+}
+
+bool SearchController::applyBlockProgram(std::shared_ptr<const blocks::VisualProgram> program) {
+    if (running_ || !program || !blocks::ValidateExecutableVisualProgram(*program).ok) return false;
+    visualExecutable_ = std::move(program);
+    visualComponents_.reset();
+    visualCondition_.reset();
+    visualEvaluationTargetId_.clear();
+    applyingBlockComponents_ = true;
+    publishConfigurationChange();
+    applyingBlockComponents_ = false;
+    refreshValidation();
+    return true;
+}
+
 bool SearchController::applyBlockComponents(
         const blocks::SearchComponentConfiguration &components,
-        std::optional<ConditionProgram> visualCondition) {
+        std::optional<ConditionProgram> visualCondition,
+        std::shared_ptr<const blocks::VisualProgram> executable) {
     if (running_) return false;
     visualComponents_ = components;
     visualCondition_ = std::move(visualCondition);
+    visualExecutable_ = std::move(executable);
     visualEvaluationTargetId_ =
             QString::fromStdString(components.evaluationTarget.id);
     applyingBlockComponents_ = true;
     const bool representedByLegacyModel =
-            configuration_.replaceWithComponents(components);
+            !visualExecutable_ && configuration_.replaceWithComponents(components);
     if (!representedByLegacyModel) publishConfigurationChange();
     applyingBlockComponents_ = false;
+    refreshValidation();
     return true;
 }
 
@@ -1123,6 +1149,12 @@ void SearchController::extractReplayInputs() {
     thread->start();
 }
 
+void SearchController::startBlockProgram(bool pauseAtStart) {
+    pauseBlockAtStart_ = pauseAtStart;
+    startSearch();
+    pauseBlockAtStart_ = false;
+}
+
 void SearchController::startSearch() {
     if (running_ || extractingReplayInputs_) {
         return;
@@ -1134,7 +1166,7 @@ void SearchController::startSearch() {
         return;
     }
     bool randomizedSeeds = false;
-    if (randomizeSeedsOnStart_) {
+    if (randomizeSeedsOnStart_ && !visualExecutable_) {
         const std::uint32_t entropy = QRandomGenerator::system()->generate();
         randomizedSeeds = visualComponents_
                 ? RandomizeVisualComponentSeeds(&*visualComponents_, entropy)
@@ -1161,6 +1193,7 @@ void SearchController::startSearch() {
     cancellationRequested_ = std::make_shared<std::atomic_bool>(false);
     iterationPhase_ = std::make_shared<std::atomic<SearchIterationPhase>>(
             SearchIterationPhase::Pending);
+    if (visualExecutable_) visualDebugger_->begin(pauseBlockAtStart_);
     QThread *const thread = new QThread(this);
     SearchWorker *const worker = new SearchWorker(
             *validation.request,
@@ -1172,6 +1205,7 @@ void SearchController::startSearch() {
     workerThread_ = thread;
 
     connect(thread, &QThread::started, worker, &SearchWorker::run);
+    connect(worker, &SearchWorker::blockDebugChanged, this, &SearchController::blockDebugChanged);
     connect(worker,
             &SearchWorker::stageChanged,
             this,
@@ -1273,12 +1307,14 @@ void SearchController::stopSearch() {
         return;
     }
     stopRequested_->store(true, std::memory_order_relaxed);
-    setStatusText(QStringLiteral("Stopping after current iteration..."));
+    setStatusText(visualExecutable_ ? QStringLiteral("Stopping block program...")
+                                   : QStringLiteral("Stopping after current iteration..."));
 }
 
 void SearchController::publishConfigurationChange() {
     if (!applyingBlockComponents_) {
         visualComponents_.reset();
+        visualExecutable_.reset();
         visualCondition_.reset();
         visualEvaluationTargetId_.clear();
     }
@@ -1293,6 +1329,7 @@ void SearchController::publishConfigurationChange() {
 }
 
 SearchController::ValidationResult SearchController::validate() const {
+    if (!visualProgramError_.isEmpty()) return {{}, visualProgramError_};
     const QFileInfo packsInfo(packsDirectory_);
     if (packsDirectory_.isEmpty()) {
         return {{}, QStringLiteral("Select a Packs directory.")};
@@ -1331,6 +1368,34 @@ SearchController::ValidationResult SearchController::validate() const {
     }
     const std::uint32_t simulationHorizonMs =
             static_cast<std::uint32_t>(horizonValue);
+    if (visualExecutable_) {
+        const auto validation = blocks::ValidateExecutableVisualProgram(*visualExecutable_);
+        if (!validation.ok) return {{}, QString::fromStdString(validation.errors.front())};
+        if (!baseInputScriptError_.isEmpty()) return {{}, baseInputScriptError_};
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (simulationBackend_ == PhysicsBackend::Cuda && !cudaAvailable_)
+            return {{}, cudaStatusText_};
+#endif
+        SearchRequest request{packsInfo.absoluteFilePath().toUtf8().toStdString(),
+                              replayInfo.absoluteFilePath().toUtf8().toStdString()};
+        request.backend = simulationBackend_;
+        request.simulationHorizonMs = simulationHorizonMs;
+        request.baseInputCommands = parsedBaseInputCommands_;
+        request.executable = visualExecutable_;
+        request.debugger = visualDebugger_;
+        if (simulationBackend_ == PhysicsBackend::MultiThreadedCpu) {
+            bool parsed = false;
+            const uint workers = cpuWorkerCount_.toUInt(&parsed);
+            if (!parsed || cpuWorkerCount_ != cpuWorkerCount_.trimmed() || workers < 1 || workers > kMaximumCpuWorkerCount)
+                return {{}, QStringLiteral("CPU worker threads must be a whole number between 1 and 256.")};
+            request.parallelSampleCount = workers;
+        }
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (simulationBackend_ == PhysicsBackend::Cuda)
+            request.parallelSampleCount = DefaultCpuWorkerCount();
+#endif
+        return {std::move(request), {}};
+    }
     const auto configuration = blockComponents();
     if (!configuration) {
         return {{}, QStringLiteral("The block program does not compile.")};

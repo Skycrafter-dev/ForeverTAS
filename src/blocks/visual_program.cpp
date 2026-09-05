@@ -23,6 +23,20 @@ std::string VisualValueTypeName(VisualValueType type) {
   switch (type) {
   case VisualValueType::None:
     return "none";
+  case VisualValueType::Any:
+    return "value";
+  case VisualValueType::Text:
+    return "text";
+  case VisualValueType::List:
+    return "list";
+  case VisualValueType::State:
+    return "simulation state";
+  case VisualValueType::Snapshot:
+    return "snapshot";
+  case VisualValueType::Inputs:
+    return "input sequence";
+  case VisualValueType::Procedure:
+    return "procedure";
   case VisualValueType::Scalar:
     return "scalar";
   case VisualValueType::Number:
@@ -59,8 +73,6 @@ std::string VisualValueTypeName(VisualValueType type) {
     return "polygon2";
   case VisualValueType::TimeRange:
     return "time range";
-  case VisualValueType::Score:
-    return "score";
   }
   return "unknown";
 }
@@ -68,13 +80,29 @@ std::string VisualValueTypeName(VisualValueType type) {
 bool VisualTypeCompatible(VisualValueType output, VisualValueType input) {
   if (output == input)
     return true;
+  if (output == VisualValueType::None || input == VisualValueType::None)
+    return false;
+  if (output == VisualValueType::Any || input == VisualValueType::Any)
+    return true;
+  if (output == VisualValueType::Vector3 &&
+      (input == VisualValueType::Position3 || input == VisualValueType::Direction3))
+    return true;
+  // Arithmetic and mutable variables must fit unit-bearing sockets. The
+  // operation consuming a number checks its domain (integer, time, etc.).
+  if (output == VisualValueType::Scalar || output == VisualValueType::Number ||
+      output == VisualValueType::Integer) {
+    return input == VisualValueType::Scalar || input == VisualValueType::Number || input == VisualValueType::Integer ||
+           input == VisualValueType::Milliseconds || input == VisualValueType::Meters ||
+           input == VisualValueType::MetersPerSecond || input == VisualValueType::Degrees ||
+           input == VisualValueType::Percent;
+  }
   if (input == VisualValueType::Scalar) {
     return output == VisualValueType::Number ||
            output == VisualValueType::Integer ||
            output == VisualValueType::Milliseconds ||
            output == VisualValueType::Meters ||
            output == VisualValueType::MetersPerSecond ||
-           output == VisualValueType::Degrees;
+           output == VisualValueType::Degrees || output == VisualValueType::Percent;
   }
   if (input == VisualValueType::Number) {
     return output == VisualValueType::Integer;
@@ -175,6 +203,7 @@ VisualProgramValidation ValidateVisualProgram(const VisualProgram &program,
         break;
       }
     }
+    const auto nodeInputs = VisualInputsForNode(node);
     for (const auto &entry : node.inputs) {
       const std::string &key = entry.first;
       const VisualNodeId childId = entry.second;
@@ -185,11 +214,11 @@ VisualProgramValidation ValidateVisualProgram(const VisualProgram &program,
         continue;
       }
       const auto input =
-          std::find_if(definition->inputs.begin(), definition->inputs.end(),
+          std::find_if(nodeInputs.begin(), nodeInputs.end(),
                        [&key](const VisualInputDefinition &candidate) {
                          return candidate.key == key;
                        });
-      if (input == definition->inputs.end()) {
+      if (input == nodeInputs.end()) {
         result.errors.push_back("Block '" + definition->label +
                                 "' has unknown input '" + key + "'.");
         continue;

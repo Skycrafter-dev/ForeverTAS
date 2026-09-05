@@ -9,6 +9,7 @@
   <script src="qrc:/blockly/third_party/blockly/blockly_compressed.js"></script>
   <script src="qrc:/blockly/third_party/blockly/en.js"></script>
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
+  <script src="examples.js"></script>
 </head>
 <body>
   <div id="editorShell">
@@ -25,6 +26,33 @@
       <span id="viewerPickStatus" role="status" aria-live="polite"></span>
     </div>
     <div id="blocklyDiv" aria-label="Visual search workspace"></div>
+    <div id="projectDock" role="toolbar" aria-label="Block programs">
+      <select id="projectAction" aria-label="Program and library actions">
+        <option value="">Program…</option>
+        <option value="new">New program</option><option value="open">Open program…</option>
+        <option value="save">Save program…</option><option value="library">Add block library…</option>
+        <option value="feedback">Example: feedback control</option>
+        <option value="branches">Example: parallel branches</option>
+      </select>
+    </div>
+    <div id="runtimeDock" role="toolbar" aria-label="Block execution">
+      <button id="runProgram" type="button">Run</button>
+      <button id="debugProgram" type="button" title="Start paused before the first block">Debug</button>
+      <button id="pauseProgram" type="button">Pause</button>
+      <button id="resumeProgram" type="button">Continue</button>
+      <button id="stepProgram" type="button">Step</button>
+      <select id="stepKind" aria-label="Step kind">
+        <option value="into">Into</option><option value="over">Over</option>
+        <option value="out">Out</option><option value="tick">Tick</option>
+      </select>
+      <button id="stopProgram" type="button">Stop</button>
+      <label><input id="inspectProgram" type="checkbox">Inspect</label>
+      <span id="runtimeStatus" role="status"></span>
+    </div>
+    <section id="runtimeInspector" aria-label="Runtime variables and state" hidden>
+      <input id="watchFilter" placeholder="Filter variables and state…" aria-label="Filter runtime values">
+      <div id="runtimeValues"></div>
+    </section>
     <div id="diagnostics" role="alert" aria-live="assertive" hidden></div>
     <div id="readOnlyShield" role="status" aria-live="polite" hidden>
       <div class="readOnlyNotice">Search is running · stop to edit blocks</div>

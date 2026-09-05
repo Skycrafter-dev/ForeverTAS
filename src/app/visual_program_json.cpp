@@ -86,6 +86,7 @@ QString PrintVisualProgramJson(const blocks::VisualProgram &program) {
         {QStringLiteral("statements"), statements},
         {QStringLiteral("x"), node.x},
         {QStringLiteral("y"), node.y},
+        {QStringLiteral("enabled"), node.enabled},
     });
   }
 
@@ -150,7 +151,7 @@ VisualProgramJson ParseVisualProgramJson(const QString &json) {
     const QJsonObject object = entry.toObject();
     if (!HasOnlyKeys(object,
                      {"id", "definitionId", "fields", "inputs", "statements",
-                      "x", "y"},
+                      "x", "y", "enabled"},
                      &unknown)) {
       result.error = QStringLiteral("Visual program node contains unknown key '%1'.")
                          .arg(unknown);
@@ -172,6 +173,11 @@ VisualProgramJson ParseVisualProgramJson(const QString &json) {
     blocks::VisualNode node;
     node.id = *id;
     node.definitionId = definition.toString().toStdString();
+    if (object.contains(QStringLiteral("enabled")) && !object.value(QStringLiteral("enabled")).isBool()) {
+      result.error = QStringLiteral("Visual block enabled state must be a boolean.");
+      return result;
+    }
+    node.enabled = object.value(QStringLiteral("enabled")).toBool(true);
 
     const QJsonValue fieldsValue = object.value(QStringLiteral("fields"));
     const QJsonValue inputsValue = object.value(QStringLiteral("inputs"));

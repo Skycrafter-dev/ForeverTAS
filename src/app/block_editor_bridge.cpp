@@ -1,11 +1,16 @@
 #include "app/block_editor_bridge.h"
+#include "blocks/visual_debugger.h"
+#include "app/system_file_dialog.h"
+
+#include <QFile>
+#include <QDir>
+#include <QSaveFile>
 
 #include "app/search_controller.h"
 #include "app/visual_program_json.h"
-#include "blocks/block_lowering.h"
 #include "blocks/visual_catalog.h"
+#include "blocks/visual_macros.h"
 #include "blocks/visual_compiler.h"
-#include "searches/algorithm_registry.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -30,7 +35,9 @@ namespace {
 
 constexpr auto kStoredWorkspaceKey = "blockEditor/v3Workspace";
 constexpr auto kStoredProgramKey = "blockEditor/v3Program";
+constexpr auto kDraftWorkspaceKey = "blockEditor/v3DraftWorkspace";
 constexpr auto kCorruptProgramBackupKey = "blockEditor/v3ProgramCorruptBackup";
+constexpr auto kRetiredWorkspaceBackupKey = "blockEditor/v3WorkspaceRetiredBackup";
 
 QString ToQString(const std::string &value) {
   return QString::fromStdString(value);
@@ -54,19 +61,57 @@ QJsonArray ChecksForOutput(blocks::VisualValueType type) {
     checks.push_back(QString::fromLatin1(value));
   };
   switch (type) {
+  case T::Any:
+    return {};
+  case T::Text:
+    add("text");
+    break;
+  case T::List:
+    add("list");
+    break;
+  case T::State:
+    add("state");
+    break;
+  case T::Snapshot:
+    add("snapshot");
+    break;
+  case T::Inputs:
+    add("inputs");
+    break;
+  case T::Procedure:
+    add("procedure");
+    break;
   case T::None:
     break;
   case T::Scalar:
     add("scalar");
+    add("number");
+    add("integer");
+    add("milliseconds");
+    add("meters");
+    add("meters_per_second");
+    add("degrees");
+    add("percent");
     break;
   case T::Number:
     add("number");
     add("scalar");
+    add("integer");
+    add("milliseconds");
+    add("meters");
+    add("meters_per_second");
+    add("degrees");
+    add("percent");
     break;
   case T::Integer:
     add("integer");
     add("number");
     add("scalar");
+    add("milliseconds");
+    add("meters");
+    add("meters_per_second");
+    add("degrees");
+    add("percent");
     break;
   case T::NumberRange:
     add("number_range");
@@ -92,12 +137,15 @@ QJsonArray ChecksForOutput(blocks::VisualValueType type) {
     break;
   case T::Percent:
     add("percent");
+    add("scalar");
     break;
   case T::Boolean:
     add("boolean");
     break;
   case T::Vector3:
     add("vector3");
+    add("position3");
+    add("direction3");
     break;
   case T::Position3:
     add("position3");
@@ -119,9 +167,6 @@ QJsonArray ChecksForOutput(blocks::VisualValueType type) {
   case T::TimeRange:
     add("time_range");
     break;
-  case T::Score:
-    add("score");
-    break;
   }
   return checks;
 }
@@ -129,6 +174,20 @@ QJsonArray ChecksForOutput(blocks::VisualValueType type) {
 QJsonArray ChecksForInput(blocks::VisualValueType type) {
   using T = blocks::VisualValueType;
   switch (type) {
+  case T::Any:
+    return {};
+  case T::Text:
+    return {QStringLiteral("text")};
+  case T::List:
+    return {QStringLiteral("list")};
+  case T::State:
+    return {QStringLiteral("state")};
+  case T::Snapshot:
+    return {QStringLiteral("snapshot")};
+  case T::Inputs:
+    return {QStringLiteral("inputs")};
+  case T::Procedure:
+    return {QStringLiteral("procedure")};
   case T::None:
     return {};
   case T::Scalar:
@@ -167,8 +226,6 @@ QJsonArray ChecksForInput(blocks::VisualValueType type) {
     return {QStringLiteral("polygon2")};
   case T::TimeRange:
     return {QStringLiteral("time_range")};
-  case T::Score:
-    return {QStringLiteral("score")};
   }
   return {};
 }
@@ -231,165 +288,6 @@ QJsonObject BlocklyBlock(const std::string &definitionId,
 QJsonObject BlockInput(QJsonObject block, bool shadow = false) {
   return {{shadow ? QStringLiteral("shadow") : QStringLiteral("block"),
            std::move(block)}};
-}
-
-QJsonObject Literal(const char *definitionId, const std::string &value,
-                    bool shadow = true) {
-  QString fieldValue = ToQString(value);
-  if (std::string_view(definitionId) == "values/boolean") {
-    fieldValue = value == "true" ? QStringLiteral("TRUE")
-                                  : QStringLiteral("FALSE");
-  }
-  return BlockInput(
-      BlocklyBlock(definitionId, {{QStringLiteral("value"), fieldValue}}),
-      shadow);
-}
-
-QJsonObject NumericRangeLiteral(const char *definitionId,
-                                const std::string &minimum,
-                                const std::string &maximum,
-                                bool shadow = true) {
-  return BlockInput(
-      BlocklyBlock(definitionId,
-                   {{QStringLiteral("minimum"), ToQString(minimum)},
-                    {QStringLiteral("maximum"), ToQString(maximum)}}),
-      shadow);
-}
-
-QJsonObject ConfiguredVisualBlock(const std::string &definitionId,
-                                  const OptionSettings &settings) {
-  const blocks::VisualBlockDefinition *const definition =
-      blocks::FindVisualBlock(definitionId);
-  if (definition == nullptr)
-    return {};
-
-  QJsonObject fields;
-  QJsonObject inputs;
-  for (const blocks::VisualInputDefinition &input : definition->inputs) {
-    if (input.defaultBlockId.empty())
-      continue;
-    if (input.nativeSettingKeys.size() == 2u) {
-      const auto minimum = settings.find(input.nativeSettingKeys[0]);
-      const auto maximum = settings.find(input.nativeSettingKeys[1]);
-      if (minimum != settings.end() && maximum != settings.end()) {
-        inputs.insert(
-            ToQString(input.key),
-            NumericRangeLiteral(input.defaultBlockId.c_str(), minimum->second,
-                                maximum->second));
-      }
-      continue;
-    }
-    const auto value = settings.find(input.key);
-    if (value != settings.end())
-      inputs.insert(ToQString(input.key),
-                    Literal(input.defaultBlockId.c_str(), value->second));
-  }
-  for (const blocks::VisualFieldDefinition &field : definition->fields) {
-    const auto value = settings.find(field.key);
-    if (value != settings.end())
-      fields.insert(ToQString(field.key), ToQString(value->second));
-  }
-  return BlocklyBlock(definitionId, fields, inputs);
-}
-
-QJsonObject RangeInput(const std::string &from, const std::string &to) {
-  QJsonObject inputs;
-  inputs.insert(QStringLiteral("from"), Literal("values/milliseconds", from));
-  inputs.insert(QStringLiteral("to"), Literal("values/milliseconds", to));
-  return BlockInput(BlocklyBlock("time/range", {}, inputs));
-}
-
-QJsonObject AtInput(const std::string &time) {
-  QJsonObject inputs;
-  inputs.insert(QStringLiteral("time"), Literal("values/milliseconds", time));
-  return BlockInput(BlocklyBlock("time/at", {}, inputs));
-}
-
-QJsonObject AllTimeInput() { return BlockInput(BlocklyBlock("time/all")); }
-
-std::string Setting(const OptionSettings &settings, const char *key,
-                    const char *fallback) {
-  const auto found = settings.find(key);
-  return found == settings.end() ? std::string(fallback) : found->second;
-}
-
-QJsonObject PointInput(const OptionSettings &settings, const char *xKey = "x",
-                       const char *yKey = "y", const char *zKey = "z") {
-  QJsonObject inputs;
-  inputs.insert(QStringLiteral("x"),
-                Literal("values/meters", Setting(settings, xKey, "0")));
-  inputs.insert(QStringLiteral("y"),
-                Literal("values/meters", Setting(settings, yKey, "0")));
-  inputs.insert(QStringLiteral("z"),
-                Literal("values/meters", Setting(settings, zKey, "0")));
-  return BlockInput(BlocklyBlock("targets/point", {}, inputs));
-}
-
-QJsonObject DirectionInput(const OptionSettings &settings) {
-  QJsonObject inputs;
-  inputs.insert(QStringLiteral("x"),
-                Literal("values/number", Setting(settings, "directionX", "1")));
-  inputs.insert(QStringLiteral("y"),
-                Literal("values/number", Setting(settings, "directionY", "0")));
-  inputs.insert(QStringLiteral("z"),
-                Literal("values/number", Setting(settings, "directionZ", "0")));
-  return BlockInput(BlocklyBlock("targets/direction", {}, inputs));
-}
-
-QJsonObject RotationInput(const OptionSettings &settings) {
-  QJsonObject inputs;
-  inputs.insert(
-      QStringLiteral("yaw"),
-      Literal("values/degrees", Setting(settings, "yawDegrees", "0")));
-  inputs.insert(
-      QStringLiteral("pitch"),
-      Literal("values/degrees", Setting(settings, "pitchDegrees", "0")));
-  inputs.insert(
-      QStringLiteral("roll"),
-      Literal("values/degrees", Setting(settings, "rollDegrees", "0")));
-  return BlockInput(BlocklyBlock("targets/rotation", {}, inputs));
-}
-
-QJsonObject SizeInput(const OptionSettings &settings) {
-  QJsonObject inputs;
-  inputs.insert(QStringLiteral("x"),
-                Literal("values/meters", Setting(settings, "sizeX", "10")));
-  inputs.insert(QStringLiteral("y"),
-                Literal("values/meters", Setting(settings, "sizeY", "10")));
-  inputs.insert(QStringLiteral("z"),
-                Literal("values/meters", Setting(settings, "sizeZ", "10")));
-  return BlockInput(BlocklyBlock("targets/size", {}, inputs));
-}
-
-QJsonObject BoxInput(const OptionSettings &settings) {
-  QJsonObject inputs;
-  inputs.insert(QStringLiteral("center"),
-                PointInput(settings, "centerX", "centerY", "centerZ"));
-  inputs.insert(QStringLiteral("size"), SizeInput(settings));
-  return BlockInput(BlocklyBlock("targets/box", {}, inputs));
-}
-
-QJsonObject PrismInput(const OptionSettings &settings) {
-  QJsonObject inputs;
-  inputs.insert(QStringLiteral("origin"),
-                PointInput(settings, "originX", "originY", "originZ"));
-  inputs.insert(QStringLiteral("depth"),
-                Literal("values/meters", Setting(settings, "depth", "5")));
-  inputs.insert(QStringLiteral("polygon"),
-                Literal("values/polygon",
-                        Setting(settings, "polygon", "-5,-5;5,-5;0,5")));
-  return BlockInput(BlocklyBlock(
-      "targets/prism",
-      {{QStringLiteral("plane"), ToQString(Setting(settings, "plane", "xz"))}},
-      inputs));
-}
-
-QJsonObject ExtremumObjective(const char *definitionId, QJsonObject value,
-                              QJsonObject range) {
-  QJsonObject inputs;
-  inputs.insert(QStringLiteral("value"), BlockInput(std::move(value)));
-  inputs.insert(QStringLiteral("range"), std::move(range));
-  return BlocklyBlock(definitionId, {}, inputs);
 }
 
 QJsonObject Chain(std::vector<QJsonObject> blocks) {
@@ -456,6 +354,14 @@ QJsonObject BlocklyNodeForProgram(const blocks::VisualProgram &program,
                                    topLevel ? node->y : 0.0);
   block.insert(QStringLiteral("id"),
                QString::number(static_cast<qulonglong>(node->id)));
+  if (!node->enabled) block.insert(QStringLiteral("enabled"), false);
+  if (node->definitionId == "procedures/call" || node->definitionId == "procedures/value" || node->definitionId == "procedures/reference") {
+    const auto parameters = node->fields.find("parameters");
+    const auto name = node->fields.find("name");
+    block.insert(QStringLiteral("extraState"), QJsonObject{
+        {QStringLiteral("parameters"), parameters == node->fields.end() ? QString() : ToQString(parameters->second)},
+        {QStringLiteral("name"), name == node->fields.end() ? QStringLiteral("my block") : ToQString(name->second)}});
+  }
   return block;
 }
 
@@ -471,228 +377,6 @@ QString WorkspaceForProgram(const blocks::VisualProgram &program) {
   return QString::fromUtf8(
       QJsonDocument(QJsonObject{{QStringLiteral("blocks"), blocks}})
           .toJson(QJsonDocument::Compact));
-}
-
-QJsonObject ObjectiveForConfiguration(const OptionConfiguration &evaluation,
-                                      QString *diagnostic) {
-  const OptionSettings &settings = evaluation.settings;
-  QJsonObject score;
-
-  if (evaluation.id == kPointTargetEvaluationId) {
-    QJsonObject distanceInputs;
-    distanceInputs.insert(QStringLiteral("a"),
-                          BlockInput(BlocklyBlock("simulation/car-position")));
-    distanceInputs.insert(QStringLiteral("b"), PointInput(settings));
-    score = ExtremumObjective(
-        "objective/minimize", BlocklyBlock("math/distance", {}, distanceInputs),
-        RangeInput(Setting(settings, "minTimeMs", "1000"),
-                   Setting(settings, "maxTimeMs", "6000")));
-  } else if (evaluation.id == kVelocityEvaluationId) {
-    const bool projected = Setting(settings, "mode", "total") == "projected";
-    const bool gated = Setting(settings, "alignmentEnabled", "false") == "true";
-    QJsonObject value;
-    if (projected) {
-      QJsonObject dotInputs;
-      dotInputs.insert(QStringLiteral("a"),
-                       BlockInput(BlocklyBlock("simulation/car-velocity")));
-      dotInputs.insert(QStringLiteral("b"), DirectionInput(settings));
-      value = BlocklyBlock("math/dot", {}, dotInputs);
-    } else {
-      value = BlocklyBlock("simulation/car-speed");
-    }
-    score =
-        ExtremumObjective("objective/maximize", std::move(value),
-                          RangeInput(Setting(settings, "minTimeMs", "1000"),
-                                     Setting(settings, "maxTimeMs", "6000")));
-
-    if (gated) {
-      QJsonObject normalizeInputs;
-      normalizeInputs.insert(
-          QStringLiteral("value"),
-          BlockInput(BlocklyBlock("simulation/car-velocity")));
-      QJsonObject alignmentDotInputs;
-      alignmentDotInputs.insert(
-          QStringLiteral("a"),
-          BlockInput(BlocklyBlock("math/normalize", {}, normalizeInputs)));
-      alignmentDotInputs.insert(QStringLiteral("b"), DirectionInput(settings));
-      QJsonObject ratioInputs;
-      ratioInputs.insert(
-          QStringLiteral("value"),
-          Literal("values/percent",
-                  Setting(settings, "minAlignmentPercent", "-100")));
-      QJsonObject compareInputs;
-      compareInputs.insert(
-          QStringLiteral("a"),
-          BlockInput(BlocklyBlock("math/dot", {}, alignmentDotInputs)));
-      compareInputs.insert(
-          QStringLiteral("b"),
-          BlockInput(BlocklyBlock("math/percent-ratio", {}, ratioInputs)));
-      QJsonObject gateInputs;
-      gateInputs.insert(QStringLiteral("score"), BlockInput(score));
-      gateInputs.insert(QStringLiteral("condition"),
-                        BlockInput(BlocklyBlock("conditions/greater-equal", {},
-                                                compareInputs)));
-      score = BlocklyBlock("objective/only-when", {}, gateInputs);
-    }
-  } else if (evaluation.id == kPoseTargetEvaluationId) {
-    QJsonObject positionDistanceInputs;
-    positionDistanceInputs.insert(
-        QStringLiteral("a"),
-        BlockInput(BlocklyBlock("simulation/car-position")));
-    positionDistanceInputs.insert(QStringLiteral("b"), PointInput(settings));
-    QJsonObject rotationDistanceInputs;
-    rotationDistanceInputs.insert(
-        QStringLiteral("a"),
-        BlockInput(BlocklyBlock("simulation/car-rotation")));
-    rotationDistanceInputs.insert(QStringLiteral("b"), RotationInput(settings));
-    QJsonObject blendInputs;
-    blendInputs.insert(
-        QStringLiteral("a"),
-        BlockInput(BlocklyBlock("math/distance", {}, positionDistanceInputs)));
-    blendInputs.insert(QStringLiteral("b"),
-                       BlockInput(BlocklyBlock("math/rotation-distance", {},
-                                               rotationDistanceInputs)));
-    blendInputs.insert(
-        QStringLiteral("weight"),
-        Literal("values/percent",
-                Setting(settings, "rotationWeightPercent", "50")));
-    score =
-        ExtremumObjective("objective/minimize",
-                          BlocklyBlock("math/weighted-blend", {}, blendInputs),
-                          RangeInput(Setting(settings, "minTimeMs", "1000"),
-                                     Setting(settings, "maxTimeMs", "6000")));
-  } else if (evaluation.id == kStuntPointsEvaluationId) {
-    score = ExtremumObjective(
-        "objective/maximize", BlocklyBlock("simulation/stunt-points"),
-        AtInput(Setting(settings, "targetTimeMs", "6000")));
-  } else if (evaluation.id == kPreciseFinishTimeEvaluationId) {
-    score = ExtremumObjective("objective/minimize",
-                              BlocklyBlock("simulation/finish-time"),
-                              AllTimeInput());
-  } else if (evaluation.id == kVolumeEntryEvaluationId ||
-             evaluation.id == kCustomVolumeEntryEvaluationId) {
-    QJsonObject insideInputs;
-    insideInputs.insert(QStringLiteral("position"),
-                        BlockInput(BlocklyBlock("simulation/car-position")));
-    insideInputs.insert(QStringLiteral("volume"),
-                        evaluation.id == kVolumeEntryEvaluationId
-                            ? BoxInput(settings)
-                            : PrismInput(settings));
-    QJsonObject firstInputs;
-    firstInputs.insert(
-        QStringLiteral("condition"),
-        BlockInput(BlocklyBlock("conditions/inside", {}, insideInputs)));
-    firstInputs.insert(QStringLiteral("range"), AllTimeInput());
-    score = BlocklyBlock("objective/first-time", {}, firstInputs);
-  } else {
-    if (diagnostic != nullptr) {
-      *diagnostic =
-          QStringLiteral("The runtime objective type '%1' has no v3 visual "
-                         "migration. It was not replaced with a different "
-                         "objective.")
-              .arg(QString::fromStdString(evaluation.id));
-    }
-    return BlocklyBlock("flow/set-objective");
-  }
-
-  QJsonObject chooseInputs;
-  chooseInputs.insert(QStringLiteral("score"), BlockInput(std::move(score)));
-  return BlocklyBlock("flow/set-objective", {}, chooseInputs);
-}
-
-QJsonObject
-MutationWindowForExpansion(const blocks::ModifierExpansion &expansion) {
-  const auto setting = [&expansion](const char *key, const char *fallback) {
-    const auto found = expansion.window.find(key);
-    return found == expansion.window.end() ? std::string(fallback)
-                                           : found->second;
-  };
-  QJsonObject inputs;
-  inputs.insert(
-      QStringLiteral("range"),
-      RangeInput(setting("minTimeMs", "1000"), setting("maxTimeMs", "5990")));
-  inputs.insert(QStringLiteral("seed"),
-                Literal("values/integer", setting("seed", "1179926867")));
-
-  std::vector<QJsonObject> atoms;
-  for (const blocks::AtomExpansion &atom : expansion.atoms) {
-    const QJsonObject block = ConfiguredVisualBlock(atom.definitionId, atom.fields);
-    if (!block.isEmpty())
-      atoms.push_back(block);
-  }
-  const QJsonObject body = Chain(std::move(atoms));
-  if (!body.isEmpty()) {
-    inputs.insert(QStringLiteral("body"), BlockInput(body));
-  }
-  return BlocklyBlock("flow/mutation-window", {}, inputs);
-}
-
-QString
-WorkspaceForComponents(const blocks::SearchComponentConfiguration &components,
-                       const QString &simulationHorizonMs,
-                       const QString &conditionScript,
-                       QString *diagnostic) {
-  std::vector<QJsonObject> iterationSteps;
-  iterationSteps.reserve(components.modifiers.size() + 1);
-  const std::string searchDefinition =
-      "search/" + components.searchAlgorithm.id;
-  QJsonObject searchPolicy =
-      ConfiguredVisualBlock(searchDefinition, components.searchAlgorithm.settings);
-  if (searchPolicy.isEmpty()) {
-    if (diagnostic != nullptr) {
-      *diagnostic =
-          QStringLiteral("The runtime search policy '%1' has no v3 visual migration.")
-              .arg(QString::fromStdString(components.searchAlgorithm.id));
-    }
-  }
-  for (const OptionConfiguration &modifier : components.modifiers) {
-    const blocks::ModifierExpansion expansion =
-        blocks::ExpandModifierAtoms(modifier);
-    if (!expansion.atoms.empty()) {
-      iterationSteps.push_back(MutationWindowForExpansion(expansion));
-    }
-  }
-  QJsonObject simulateInputs;
-  simulateInputs.insert(
-      QStringLiteral("until"),
-      Literal("values/milliseconds", simulationHorizonMs.toStdString()));
-  if (conditionScript.isEmpty()) {
-    simulateInputs.insert(QStringLiteral("where"),
-                          Literal("values/boolean", "true"));
-  } else {
-    simulateInputs.insert(
-        QStringLiteral("where"),
-        BlockInput(BlocklyBlock(
-            "conditions/legacy-script",
-            QJsonObject{{QStringLiteral("source"), conditionScript}})));
-  }
-  iterationSteps.push_back(
-      BlocklyBlock("flow/simulate", {}, simulateInputs));
-  iterationSteps.push_back(
-      ObjectiveForConfiguration(components.evaluationTarget, diagnostic));
-
-  if (!searchPolicy.isEmpty()) {
-    const QJsonObject iterationBody = Chain(std::move(iterationSteps));
-    if (!iterationBody.isEmpty()) {
-      QJsonObject searchInputs =
-          searchPolicy.value(QStringLiteral("inputs")).toObject();
-      searchInputs.insert(QStringLiteral("body"), BlockInput(iterationBody));
-      searchPolicy.insert(QStringLiteral("inputs"), searchInputs);
-    }
-  }
-
-  QJsonObject startInputs;
-  if (!searchPolicy.isEmpty()) {
-    startInputs.insert(QStringLiteral("body"), BlockInput(searchPolicy));
-  }
-  QJsonObject start =
-      BlocklyBlock("flow/when-start", {}, startInputs, 54.0, 48.0);
-  QJsonArray top;
-  top.push_back(start);
-  QJsonObject blocks{{QStringLiteral("languageVersion"), 0},
-                     {QStringLiteral("blocks"), top}};
-  QJsonObject root{{QStringLiteral("blocks"), blocks}};
-  return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
 QString JsonScalarToString(const QJsonValue &value) {
@@ -714,87 +398,46 @@ BlockEditorBridge::BlockEditorBridge(SearchController *controller,
   Q_ASSERT(controller_ != nullptr);
   connect(controller_, &SearchController::runningChanged, this,
           &BlockEditorBridge::editableChanged);
+  connect(controller_, &SearchController::blockDebugChanged, this, [this](const QString &text) {
+    auto json = QJsonDocument::fromJson(text.toUtf8()).object();
+    const auto id = json.value(QStringLiteral("block")).toString().toULongLong();
+    const auto found = editorIds_.find(id);
+    json.insert(QStringLiteral("block"), found == editorIds_.end() ? QString() : found->second);
+    debugJson_ = JsonText(json);
+    emit debugChanged();
+  });
   connect(controller_, &SearchController::darkModeChanged, this,
           &BlockEditorBridge::darkModeChanged);
-  connect(controller_, &SearchController::blockStructureChanged, this,
-          [this]() {
-            if (!applyingWorkspace_)
-              synchronizeFromController();
-          });
-  connect(controller_, &SearchController::simulationHorizonMsChanged, this,
-          [this]() {
-            if (!applyingWorkspace_)
-              synchronizeFromController();
-          });
-  connect(controller_, &SearchController::conditionScriptChanged, this,
-          [this]() {
-            if (!applyingWorkspace_)
-              synchronizeFromController();
-          });
-
   QSettings settings;
-  const auto base = controller_->blockComponents();
-  const QString storedProgram =
-      settings.value(QString::fromLatin1(kStoredProgramKey)).toString();
-  if (!storedProgram.isEmpty() && base) {
-    const VisualProgramJson persisted = ParseVisualProgramJson(storedProgram);
-    if (!persisted.program) {
-      settings.setValue(QString::fromLatin1(kCorruptProgramBackupKey),
-                        storedProgram);
-    } else {
-      const blocks::CompileResult compiled =
-          blocks::CompileVisualProgram(*persisted.program, *base);
-      if (compiled.ok) {
-        applyingWorkspace_ = true;
-        const bool applied = controller_->applyBlockComponents(
-            compiled.configuration, compiled.conditionProgram);
-        if (applied && compiled.simulationHorizonMs) {
-          controller_->setSimulationHorizonMs(
-              ToQString(*compiled.simulationHorizonMs));
-        }
-        applyingWorkspace_ = false;
-        if (applied) {
-          const QString storedWorkspace =
-              settings.value(QString::fromLatin1(kStoredWorkspaceKey)).toString();
-          if (!storedWorkspace.isEmpty()) {
-            const ParsedWorkspace cached = ParseBlocklyWorkspace(storedWorkspace);
-            if (cached.error.isEmpty() &&
-                PrintVisualProgramJson(cached.program) ==
-                    PrintVisualProgramJson(*persisted.program)) {
-              workspaceJson_ = storedWorkspace;
-            }
-          }
-          if (workspaceJson_.isEmpty())
-            workspaceJson_ = WorkspaceForProgram(*persisted.program);
-        }
-      }
-      if (workspaceJson_.isEmpty()) {
-        settings.setValue(QString::fromLatin1(kCorruptProgramBackupKey),
-                          storedProgram);
-      }
-    }
+  const QString saved = settings.value(QString::fromLatin1(kStoredProgramKey)).toString();
+  const auto parsed = ParseVisualProgramJson(saved);
+  QString workspace;
+  bool recovered = false;
+  if (!saved.isEmpty() && !parsed.program) {
+    settings.setValue(QString::fromLatin1(kCorruptProgramBackupKey), saved);
+    recovered = true;
   }
-
-  // One-time transitional migration from the raw Blockly cache. Once parsed,
-  // semantic v3 JSON is written separately and becomes authoritative.
-  if (workspaceJson_.isEmpty() && base) {
-    const QString storedWorkspace =
-        settings.value(QString::fromLatin1(kStoredWorkspaceKey)).toString();
-    if (!storedWorkspace.isEmpty()) {
-      const ParsedWorkspace parsed = ParseBlocklyWorkspace(storedWorkspace);
-      if (parsed.error.isEmpty()) {
-        const blocks::CompileResult compiled =
-            blocks::CompileVisualProgram(parsed.program, *base);
-        if (compiled.ok && compiled.configuration == *base) {
-          workspaceJson_ = storedWorkspace;
-          settings.setValue(QString::fromLatin1(kStoredProgramKey),
-                            PrintVisualProgramJson(parsed.program));
-        }
-      }
-    }
+  const QString cached = settings.value(QString::fromLatin1(kStoredWorkspaceKey)).toString();
+  if (parsed.program) {
+    const auto cache = ParseBlocklyWorkspace(cached);
+    workspace = cache.error.isEmpty() && PrintVisualProgramJson(cache.program) == saved
+        ? cached : WorkspaceForProgram(*parsed.program);
   }
-  if (workspaceJson_.isEmpty())
-    synchronizeFromController();
+  const QString draft = settings.value(QString::fromLatin1(kDraftWorkspaceKey)).toString();
+  if (!draft.isEmpty() && ParseBlocklyWorkspace(draft).error.isEmpty()) workspace = draft;
+  else if (!draft.isEmpty()) {
+    settings.setValue(QString::fromLatin1(kRetiredWorkspaceBackupKey), draft);
+    recovered = true;
+  } else if (recovered && !cached.isEmpty()) {
+    settings.setValue(QString::fromLatin1(kRetiredWorkspaceBackupKey), cached);
+  }
+  if (workspace.isEmpty()) {
+    workspace = QStringLiteral(R"({"blocks":{"languageVersion":0,"blocks":[{"type":"ft_flow_when_start","id":"start"}]}})");
+  }
+  const bool applied = applyWorkspace(workspace, lastAcceptedRevision_ + 1);
+  if (recovered && applied) publishDiagnostics({QStringLiteral(
+      "The previous source uses removed or invalid blocks and was backed up in the application settings. "
+      "Macroblocks provides editable replacements for the old input, condition and target options.")}, false);
 }
 
 bool BlockEditorBridge::editable() const {
@@ -803,6 +446,102 @@ bool BlockEditorBridge::editable() const {
 
 bool BlockEditorBridge::darkMode() const {
   return controller_ != nullptr && controller_->darkMode();
+}
+
+bool BlockEditorBridge::running() const { return controller_ && controller_->running(); }
+
+bool BlockEditorBridge::runWorkspace(const QString &json, qulonglong revision, bool debug) {
+  if (!applyWorkspace(json, revision)) return false;
+  if (debug && !controller_->executableBlockProgram()) {
+    publishDiagnostics({QStringLiteral("Choose block program in the start hat before debugging.")}, false);
+    return false;
+  }
+  if (!controller_->canStart()) {
+    publishDiagnostics({controller_->validationMessage()}, false);
+    return false;
+  }
+  controller_->blockDebugger()->enable(debug || controller_->blockDebugger()->enabled() || !breakpointIds_.isEmpty());
+  debugJson_ = QStringLiteral("{}");
+  emit debugChanged();
+  controller_->startBlockProgram(debug);
+  return controller_->running();
+}
+
+void BlockEditorBridge::pauseProgram() {
+  if (running() && controller_->executableBlockProgram()) controller_->blockDebugger()->pause();
+}
+
+void BlockEditorBridge::resumeProgram(const QString &step) {
+  using Step = blocks::VisualDebugger::Step;
+  const std::map<QString, Step> modes{{QStringLiteral("run"),Step::Run}, {QStringLiteral("into"),Step::Into},
+      {QStringLiteral("over"),Step::Over}, {QStringLiteral("out"),Step::Out}, {QStringLiteral("tick"),Step::Tick}};
+  const auto mode = modes.find(step);
+  if (mode == modes.end() || !running()) return;
+  controller_->blockDebugger()->resume(mode->second);
+  auto json=QJsonDocument::fromJson(debugJson_.toUtf8()).object();
+  json.insert(QStringLiteral("paused"),false);
+  debugJson_=JsonText(json);
+  emit debugChanged();
+}
+
+void BlockEditorBridge::stopProgram() { controller_->stopSearch(); }
+void BlockEditorBridge::inspectProgram(bool enabled) { controller_->blockDebugger()->enable(enabled); }
+
+void BlockEditorBridge::setBreakpoints(const QStringList &ids) {
+  breakpointIds_ = ids;
+  std::set<blocks::VisualNodeId> nodes;
+  for (const auto &[id, editor] : editorIds_) if (ids.contains(editor)) nodes.insert(id);
+  controller_->blockDebugger()->setBreakpoints(std::move(nodes));
+}
+
+QString BlockEditorBridge::projectFromWorkspace(const QString &json) {
+  const auto parsed=ParseBlocklyWorkspace(json);
+  if (!parsed.error.isEmpty()) {
+    publishDiagnostics({parsed.error},false);
+    return {};
+  }
+  return PrintVisualProgramJson(parsed.program);
+}
+
+QString BlockEditorBridge::workspaceFromProject(const QString &json) {
+  const auto parsed=ParseVisualProgramJson(json);
+  if (!parsed.program) {
+    publishDiagnostics({parsed.error},false);
+    return {};
+  }
+  return WorkspaceForProgram(*parsed.program);
+}
+
+QString BlockEditorBridge::openProject() {
+  if (!editable()) return {};
+  const QString path=OpenSystemFileDialog(QStringLiteral("Open block program or library"),
+      QSettings().value(QStringLiteral("blockEditor/projectPath"),QDir::homePath()).toString());
+  if (path.isEmpty()) return {};
+  QFile file(path);
+  if (!file.open(QIODevice::ReadOnly) || file.size()>4*1024*1024) {
+    publishDiagnostics({QStringLiteral("The project must be a readable JSON file under 4 MiB.")},false);
+    return {};
+  }
+  const auto workspace=workspaceFromProject(QString::fromUtf8(file.read(4*1024*1024+1)));
+  if (!workspace.isEmpty()) QSettings().setValue(QStringLiteral("blockEditor/projectPath"),path);
+  return workspace;
+}
+
+bool BlockEditorBridge::saveProject(const QString &json) {
+  if (!editable()) return false;
+  const auto project=projectFromWorkspace(json);
+  if (project.isEmpty()) return false;
+  const QString path=SaveSystemFileDialog(QStringLiteral("Save block program"),
+      QSettings().value(QStringLiteral("blockEditor/projectPath"),QDir::homePath()+QStringLiteral("/program.forevertas.json")).toString());
+  if (path.isEmpty()) return false;
+  QSaveFile file(path);
+  const auto bytes=project.toUtf8();
+  if (!file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size() || !file.commit()) {
+    publishDiagnostics({QStringLiteral("The block program could not be saved: ")+file.errorString()},false);
+    return false;
+  }
+  QSettings().setValue(QStringLiteral("blockEditor/projectPath"),path);
+  return true;
 }
 
 QString BlockEditorBridge::BuildCatalogJson() {
@@ -865,10 +604,23 @@ QString BlockEditorBridge::BuildCatalogJson() {
         {QStringLiteral("fields"), fields},
         {QStringLiteral("statements"), statements}});
   }
+  QJsonArray macros;
+  for (const auto &macro : blocks::VisualMacroCatalog()) {
+    const auto &body = macro.program.find(macro.program.topLevel.front())->statements.at("body");
+    std::vector<QJsonObject> sequence;
+    for (auto id : body) sequence.push_back(BlocklyNodeForProgram(macro.program, id, false));
+    macros.push_back(QJsonObject{
+        {QStringLiteral("id"), ToQString(macro.id)},
+        {QStringLiteral("category"), ToQString(macro.category)},
+        {QStringLiteral("label"), ToQString(macro.label)},
+        {QStringLiteral("description"), ToQString(macro.description)},
+        {QStringLiteral("stack"), Chain(std::move(sequence))}});
+  }
   return QString::fromUtf8(
       QJsonDocument(QJsonObject{{QStringLiteral("version"), 3},
                                 {QStringLiteral("categories"), categories},
-                                {QStringLiteral("blocks"), definitions}})
+                                {QStringLiteral("blocks"), definitions},
+                                {QStringLiteral("macros"), macros}})
           .toJson(QJsonDocument::Compact));
 }
 
@@ -955,6 +707,8 @@ BlockEditorBridge::ParseBlocklyWorkspace(const QString &json) {
     blocks::VisualNode node;
     node.id = id;
     node.definitionId = definition->id;
+    node.enabled = object.value(QStringLiteral("enabled")).toBool(true) &&
+        object.value(QStringLiteral("disabledReasons")).toArray().isEmpty();
     node.x = object.value(QStringLiteral("x")).toDouble();
     node.y = object.value(QStringLiteral("y")).toDouble();
     const QJsonObject fieldValues =
@@ -988,13 +742,14 @@ BlockEditorBridge::ParseBlocklyWorkspace(const QString &json) {
     }
     result.program.nodes.emplace(id, std::move(node));
     blocks::VisualNode *const stored = result.program.find(id);
+    const auto nodeInputs = blocks::VisualInputsForNode(*stored);
 
     const QJsonObject serializedInputs =
         object.value(QStringLiteral("inputs")).toObject();
     for (auto iterator = serializedInputs.constBegin();
          iterator != serializedInputs.constEnd(); ++iterator) {
       const bool valueInput =
-          std::any_of(definition->inputs.begin(), definition->inputs.end(),
+          std::any_of(nodeInputs.begin(), nodeInputs.end(),
                       [&iterator](const blocks::VisualInputDefinition &input) {
                         return ToQString(input.key) == iterator.key();
                       });
@@ -1009,7 +764,7 @@ BlockEditorBridge::ParseBlocklyWorkspace(const QString &json) {
         return std::nullopt;
       }
     }
-    for (const blocks::VisualInputDefinition &input : definition->inputs) {
+    for (const blocks::VisualInputDefinition &input : nodeInputs) {
       const QJsonObject socket =
           serializedInputs.value(ToQString(input.key)).toObject();
       QJsonObject child = socket.value(QStringLiteral("block")).toObject();
@@ -1069,6 +824,7 @@ BlockEditorBridge::ParseBlocklyWorkspace(const QString &json) {
     }
     result.error = messages.join(QLatin1Char('\n'));
   }
+  for (const auto &[editor, id] : ids) result.editorIds.emplace(id, editor);
   return result;
 }
 
@@ -1086,14 +842,9 @@ bool BlockEditorBridge::applyWorkspace(const QString &workspaceJson,
     publishDiagnostics(parsed.error.split(QLatin1Char('\n')));
     return false;
   }
-  const auto base = controller_->blockComponents();
-  if (!base) {
-    publishDiagnostics({QStringLiteral(
-        "The current runtime block configuration cannot be compiled.")});
-    return false;
-  }
-  const blocks::CompileResult compiled =
-      blocks::CompileVisualProgram(parsed.program, *base);
+  workspaceJson_ = workspaceJson;
+  QSettings().setValue(QString::fromLatin1(kDraftWorkspaceKey), workspaceJson);
+  const auto compiled = blocks::CompileVisualProgram(parsed.program);
   if (!compiled.ok) {
     QStringList messages;
     for (const std::string &error : compiled.errors) {
@@ -1102,24 +853,19 @@ bool BlockEditorBridge::applyWorkspace(const QString &workspaceJson,
     publishDiagnostics(messages);
     return false;
   }
-  applyingWorkspace_ = true;
-  const bool applied =
-      controller_->applyBlockComponents(compiled.configuration,
-                                        compiled.conditionProgram);
-  if (applied && compiled.simulationHorizonMs) {
-    controller_->setSimulationHorizonMs(
-        ToQString(*compiled.simulationHorizonMs));
-  }
-  applyingWorkspace_ = false;
+  const bool applied = controller_->applyBlockProgram(compiled.executable);
   if (!applied) {
     publishDiagnostics({QStringLiteral(
-        "The native runtime rejected the compiled block configuration.")});
+        "The block runtime rejected the program.")});
     return false;
   }
 
   lastAcceptedRevision_ = revision;
+  editorIds_ = parsed.editorIds;
+  setBreakpoints(breakpointIds_);
   workspaceJson_ = workspaceJson;
   QSettings settings;
+  settings.remove(QString::fromLatin1(kDraftWorkspaceKey));
   settings.setValue(QString::fromLatin1(kStoredProgramKey),
                     PrintVisualProgramJson(parsed.program));
   settings.setValue(QString::fromLatin1(kStoredWorkspaceKey), workspaceJson_);
@@ -1189,23 +935,10 @@ void BlockEditorBridge::completeViewerPointPick(const QString &blockId,
   emit viewerPointPicked(blockId, x, y, z);
 }
 
-QString
-BlockEditorBridge::BuildWorkspaceFromController(QString *diagnostic) const {
-  const auto components = controller_->blockComponents();
-  if (!components) {
-    if (diagnostic != nullptr) {
-      *diagnostic =
-          QStringLiteral("The current runtime block program cannot be "
-                         "represented because it does not compile.");
-    }
-    return QStringLiteral(R"({"blocks":{"languageVersion":0,"blocks":[]}})");
-  }
-  return WorkspaceForComponents(*components, controller_->simulationHorizonMs(),
-                                controller_->conditionScript(), diagnostic);
-}
-
 void BlockEditorBridge::publishDiagnostics(const QStringList &messages,
                                            bool isError) {
+  if (isError || messages.isEmpty())
+    controller_->setBlockProgramError(isError ? messages.join(QLatin1Char('\n')) : QString());
   QJsonArray array;
   for (const QString &message : messages) {
     array.push_back(QJsonObject{
@@ -1219,26 +952,6 @@ void BlockEditorBridge::publishDiagnostics(const QStringList &messages,
     return;
   diagnosticsJson_ = next;
   emit diagnosticsJsonChanged();
-}
-
-void BlockEditorBridge::synchronizeFromController() {
-  QString diagnostic;
-  const QString next = BuildWorkspaceFromController(&diagnostic);
-  const ParsedWorkspace parsed = ParseBlocklyWorkspace(next);
-  if (parsed.error.isEmpty()) {
-    QSettings().setValue(QString::fromLatin1(kStoredProgramKey),
-                         PrintVisualProgramJson(parsed.program));
-  }
-  if (next != workspaceJson_) {
-    workspaceJson_ = next;
-    ++lastAcceptedRevision_;
-    emit workspaceRevisionChanged();
-    emit workspaceJsonChanged();
-  }
-  if (diagnostic.isEmpty())
-    publishDiagnostics({}, false);
-  else
-    publishDiagnostics({diagnostic}, false);
 }
 
 } // namespace forevertas::app

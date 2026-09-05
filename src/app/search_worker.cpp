@@ -1,4 +1,9 @@
 #include "app/search_worker.h"
+#include "blocks/visual_debugger.h"
+
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include "app/compact_number_format.h"
 #include "app/rolling_throughput.h"
@@ -15,6 +20,11 @@ namespace {
 QString IterationLabel(
         SearchWinnerSource source,
         const std::optional<std::uint64_t> &iterationIndex) {
+    if (source == SearchWinnerSource::Program) {
+        return iterationIndex
+                ? QStringLiteral("Candidate #%1").arg(FormatCompactNumber(static_cast<double>(*iterationIndex + 1u)))
+                : QStringLiteral("Block program");
+    }
     if (source == SearchWinnerSource::Baseline) {
         return QStringLiteral("Baseline");
     }
@@ -97,6 +107,8 @@ QString SearchStageStatus(SearchProgressStage stage,
     const bool multiThreadedCpu =
             backendId == "multi-threaded-cpu";
     switch (stage) {
+    case SearchProgressStage::VisualProgram:
+        return QStringLiteral("Running block program...");
     case SearchProgressStage::OpeningPacksDirectory:
         return QStringLiteral("Opening Packs directory...");
     case SearchProgressStage::ReadingScenario:
@@ -201,6 +213,32 @@ SearchWorker::SearchWorker(
 
 void SearchWorker::run() {
     emit stageChanged(QStringLiteral("Preparing search..."), true);
+    if (request_.debugger) request_.debugger->setObserver([this](const blocks::VisualDebugSnapshot &snapshot) {
+        const auto variables = [](const auto &values) {
+            QJsonArray result;
+            for (const auto &[name, value] : values) {
+                result.push_back(QJsonObject{{"name", QString::fromStdString(name)},
+                    {"value", QString::fromStdString(blocks::DescribeVisualValue(value))}});
+                if (result.size() == 256) break;
+            }
+            return result;
+        };
+        QJsonArray frames, state;
+        for (const auto &frame : snapshot.frames)
+            frames.push_back(QJsonObject{{"name", QString::fromStdString(frame.name)}, {"locals", variables(frame.locals)}});
+        for (const auto &[key, label] : blocks::VisualStateProperties())
+            state.push_back(QJsonObject{{"name", QString::fromStdString(label)},
+                {"value", QString::fromStdString(blocks::DescribeVisualValue(blocks::ReadVisualStateProperty(snapshot.state, key)))}});
+        const QJsonObject json{{"block", QString::number(snapshot.block)},
+            {"paused", snapshot.paused}, {"finished", snapshot.finished},
+            {"timeMs", static_cast<double>(snapshot.state.timeMs)},
+            {"variables", variables(snapshot.variables)}, {"frames", frames}, {"state", state}};
+        emit blockDebugChanged(QString::fromUtf8(QJsonDocument(json).toJson(QJsonDocument::Compact)));
+    });
+    struct ClearObserver {
+        std::shared_ptr<blocks::VisualDebugger> debugger;
+        ~ClearObserver() { if (debugger) debugger->setObserver({}); }
+    } clearObserver{request_.debugger};
 
     SearchRunControl control;
     control.reuseLoadedSandbox = true;
@@ -288,7 +326,7 @@ void SearchWorker::run() {
                                    std::optional<std::uint64_t>{},
                            publishImprovement](
                                   const SearchLiveUpdate &live) mutable {
-        if (latestInputsText.isEmpty() ||
+        if (request_.executable || latestInputsText.isEmpty() ||
             latestSource != live.winnerSource ||
             latestIteration != live.winningIterationIndex) {
             latestInputsText = QString::fromStdString(
