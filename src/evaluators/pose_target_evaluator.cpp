@@ -20,16 +20,16 @@ struct Quaternion {
 
 Quaternion FromEulerDegrees(double yaw, double pitch, double roll) {
     constexpr double degreesToRadians = 3.14159265358979323846 / 180.0;
-    const double cy = std::cos(yaw * degreesToRadians * 0.5);
-    const double sy = std::sin(yaw * degreesToRadians * 0.5);
     const double cp = std::cos(pitch * degreesToRadians * 0.5);
     const double sp = std::sin(pitch * degreesToRadians * 0.5);
+    const double cy = std::cos(yaw * degreesToRadians * 0.5);
+    const double sy = std::sin(yaw * degreesToRadians * 0.5);
     const double cr = std::cos(roll * degreesToRadians * 0.5);
     const double sr = std::sin(roll * degreesToRadians * 0.5);
-    return {sr * cp * cy - cr * sp * sy,
-            cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy,
-            cr * cp * cy + sr * sp * sy};
+    return {sp * cy * cr + cp * sy * sr,
+            cp * sy * cr - sp * cy * sr,
+            cp * cy * sr - sp * sy * cr,
+            cp * cy * cr + sp * sy * sr};
 }
 
 double RotationError(const Quaternion &target,

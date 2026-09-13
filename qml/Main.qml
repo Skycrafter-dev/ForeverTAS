@@ -2039,19 +2039,19 @@ ApplicationWindow {
                                     Repeater3D {
                                         model: [
                                             {
-                                                "axis": "roll",
+                                                "axis": "pitch",
                                                 "position":
                                                     Qt.vector3d(-2.3, 0, 0),
                                                 "color": "#ffadad"
                                             },
                                             {
-                                                "axis": "pitch",
+                                                "axis": "yaw",
                                                 "position":
                                                     Qt.vector3d(0, -1.8, 0),
                                                 "color": "#a9efb2"
                                             },
                                             {
-                                                "axis": "yaw",
+                                                "axis": "roll",
                                                 "position":
                                                     Qt.vector3d(0, 0, -3.9),
                                                 "color": "#a8c7ff"

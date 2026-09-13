@@ -15,7 +15,7 @@ namespace forevertas::app {
 namespace {
 
 constexpr char kPoseTargetsKey[] = "targets/poses";
-constexpr int kVersion = 1;
+constexpr int kVersion = 2;
 constexpr qsizetype kMaximumTargets = 256;
 constexpr double kMaximumCoordinate = 10000000.0;
 
@@ -101,9 +101,9 @@ int PoseTargetModel::addTarget(double x,
             QUuid::createUuid().toString(QUuid::WithoutBraces),
             nextDefaultName(),
             position,
-            NormalizeDegrees(euler.z()),
             NormalizeDegrees(euler.y()),
-            NormalizeDegrees(euler.x())});
+            NormalizeDegrees(euler.x()),
+            NormalizeDegrees(euler.z())});
     selectedIndex_ = count() - 1;
     persist();
     emit targetsChanged();
@@ -270,9 +270,9 @@ bool PoseTargetModel::moveSelectedTo(
     }
     const QVector3D euler = rotation.normalized().toEulerAngles();
     Target &target = targets_[static_cast<std::size_t>(selectedIndex_)];
-    const float yaw = NormalizeDegrees(euler.z());
-    const float pitch = NormalizeDegrees(euler.y());
-    const float roll = NormalizeDegrees(euler.x());
+    const float yaw = NormalizeDegrees(euler.y());
+    const float pitch = NormalizeDegrees(euler.x());
+    const float roll = NormalizeDegrees(euler.z());
     if (target.position == position &&
         qFuzzyCompare(target.yawDegrees + 1.0F, yaw + 1.0F) &&
         qFuzzyCompare(target.pitchDegrees + 1.0F, pitch + 1.0F) &&
@@ -370,9 +370,9 @@ float PoseTargetModel::NormalizeDegrees(double degrees) {
 
 QQuaternion PoseTargetModel::Rotation(const Target &target) {
     return QQuaternion::fromEulerAngles(
-                   target.rollDegrees,
                    target.pitchDegrees,
-                   target.yawDegrees)
+                   target.yawDegrees,
+                   target.rollDegrees)
             .normalized();
 }
 

@@ -311,12 +311,17 @@ private:
 };
 
 Value Angles(float x, float y, float z, float w) {
-    const double sinr = 2.0 * (w * x + y * z);
-    const double cosr = 1.0 - 2.0 * (x * x + y * y);
-    const double sinp = 2.0 * (w * y - z * x);
-    const double siny = 2.0 * (w * z + x * y);
-    const double cosy = 1.0 - 2.0 * (y * y + z * z);
-    return {std::atan2(siny, cosy), std::abs(sinp) >= 1.0 ? std::copysign(1.5707963267948966, sinp) : std::asin(sinp), std::atan2(sinr, cosr), true};
+    const double sinPitch = 2.0 * (w * x - y * z);
+    const double sinYaw = 2.0 * (w * y + x * z);
+    const double cosYaw = 1.0 - 2.0 * (x * x + y * y);
+    const double sinRoll = 2.0 * (w * z + x * y);
+    const double cosRoll = 1.0 - 2.0 * (x * x + z * z);
+    return {std::atan2(sinYaw, cosYaw),
+            std::abs(sinPitch) >= 1.0
+                    ? std::copysign(1.5707963267948966, sinPitch)
+                    : std::asin(sinPitch),
+            std::atan2(sinRoll, cosRoll),
+            true};
 }
 
 Value Source(PhysicsSandboxCudaConditionValue source,

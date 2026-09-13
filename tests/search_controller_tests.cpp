@@ -652,7 +652,7 @@ bool TestPoseTargets() {
                             QStringLiteral("45")),
             "pose target property edits failed");
     const QQuaternion expected = QQuaternion::fromEulerAngles(
-            45.0F, -20.0F, 90.0F);
+            -20.0F, 90.0F, 45.0F);
     const QQuaternion actual = model.selectedTarget()
                                        .value(QStringLiteral("rotation"))
                                        .value<QQuaternion>();
@@ -748,7 +748,7 @@ bool TestPoseTargets() {
     QSettings().setValue(
             QStringLiteral("targets/poses"),
             QByteArrayLiteral(
-                    "{\"version\":1,\"selectedId\":\"missing\","
+                    "{\"version\":2,\"selectedId\":\"missing\","
                     "\"targets\":[{\"id\":\"\",\"name\":\"Broken\","
                     "\"position\":[0,0,0],\"rotation\":[0,0,0]},"
                     "{\"id\":\"valid\",\"name\":\"Recovered\","
@@ -818,7 +818,7 @@ bool TestPoseTargets() {
                                                     QStringLiteral(
                                                             "yawDegrees"))
                                             .toDouble() -
-                            35.0) < 0.001 &&
+                            25.0) < 0.001 &&
                     targets->selectTarget(0) &&
                     controller.evaluationTargetSettings()
                                     .value(QStringLiteral("x"))

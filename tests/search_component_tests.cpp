@@ -459,6 +459,27 @@ bool TestEvaluationTargets() {
     {
         OptionSettings settings =
                 forevertas::FindEvaluationTarget(
+                        forevertas::kPoseTargetEvaluationId)->defaultSettings;
+        settings["yawDegrees"] = "20";
+        settings["pitchDegrees"] = "10";
+        settings["rollDegrees"] = "30";
+        auto evaluator = Evaluator(
+                forevertas::kPoseTargetEvaluationId, &settings);
+        auto session = evaluator->CreateSession();
+        PhysicsSandboxStateView state;
+        state.timeMs = 1000u;
+        state.car.rotationX = 0.12767944f;
+        state.car.rotationY = 0.14487813f;
+        state.car.rotationZ = 0.23929833f;
+        state.car.rotationW = 0.95154852f;
+        const auto sample = session->Observe(std::nullopt, state);
+        okay &= Check(sample && std::abs(sample->score) < 2e-4,
+                      "Y-up yaw/pitch/roll pose produced rotation error");
+    }
+
+    {
+        OptionSettings settings =
+                forevertas::FindEvaluationTarget(
                         forevertas::kVolumeEntryEvaluationId)->defaultSettings;
         settings["sizeX"] = "2";
         settings["sizeY"] = "2";
@@ -2054,7 +2075,12 @@ bool TestReplayPathRobustness() {
 bool TestConditionLanguageParity() {
     const std::string script =
             "kmh(car.speed) >= 36\n"
-            "deg(car.yaw) = 0\n"
+            "deg(car.yaw) > 19.9\n"
+            "deg(car.yaw) < 20.1\n"
+            "deg(car.pitch) > 9.9\n"
+            "deg(car.pitch) < 10.1\n"
+            "deg(car.roll) > 29.9\n"
+            "deg(car.roll) < 30.1\n"
             "distance(car.pos, variable(bf_target_point)) < 0.01\n"
             "car.prev.x = 1\n"
             "car.localvel.z = 10\n"
@@ -2089,6 +2115,10 @@ bool TestConditionLanguageParity() {
     current.car.position = {4.0f, 5.0f, 6.0f};
     current.car.linearSpeed = {0.0f, 0.0f, 10.0f};
     current.car.localSpeed = {0.0f, 0.0f, 10.0f};
+    current.car.rotationX = 0.12767944f;
+    current.car.rotationY = 0.14487813f;
+    current.car.rotationZ = 0.23929833f;
+    current.car.rotationW = 0.95154852f;
     current.car.freeWheeling = true;
     current.car.lateralContact = true;
     current.car.sliding = true;

@@ -199,27 +199,27 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
     if (configuration.id == kPoseTargetEvaluationId) {
         constexpr double degreesToRadians =
                 3.14159265358979323846 / 180.0;
-        const double yaw =
-                Number(settings, "yawDegrees") *
-                degreesToRadians * 0.5;
         const double pitch =
                 Number(settings, "pitchDegrees") *
+                degreesToRadians * 0.5;
+        const double yaw =
+                Number(settings, "yawDegrees") *
                 degreesToRadians * 0.5;
         const double roll =
                 Number(settings, "rollDegrees") *
                 degreesToRadians * 0.5;
-        const double cy = std::cos(yaw);
-        const double sy = std::sin(yaw);
         const double cp = std::cos(pitch);
         const double sp = std::sin(pitch);
+        const double cy = std::cos(yaw);
+        const double sy = std::sin(yaw);
         const double cr = std::cos(roll);
         const double sr = std::sin(roll);
         return PhysicsSandboxCudaPoseEvaluator{
                 Vector(settings, "x", "y", "z"),
-                sr * cp * cy - cr * sp * sy,
-                cr * sp * cy + sr * cp * sy,
-                cr * cp * sy - sr * sp * cy,
-                cr * cp * cy + sr * sp * sy,
+                sp * cy * cr + cp * sy * sr,
+                cp * sy * cr - sp * cy * sr,
+                cp * cy * sr - sp * sy * cr,
+                cp * cy * cr + sp * sy * sr,
                 Number(settings, "rotationWeightPercent") / 100.0};
     }
     if (configuration.id == kVolumeEntryEvaluationId) {
