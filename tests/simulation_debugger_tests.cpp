@@ -1223,7 +1223,9 @@ int main(int argc, char **argv) {
                 poll.start();
             });
 
-    QTimer::singleShot(120000, &application, [&]() {
+    // Keep the in-process diagnostic watchdog below CTest's 180 s hard
+    // timeout, but do not make it stricter than the integration-test budget.
+    QTimer::singleShot(165000, &application, [&]() {
         std::cerr << "native simulation debugger test timed out; phase="
                   << static_cast<int>(phase)
                   << ", status=" << model->statusText().toStdString()
