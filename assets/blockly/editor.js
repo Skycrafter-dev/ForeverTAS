@@ -3,6 +3,7 @@
 
   let bridge = null;
   let workspace = null;
+  let programTabs = null;
   let catalog = null;
   let revision = 0;
   let loadingWorkspace = false;
@@ -13,6 +14,7 @@
   let syncingProcedures = false;
   let debugSnapshot = {};
   let lastDebugBlock = '';
+  let workbench = null;
   const breakpoints = new Set();
 
   function parameterNames(text) {
@@ -126,7 +128,6 @@
   const searchResults = document.getElementById('searchResults');
   const diagnostics = document.getElementById('diagnostics');
   const loadingState = document.getElementById('loadingState');
-  const readOnlyShield = document.getElementById('readOnlyShield');
   const viewerPickDock = document.getElementById('viewerPickDock');
   const viewerPickButton = document.getElementById('viewerPickButton');
   const viewerPickStatus = document.getElementById('viewerPickStatus');
@@ -224,6 +225,14 @@
             this.setNextStatement(true, checks);
           }
           this.setTooltip(definition.label || definition.id);
+          // Blockly derives a collapsed label during a later render frame.
+          // That presentation update must not become a second undo operation.
+          const updateCollapsed = this.updateCollapsed.bind(this);
+          this.updateCollapsed = () => {
+            Blockly.Events.disable();
+            try { updateCollapsed(); } finally { Blockly.Events.enable(); }
+          };
+          if (definition.id === 'flow/section') this.toString = () => this.getFieldValue('name') || 'Section';
           if (definition.id === 'procedures/define') {
             this.customContextMenu = procedureContextMenu;
             this.setTooltip('Name this block and list its parameter names, separated by commas. Right-click to create a call. Use local variables and return inside the body.');
@@ -270,7 +279,7 @@
           .map(block => ({kind: 'block', type: block.type}))
       })), {
         kind: 'category', name: 'Macroblocks', colour: '#bc6a36',
-        contents: [...new Set((catalog.macros || []).map(macro => macro.category))].map(category => ({
+        contents: [...new Set((catalog.macros || []).filter(macro => macro.category !== 'Macromacroblocks').map(macro => macro.category))].map(category => ({
           kind: 'category', name: category, colour: '#bc6a36',
           contents: [
             {kind: 'label', text: 'Insert an editable sequence'},
@@ -278,6 +287,10 @@
               .map(macro => ({kind: 'button', text: macro.label, callbackKey: `macro:${macro.id}`}))
           ]
         }))
+      }, {
+        kind: 'category', name: 'Macromacroblocks', colour: '#bc6a36',
+        contents: (catalog.macros || []).filter(macro => macro.category === 'Macromacroblocks')
+          .map(macro => ({kind: 'button', text: macro.label, callbackKey: `macro:${macro.id}`}))
       }]
     };
   }
@@ -312,7 +325,8 @@
     const previousGroup = Blockly.Events.getGroup();
     Blockly.Events.setGroup(true);
     try {
-      const first = Blockly.serialization.blocks.append(source, workspace, {recordUndo: true});
+      const grouped = {type: 'ft_flow_section', fields: {name: macro.label}, collapsed: true, inputs: {body: {block: source}}};
+      const first = Blockly.serialization.blocks.append(grouped, workspace, {recordUndo: true});
       first.setCommentText(`${macro.label}\n${macro.description}\nAll steps below are ordinary blocks. Temporary variables${suffix ? ` use suffix ${suffix.trim()}` : ' can be renamed'}.`);
       centerNewBlock(first);
     } finally {
@@ -377,6 +391,7 @@
       media: 'qrc:/blockly/third_party/blockly/media/',
       trashcan: true,
       disable: true,
+      collapse: true,
       sounds: false,
       move: {scrollbars: true, drag: true, wheel: true},
       zoom: {controls: true, wheel: true, startScale: 0.82, maxScale: 1.8, minScale: 0.45, scaleSpeed: 1.08, pinch: true},
@@ -386,6 +401,9 @@
       workspace.registerButtonCallback(`macro:${macro.id}`, () => insertMacro(macro));
     workspace.addChangeListener(onWorkspaceEvent);
     window.addEventListener('resize', () => Blockly.svgResize(workspace));
+    new ResizeObserver(() => {
+      if (document.getElementById('canvasPane').clientWidth) Blockly.svgResize(workspace);
+    }).observe(document.getElementById('canvasPane'));
   }
 
   function addDefaultShadows(block) {
@@ -513,7 +531,7 @@
       if (points.length < 3 || points.some(point => point.length !== 2 || point.some(value => !Number.isFinite(value)))) return false;
       const origin = ensureDefaultInputBlock(block, 'origin');
       if (!origin) return false;
-      block.setFieldValue(String(data.plane), 'plane');
+      if (!setLiteralInput(block, 'plane', data.plane)) return false;
       const source = (id, inputs = {}, fields = {}) => ({
         type: catalog.blocks.find(item => item.id === id).type, fields,
         inputs: Object.fromEntries(Object.entries(inputs).map(([key, value]) => [key, {block: value}]))
@@ -554,11 +572,10 @@
     return applied;
   }
 
-  function loadWorkspace(serializedText) {
+  function loadWorkspace(state) {
     if (!workspace) return;
-    const state = parseJson(serializedText, null);
-    if (!state) return;
     loadingWorkspace = true;
+    Blockly.Events.disable();
     try {
       workspace.clear();
       Blockly.serialization.workspaces.load(state, workspace);
@@ -568,6 +585,7 @@
       lastSelectedBlockId = '';
       updateViewerPicker();
     } finally {
+      Blockly.Events.enable();
       loadingWorkspace = false;
     }
   }
@@ -577,8 +595,10 @@
     if (event && event.type === Blockly.Events.SELECTED) {
       lastSelectedBlockId = event.newElementId || '';
       updateViewerPicker();
+      programTabs?.changed();
       return;
     }
+    if (event?.type === Blockly.Events.VIEWPORT_CHANGE) { programTabs?.changed(); return; }
     if (event && (event.isUiEvent || event.type === Blockly.Events.VIEWPORT_CHANGE || event.type === Blockly.Events.TOOLBOX_ITEM_SELECT)) return;
     syncProcedures(event);
     if (event && event.type === Blockly.Events.BLOCK_CREATE) {
@@ -589,18 +609,22 @@
     }
     clearTimeout(saveTimer);
     saveTimer = setTimeout(commitWorkspace, 140);
+    programTabs?.changed();
   }
 
   function commitWorkspace() {
     if (!bridge || !workspace || loadingWorkspace || !bridge.editable) return;
     const state = Blockly.serialization.workspaces.save(workspace);
     const json = JSON.stringify(state);
-    ++revision;
-    bridge.applyWorkspace(json, revision, accepted => {
+    const submittedRevision = ++revision, documentId = programTabs?.active()?.id;
+    bridge.applyWorkspace(json, submittedRevision, accepted => {
+      if (submittedRevision !== revision || programTabs?.active()?.id !== documentId) return;
       if (accepted === false) renderDiagnostics();
       else if (breakpoints.size) bridge.setBreakpoints([...breakpoints]);
       renderRuntime();
     });
+    workbench?.render();
+    programTabs?.changed();
   }
 
   function renderRuntime() {
@@ -608,19 +632,23 @@
     const running = Boolean(bridge.running), paused = running && debugSnapshot.paused;
     const program = workspace.getTopBlocks(false).some(block =>
       definitionForBlock(block)?.id === 'flow/when-start');
-    document.getElementById('runProgram').disabled = running;
-    document.getElementById('debugProgram').disabled = running || !program;
-    document.getElementById('debugProgram').title = program ? 'Start paused before the first block' : 'Choose block program in the start hat';
+    const unavailable = running || !program || !programTabs?.active() || Boolean(programTabs.active().loadError);
+    document.getElementById('runProgram').disabled = unavailable || Boolean(document.querySelector('#configurationPanel input:invalid'));
+    document.getElementById('debugProgram').disabled = unavailable || Boolean(document.querySelector('#configurationPanel input:invalid'));
+    document.getElementById('debugProgram').title = program ? 'Start paused before the first block' : 'Add a when run starts block';
     document.getElementById('pauseProgram').disabled = !running || paused || !program;
     document.getElementById('inspectProgram').disabled = !program;
     document.getElementById('resumeProgram').disabled = !paused;
-    document.getElementById('stepProgram').disabled = !paused;
+    for (const button of document.querySelectorAll('[data-step]')) button.disabled = !paused;
+    document.getElementById('stepMenu').querySelector('summary').setAttribute('aria-disabled', String(!paused));
     document.getElementById('stopProgram').disabled = !running;
     document.getElementById('runtimeStatus').textContent = (paused ? 'Paused' : running ? 'Running' : debugSnapshot.finished ? 'Finished' : '')
       + (debugSnapshot.timeMs === undefined ? '' : ` · ${debugSnapshot.timeMs} ms`);
     workspace.highlightBlock(paused ? debugSnapshot.block || null : null);
-    if (paused && debugSnapshot.block && debugSnapshot.block !== lastDebugBlock && workspace.getBlockById(debugSnapshot.block))
-      workspace.centerOnBlock(debugSnapshot.block);
+    if (paused && debugSnapshot.block && debugSnapshot.block !== lastDebugBlock && workspace.getBlockById(debugSnapshot.block)) {
+      const active = workspace.getBlockById(debugSnapshot.block);
+      workbench?.reveal(active);
+    }
     lastDebugBlock = paused ? debugSnapshot.block : '';
     const inspector = document.getElementById('runtimeInspector');
     inspector.hidden = !document.getElementById('inspectProgram').checked && !paused;
@@ -644,11 +672,18 @@
     section('globals', 'Program variables', debugSnapshot.variables, true);
     (debugSnapshot.frames || []).forEach((frame, i) => section(`frame${i}`, `${i + 1}. ${frame.name}`, frame.locals, true));
     section('state', 'Simulation state', debugSnapshot.state);
+    programTabs?.render();
   }
 
   for (const [id, debug] of [['runProgram', false], ['debugProgram', true]]) {
-    document.getElementById(id).addEventListener('click', () => {
-      if (!bridge?.editable) return;
+    document.getElementById(id).addEventListener('click', async () => {
+      if (!bridge?.editable || programTabs.busy) return;
+      const documentId = programTabs.active()?.id;
+      const invalid = document.querySelector('#configurationPanel input:invalid');
+      if (invalid) { invalid.reportValidity(); return; }
+      if (await programTabs.flush()) return;
+      if (!bridge.editable || programTabs.busy || programTabs.active()?.id !== documentId) return;
+      bridge.cancelViewerPointPick();
       clearTimeout(saveTimer);
       const json = JSON.stringify(Blockly.serialization.workspaces.save(workspace));
       if (debug) document.getElementById('inspectProgram').checked = true;
@@ -660,41 +695,34 @@
   }
   document.getElementById('pauseProgram').addEventListener('click', () => bridge.pauseProgram());
   document.getElementById('resumeProgram').addEventListener('click', () => bridge.resumeProgram('run'));
-  document.getElementById('stepProgram').addEventListener('click', () => bridge.resumeProgram(document.getElementById('stepKind').value));
+  for (const button of document.querySelectorAll('[data-step]')) button.addEventListener('click', () => {
+    document.getElementById('stepMenu').open = false;
+    bridge.resumeProgram(button.dataset.step);
+  });
   document.getElementById('stopProgram').addEventListener('click', () => bridge.stopProgram());
   document.getElementById('inspectProgram').addEventListener('change', event => {
     bridge.inspectProgram(event.target.checked); renderRuntime();
   });
   document.getElementById('watchFilter').addEventListener('input', renderRuntime);
 
-  function replaceProgram(state) {
-    if (!bridge?.editable) return;
-    // Keep the previous program in the undo history rather than discarding it
-    // while switching examples or loading a file.
-    Blockly.Events.setGroup(true);
-    try {
-      workspace.clear();
-      for (const script of state.blocks?.blocks || []) Blockly.serialization.blocks.append(script, workspace, {recordUndo: true});
-      syncProcedures();
-      for (const item of workspace.getAllBlocks(false)) addDefaultShadows(item);
-    } finally { Blockly.Events.setGroup(false); }
-    breakpoints.clear(); bridge.setBreakpoints([]);
-    clearTimeout(saveTimer); commitWorkspace();
-    workspace.zoomToFit();
+  function openProgram(state, title = 'Untitled', view = 'configure') {
+    return programTabs.open(state, title, '', view);
   }
 
-  document.getElementById('projectAction').addEventListener('change', event => {
-    const action = event.target.value; event.target.value = '';
-    if (!bridge?.editable || !action) return;
-    if (action === 'save') {
-      bridge.saveProject(JSON.stringify(Blockly.serialization.workspaces.save(workspace)), () => {});
-      return;
-    }
+  function projectAction(action) {
+    document.getElementById('projectMenu').open = false;
+    if (!bridge?.editable || programTabs.busy || !action) return;
+    if (action === 'save' || action === 'save-as') { programTabs.saveFile(action === 'save-as'); return; }
+    if (action === 'rename') { programTabs.rename(); return; }
+    if (action === 'close') { programTabs.closeTab(); return; }
+    if (action === 'reopen') { programTabs.reopen(); return; }
     if (action === 'open' || action === 'library') {
-      bridge.openProject(text => {
+      const documentId = programTabs.active()?.id;
+      bridge.openProgramFile(text => {
         if (!text || !bridge.editable) return;
-        const state = JSON.parse(text);
-        if (action === 'open') { replaceProgram(state); return; }
+        const file = JSON.parse(text), state = file.workspace;
+        if (action === 'open') { programTabs.open(state, file.title, file.path); return; }
+        if (!documentId || documentId !== programTabs.active()?.id) return;
         const scripts = state.blocks?.blocks || [];
         const names = new Set(workspace.getAllBlocks(false)
           .filter(b => b.type === 'ft_procedures_define').map(b => b.getFieldValue('name')));
@@ -718,8 +746,111 @@
       });
       return;
     }
-    replaceProgram(window.foreverBlockExample(action === 'new' ? 'empty' : action));
+    openProgram(window.foreverBlockExample(action === 'new' ? 'empty' : action),
+      ({new: 'Untitled', feedback: 'Feedback control', branches: 'Parallel branches'})[action], 'blocks');
+  }
+  for (const button of document.querySelectorAll('[data-project]'))
+    button.addEventListener('click', () => projectAction(button.dataset.project));
+  document.getElementById('newProgramTab').addEventListener('click', () => projectAction('new'));
+  document.addEventListener('keydown', event => {
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && !document.querySelector('dialog[open]') && event.key.toLowerCase() === 'n') {
+      event.preventDefault(); projectAction('new');
+    }
   });
+
+  function setView(view) {
+    if (!['configure', 'blocks', 'split'].includes(view)) view = 'configure';
+    document.getElementById('editorShell').dataset.view = view;
+    document.getElementById('configureView').setAttribute('aria-pressed', String(view === 'configure'));
+    document.getElementById('blocksView').setAttribute('aria-pressed', String(view === 'blocks'));
+    document.getElementById('settingsSideToggle').setAttribute('aria-pressed', String(view === 'split'));
+    if (view !== 'configure') requestAnimationFrame(() => Blockly.svgResize(workspace));
+    programTabs?.changed();
+  }
+  document.getElementById('configureView').addEventListener('click', () => { setView('configure'); workbench?.render(); });
+  document.getElementById('blocksView').addEventListener('click', () => setView('blocks'));
+  document.getElementById('settingsSideToggle').addEventListener('click', () => { setView('split'); workbench?.render(); });
+  document.addEventListener('pointerdown', event => {
+    const menus = [...document.querySelectorAll('.popupMenu[open]')];
+    if (menus.length && !menus.some(menu => menu.contains(event.target))) {
+      for (const menu of menus) menu.open = false;
+      if (event.target.closest('#canvasPane')) { event.preventDefault(); event.stopPropagation(); }
+    }
+  }, true);
+  document.addEventListener('keydown', event => {
+    if (event.key === 'Escape') for (const menu of document.querySelectorAll('.popupMenu[open]')) { menu.open = false; menu.querySelector('summary').focus(); }
+  });
+  document.addEventListener('click', event => {
+    if (event.target.closest('summary[aria-disabled="true"]')) event.preventDefault();
+  }, true);
+  document.addEventListener('toggle', event => {
+    const menu = event.target;
+    if (!menu.matches?.('.popupMenu') || !menu.open) return;
+    for (const other of document.querySelectorAll('.popupMenu[open]')) if (other !== menu) other.open = false;
+    const content = menu.querySelector('.menuContents'), trigger = menu.querySelector('summary').getBoundingClientRect();
+    content.style.position = 'fixed'; content.style.bottom = 'auto';
+    content.style.maxHeight = Math.max(80, window.innerHeight - 16) + 'px';
+    const size = content.getBoundingClientRect();
+    content.style.left = Math.max(6, Math.min(trigger.left, window.innerWidth - size.width - 6)) + 'px';
+    content.style.top = Math.max(6, Math.min(menu.id === 'stepMenu' ? trigger.top - size.height - 4 : trigger.bottom + 4,
+      window.innerHeight - size.height - 6)) + 'px';
+  }, true);
+  document.addEventListener('keydown', event => {
+    const menu = event.target.closest?.('.popupMenu[open]');
+    if (!menu || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+    const buttons = [...menu.querySelectorAll('.menuContents button:not(:disabled)')];
+    if (!buttons.length) return;
+    let next = buttons.indexOf(document.activeElement) + (event.key === 'ArrowUp' ? -1 : 1);
+    if (event.key === 'Home') next = 0;
+    if (event.key === 'End') next = buttons.length - 1;
+    buttons[(next + buttons.length) % buttons.length].focus(); event.preventDefault();
+  });
+
+  function collectTabUi() {
+    const drafts = {};
+    for (const input of document.querySelectorAll('#configurationCards input[data-source]')) {
+      if (input.type === 'checkbox') continue;
+      const source = workspace.getBlockById(input.dataset.source)?.getField(input.dataset.field);
+      if (source && (!input.checkValidity() || input.value !== String(source.getValue())))
+        drafts[input.dataset.source + '/' + input.dataset.field] = {value: input.value, error: input.validationMessage};
+    }
+    return {view: document.getElementById('editorShell').dataset.view,
+      scale: workspace.scale, scrollX: workspace.scrollX, scrollY: workspace.scrollY,
+      cards: Object.fromEntries([...document.querySelectorAll('#configurationCards details[data-block]')].map(card => [card.dataset.block, card.open])),
+      configScroll: document.getElementById('configurationPanel').scrollTop,
+      selected: lastSelectedBlockId, breakpoints: [...breakpoints], drafts};
+  }
+  function restoreTabUi(ui) {
+    document.getElementById('configurationCards').replaceChildren();
+    workbench.render();
+    for (const card of document.querySelectorAll('#configurationCards details[data-block]'))
+      if (ui.cards && Object.hasOwn(ui.cards, card.dataset.block)) card.open = ui.cards[card.dataset.block];
+    for (const input of document.querySelectorAll('#configurationCards input[data-source]')) {
+      const draft = ui.drafts?.[input.dataset.source + '/' + input.dataset.field];
+      if (draft) { input.value = draft.value; input.setCustomValidity(draft.error || ''); }
+    }
+    document.getElementById('configurationPanel').scrollTop = ui.configScroll || 0;
+    setView(ui.view || 'configure');
+    if (Number.isFinite(ui.scale)) workspace.setScale(Math.max(.45, Math.min(1.8, ui.scale)));
+    if (Number.isFinite(ui.scrollX) && Number.isFinite(ui.scrollY)) workspace.scroll(ui.scrollX, ui.scrollY);
+    const selected = ui.selected ? workspace.getBlockById(ui.selected) : null;
+    selected?.select();
+    renderRuntime();
+  }
+  function activateTab(doc) {
+    clearTimeout(saveTimer);
+    bridge.cancelViewerPointPick();
+    search.value = ''; updateSearch();
+    for (const menu of document.querySelectorAll('.popupMenu[open]')) menu.open = false;
+    breakpoints.clear();
+    for (const id of doc?.ui?.breakpoints || []) breakpoints.add(id);
+    bridge.setBreakpoints([...breakpoints]);
+    debugSnapshot = {}; lastDebugBlock = '';
+    document.getElementById('inspectProgram').checked = false;
+    bridge.inspectProgram(false);
+    document.getElementById('emptyPrograms').hidden = Boolean(doc);
+    commitWorkspace();
+  }
 
   function renderDiagnostics() {
     if (!bridge) return;
@@ -814,6 +945,7 @@
     if ((event.ctrlKey || event.metaKey) && !event.altKey
         && event.key.toLowerCase() === 'f') {
       event.preventDefault();
+      setView('blocks');
       search.focus();
       search.select();
     }
@@ -845,16 +977,17 @@
     if (!bridge) return;
     const editable = Boolean(bridge.editable);
     workspace.setIsReadOnly(!editable);
-    readOnlyShield.hidden = editable;
     search.disabled = !editable;
-    document.getElementById('projectAction').disabled = !editable;
+    for (const button of document.querySelectorAll('[data-project]')) button.disabled = !editable;
+    document.getElementById('newSearch').disabled = !editable;
     clearSearch.disabled = !editable;
     updateViewerPicker();
     if (!editable) searchResults.classList.remove('open');
     renderRuntime();
+    workbench?.render();
   }
 
-  function boot(channel) {
+  async function boot(channel) {
     try {
       bridge = channel.objects.foreverBridge;
       revision = Number(bridge.workspaceRevision || 0);
@@ -863,12 +996,20 @@
       for (const category of catalog.categories) categoriesById.set(category.id, category);
       registerDefinitions();
       injectWorkspace();
-      loadWorkspace(bridge.workspaceJson);
+      workbench = ForeverWorkbench.attach({workspace, bridge, catalog, changed: commitWorkspace,
+        replace: openProgram, showBlocks: () => setView('blocks')});
+      programTabs = ForeverProgramTabs.create({workspace, bridge, load: loadWorkspace,
+        activated: activateTab, collectUi: collectTabUi, restoreUi: restoreTabUi});
+      window.foreverProgramTabs = programTabs;
+      await programTabs.initialize();
+      workbench.render();
       renderDiagnostics();
       setEditableState();
       bridge.workspaceJsonChanged.connect(() => {
         revision = Number(bridge.workspaceRevision || revision);
-        loadWorkspace(bridge.workspaceJson);
+        const state = JSON.stringify(Blockly.serialization.workspaces.save(workspace));
+        if (state !== bridge.workspaceJson) openProgram(JSON.parse(bridge.workspaceJson), 'Recovered program');
+        workbench.render();
       });
       bridge.diagnosticsJsonChanged.connect(renderDiagnostics);
       bridge.editableChanged.connect(setEditableState);

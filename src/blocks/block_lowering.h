@@ -6,6 +6,7 @@
 #include "searches/option_configuration.h"
 
 #include <map>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -23,8 +24,8 @@ using AtomFieldValues = OptionSettings;
 struct MutationGroupLowering {
     // One configuration per registered option touched by the group's atoms,
     // in first-appearance order. Atoms bound to the same option merge into
-    // one configuration, which is what makes a migrated window behave
-    // exactly like the legacy multi-feature block it came from.
+    // one configuration, preserving the behavior of the released v0.2.3
+    // modifier when that configuration is imported.
     std::vector<OptionConfiguration> configurations;
     std::vector<std::string> errors;
 };
@@ -57,29 +58,28 @@ struct AtomExpansion {
     OptionSettings fields;
 };
 
-// One mutation window rebuilt from a legacy modifier configuration.
+// One mutation window rebuilt from a registered modifier configuration.
 struct ModifierExpansion {
     OptionSettings window;  // minTimeMs / maxTimeMs / seed
     std::vector<AtomExpansion> atoms;
 };
 
-// Expands a legacy modifier configuration into the atom composition that
+// Expands a registered modifier configuration into the atom composition that
 // recompiles to it byte for byte. Returns an empty expansion when the
 // option id is unknown.
 ModifierExpansion ExpandModifierAtoms(const OptionConfiguration &modifier);
 
-// Expands a legacy evaluation configuration into one evaluation atom.
+// Expands a registered evaluation configuration into one evaluation atom.
 // Returns a null expansion (empty definitionId) when unknown.
 AtomExpansion ExpandEvaluationAtom(const OptionConfiguration &evaluation);
 
 // Rebuilds an editable atom program from compiled components: the inverse
-// of CompileProgram for migrated programs. Unknown option ids fall back to
-// the registered defaults.
-BlockProgram BuildProgramFromComponents(
+// of CompileProgram. Unknown option ids are rejected.
+std::optional<BlockProgram> BuildProgramFromComponents(
         const SearchComponentConfiguration &components);
 
-// Resolves registered option ids (including legacy aliases) to the
-// canonical atom definition ids used by the workspace.
+// Resolves exact registered option ids to the atom definition ids used by
+// the workspace.
 std::string SearchAtomDefinitionForOption(const std::string &optionId);
 std::string EvaluationAtomDefinitionForOption(const std::string &optionId);
 

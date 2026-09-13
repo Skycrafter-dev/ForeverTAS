@@ -65,7 +65,7 @@ type-checks, compiles and persists the normalized version-3 program before it
 can affect runtime configuration. Supported generic objective expressions run
 with the same semantics on CPU, regular CUDA and Fast CUDA; CUDA precise finish
 time remains on its dedicated native objective.
-See [docs/BLOCK_WORKBENCH_GUIDE.md](docs/BLOCK_WORKBENCH_GUIDE.md) for a
+See [docs/BLOCK_WORKBENCH_GUIDE.txt](docs/BLOCK_WORKBENCH_GUIDE.txt) for a
 practical visual-search tutorial and composition examples.
 The Browse buttons always open the operating system's file picker rather than
 a Qt-provided dialog.
@@ -220,11 +220,11 @@ ForeverTAS can be packaged natively as a Linux AppImage or Windows portable
 ZIP. Both artifacts use the same CMake installation definition and include the
 required Qt and QML runtime files. macOS is not supported.
 
-See [docs/PACKAGING.md](docs/PACKAGING.md) for local packaging commands,
+See [docs/PACKAGING.txt](docs/PACKAGING.txt) for local packaging commands,
 artifact layouts, signing notes, and clean-machine release checks.
 
-See `docs/SEARCH_COMPONENTS.md` for the registry, persistence, composition, and
+See `docs/SEARCH_COMPONENTS.txt` for the registry, persistence, composition, and
 extension contracts.
 
-See `docs/RENDERER.md` for visual-scene extraction, replacement materials,
+See `docs/RENDERER.txt` for visual-scene extraction, replacement materials,
 fallbacks, caching, render modes, and asset ownership.

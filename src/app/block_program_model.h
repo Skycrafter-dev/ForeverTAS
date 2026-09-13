@@ -26,7 +26,8 @@ struct BlockConfigurationValidation {
 // QML-facing owner of the placed-block program. Applies the workspace
 // policy (one script: one search block, one evaluation slot, an ordered
 // stack of mutation windows each holding ordered mutation atoms), persists
-// the program as JSON, migrates legacy per-option configuration, and
+// the current native-search program as JSON, imports the released v0.2.3
+// search settings once, and
 // compiles for validation and search.
 class BlockProgramModel final : public QObject {
     Q_OBJECT
@@ -80,24 +81,23 @@ public:
     bool setProgramText(const QString &text, QString *error = nullptr);
 
     // Replaces every seed field in the script with a fresh deterministic
-    // value, mirroring the legacy seed randomization order.
+    // value, preserving v0.2.3's released seed randomization order.
     bool randomizeSeeds(std::uint32_t entropy);
 
     // Derived option ids used by viewer interactions.
     QString searchAlgorithmId() const;
     QString evaluationTargetId() const;
 
-    // Legacy settings access used to seed the target collections.
-    QVariantMap legacyEvaluationSettings(const QString &optionId) const;
+    // Exact v0.2.3 evaluation settings used to seed target collections.
+    QVariantMap releasedEvaluationSettings(const QString &optionId) const;
 
     BlockConfigurationValidation validate(std::uint32_t tickDurationMs,
                                           std::uint32_t simulationHorizonMs)
             const;
 
-    // Bridge between the compositional v3 editor and the existing optimized
-    // runtime program. The editor compiles to these category-neutral
-    // components, then this model rebuilds its compatibility program so every
-    // existing search/target/viewer path observes exactly the same settings.
+    // Bridge between the visual editor and the optimized native-search
+    // runtime. The editor compiles to category-neutral components and this
+    // model rebuilds the native-search program from exact current IDs.
     std::optional<blocks::SearchComponentConfiguration> compiledComponents()
             const;
     bool replaceWithComponents(
@@ -113,7 +113,7 @@ private:
     void load();
     void persist() const;
     void buildDefault();
-    bool migrateLegacy(QSettings &storage);
+    bool migrateReleasedV023(QSettings &storage);
     blocks::BlockId scriptHat() const;
     void rememberFields(const blocks::BlockNode &node);
     std::map<std::string, std::string> rememberedOr(

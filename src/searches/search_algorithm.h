@@ -114,6 +114,8 @@ struct SearchRunControl {
     std::function<bool()> stopRequested;
     std::function<bool()> cancellationRequested;
     std::function<void(const SearchProgress &)> progressChanged;
+    std::function<void(const std::string &)> visualExecutionModeChanged;
+    bool compileVisualPrograms = true;
     std::function<bool()> beginIteration;
     std::function<void(const SearchStatisticsUpdate &)> statisticsChanged;
     std::function<void(const SearchLiveUpdate &)> liveChanged;

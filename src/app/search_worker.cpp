@@ -279,6 +279,11 @@ void SearchWorker::run() {
                         request_.useCudaSessionSpecialization),
                 true);
     };
+    control.visualExecutionModeChanged = [this,last=std::string{}](const std::string &mode) mutable {
+        if (mode==last) return;
+        last=mode;
+        emit stageChanged(QString::fromStdString(mode),true);
+    };
     control.cudaBatchSizeChanged = [this](std::uint32_t batchSize) {
         emit cudaBatchSizeChanged(batchSize);
     };

@@ -47,14 +47,14 @@ QString Number(double value) {
 
 }  // namespace
 
-CuboidTargetModel::CuboidTargetModel(const QVariantMap &legacySettings,
+CuboidTargetModel::CuboidTargetModel(const QVariantMap &releasedSettings,
                                      QObject *parent)
     : QAbstractListModel(parent) {
     persistenceTimer_.setSingleShot(true);
     persistenceTimer_.setInterval(150);
     connect(&persistenceTimer_, &QTimer::timeout,
             this, &CuboidTargetModel::persist);
-    load(legacySettings);
+    load(releasedSettings);
 }
 
 CuboidTargetModel::~CuboidTargetModel() {
@@ -404,7 +404,7 @@ QString CuboidTargetModel::nextDefaultName() const {
     }
 }
 
-void CuboidTargetModel::load(const QVariantMap &legacySettings) {
+void CuboidTargetModel::load(const QVariantMap &releasedSettings) {
     const QByteArray encoded = QSettings()
             .value(QLatin1String(kCuboidTargetsKey))
             .toByteArray();
@@ -479,30 +479,30 @@ void CuboidTargetModel::load(const QVariantMap &legacySettings) {
                 QStringLiteral("Cuboid 1"),
                 QVector3D(
                         static_cast<float>(SettingNumber(
-                                legacySettings,
+                                releasedSettings,
                                 QStringLiteral("centerX"),
                                 0.0)),
                         static_cast<float>(SettingNumber(
-                                legacySettings,
+                                releasedSettings,
                                 QStringLiteral("centerY"),
                                 0.0)),
                         static_cast<float>(SettingNumber(
-                                legacySettings,
+                                releasedSettings,
                                 QStringLiteral("centerZ"),
                                 0.0))),
                 QVector3D(
                         static_cast<float>(SettingNumber(
-                                legacySettings,
+                                releasedSettings,
                                 QStringLiteral("sizeX"),
                                 10.0,
                                 true)),
                         static_cast<float>(SettingNumber(
-                                legacySettings,
+                                releasedSettings,
                                 QStringLiteral("sizeY"),
                                 10.0,
                                 true)),
                         static_cast<float>(SettingNumber(
-                                legacySettings,
+                                releasedSettings,
                                 QStringLiteral("sizeZ"),
                                 10.0,
                                 true)))});

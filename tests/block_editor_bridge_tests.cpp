@@ -1,6 +1,5 @@
 #include "app/block_editor_bridge.h"
 #include "app/search_controller.h"
-#include "app/visual_program_json.h"
 #include "blocks/block_compiler.h"
 #include "blocks/visual_compiler.h"
 #include "evaluators/custom_volume_entry_evaluator.h"
@@ -56,76 +55,47 @@ QJsonObject CatalogBlock(const BlockEditorBridge &bridge,
 
 bool TestExecutablePersistence() {
   QSettings().clear();
-  VisualProgram program;
-  const auto add = [&](VisualNodeId id, const char *type,
-                       std::map<std::string,std::string> fields,
-                       std::map<std::string,VisualNodeId> inputs,
-                       std::map<std::string,std::vector<VisualNodeId>> statements) {
-    program.nodes.emplace(id, VisualNode{id,type,std::move(fields),std::move(inputs),std::move(statements)});
-  };
-  add(1,"flow/when-start",{},{},{{"body",{2}}});
-  add(2,"data/set",{{"name","observed"}},{{"value",3}},{});
-  add(3,"procedures/value",{{"name","advance"},{"parameters","ticks"}},{{"arg0",4}},{});
-  add(4,"values/number",{{"value","2"}},{},{});
-  add(5,"procedures/define",{{"name","advance"},{"parameters","ticks"}},{},{{"body",{6,8}}});
-  add(6,"flow/repeat",{},{{"count",7}},{{"body",{10}}});
-  add(10,"simulation/step",{},{},{});
-  add(7,"data/get",{{"name","ticks"}},{},{});
-  add(8,"procedures/return",{},{{"value",9}},{});
-  add(9,"simulation/state",{},{},{});
-  program.topLevel={1,5};
-  QSettings().setValue(QStringLiteral("blockEditor/v3Program"),PrintVisualProgramJson(program));
   SearchController controller;
   BlockEditorBridge bridge(&controller);
-  bool okay=Check(controller.executableBlockProgram()!=nullptr,
-                  "persisted block program was not wired into the controller");
-  okay &= Check(bridge.applyWorkspace(bridge.workspaceJson(),bridge.workspaceRevision()+1),
-                "dynamic procedure sockets did not survive the semantic/Blockly round-trip: "+bridge.diagnosticsJson().toStdString());
-  const auto workspace=bridge.workspaceJson();
+  const QJsonObject number{{"type","ft_values_number"},{"id","number"},
+                           {"fields",QJsonObject{{"value",2}}}};
+  const QJsonObject set{{"type","ft_data_set"},{"id","set"},
+                        {"fields",QJsonObject{{"name","observed"}}},
+                        {"inputs",QJsonObject{{"value",QJsonObject{{"block",number}}}}}};
+  const QJsonObject start{{"type","ft_flow_when_start"},{"id","entry"},
+                          {"inputs",QJsonObject{{"body",QJsonObject{{"block",set}}}}}};
+  const QJsonObject source{{"blocks",QJsonObject{{"languageVersion",0},
+                                                  {"blocks",QJsonArray{start}}}}};
+  const QString workspace=QString::fromUtf8(QJsonDocument(source).toJson(QJsonDocument::Compact));
+  bool okay=Check(bridge.applyWorkspace(workspace,bridge.workspaceRevision()+1),
+                  "current Blockly source was rejected: "+bridge.diagnosticsJson().toStdString());
   const auto executable=controller.executableBlockProgram();
+  okay &= Check(executable!=nullptr,"current Blockly source was not wired into the controller");
   controller.setSimulationHorizonMs(QStringLiteral("8000"));
-  okay &= Check(workspace==bridge.workspaceJson() && executable==controller.executableBlockProgram(),
-                "changing the horizon regenerated executable source from native settings");
-  QTemporaryDir assets;
-  QFile scenario(assets.filePath(QStringLiteral("scenario.Gbx")));
-  okay &= Check(scenario.open(QIODevice::WriteOnly),"cannot create validation fixture");
-  scenario.write("fixture"); scenario.close();
-  controller.setPacksDirectory(assets.path());
-  controller.setReplayPath(scenario.fileName());
-  controller.setSimulationBackendId(QStringLiteral("reference"));
-  okay &= Check(controller.canStart(),"program inherited an unrelated native search validation error: "+controller.validationMessage().toStdString());
-  const auto exported=bridge.projectFromWorkspace(bridge.workspaceJson());
-  okay &= Check(!exported.isEmpty() &&
-      bridge.projectFromWorkspace(bridge.workspaceFromProject(exported))==exported,
-      "project export/import did not preserve the executable source graph");
-  controller.setSimulationBackendId(QStringLiteral("multi-threaded-cpu"));
-  controller.setCpuWorkerCount(QStringLiteral("2"));
-  okay &= Check(controller.canStart(),"general programs are still barred from the parallel CPU backend");
-  controller.setCpuWorkerCount(QStringLiteral("0"));
-  okay &= Check(!controller.canStart(),"general programs accepted an invalid worker count");
-  controller.setCpuWorkerCount(QStringLiteral("2"));
-  controller.setSimulationBackendId(QStringLiteral("reference"));
+  okay &= Check(bridge.workspaceJson()==workspace && executable==controller.executableBlockProgram(),
+                "changing native settings regenerated the visual program");
+
+  const QJsonObject tab{{"id","program"},{"title","Program"},{"path",""},
+      {"fileTitle",""},{"fileState",""},{"dirty",true},{"workspace",source},
+      {"undo",QJsonArray{}},{"redo",QJsonArray{}},
+      {"ui",QJsonObject{{"view","blocks"},{"drafts",QJsonObject{}}}}};
+  const QJsonObject session{{"version",2},{"active","program"},{"tabs",QJsonArray{tab}}};
+  const QString sessionText=QString::fromUtf8(QJsonDocument(session).toJson(QJsonDocument::Compact));
+  okay &= Check(bridge.storeSession(sessionText).isEmpty(),"current program session was rejected");
   {
     SearchController restored;
     BlockEditorBridge restoredBridge(&restored);
-    okay &= Check(restored.executableBlockProgram() &&
-        PrintVisualProgramJson(*restored.executableBlockProgram())==PrintVisualProgramJson(*executable),
-        "program was lost on application restart");
-    okay &= Check(restoredBridge.workspaceJson()==workspace,"procedure workspace changed on restart");
+    okay &= Check(restoredBridge.sessionJson()==sessionText &&
+                  restoredBridge.workspaceJson()==workspace &&
+                  restored.executableBlockProgram()!=nullptr,
+                  "current program session did not restore exactly");
   }
+
   const QString draft = QStringLiteral(R"({"blocks":{"languageVersion":0,"blocks":[{"type":"ft_flow_when_start","inputs":{"body":{"block":{"type":"ft_data_set","fields":{"name":"draft"}}}}}]}})");
   okay &= Check(!bridge.applyWorkspace(draft,bridge.workspaceRevision()+1) && !controller.canStart(),
                 "an incomplete workspace could still run the previous program");
-  bridge.workspaceFromProject(QStringLiteral("not a project"));
-  okay &= Check(!controller.canStart(),"a failed project import re-enabled an invalid visible program");
-  {
-    SearchController restored;
-    BlockEditorBridge restoredBridge(&restored);
-    okay &= Check(!restored.canStart() && restoredBridge.workspaceJson()==draft,
-                  "an incomplete draft was lost or became runnable after restart");
-  }
-  okay &= Check(bridge.applyWorkspace(workspace,bridge.workspaceRevision()+2) && controller.canStart(),
-                "fixing a draft did not re-enable program execution");
+  okay &= Check(bridge.applyWorkspace(workspace,bridge.workspaceRevision()+2),
+                "fixing an incomplete workspace did not restore execution");
   return okay;
 }
 
@@ -264,7 +234,7 @@ bool TestViewerTargetBridge(SearchController *controller,
   return okay;
 }
 
-bool TestMacroPersistenceAndRetiredSources() {
+bool TestMacroExpansionAndPrototypeRejection() {
   QSettings().clear();
   SearchController controller;
   BlockEditorBridge bridge(&controller);
@@ -280,30 +250,22 @@ bool TestMacroPersistenceAndRetiredSources() {
       {"blocks",QJsonObject{{"languageVersion",0},{"blocks",QJsonArray{start}}}}}).toJson(QJsonDocument::Compact));
     okay &= Check(bridge.applyWorkspace(workspace,bridge.workspaceRevision()+1),
         "Expanded macro rejected: "+macro.value("id").toString().toStdString()+" "+bridge.diagnosticsJson().toStdString());
-    const QString project=bridge.projectFromWorkspace(workspace);
-    okay &= Check(!project.isEmpty() && bridge.projectFromWorkspace(bridge.workspaceFromProject(project))==project,
-                  "Expanded macro lost its primitive source in project round-trip");
   }
   const QString visible=bridge.workspaceJson();
   controller.setConditionScript(QStringLiteral("intentionally invalid native condition"));
   controller.applyBlockComponents({DefaultSearchAlgorithmConfiguration(),DefaultModifierConfigurations(),DefaultEvaluationTargetConfiguration()});
   okay &= Check(bridge.workspaceJson()==visible,"Native settings replaced the visual source with a predefined search");
   okay &= Check(bridge.applyWorkspace(visible,bridge.workspaceRevision()+1),"Native settings prevent the source graph from being reapplied");
-  const QString retired=QStringLiteral(R"({"version":3,"nodes":[{"id":"1","definitionId":"mutate/delete-accelerate","fields":{},"inputs":{},"statements":{},"x":0,"y":0}],"topLevel":["1"]})");
+
   QSettings().clear();
-  QSettings().setValue(QStringLiteral("blockEditor/v3Program"),retired);
-  SearchController recovered;
-  BlockEditorBridge recoveredBridge(&recovered);
-  okay &= Check(QSettings().value(QStringLiteral("blockEditor/v3ProgramCorruptBackup")).toString()==retired &&
-                recoveredBridge.diagnosticsJson().contains(QStringLiteral("backed up")),
-                "Retired wrapper source was silently discarded or silently reinterpreted");
-  okay &= Check(recovered.executableBlockProgram() && recovered.executableBlockProgram()->nodes.size()==1,
-                "Retired native wrappers were recreated in the new workspace");
-  const auto goodProject=recoveredBridge.projectFromWorkspace(recoveredBridge.workspaceJson());
-  for (const QString &bad : {QStringLiteral("not json"),QStringLiteral("{}"),retired})
-    okay &= Check(recoveredBridge.workspaceFromProject(bad).isEmpty(),"Malformed/retired project imported as an executable");
-  okay &= Check(recoveredBridge.projectFromWorkspace(recoveredBridge.workspaceJson())==goodProject,
-                "Failed import changed the current source");
+  QSettings().setValue(QStringLiteral("blockEditor/v3Program"),
+                       QStringLiteral(R"({"version":3,"nodes":[{"id":"1","definitionId":"mutate/delete-accelerate"}]})"));
+  SearchController clean;
+  BlockEditorBridge cleanBridge(&clean);
+  okay &= Check(!cleanBridge.workspaceJson().contains(QStringLiteral("delete-accelerate")) &&
+                clean.executableBlockProgram()!=nullptr &&
+                clean.executableBlockProgram()->nodes.size()==1,
+                "an intermediate prototype program format was restored");
   QSettings().clear();
   return okay;
 }
@@ -350,6 +312,85 @@ bool TestFiveHundredBlockWorkspaceStress() {
                 "500-block workspace parse/validate/compile exceeded 2.5 seconds");
   okay &= Check(bridge.workspaceJson().size() > 0,
                 "500-block workspace disappeared after acceptance");
+  return okay;
+}
+
+bool TestProgramTabSession() {
+  QSettings().clear();
+  SearchController controller;
+  BlockEditorBridge bridge(&controller);
+  const auto source = ParsedObject(bridge.workspaceJson());
+  const auto draft = ParsedObject(QStringLiteral(R"({"blocks":{"languageVersion":0,"blocks":[{"type":"ft_flow_when_start","id":"entry","inputs":{"body":{"block":{"type":"ft_data_local","id":"setting","fields":{"name":"unfinished"}}}}}]}})"));
+  const auto tab = [](const QString &id, const QJsonObject &workspace) {
+    return QJsonObject{{"id",id},{"title",id},{"workspace",workspace},
+        {"path",""},{"fileTitle",""},{"fileState",""},{"dirty",true},
+        {"undo",QJsonArray{QJsonObject{{"type","change"},{"blockId","setting"},{"element","field"},{"name","value"},{"oldValue",1},{"newValue",2}}}},
+        {"redo",QJsonArray{}},{"ui",QJsonObject{{"view","split"},{"drafts",QJsonObject{{"setting/value","-"}}}}}};
+  };
+  QJsonObject session{{"version",2},{"active","draft"},{"tabs",QJsonArray{tab("example",source),tab("draft",draft)}}};
+  const auto text = [](const QJsonObject &value) { return QString::fromUtf8(QJsonDocument(value).toJson(QJsonDocument::Compact)); };
+  const QString saved = text(session);
+  bool okay = Check(bridge.storeSession(saved).isEmpty(), "Tab autosave rejected an incomplete program");
+  {
+    SearchController restored;
+    BlockEditorBridge reader(&restored);
+    okay &= Check(reader.sessionJson()==saved && ParsedObject(reader.workspaceJson())==draft && !restored.canStart(),
+        "Restart lost tabs/history, selected the wrong program, or ran an incomplete draft");
+  }
+  auto broken = session;
+  broken.insert("active","missing");
+  okay &= Check(!bridge.storeSession(text(broken)).isEmpty() && QSettings().value("blockEditor/tabsSession").toString()==saved,
+      "Invalid autosave replaced the last good session");
+  auto prototype = session;
+  prototype.insert("version",1);
+  okay &= Check(!bridge.storeSession(text(prototype)).isEmpty(),
+      "Prototype program-tab session v1 was accepted");
+  broken.insert("tabs",QJsonArray{tab("same",source),tab("same",source)});
+  okay &= Check(!bridge.storeSession(text(broken)).isEmpty(), "Duplicate tab IDs were accepted");
+  session.insert("active","example");
+  okay &= Check(bridge.storeSession(text(session)).isEmpty(), "Cannot select a different autosaved tab");
+  {
+    SearchController restored;
+    BlockEditorBridge reader(&restored);
+    okay &= Check(ParsedObject(reader.workspaceJson())==source && restored.executableBlockProgram(),
+        "Restart did not select the saved active tab");
+  }
+  QTemporaryDir files;
+  const auto filename = files.filePath("draft.forevertas.json");
+  const auto exported = ParsedObject(bridge.saveProgramFile(text(draft),filename,QStringLiteral("Draft search")));
+  QFile file(filename);
+  okay &= Check(exported.contains("path") && file.open(QIODevice::ReadOnly), "Cannot explicitly save a draft file");
+  if (file.isOpen()) {
+    const auto fileObject = ParsedObject(QString::fromUtf8(file.readAll()));
+    okay &= Check(fileObject.value("format").toString()==QStringLiteral("forevertas-program") &&
+                  fileObject.value("version").toInt()==1 &&
+                  fileObject.value("name").toString()==QStringLiteral("Draft search") &&
+                  fileObject.value("workspace").toObject()==draft,
+        "Current program file did not contain the exact current schema");
+  }
+  okay &= Check(ParsedObject(bridge.saveProgramFile(text(source),filename,QString())).contains("error"),
+      "Current program file accepted a missing program name");
+  okay &= Check(ParsedObject(bridge.saveProgramFile(text(source),files.path(),QStringLiteral("Source"))).contains("error"),
+      "File write failure was not reported");
+  session.insert("tabs",QJsonArray{}); session.insert("active",QString());
+  okay &= Check(bridge.storeSession(text(session)).isEmpty(), "Closing all programs cannot be persisted");
+  {
+    SearchController restored;
+    BlockEditorBridge reader(&restored);
+    okay &= Check(ParsedObject(reader.sessionJson()).value("tabs").toArray().isEmpty() && !restored.canStart(),
+      "Explicitly closed tabs reappeared or enabled an old program on restart");
+  }
+  QSettings().setValue("blockEditor/tabsSession","broken JSON");
+  {
+    SearchController restored;
+    BlockEditorBridge reader(&restored);
+    okay &= Check(!reader.sessionError().isEmpty() &&
+                  !QSettings().contains("blockEditor/tabsSession") &&
+                  !QSettings().contains("blockEditor/tabsSessionRecovery"),
+      "Invalid prototype/current session was retained through a recovery fallback");
+  }
+  QSettings().clear();
+  if (okay) std::cout << "PASS tab autosave: current schema, inactive drafts, histories, strict prototype rejection and file errors\n";
   return okay;
 }
 
@@ -446,7 +487,8 @@ int main(int argc, char **argv) {
   okay &= TestCatalogPublishesViewerPickers(bridge);
   okay &= TestViewerTargetBridge(&controller, &bridge);
   okay &= TestExecutablePersistence();
-  okay &= TestMacroPersistenceAndRetiredSources();
+  okay &= TestMacroExpansionAndPrototypeRejection();
   okay &= TestFiveHundredBlockWorkspaceStress();
+  okay &= TestProgramTabSession();
   return okay ? 0 : 1;
 }

@@ -234,8 +234,7 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
                 {centerX - halfX, centerY - halfY, centerZ - halfZ},
                 {centerX + halfX, centerY + halfY, centerZ + halfZ}};
     }
-    if (configuration.id == kPreciseFinishTimeEvaluationId ||
-        configuration.id == "finish-time") {
+    if (configuration.id == kPreciseFinishTimeEvaluationId) {
         return PhysicsSandboxCudaFinishTimeEvaluator{};
     }
     if (configuration.id == kStuntPointsEvaluationId) {

@@ -10,6 +10,7 @@
 #include <stdexcept>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace forevertas::blocks {
 
@@ -28,16 +29,44 @@ struct VisualVolume {
   double depth = 0;
 };
 struct VisualSnapshot;
+struct VisualHistorySpan;
+struct VisualHistoryNode {
+  VisualState state;
+  std::shared_ptr<const VisualHistoryNode> previous;
+  std::size_t size = 1;
+  std::shared_ptr<const VisualHistorySpan> span{};
+};
 
 // The interpreter owns program flow, data, selection, and input generation.
 // Physics operations are supplied by the host. Higher-level behavior is
 // expressed by ordinary block sequences, including the bundled macroblocks.
 struct VisualHostSnapshot { virtual ~VisualHostSnapshot() = default; };
+struct VisualPhysicsSnapshot final : VisualHostSnapshot {
+  forevervalidator::experimental::PhysicsSandboxState state;
+  std::shared_ptr<const unsigned char> identity;
+  explicit VisualPhysicsSnapshot(forevervalidator::experimental::PhysicsSandboxState value,
+      std::shared_ptr<const unsigned char> identity=std::make_shared<const unsigned char>(0))
+      : state(std::move(value)),identity(std::move(identity)) {}
+};
+class VisualBatchExecutor;
+struct VisualHistorySpan {
+  virtual ~VisualHistorySpan() = default;
+  virtual void appendTo(std::vector<VisualState> &states) const = 0;
+};
+std::shared_ptr<const VisualHistorySpan> DeferredVisualHistory(
+    std::function<std::vector<VisualState>()> sample);
+struct VisualAdvance {
+  VisualState state, previous;
+  std::shared_ptr<const VisualHistorySpan> history;
+};
 class VisualSimulationHost {
 public:
   virtual ~VisualSimulationHost() = default;
   virtual VisualState read() const = 0;
   virtual VisualState advance() = 0;
+  virtual VisualAdvance advanceMany(std::uint32_t ticks);
+  virtual std::shared_ptr<VisualBatchExecutor> batchExecutor() { return {}; }
+  virtual std::uint32_t workerCapacity() const { return 256; }
   virtual std::shared_ptr<const VisualHostSnapshot> capture() const = 0;
   virtual VisualState restore(const VisualHostSnapshot &snapshot) = 0;
   virtual VisualInputs inputs() const = 0;
@@ -51,8 +80,8 @@ public:
 struct VisualSnapshot {
   std::shared_ptr<const VisualHostSnapshot> native;
   VisualState state, previous;
-  VisualInputs inputs;
-  std::shared_ptr<const std::vector<VisualState>> history;
+  std::shared_ptr<const VisualInputs> inputs;
+  std::shared_ptr<const VisualHistoryNode> history;
   std::uint32_t horizonMs = 0;
   std::uint64_t candidate = 0;
 };
@@ -95,6 +124,8 @@ class VisualDebugger;
 
 struct VisualRuntimeControl {
   std::function<bool()> stopRequested;
+  // Progress is deliberately separate from the hot cancellation probe.
+  std::function<void()> progress;
   std::function<void(const VisualPublishedRun &)> published;
   std::function<void(std::uint64_t)> candidateCountChanged;
   std::optional<std::uint64_t> candidateLimit;
@@ -105,7 +136,13 @@ struct VisualRuntimeControl {
   std::uint32_t horizonMs = 6000;
   std::uint32_t tickMs = 10;
   std::uint32_t workerCount = 1;
+  std::uint32_t batchSize = 1;
+  bool compilePrograms = true;
+  std::function<void(const std::string &)> executionModeChanged;
   std::shared_ptr<VisualDebugger> debugger;
+  // Mapped execution restarts at the enclosing runtime's origin, not its map
+  // baseline. Direct bytecode callers may omit this to use their baseline.
+  std::shared_ptr<const VisualSnapshot> restartOrigin;
 };
 
 struct VisualExecutionResult {
@@ -118,6 +155,9 @@ struct VisualExecutionResult {
 
 const std::vector<std::pair<std::string, std::string>> &VisualStateProperties();
 VisualValue ReadVisualStateProperty(const VisualState &state, const std::string &property);
+VisualValue ReadVisualStateProperty(const VisualState &state, std::size_t property);
+std::vector<VisualState> VisualHistoryStates(
+    const std::shared_ptr<const VisualHistoryNode> &history);
 VisualProgramValidation ValidateExecutableVisualProgram(const VisualProgram &program);
 VisualExecutionResult ExecuteVisualProgram(const VisualProgram &program,
     VisualSimulationHost &host, const VisualRuntimeControl &control = {});

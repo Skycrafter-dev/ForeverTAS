@@ -1,0 +1,25 @@
+# Blocks workbench guide
+
+Choose **New search…**, select input passes and a target, then edit the **Configure** cards and press **Run**. **Macromacroblocks → Sky's** contains the three photographed input passes; a target is chosen separately. Add, disable, reorder or remove passes and conditions directly from their cards. **Change target** replaces only the target logic.
+
+The configuration controls edit constant initializers in the actual source. A calculation remains a calculation, not a settings field. Undo/redo works from either view. **Blocks** exposes every step; **Edit logic** jumps to a section, and the **Settings** toggle keeps its controls alongside the canvas. **Program → New blank program** starts an empty graph for custom work. **Debug** starts paused.
+
+## Start from editable sequences
+
+Programs have their own autosaved tabs. New searches and examples open another tab; nothing replaces your existing work. Use the Undo/Redo buttons for that tab's history, **Program → Rename program…** to name it, and explicitly close it when finished. Save a program file through **Program** to keep a portable copy. **Configure**, **Blocks**, and **Both** are fixed view choices; the application pages are in the rail on the right.
+
+Open **Macroblocks** in the toolbox, or search for a template by name. **Inputs** contains existing-event mutation, deletion, insertion/holds, steering rerolls and smooth steering. **Conditions** contains common tests and per-tick rejection. **Targets** contains scoring and first-entry/finish loops. **Search** contains a brute-force example assembled from primitives.
+
+Inserting a template creates ordinary source inside a named, folded section, with fresh temporary names. Attach it to your program and edit any part. Expand the section to see its primitives; it has no native macro implementation or special execution semantics. Undo removes the inserted sequence as one edit. To reuse your modified sequence, move it inside a **My Blocks** definition and replace its initial values with procedure parameters.
+
+## Fine control
+
+**Advance one tick** steps exactly once. Input reporters return a new sequence after changing or deleting one specific event; use the resulting sequence explicitly. Timestamp edits do not silently sort, merge, clamp or randomize other records. Construct targets from points, vectors, rotations, boxes and polygon point lists. Compare values and store a snapshot yourself when it qualifies.
+
+**Keep this result** and **keep saved result** publish unconditionally. Your visible comparisons decide whether a candidate is better and whether to replace the baseline.
+
+## Inspect and save
+
+Use the **Step…** menu for Into/Over/Out/Tick actions and block context-menu breakpoints to inspect the source and simulation state. **Program** provides save/open, reusable library import and examples. Folded sections survive save/load. The **Results** application tab displays results; execution controls live in the Blocks workbench only.
+
+See [Blocks simulation sandbox](BLOCKS_SANDBOX.txt) for exact input units, macro semantics, events, parallel execution, persistence and runtime limits. Legacy visual-to-native search compilation and its opaque mutation/evaluation blocks have been removed.

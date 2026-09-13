@@ -411,22 +411,22 @@ bool TestAbsoluteTargetPlacement() {
 
 bool TestCuboidTargetModel() {
     QSettings().clear();
-    const QVariantMap legacy{
+    const QVariantMap releasedV023{
             {QStringLiteral("centerX"), QStringLiteral("1.5")},
             {QStringLiteral("centerY"), QStringLiteral("-2")},
             {QStringLiteral("centerZ"), QStringLiteral("3")},
             {QStringLiteral("sizeX"), QStringLiteral("4")},
             {QStringLiteral("sizeY"), QStringLiteral("5")},
             {QStringLiteral("sizeZ"), QStringLiteral("6")}};
-    CuboidTargetModel model(legacy);
+    CuboidTargetModel model(releasedV023);
     bool okay = Check(model.count() == 1 && model.selectedIndex() == 0,
-                      "cuboid model did not create its legacy target");
+                      "cuboid model did not create its v0.2.3 target");
     QVariantMap selected = model.selectedTarget();
     okay &= Check(selected.value(QStringLiteral("centerX")).toString() ==
                                   QStringLiteral("1.5") &&
                           selected.value(QStringLiteral("sizeZ")).toString() ==
                                   QStringLiteral("6"),
-                  "cuboid model did not migrate legacy dimensions");
+                  "cuboid model did not migrate v0.2.3 dimensions");
     okay &= Check(model.addTarget(
                               std::numeric_limits<double>::infinity(),
                               0.0,
@@ -548,7 +548,7 @@ bool TestCuboidTargetModel() {
             QByteArrayLiteral("{\"version\":1,\"targets\":["
                               "{\"id\":\"bad\",\"name\":\"Bad\","
                               "\"center\":[0,0,0],\"size\":[1,0,1]}]}"));
-    CuboidTargetModel recovered(legacy);
+    CuboidTargetModel recovered(releasedV023);
     okay &= Check(recovered.count() == 1 &&
                           recovered.selectedTarget()
                                           .value(QStringLiteral("sizeY"))
@@ -1423,11 +1423,11 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
             EvaluatorBlockId(controller), QStringLiteral("minTimeMs"),
             QStringLiteral("1000"));
 
+    const QString targetBeforePrototypeAlias = controller.evaluationTargetId();
     controller.setEvaluationTargetId(QStringLiteral("finish-time"));
     okay &= Check(
-            controller.evaluationTargetId() ==
-                    QStringLiteral("precise-finish-time"),
-            "legacy finish target ID did not migrate to precise finish");
+            controller.evaluationTargetId() == targetBeforePrototypeAlias,
+            "prototype finish-time evaluation alias was still accepted");
     controller.setEvaluationTargetId(
             QStringLiteral("precise-finish-time"));
     okay &= Check(controller.canStart(),
@@ -2135,36 +2135,85 @@ bool TestLocaleIndependentPersistedDecimals(const QString &packsDirectory,
     return okay;
 }
 
-bool TestLegacyMigration() {
+bool TestReleasedV023Migration() {
     QSettings().clear();
-    const QString retiredBudgetKey = QString::fromLatin1(
-            QByteArray::fromHex("617474656d7074436f756e74"));
-    QSettings().setValue(
-            QStringLiteral("search/") + retiredBudgetKey,
-            QStringLiteral("1000"));
-    QSettings().setValue(QStringLiteral("selection/mutationAlgorithm"),
-                         QStringLiteral("random-steering"));
+    QSettings settings;
+    // Unreleased native-block persistence must not shadow the released
+    // migration source.
+    settings.setValue(QStringLiteral("blocks/program"),
+                      QByteArrayLiteral("{\"version\":2,\"blocks\":[]}"));
+    settings.setValue(QStringLiteral("selection/searchAlgorithm"),
+                      QStringLiteral("basic-brute-force"));
+    settings.setValue(
+            QStringLiteral(
+                    "configuration/search/basic-brute-force/autoPromoteBest"),
+            QStringLiteral("true"));
+    settings.setValue(QStringLiteral("selection/evaluationTarget"),
+                      QStringLiteral("velocity"));
+    settings.setValue(
+            QStringLiteral("configuration/evaluation/velocity/minTimeMs"),
+            QStringLiteral("900"));
+    settings.setValue(
+            QStringLiteral("configuration/evaluation/velocity/maxTimeMs"),
+            QStringLiteral("5100"));
+    settings.setValue(
+            QStringLiteral("configuration/evaluation/velocity/mode"),
+            QStringLiteral("projected"));
+    settings.setValue(
+            QStringLiteral("configuration/evaluation/velocity/alignmentEnabled"),
+            QStringLiteral("false"));
+    settings.setValue(
+            QStringLiteral("configuration/evaluation/velocity/directionX"),
+            QStringLiteral("1"));
+    settings.setValue(
+            QStringLiteral("configuration/evaluation/velocity/directionY"),
+            QStringLiteral("0"));
+    settings.setValue(
+            QStringLiteral("configuration/evaluation/velocity/directionZ"),
+            QStringLiteral("0"));
+    settings.setValue(
+            QStringLiteral("configuration/evaluation/velocity/minAlignmentPercent"),
+            QStringLiteral("-100"));
+    const QJsonObject modifier{{QStringLiteral("id"),
+                                QStringLiteral("random-steering")},
+                               {QStringLiteral("settings"),
+                                QJsonObject{{QStringLiteral("minTimeMs"),
+                                             QStringLiteral("1200")},
+                                            {QStringLiteral("maxTimeMs"),
+                                             QStringLiteral("2400")},
+                                            {QStringLiteral("seed"),
+                                             QStringLiteral("987")}}}};
+    settings.setValue(
+            QStringLiteral("composition/modifiers"),
+            QJsonDocument(QJsonArray{modifier}).toJson(QJsonDocument::Compact));
+
+    // Pre-v0.2.3 compatibility keys deliberately conflict with the released
+    // v0.2.3 state. The new version must not consult them.
+    settings.setValue(QStringLiteral("selection/mutationAlgorithm"),
+                      QStringLiteral("input-deletion"));
     QSettings().setValue(QStringLiteral("search/minMutateMs"),
-                         QStringLiteral("1200"));
+                         QStringLiteral("5000"));
     QSettings().setValue(QStringLiteral("search/maxMutateMs"),
-                         QStringLiteral("2400"));
+                         QStringLiteral("5900"));
     QSettings().setValue(QStringLiteral("search/mutationSeed"),
-                         QStringLiteral("987"));
-    QSettings().setValue(QStringLiteral("selection/evaluationTarget"),
-                         QStringLiteral("maximum-speed"));
+                         QStringLiteral("1"));
+    settings.setValue(
+            QStringLiteral("configuration/evaluation/maximum-speed/mode"),
+            QStringLiteral("total"));
 
     SearchController controller;
     bool okay = Check(
-            !QSettings().contains(
-                    QStringLiteral("search/") + retiredBudgetKey),
-            "retired search budget was not removed");
+            BlockField(controller, HatBlockId(controller),
+                       QStringLiteral("autoPromoteBest")) ==
+                    QStringLiteral("true"),
+            "v0.2.3 search settings were not migrated");
     okay &= Check(
             MutatorBlockIds(controller.blockScript()).size() == 1 &&
                     BlockOptionId(
                             controller,
                             FirstWindowAtomId(controller.blockScript(), 0)) ==
                             QStringLiteral("random-steering"),
-            "legacy mutation selection was not migrated");
+            "v0.2.3 modifier list was not migrated");
     okay &= Check(
             BlockField(controller, MutatorBlockId(controller, 0),
                        QStringLiteral("minTimeMs")) ==
@@ -2175,12 +2224,27 @@ bool TestLegacyMigration() {
                     BlockField(controller, MutatorBlockId(controller, 0),
                                QStringLiteral("seed")) ==
                             QStringLiteral("987"),
-            "legacy modifier settings were not migrated");
+            "v0.2.3 modifier settings were not migrated exactly");
     okay &= Check(controller.evaluationTargetId() ==
                           QStringLiteral("velocity"),
-                  "legacy evaluation target was canonicalized");
+                  "v0.2.3 evaluation target was not migrated");
+    okay &= Check(
+            BlockField(controller, EvaluatorBlockId(controller),
+                       QStringLiteral("minTimeMs")) == QStringLiteral("900") &&
+                    BlockField(controller, EvaluatorBlockId(controller),
+                               QStringLiteral("maxTimeMs")) ==
+                            QStringLiteral("5100") &&
+                    controller.blockData(EvaluatorBlockId(controller))
+                                    .value(QStringLiteral("definitionId"))
+                                    .toString() ==
+                            QStringLiteral("evaluate/speed-toward"),
+            "v0.2.3 evaluation settings were not migrated from their exact paths");
     okay &= Check(QSettings().contains(QStringLiteral("blocks/program")),
-                  "migrated block program was not persisted");
+                  "v0.2.3 migration was not materialized in the current format");
+    okay &= Check(!QSettings().value(QStringLiteral("blocks/program"))
+                           .toByteArray()
+                           .contains("\"version\":2"),
+                  "unreleased native-block persistence survived migration");
     return okay;
 }
 
@@ -2531,7 +2595,7 @@ int main(int argc, char **argv) {
                     packsDirectory.path(), replayPath) &&
             TestLocaleIndependentPersistedDecimals(
                     packsDirectory.path(), replayPath) &&
-            TestLegacyMigration();
+            TestReleasedV023Migration();
     if (okay && argc == 4 &&
         QString::fromLocal8Bit(argv[1]) == QStringLiteral("--lifecycle")) {
         const QString packs = QString::fromLocal8Bit(argv[2]);

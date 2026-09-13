@@ -29,7 +29,7 @@ void Check(bool condition, const char *message) {
 BlockProgram DefaultProgram() {
   return BuildProgramFromComponents(SearchComponentConfiguration{
       DefaultSearchAlgorithmConfiguration(), DefaultModifierConfigurations(),
-      DefaultEvaluationTargetConfiguration()});
+      DefaultEvaluationTargetConfiguration()}).value();
 }
 
 // Expands compiled components to an atom program, recompiles, and expects
@@ -37,8 +37,12 @@ BlockProgram DefaultProgram() {
 // preserves search behavior byte for byte.
 bool RoundTripsComponents(const SearchComponentConfiguration &components,
                           std::string *detail) {
-  const BlockProgram program = BuildProgramFromComponents(components);
-  const CompileResult result = CompileProgram(program);
+  const auto program = BuildProgramFromComponents(components);
+  if (!program) {
+    *detail = "component expansion rejected the configuration";
+    return false;
+  }
+  const CompileResult result = CompileProgram(*program);
   if (!result.ok) {
     *detail = "compile failed";
     if (!result.errors.empty())
@@ -130,24 +134,30 @@ void TestCatalogAtoms() {
   Check(FindBlock("values/minimum") != nullptr, "min primitive exists");
   Check(FindBlock("values/nope") == nullptr, "unknown block is null");
 
-  // The legacy multi-configuration option blocks are gone from the
-  // palette vocabulary.
+  // The removed multi-configuration prototype blocks are not part of the
+  // current palette vocabulary.
   Check(FindBlock("mutate/random-steering") == nullptr,
-        "legacy random-steering block removed");
+        "prototype random-steering block removed");
   Check(FindBlock("mutate/input-insertion") == nullptr,
-        "legacy insertion block removed");
+        "prototype insertion block removed");
   Check(FindBlock("mutate/existing-event-perturbation") == nullptr,
-        "legacy perturbation block removed");
+        "prototype perturbation block removed");
   Check(FindBlock("mutate/input-deletion") == nullptr,
-        "legacy deletion block removed");
+        "prototype deletion block removed");
   Check(FindBlock("evaluate/velocity") == nullptr,
-        "legacy velocity block removed");
+        "prototype velocity block removed");
   Check(FindBlock("evaluate/pose-target") == nullptr,
-        "legacy pose block removed");
+        "prototype pose block removed");
+  Check(FindSearchAlgorithm("serial-brute-force") == nullptr,
+        "pre-v0.2.3 search alias is still accepted");
+  Check(FindEvaluationTarget("maximum-speed") == nullptr,
+        "pre-v0.2.3 velocity alias is still accepted");
+  Check(FindEvaluationTarget("finish-time") == nullptr,
+        "pre-v0.2.3 finish alias is still accepted");
 }
 
 void TestFieldSchemasMatchOptions() {
-  // Every atom field key must be a legacy settings key with a
+  // Every atom field key must be a registered option-setting key with a
   // byte-identical default, so lowering stays byte-stable.
   for (const BlockDefinition &definition : BlockCatalog()) {
     if (definition.optionId.empty())
@@ -440,11 +450,13 @@ void TestLoweringEquivalence() {
     settings["directionX"] = "0";
     settings["directionY"] = "0";
     settings["directionZ"] = "1";
-    const BlockProgram program =
+    const auto program =
         BuildProgramFromComponents(SearchComponentConfiguration{
             search, DefaultModifierConfigurations(),
             OptionConfiguration{kVelocityEvaluationId, settings}});
-    const CompileResult result = CompileProgram(program);
+    Check(program.has_value(), "total gated expands");
+    if (!program) return;
+    const CompileResult result = CompileProgram(*program);
     Check(result.ok, "total gated compiles");
     if (result.ok) {
       const OptionSettings &compiled =
@@ -690,48 +702,17 @@ void TestTextExpressions() {
   }
 }
 
-void TestLegacyTextParsing() {
-  // Option-id text from the previous interchange remains loadable and
-  // expands to the equivalent atom program.
-  const BlockProgramText parsed =
-      ParseBlockProgramText("search basic-brute-force {\n"
-                            "  evaluate velocity {\n"
-                            "    minTimeMs = 1000\n"
-                            "    maxTimeMs = 6000\n"
-                            "    mode = projected\n"
-                            "  }\n"
-                            "  mutate random-steering {\n"
-                            "    minTimeMs = 1200\n"
-                            "    maxTimeMs = 4400\n"
-                            "    seed = 5\n"
-                            "  }\n"
-                            "}\n");
-  Check(parsed.program.has_value(), "legacy text parses");
-  if (!parsed.program.has_value()) {
-    std::fprintf(stderr, "legacy text error: %s\n", parsed.error.c_str());
-    return;
-  }
-  const CompileResult result = CompileProgram(*parsed.program);
-  Check(result.ok, "legacy text compiles");
-  if (result.ok) {
-    Check(result.configuration.evaluationTarget.id == kVelocityEvaluationId,
-          "legacy evaluation id");
-    Check(result.configuration.evaluationTarget.settings.at("mode") ==
-              "projected",
-          "legacy evaluation mode");
-    Check(result.configuration.modifiers.front().id ==
-              kRandomSteeringModifierId,
-          "legacy modifier id");
-    Check(result.configuration.modifiers.front().settings.at("maxTimeMs") ==
-              "4400",
-          "legacy modifier window");
-  }
-
+void TestPrototypeTextRejected() {
   Check(!ParseBlockProgramText("search basic-brute-force {\n"
-                               "  mutate no-such-modifier { seed = 1 }\n"
+                               "  evaluate velocity { minTimeMs = 0 }\n"
                                "}\n")
              .program.has_value(),
-        "unknown legacy modifier rejected");
+        "prototype evaluation option syntax was accepted");
+  Check(!ParseBlockProgramText("search basic-brute-force {\n"
+                               "  mutate random-steering { seed = 1 }\n"
+                               "}\n")
+             .program.has_value(),
+        "prototype modifier option syntax was accepted");
 }
 
 void TestTextParseErrors() {
@@ -789,94 +770,19 @@ void TestJsonRoundTrip() {
   Check(parsed.program->find(loose)->x == 12.0, "position survives");
 }
 
-void TestJsonVersionOneMigration() {
-  const std::string velocityFields =
-      "\"minTimeMs\":\"1000\",\"maxTimeMs\":\"6000\","
-      "\"mode\":\"total\",\"alignmentEnabled\":\"false\","
-      "\"directionX\":\"1\",\"directionY\":\"0\","
-      "\"directionZ\":\"0\",\"minAlignmentPercent\":\"-100\"";
-  const std::string document =
-      "{\"version\":1,\"script\":1,\"blocks\":["
-      "{\"id\":1,\"def\":\"search/basic-brute-force\","
-      "\"fields\":{\"autoPromoteBest\":\"true\"},"
-      "\"evaluator\":2,\"substack\":[3,4]},"
-      "{\"id\":2,\"def\":\"evaluate/velocity\",\"fields\":{" +
-      velocityFields +
-      "}},"
-      "{\"id\":3,\"def\":\"mutate/random-steering\","
-      "\"fields\":{\"minTimeMs\":\"1000\",\"maxTimeMs\":\"4500\","
-      "\"seed\":\"42\"}},"
-      "{\"id\":4,\"def\":\"mutate/existing-event-perturbation\","
-      "\"fields\":{\"minTimeMs\":\"600\",\"maxTimeMs\":\"2500\","
-      "\"seed\":\"9\",\"minCount\":\"2\",\"maxCount\":\"2\","
-      "\"maxTimeShiftMs\":\"120\",\"steerMode\":\"absolute\","
-      "\"steerDeltaMin\":\"-0.15\",\"steerDeltaMax\":\"0.15\","
-      "\"steerAbsoluteMin\":\"-0.5\",\"steerAbsoluteMax\":\"0.5\","
-      "\"toggleAccelerate\":\"true\",\"toggleBrake\":\"false\"}},"
-      "{\"id\":5,\"def\":\"values/number\","
-      "\"fields\":{\"value\":\"9\"},\"x\":5,\"y\":6}"
-      "],\"loose\":[5]}";
-  const BlockProgramJson parsed = ParseBlockProgramJson(document);
-  Check(parsed.program.has_value(), "version 1 migrates");
-  if (!parsed.program.has_value()) {
-    std::fprintf(stderr, "migration error: %s\n", parsed.error.c_str());
-    return;
-  }
-  const CompileResult result = CompileProgram(*parsed.program);
-  Check(result.ok, "migrated program compiles");
-  if (!result.ok)
-    return;
-  Check(result.configuration.searchAlgorithm.settings.at("autoPromoteBest") ==
-            "true",
-        "search setting migrates");
-  Check(result.configuration.evaluationTarget.id == kVelocityEvaluationId,
-        "evaluation migrates");
-  Check(result.configuration.evaluationTarget.settings ==
-            FindEvaluationTarget(kVelocityEvaluationId)->defaultSettings,
-        "evaluation defaults migrate");
-  Check(result.configuration.modifiers.size() == 2, "two modifiers migrate");
-  Check(result.configuration.modifiers.front().id == kRandomSteeringModifierId,
-        "first modifier migrates");
-  Check(result.configuration.modifiers.front().settings.at("maxTimeMs") ==
-            "4500",
-        "first modifier window migrates");
-  const OptionSettings &perturbation =
-      result.configuration.modifiers.back().settings;
-  Check(perturbation.at("steerMode") == "absolute",
-        "perturbation mode migrates");
-  Check(perturbation.at("steerAbsoluteMin") == "-0.5",
-        "perturbation absolute range migrates");
-  Check(perturbation.at("maxTimeShiftMs") == "120",
-        "perturbation shift migrates");
-  Check(perturbation.at("toggleAccelerate") == "true",
-        "perturbation toggle migrates");
-  Check(perturbation.at("toggleBrake") == "false",
-        "perturbation absent toggle migrates");
-  // The reprinted document is version 2 and stable.
-  const std::string printed =
-      PrintBlockProgramJson(*parsed.program, parsed.remembered);
-  const BlockProgramJson reparsed = ParseBlockProgramJson(printed);
-  Check(reparsed.program.has_value(), "reprinted v2 parses");
-  if (reparsed.program.has_value()) {
-    const CompileResult recompiled = CompileProgram(*reparsed.program);
-    Check(recompiled.ok && recompiled.configuration == result.configuration,
-          "migrated program survives v2 round trip");
-  }
-  // The loose value block survives as a number block at its position.
-  bool foundLoose = false;
-  for (const auto &[id, node] : parsed.program->nodes()) {
-    if (node.definitionId != "values/number")
-      continue;
-    if (node.fields.at("value") == "9" && node.x == 5.0 && node.y == 6.0) {
-      foundLoose = true;
-    }
-  }
-  Check(foundLoose, "loose value block survives migration");
-
-  // Unknown versions are rejected.
-  Check(!ParseBlockProgramJson("{\"version\":3,\"blocks\":[]}")
+void TestPrototypeJsonRejected() {
+  Check(!ParseBlockProgramJson("{\"version\":1,\"blocks\":[]}")
              .program.has_value(),
-        "unsupported version rejected");
+        "prototype native-block JSON v1 was accepted");
+  Check(!ParseBlockProgramJson("{\"version\":2,\"blocks\":[]}")
+             .program.has_value(),
+        "prototype native-block JSON v2 was accepted");
+  Check(!ParseBlockProgramJson("{\"blocks\":[]}")
+             .program.has_value(),
+        "versionless prototype native-block JSON was accepted");
+  Check(!ParseBlockProgramJson("{\"version\":4,\"blocks\":[]}")
+             .program.has_value(),
+        "unknown native-block JSON version was accepted");
 }
 
 void TestNumberFormatting() {
@@ -893,8 +799,8 @@ void TestNumberFormatting() {
 }
 
 void TestValidationParity() {
-  // Modifier windows beyond the horizon are silently clamped (legacy
-  // behavior); evaluation windows beyond it are rejected.
+  // Modifier windows beyond the horizon preserve v0.2.3 clamping
+  // semantics; evaluation windows beyond it are rejected.
   BlockProgram program = DefaultProgram();
   const BlockId group = program.find(*program.script())->substack.front();
   program.setFieldValue(group, "maxTimeMs", "9000");
@@ -925,10 +831,10 @@ int main() {
   TestCompileReporterExpressions();
   TestTextRoundTrip();
   TestTextExpressions();
-  TestLegacyTextParsing();
+  TestPrototypeTextRejected();
   TestTextParseErrors();
   TestJsonRoundTrip();
-  TestJsonVersionOneMigration();
+  TestPrototypeJsonRejected();
   TestNumberFormatting();
   TestValidationParity();
   if (failures != 0) {

@@ -1,0 +1,2503 @@
+# Block execution verification
+
+The accelerator executes mapped source procedures, not recognized search names.
+`program_bytecode.cpp` lowers blocks; `program_vm.h` and `program_vm_ops.h` provide
+the shared machine; `program_host.cpp` and `program_cuda_kernel.cu` implement its
+physics operations. Unsupported programs retain the source interpreter and the
+requested physics backend. Source APIs and editable graphs remain authoritative.
+
+Current policy: CUDA source control uses the resident physics cursor by default.
+`FOREVERTAS_CUDA_SOURCE_CURSOR=0` opts out; `1` explicitly enables it. Source
+instructions and events still run at every consumed tick. Earlier opt-in
+statements below describe historical revisions, not the current default.
+
+## Resource and semantic checks
+
+- The persistent CPU pool is bounded at 256 workers. Nested maps do not create
+  additional pools, and CUDA interpreted branches have a one-session limit.
+- Lane seeds are assigned before scheduling. GPU allocation retries replay only
+  the uncommitted wave with the same arguments and seeds.
+- GPU working arenas and compact output each start at 128 KiB per lane.
+  Initial-value imports grow from 2 MiB to at most 64 MiB. Working arenas grow
+  to fit those imports; their retry limit is at least 2 MiB and provides twice
+  the rounded import capacity, capped at 64 MiB. Compact output still has a
+  2 MiB retry limit. Retries grow only the exhausted buffer; values beyond
+  these resource limits fall back.
+  Stream draining protects caller-owned uploads on exceptions and cancellation.
+- Shared immutable lists retain their sharing through encoding and compact GPU
+  results. Deep or oversized values request source execution rather than changing
+  collection semantics to fit fixed storage.
+- CPU shared-prefix reuse requires an identical native starting snapshot and
+  exact equality of consumed input events. Its LRU cache is limited to 64 entries
+  per host. Deferred histories replay from native states, not public-state guesses.
+- Source execution records reusable native CPU and CUDA checkpoints every 32
+  ticks, without advancing any extra physics. CPU checkpoints are grouped by
+  128-tick origins and may satisfy part of a requested advance. CUDA
+  reuse compares every consumed event and the complete native origin identity.
+  Both caches are bounded at 64 entries. Snapshot capture is reused only while
+  the underlying sandbox remains unchanged.
+- Uniform-result proofs use the same VM with conservative integer intervals.
+  Unknown control flow, possible errors, physics effects, and a bounded proof
+  budget reject the optimization. No named search pattern is consulted.
+
+`forevertas-visual-runtime` tests source/compiled values, seeded random behavior,
+worker lifetime, failures, fallback, shared lists, uniform proofs and cancellation.
+`forevertas-block-program-physics` compares real reference/CPU/CUDA state fields,
+returned snapshots, subsequent restore and continuation, histories and in-flight
+cancellation. It requires the configured replay and installed packs.
+
+## Comparable benchmarks
+
+Export the `v0.2.3` tag to a separate directory and configure the existing build
+with `FOREVERTAS_BENCHMARK_BASELINE_SOURCE_DIR` pointing there. Build
+`forevertas-native-baseline-benchmark` and `forevertas-block-program-benchmark`.
+The tagged search implementation and current block implementation intentionally
+link the same cached ForeverValidator physics build to isolate search overhead.
+This is not a comparison against the originally packaged v0.2.3 binary.
+
+Run `python3 tests/block_program_benchmark.py --help` for fixture paths and knobs.
+The driver generates an editable graph through the actual workbench builder,
+alternates native/block runs, preserves raw JSON and executable/replay hashes,
+checks candidate counts and block result parity across backends, rejects
+unreported fallback, and reports median post-load search and end-to-end times.
+The `baseline-inputs-to-completion-v1` timing contract starts both implementations
+at `ApplyingBaselineInputs`, before baseline evaluation and all candidate work.
+It includes subsequent search preparation. The older `Mutations` progress event
+is not a valid start: native CPU emits it after the first aggregated worker update.
+`--verify-interpreter` additionally checks block results against source execution.
+Native and block random scheduling differ; native/block result identity is not
+claimed. Automatic promotion is disabled for a comparable fixed search origin.
+
+The default 1100 ms fixture has no eligible input edits and primarily measures
+control overhead. The 6000 ms fixture performs real branch physics. Keep these
+results separate. Record competing GPU/CPU workloads and use repeated paired
+runs before claiming a speedup. Performance parity is not established merely by
+successful compilation, a CUDA execution label, or fast no-op candidate counts.
+
+## Historical measurements: 2026-09-06
+
+**At that revision, the requested performance target had not been achieved.**
+These were diagnostic measurements, not controlled GPU measurements or release
+readiness evidence.
+These measurements precede the request to use small-scale tests only and the
+subsequent optimizations. That executable was not rebuilt during the following
+paired run. Each row is the median of three alternating paired runs:
+8192 candidates, 6000 ms horizon, 8 CPU workers or native CUDA batch 256.
+
+| Backend | Tagged native execution | Blocks execution | Native total | Blocks total |
+| --- | ---: | ---: | ---: | ---: |
+| Multithreaded CPU | 3.148 s | 3.900 s | 4.225 s | 4.465 s |
+| CUDA | 13.562 s | 80.145 s | 15.356 s | 80.843 s |
+
+The two legacy "execution" columns above used different progress boundaries
+and are not valid throughput comparisons. Total times remain end-to-end
+measurements. Later small-scale runs using the same legacy boundary have the
+same limitation; only results tagged with the timing contract above use the
+corrected post-load interval.
+
+Hardware: Ryzen 5 7500F and RTX 5060 (8151 MiB), driver 610.57.04.
+Unreal Editor was running concurrently; approximately 5070 MiB was occupied
+before GPU runs, with 42-100% GPU utilization at run boundaries. It was not
+stopped or modified. An earlier, less memory-constrained paired run measured
+31.287 s for blocks versus 12.391 s for native CUDA. Neither run demonstrates
+the requested GPU performance. CPU end-to-end time in that run was about 5.7%
+longer than the native comparison.
+
+The tagged search source is `0fe83ee60c22d89a5597b4472925b23d9cab0fa9`, linked
+against the same current physics build as the blocks executable. All final block
+runs matched source-interpreted score, evaluation time and input SHA-256 exactly.
+The workload performed real physics and reported `CUDA block-program kernel`,
+not uniform no-op execution or source fallback.
+
+Raw results, per-run resource telemetry, fixture, executable hashes and summary
+are retained locally in `/tmp/ft-accel-continuation/paired-verified/`. The command
+log is `/tmp/ft-accel-paired-verified.log`. Reproduce with the benchmark driver
+using `--horizons 6000 --backends multi-threaded-cpu cuda --repeats 3
+--verify-interpreter` and the configured packs/replay paths.
+
+Verification on that historical source revision:
+
+- Full CPU release build and 15/15 CTest tests passed.
+- Full CUDA release build passed. Initially 27/29 CTest tests passed; calibration
+  passed on isolated retry. The remaining native precise-finish test failed
+  resident CUDA allocation on both attempts. Its test includes a 40000-candidate
+  promotion probe; this is an allocation failure, not a reported state mismatch.
+- Blockly real-physics tests passed, including forced compact-output growth,
+  shared nested values, exact public-state equality, restored continuation,
+  deferred histories and in-flight cancellation. Browser-authored examples,
+  native CUDA search parity and CUDA expression parity also passed.
+- ASan/UBSan runtime tests and real reference/CPU/multithreaded CPU parity passed,
+  with leak detection enabled. `git diff --check` and benchmark Python syntax
+  validation passed.
+
+Logs: `/tmp/ft-accel-verified-{build,cpu-build,cuda-tests,cpu-tests,asan-tests,
+asan-physics}.log` and `/tmp/ft-accel-cuda-retry.log`.
+
+The follow-up below addresses VM/physics separation, register/stack traffic,
+CPU mapping costs and repeated correctness checks. The historical native
+allocation test was not rerun after the small-scale-only restriction; it is not
+part of the focused suite reported below.
+
+## Small-scale follow-up
+
+Follow-up performance runs are limited to 256 total candidates and two CPU workers.
+Initial runs fixed batches at 64; subsequent runs also measure automatic
+batching, still capped by the same 256-candidate total. No full-scale run is
+required or authorized for this follow-up.
+The busy workstation makes individual timings noisy; extrapolation must separate
+fixed setup and source-evaluation costs from per-candidate work.
+
+The independent arena/output sizing removes a normal-snapshot retry observed
+with the former 64 KiB output buffer. Ordered eight-ellipsoid collision layouts
+use the existing exact physics specialization only after checking their packed
+configuration. Other layouts retain the generic implementation. A physics flush
+copies the predecessor state only for its last tick, since intermediate ticks
+cannot be observed by the suspended source program.
+
+`FOREVERTAS_CUDA_VM_PROFILE=1` enables per-wave CUDA duration, resource, memory
+high-water and prefix-reuse diagnostics. It does not enable profiling by default.
+`FOREVERTAS_CUDA_VM_PREFIX_DISABLE=1` disables the optional checkpoint cache.
+The default CUDA executor uses a resumable VM with a separate physics kernel.
+`FOREVERTAS_CUDA_VM_SCHEDULED=1` forces that scheduler;
+`FOREVERTAS_CUDA_VM_MONOLITHIC=1` forces the combined kernel instead.
+Normally, a first pause averaging fewer than 32 pending ticks selects the
+combined kernel by replaying the uncommitted wave once with identical arguments
+and seeds. This is an observed execution-cost heuristic, not a named source
+pattern. Suspension occurs
+before an instruction consumes operands or increments its operation count;
+physics runs before an observation/input edit and before result finalization.
+
+The latest CPU ASan/UBSan run passes the runtime suite, including instruction
+suspension accounting, and the small `--accelerated-history` reference/CPU cases
+with leak detection enabled. Evidence: `/tmp/ft-small-resume-asan-{build,unit,
+history}.log`. Partial CPU checkpoint reuse also passes the small ASan/UBSan
+history cases: `/tmp/ft-small-partial-prefix-asan-{build,unit,history}.log`.
+Default CUDA scheduling and short-feedback replay pass their small state,
+snapshot, collection, history and cancellation checks in
+`/tmp/ft-small-local-state-{build,unit,history,parity}.log`.
+
+CPU automatic batches now contain up to 32 jobs per worker, capped at 1024,
+instead of four. Explicit source batch sizes are unchanged. Reference and
+single-threaded optimized CPU retain their single-job default.
+
+## Earlier small-scale result
+
+**CPU is at parity within workstation noise; CUDA is faster in the measured
+small workload. Full-scale performance is inferred, not measured.** This is a
+result for the comparable editable workbench fixture, not a promise that every
+arbitrary source graph has a native-search equivalent or identical throughput.
+
+The corrected 64/128/256-candidate sweep used three alternating native/block
+pairs per size, a 6000 ms horizon, two CPU workers and native CUDA batches of 64.
+Source batches used their automatic policy, capped by the total candidate count.
+Median paired post-load speedups (native time divided by blocks time):
+
+| Candidates | Multithreaded CPU | CUDA |
+| --- | ---: | ---: |
+| 64 | 1.007x | 1.260x |
+| 128 | 1.030x | 1.687x |
+| 256 | 1.033x | 2.374x |
+
+An additional six-pair CPU confirmation measured paired medians of 1.011x at
+128 candidates and 1.028x at 256. CPU aggregate medians and individual pairs
+fluctuate across parity under competing load; this is not evidence for a fixed
+percentage CPU improvement. The final rebuilt binary's three-pair 256-candidate
+confirmation measured 1.061x CPU and 2.362x CUDA post-load, and paired end-to-end
+ratios of 1.032x and 2.030x respectively. For transparency, the ratio of CPU
+end-to-end aggregate medians in that same run was 0.966x; paired ratios and the
+full raw timings are retained rather than hiding the differing noise estimates.
+
+CUDA's effective 256:64 batch ratio at the largest small test is a quarter-scale
+cap of the 1024:256 comparison configuration, not an equal-batch comparison.
+The 64-to-256 wave measurements support a favorable batching projection, but
+SM occupancy, cache pressure and competing GPU work beyond that range remain
+unmeasured. CPU inference is parity, not a claimed full-scale speedup.
+
+Every block run matched source-interpreted score, evaluation time and input hash.
+The CUDA physics kernel uses 17768 bytes of local storage per thread in this
+configuration, versus 40840 for the combined kernel. It retains complete native
+state, full output snapshots and precise physics arithmetic.
+
+Evidence directories under `/tmp/ft-accel-continuation/`:
+`small-common-scaling-{64,128,256}`, `small-cpu-confirm-{128,256}` and
+`small-final-confirm`. They contain the fixture, raw runs, telemetry, executable
+hashes and summaries. `pairedSpeedup` and `pairedEndToEndSpeedup` report medians
+of within-pair ratios; the original aggregate-median ratios are also retained.
+
+Final verification:
+
+- Updated application build and 15/15 focused CTest tests pass, including browser,
+  controller, QML, install and explicit-horizon guards.
+- Small real-physics history/continuation tests pass on reference, CPU and CUDA.
+  Both forced scheduling and automatic short-feedback replay pass state,
+  snapshot, nested-value and capacity-growth parity tests.
+- CPU ASan/UBSan runtime and history tests pass with leak detection enabled.
+- CUDA Compute Sanitizer reports zero errors on the forced-scheduler parity test.
+- Benchmark Python syntax and `git diff --check` pass.
+
+Logs: `/tmp/ft-small-horizon-{build,tests,history}.log`,
+`/tmp/ft-small-local-scratch-{unit,history,parity}.log`,
+`/tmp/ft-small-final-asan-{build,unit,history}.log`,
+`/tmp/ft-small-cuda-memcheck.log` and `/tmp/ft-small-final-confirm.log`.
+
+## Earlier generic-program measurements (2026-09-06)
+
+**The arbitrary-program throughput objective is not achieved.** In particular,
+every-tick observation is substantially slower than the native comparison,
+despite the final-tick-only improvements reported above. Do not extrapolate
+those improvements to feedback-heavy programs.
+
+The bytecode compiler now handles tick, checkpoint, finish, conditional and
+message events, dynamic function application, and source-ordered event scopes.
+Per-procedure compact local slots avoid allocating every program symbol in
+every call frame. Event states retain exact capture-time semantics through
+lazy state tokens; escaping tokens are materialized before simulation changes.
+Publication also drains pending simulation even when its score is constant.
+
+Unsupported instructions trap when executed rather than rejecting the entire
+graph. A failed CUDA lane replays through the source interpreter with its
+original arguments and seed, while completed lanes retain their results.
+The execution-mode notification reports the fallback lane count. This is not
+full device coverage: nested maps, in-branch native restore/restart/history and
+other unsupported operations can still require source replay. Source execution
+also remains authoritative for exact runtime errors and caught exceptions.
+
+`FOREVERTAS_CUDA_VM_GRAPH=1` opts into a device-side conditional graph running
+the same resumable VM and physics kernels (CUDA runtime 12.4 or newer).
+It avoids host scheduling round trips at each observation. It is experimental,
+not the default. A resident combined-kernel experiment was removed because
+measurements did not improve throughput.
+
+The diversity driver `tests/block_program_diversity_benchmark.py` generates
+five equivalent graphs: direct workbench, indirect calls, broadcasts, tick
+events and chunked loops. It checks each Blocks backend against source and
+checks result identities across graph transformations. These are comparable
+workload structures, not evidence that all arbitrary programs have been tested.
+`--target-start 0` scores from the initial state on every simulation tick;
+omitting it retains the final-tick-only benchmark. Native and Blocks share
+the scoring window, but their candidate schedules differ; no native/Blocks
+result-identity claim is made.
+
+Three alternating pairs, 256 candidates, 6000 ms horizon:
+
+| Measurement | Native CUDA batch | Blocks batch | Paired native/Blocks throughput ratio |
+| --- | ---: | ---: | ---: |
+| Initial final-tick-only, five structures | 64 | 256 | 2.677-2.838x |
+| Initial final-tick-only, four structures | 256 | 256 | 1.258-1.292x |
+| Initial final-tick-only, chunked loops | 256 | 256 | 0.885x |
+| Every-tick conditional graph, direct workbench | 256 | 256 | 0.380x |
+| Every-tick conditional graph, indirect calls | 256 | 256 | 0.370x |
+| Every-tick conditional graph, broadcasts | 256 | 256 | 0.399x |
+| Every-tick conditional graph, tick events | 256 | 256 | 0.401x |
+| Every-tick conditional graph, chunked loops | 256 | 256 | 0.412x |
+
+The equal-batch final-tick chunked-loop run coincided with a large increase in
+competing Unreal GPU load. It is retained, not discarded. Every-tick failures
+remain across structures, so they cannot be explained away by that one run.
+At 64 candidates and equal batches, conditional-graph direct and tick-event
+ratios were 0.683x and 0.619x. The earlier combined VM took approximately
+4.7-4.9 seconds for those Blocks executions versus 1.4-1.5 seconds native;
+conditional scheduling improves this but does not eliminate the cliff.
+
+Raw fixtures, hashes, source checks, alternating pairs and telemetry are in
+`/tmp/ft-generic-diversity-initial`, `/tmp/ft-generic-diversity-equal256`,
+`/tmp/ft-generic-every-tick-local`, `/tmp/ft-generic-every-tick-resident`,
+`/tmp/ft-generic-every-tick-graph` and
+`/tmp/ft-generic-every-tick-graph256`. These are local measurement artifacts,
+not checked-in reproducibility guarantees. The scripts regenerate them.
+
+Before the subsequent local-VM experiment, conditional-graph runtime, events,
+mixed-lane fallback and publication tests passed 4/4 in
+`/tmp/ft-generic-graph-test.log`. The full CPU application build and test suite
+passed 15/15 in `/tmp/ft-generic-cpu-full-{build,test}.log`.
+ASan/UBSan with leak detection passed runtime and real event tests in
+`/tmp/ft-generic-asan-{build,test,events}.log` before the final lazy-property
+read optimization. These historical checks do not substitute for rebuilding
+and verifying later experiments.
+
+## Current generic execution
+
+Conditional graphs are now the default on CUDA runtime 12.4 and newer.
+`FOREVERTAS_CUDA_VM_GRAPH=0` selects the host scheduler; unsupported graph or
+driver APIs also select it. `FOREVERTAS_CUDA_VM_SCHEDULED=1` disables its
+first-wave combined-kernel heuristic. `FOREVERTAS_CUDA_VM_MONOLITHIC=1` is a
+diagnostic override, except where exact host mathematics requires suspension.
+`FOREVERTAS_CUDA_VM_MAX_LANES=2` forces multiple small physical waves without
+changing the source-visible logical batch size.
+
+Snapshot capture now shares immutable native extension data. Each version
+stores its exact physical base and the modified collision-overflow prefix;
+decoding overlays these on the shared full version. Reset, respawn, prefix
+reuse and stunt mutations invalidate the shared extension. Retained versions
+remain independent of later stepping and input edits. Tests restore imported
+versions on the host and compare every public property after continuation.
+In-branch device restore/restart/history and nested maps still require source
+replay; importing a returned snapshot does not establish device support for
+those operations.
+
+The strict scalar-math test exposed a one-ULP libdevice/libm difference.
+Sine, cosine, quaternion construction and rotation distance therefore suspend
+their CUDA lanes for a batched host computation using the CPU VM's existing
+formulas and math library. The VM then resumes with untouched operand ownership,
+instruction accounting and RNG state. Other lanes can continue device physics.
+An exact, per-lane last-operation cache compares operand bits, including signed
+zeros, before reusing a host reply. `CUDA_VM_MATH_PROFILE` reports host waves
+and operations when profiling is enabled. Scalar `min`, `max` and `clamp` also
+preserve the source operand on equality rather than changing a zero's sign.
+This is hybrid numeric execution, not a fully device-only math implementation.
+Math-heavy loops can incur repeated host round trips, and no throughput claim
+is made for them. Source math and bitwise assertions have not been relaxed.
+
+The diversity driver now includes seven equivalent structures: direct
+workbench, indirect calls, broadcasts, tick events, chunked loops, checkpoint
+events and conditional events. Native CUDA batch size and Blocks CPU worker
+count are separate controls; `--cuda-batch 1024` no longer incorrectly requests
+1024 Blocks CPU workers. `--block-batch` still controls logical Blocks batching.
+Benchmark mode transitions record seconds from the common post-load boundary,
+so pre-map source work is not hidden by GPU-only timing.
+
+The native-style comparator shares the candidate count, horizon and mutation
+window, but does not assert identical candidate streams. Its winning input hash
+and score differ from the Blocks oracle. These are workload-style comparisons,
+not timings of a verified identical candidate corpus; source/CUDA parity is
+verified separately against the Blocks interpreter.
+
+An intermediate three-pair run with 1024 candidates, native batch 256 and
+automatic Blocks batch 1024 measured the following every-tick results:
+
+| Structure | Native seconds | Blocks seconds | Paired ratio |
+| --- | ---: | ---: | ---: |
+| Workbench | 2.802 | 2.655 | 1.061x |
+| Indirect calls | 2.127 | 1.453 | 1.464x |
+| Broadcasts | 2.124 | 1.433 | 1.480x |
+| Tick events | 2.129 | 1.421 | 1.497x |
+| Chunked loops | 2.733 | 2.557 | 1.071x |
+| Checkpoint events | 2.739 | 2.688 | 1.017x |
+| Conditional events | 2.703 | 2.668 | 1.015x |
+
+All seven matched source/backend/cross-structure result identities. These are
+medians of alternating pairs, not a guarantee of individual-pair improvement.
+The smallest margins are not robust under competing workstation load, and this
+is not an equal-batch comparison. Evidence is retained in
+`/tmp/ft-generic-default-1024-native256-feedback`. This run predates the exact
+host-math bridge and the benchmark worker-control correction.
+
+Earlier 256-candidate equal-batch feedback runs after snapshot delta encoding
+still measured only 0.398-0.584x end-to-end, despite a roughly one-second mapped
+GPU stage. Later mode timelines identified 1.36-1.40 seconds of pre-map source
+work in the direct 1024-candidate case. Snapshot import and executor destruction
+were approximately one millisecond each, so neither was rewritten speculatively.
+Copying the complete VM into thread-local storage was also removed after
+0.312x measurements. These failures remain relevant to the unmet objective:
+arbitrary serial source control and small batches can still dominate execution.
+
+Unreal Editor remained active throughout these measurements. Its load was not
+stopped or modified. Kernel cycle totals are lane-summed diagnostics, not
+end-to-end wall time. The requested consistently higher native-relative
+throughput is **not yet established**.
+
+The subsequent equal-1024-batch feedback comparison confirmed that gap. All
+seven structures passed source/backend/cross-structure parity, but none had a
+median paired throughput advantage:
+
+| Structure | Native seconds | Blocks seconds | Paired ratio |
+| --- | ---: | ---: | ---: |
+| Workbench | 1.377 | 2.680 | 0.515x |
+| Indirect calls | 1.362 | 2.691 | 0.506x |
+| Broadcasts | 1.362 | 2.578 | 0.514x |
+| Tick events | 1.347 | 2.586 | 0.520x |
+| Chunked loops | 1.129 | 1.377 | 0.819x |
+| Checkpoint events | 1.133 | 1.647 | 0.696x |
+| Conditional events | 1.517 | 1.529 | 0.988x |
+
+Evidence: `/tmp/ft-exact-bridge-equal1024-feedback`, three alternating pairs,
+1024 candidates, 6000 ms horizon, scoring from time zero. The first direct
+Blocks pair reached CUDA preparation at 1.438 seconds and completed the kernel
+stage at 2.709 seconds. This measures the initial exact-math bridge, before the
+last-operation cache and signed-zero correction.
+
+## Final-build verification
+
+The full CPU and CUDA application builds succeeded. Verification of the final
+math/cache/signed-zero source revision:
+
+- CPU CTest: 15/15, `/tmp/ft-exact-final-cpu-{build,test}.log`.
+- Focused CUDA physics, events, mixed fallback, publication, retained snapshots
+  and exact math: 6/6, `/tmp/ft-exact-final-{build,test}.log`.
+- Forced host scheduling and combined-kernel diagnostics: 5/5 each,
+  `/tmp/ft-exact-final-{legacy,monolithic}-test.log`. Exact math intentionally
+  retains resumable execution even with the combined-kernel override.
+- Compute Sanitizer, two-lane physical waves: exact math/cancellation and
+  large-value/state/restore parity both passed with zero errors,
+  `/tmp/ft-exact-final-{math,parity}-memcheck.log`.
+- ASan/UBSan with leak detection: exact math and cancellation on reference and
+  multithreaded CPU, `/tmp/ft-exact-final-asan-refresh-test.log`.
+- A distinct B05 replay passed dynamic-event and every-public-property parity
+  on all four backends, `/tmp/ft-exact-final-b05-events.log`.
+- Python syntax, fixture JavaScript syntax and `git diff --check` passed.
+
+The scalar test compares 1280 published double bit patterns, including
+trigonometry, rotations, divergent stepping, signed zeros and repeated cached
+operations. Its cancellation case changes the angle each iteration so that a
+constant cache hit cannot hide the host/device synchronization path.
+
+Final-build every-tick benchmarks with 1024 candidates, native batch 256,
+automatic Blocks batch 1024 and three alternating pairs:
+
+| Structure | Native seconds | Blocks seconds | Paired ratio |
+| --- | ---: | ---: | ---: |
+| Workbench | 2.119 | 1.413 | 1.493x |
+| Indirect calls | 2.146 | 1.432 | 1.496x |
+| Broadcasts | 2.171 | 1.425 | 1.507x |
+| Tick events | 2.042 | 1.330 | 1.535x |
+| Chunked loops | 2.121 | 1.355 | 1.588x |
+| Checkpoint events | 2.018 | 1.463 | 1.382x |
+| Conditional events | 2.022 | 1.390 | 1.450x |
+
+All 21 individual pairs were faster, spanning 1.373-1.592x, and all seven
+structures passed source/backend/cross-structure result identity checks.
+Evidence, fixtures, executable hashes and telemetry:
+`/tmp/ft-exact-final-native256-feedback`. This is a measured advantage against
+the usual native batch configuration, not proof of equal-batch superiority.
+The first run's initial GPU utilization snapshot was 11%; competing load had
+changed since earlier experiments. The first direct pre-map interval was
+0.329 seconds rather than 1.438 seconds. Do not attribute that entire change
+to the last arithmetic patch or discard the earlier slow observations.
+
+Final-build controls still fail the broader throughput objective:
+
+| Structure | Equal 1024 batches | 256 candidates, equal 256 batches |
+| --- | ---: | ---: |
+| Workbench | 0.803x | 0.915x |
+| Indirect calls | 0.995x | Not measured |
+| Broadcasts | 1.011x | Not measured |
+| Tick events | 1.047x | 0.947x |
+| Chunked loops | 1.035x | Not measured |
+| Checkpoint events | 0.802x | Not measured |
+| Conditional events | 0.777x | 1.091x |
+
+These are three-pair medians with every-tick scoring and exact source/backend
+result checks. Raw results are in `/tmp/ft-exact-final-equal1024-feedback` and
+`/tmp/ft-exact-final-small-feedback`. Thus the normal-batch advantage is real
+for the measured configuration, but consistently higher throughput across
+batch sizes and structures is not established. Serial root/source control,
+unsupported nested execution and repeated exact-host math remain explicit
+limits, not completed optimization work.
+
+### Experimental Source Physics Cursor
+
+`FOREVERTAS_CUDA_SOURCE_CURSOR=1` enables a resident CUDA physics cursor under
+ordinary source block control. It predicts only physics, in windows growing
+from one to at most 32 ticks. Source instructions and event handlers still
+execute at every consumed tick. Input edits, restores, horizon changes and
+mapped execution discard the unused prediction suffix. Captures and early
+stops import the last consumed state, never the device's predicted future.
+Prediction failures are exposed only when the source requests the failing
+tick; an already computed valid prefix remains usable.
+
+Native extension generations are transferred only when they change. Each
+predicted frame overlays its exact physics and collision delta on that
+generation. The host retains independent packed frames and imports native
+sandbox snapshots lazily. Cursor invalidation retains CUDA allocation buffers
+so frequent controller edits do not repeatedly allocate device resources.
+
+`FOREVERTAS_CUDA_SOURCE_LOOKAHEAD=1` disables lookahead for paired diagnostics;
+positive values up to 32 cap it. With `FOREVERTAS_CUDA_VM_PROFILE=1`,
+`CUDA_SOURCE_PROFILE` reports windows, predicted and consumed ticks, resets,
+and transferred native bytes. This path remains opt-in until CUDA parity,
+resource checks and end-to-end throughput measurements pass. The source
+regression includes event-state observations, retained restores, map handoff,
+frequent input edits and a count-only early stop with no publication that
+could conceal an incorrect final state.
+
+The direct-export implementation passed all seven CUDA regression suites
+(`32.87` seconds total), and the source suite passed Compute Sanitizer memcheck
+with zero errors. The additional source cases also passed under ASan on the
+reference, optimized CPU and multithreaded CPU backends, with source and
+accelerated execution enabled separately.
+
+Initial profiling did not justify enabling the cursor. A version that built
+ordinary VM snapshots and compacted them for transfer took `396.0` ms for 600
+root steps, versus `321.7` ms without the cursor. Limiting that implementation
+to one predicted tick still took `386.6` ms. Direct typed export, without
+temporary VM snapshots or compaction, subsequently measured `292.1` and
+`294.1` ms; its nearby no-cursor control measured `328.3` ms. A direct-export
+one-tick control measured `286.4` ms. These are diagnostic runs, not paired
+throughput acceptance results: fewer launches alone did not produce the
+required improvement, and the mapped-kernel timings also varied between runs.
+All these runs produced identical scores and input hashes. Logs are under
+`/tmp/ft-cursor-lookahead-profile-*` and
+`/tmp/ft-cursor-direct-export-profile-*`; verification logs use the
+`/tmp/ft-cursor-direct-export-*` prefix.
+
+Three alternating pairs per structure, with the cursor enabled, still fail
+the throughput acceptance gate. These are native/Blocks execution-time ratios
+(greater than one is faster); every structure passed source/backend and
+cross-structure result identity checks:
+
+| Structure | Equal 1024 batches | 256 candidates, equal 256 batches |
+| --- | ---: | ---: |
+| Workbench | 0.872x | 1.192x |
+| Indirect calls | 1.157x | 1.037x |
+| Broadcasts | 1.055x | 1.424x |
+| Tick events | 1.081x | 1.549x |
+| Chunked loops | 0.910x | 1.328x |
+| Checkpoint events | 0.791x | 0.945x |
+| Conditional events | 0.847x | 1.001x |
+
+Evidence is in `/tmp/ft-cursor-direct-equal1024-feedback-v2` and
+`/tmp/ft-cursor-direct-small-feedback`, including timing-contract metadata,
+executable hashes, individual pairs and GPU telemetry. Native timings varied
+between otherwise identical workloads; these observations must not be
+presented as isolated effects of a graph transformation.
+
+Before resident input updates, frequent edits exposed a cursor reset cost. For the 100-tick
+controller regression, accelerated CUDA with the cursor reported `97.70` ms
+inside source advances, versus `40.16` ms with the cursor disabled. The cursor
+retained its allocations, but still restarted 100 times. These advance-only
+measurements exclude the separate input-edit operation. Both runs matched
+the source oracle; logs are `/tmp/ft-cursor-controller-profile-on.log` and
+`/tmp/ft-cursor-controller-profile-off.log`. Retaining buffers alone does not
+remove the controller cliff. The experimental cursor therefore remains
+disabled by default, and consistently superior throughput remains unproven.
+
+The subsequent implementation retains authoritative sandbox input validation
+and regenerates the complete control plan, including nonstandard actions such
+as respawn. When all predictions have been consumed without an error, an
+input update preserves the device's physical state and collision scratch;
+only input storage, controls, the timeline origin and export generations are
+updated. An unused prediction suffix instead requires an exact rewind to the
+last consumed packed state. Failed updates cannot leave a partially updated
+cursor active. The regression now checks future respawn edits, 121 ordered
+publications, and that frequent valid edits do not silently disable the cursor.
+
+Cold initialization copies the large native state with a device-to-device
+transfer rather than one GPU lane. The working arena now retains only staged
+values, removing the obsolete 8 MiB snapshot allocation reserve. Staging size
+also accounts for the allocator's power-of-two input-list buckets rather than
+depending on a fixed amount of padding for large input sequences.
+
+The fresh small-arena build passed all seven suites in `32.00` seconds and
+Compute Sanitizer source memcheck reported zero errors. CPU source cases,
+including the new respawn sequence, passed ASan. Logs are
+`/tmp/ft-cursor-small-arena-test2.log`,
+`/tmp/ft-cursor-small-arena-memcheck.log`, and
+`/tmp/ft-cursor-input-update-asan-final-test.log`.
+
+The first resident-update benchmark series was interrupted by a scenario-load
+failure while the GPU reported only 145 MiB free with Unreal Editor active.
+Five GPU suites also failed during scenario loading under that pressure;
+all seven passed when 1424 MiB became available. The interrupted series in
+`/tmp/ft-cursor-preserve-input-controller-*` is not throughput acceptance
+evidence. Full controller timings now use the same
+baseline-inputs-to-completion boundary as the diversity benchmark, instead of
+using advance-only timers that omit input updates.
+
+After memory availability recovered, the final resident-input implementation
+completed three alternating controller pairs without fallback:
+
+| Pair | Cursor Disabled | Cursor Enabled | Disabled/Enabled |
+| --- | ---: | ---: | ---: |
+| 1 | 41.529 ms | 37.639 ms | 1.103x |
+| 2 | 38.734 ms | 38.005 ms | 1.019x |
+| 3 | 49.705 ms | 41.609 ms | 1.195x |
+
+Each enabled run handled 100 input updates with zero rewinds; input-update
+work took 5.18-6.22 ms total. All six runs passed the source/backend state
+checks and the no-resident-fallback assertion. Logs and pre-run GPU telemetry
+are `/tmp/ft-cursor-small-arena-controller-*`. These paired observations remove
+the previously measured controller regression, but compare against the
+existing source-physics path, not v0.2.3 native search. GPU load and clocks
+still varied. They do not establish the broader throughput objective or
+justify treating the earlier equal-batch failures as resolved. The cursor
+remains opt-in.
+
+### Imported Snapshot Metadata
+
+A regression reproduced an unconditional `native snapshot argument` fallback
+when a map only read snapshot metadata or returned an existing snapshot.
+Arguments and globals now carry immutable state/input metadata plus a compact
+opaque token. Output decoding resolves that token to the original snapshot,
+preserving pointer identity, native physics, input history and horizon even
+when the snapshot predates the map baseline. Ordinary CPU encoding is unchanged.
+This removes the blanket fallback, not the source execution required by an
+unsupported operation such as restoring a snapshot inside a mapped procedure.
+
+The regression passes snapshots through arguments and globals, repeats an
+alias, reads metadata inside the map, checks identity both inside and outside
+the map, publishes older states, then restores and steps each returned snapshot.
+A second variant restores inside the map and requires explicit per-lane source
+fallback reporting. The original failing test is retained in
+`/tmp/ft-imported-snapshot-repro-test.log`.
+
+After the change, all seven runtime suites passed (six in `77.82` seconds,
+plus the event suite in `3.88` seconds). The snapshot suite passed CPU ASan
+and CUDA Compute Sanitizer with zero errors. Evidence is in
+`/tmp/ft-imported-snapshot-final-test.log`,
+`/tmp/ft-imported-snapshot-events-test.log`,
+`/tmp/ft-imported-snapshot-asan-test.log`, and
+`/tmp/ft-imported-snapshot-memcheck.log`.
+The same snapshot cases also passed with `FOREVERTAS_CUDA_VM_MAX_LANES=2`,
+forcing imported aliases across separate waves
+(`/tmp/ft-imported-snapshot-two-lane.log`).
+
+The source-cursor suite also covers 17,000 input events, beyond the old fixed
+staging padding's allocator bucket boundary. It requires resident CUDA
+execution and complete state/input parity after a subsequent input edit.
+The large-input suite passed all seven runtime tests, CPU ASan checks, and
+Compute Sanitizer with zero errors (`/tmp/ft-large-source-inputs-suite.log`,
+`/tmp/ft-large-source-inputs-asan-test.log`, and
+`/tmp/ft-large-source-inputs-memcheck.log`). These are correctness and fallback
+coverage results, not evidence that all structures outperform v0.2.3 native
+execution. The broader equal-batch throughput shortfall remains unresolved.
+
+### Direct Previous-State Reads
+
+Reading one property of `simulation/previous-state` no longer builds a whole
+state value in compiled programs. The compiler emits a direct property read,
+also used by checkpoint/finish event detection. CPU execution retains the
+previous-state synchronization barrier. CUDA can read common physical fields
+directly from the preceding native state; other properties use the existing
+public-state conversion. Retaining a whole state still uses its original value
+semantics. This is a generic expression optimization, not a search recognizer.
+
+The initial implementation combined current and previous reads behind a
+runtime branch. Although checkpoint throughput improved, the tick-event map
+phase regressed by about 1-2%. The final implementation restores the original
+current-state hot path and keeps previous reads separate.
+
+Three alternating native/before/after triples per structure used 1024
+candidates, native batch 1024, automatic Blocks batch 1024, a 6000 ms horizon,
+and scoring from time zero. The source cursor was disabled, matching the
+default. Both Blocks binaries were checked against source-interpreter scores,
+evaluation times and complete input hashes, with no fallback allowed. Ratios
+below are medians of individual paired throughput ratios, not ratios of median
+times:
+
+| Structure | Before/After | Native/After |
+| --- | ---: | ---: |
+| Workbench | 0.998x | 0.800x |
+| Indirect calls | 0.997x | 0.805x |
+| Broadcasts | 0.998x | 0.803x |
+| Tick events | 1.000x | 0.810x |
+| Chunked loops | 1.007x | 0.836x |
+| Checkpoint events | 1.073x | 0.784x |
+| Conditional events | 1.000x | 0.778x |
+
+The checkpoint gain is measurable; the other medians are within one percent
+of the old executable. All seven still trail native at equal batch sizes.
+The preserved old binary's hash matches the preceding diversity benchmark.
+Raw triples, executable hashes and GPU telemetry are in
+`/tmp/ft-direct-previous-separated-pairs` and
+`/tmp/ft-direct-previous-remaining-pairs`; the earlier combined-path experiment
+is in `/tmp/ft-direct-previous-pairs`. Unreal Editor remained active, so shifts
+between separate benchmark series are not isolated effects of this patch.
+
+The final build passed all seven runtime suites in `81.54` seconds
+(`/tmp/ft-direct-previous-separated-test.log`). The expanded parity case crosses
+a 128-tick batching boundary, then checks every direct previous-state property
+against a materialized state before it can reuse a cached public view. It
+passes source, CPU and CUDA execution; CPU ASan evidence is
+`/tmp/ft-direct-previous-asan-final-test.log`.
+Final CUDA memcheck runs for feedback and events reported zero errors
+(`/tmp/ft-direct-previous-final-memcheck.log` and
+`/tmp/ft-direct-previous-final-events-memcheck.log`). The same all-property
+parity test also passed on B05 and with forced monolithic execution limited
+to two lanes per wave (`/tmp/ft-direct-previous-b05.log` and
+`/tmp/ft-direct-previous-monolithic-two-lane.log`).
+
+Profiling still identifies serial root physics as a major remaining cost:
+in one checkpoint run, 600 root advances took `1398.1` ms, before a `1364.5` ms
+mapped phase. Under lighter load, the paired workbench root phase was about
+`304` ms. A separate opt-in cursor diagnostic still took `313.2` ms for root
+advances, including `83.9` ms cold cursor startup. These are diagnostics, not
+paired acceptance results (`/tmp/ft-direct-previous-before-profile.log` and
+`/tmp/ft-direct-previous-cursor-profile.log`). Eliminating the previous-state
+allocation does not resolve this root execution cost or the overall goal.
+
+### Root Physics Attribution
+
+`FOREVERTAS_CUDA_VM_PROFILE` now separates source prediction calls, host decoding
+and uncached snapshot imports. A 600-tick source-cursor run measured:
+
+| Stage | Milliseconds |
+| --- | ---: |
+| Root advances, inclusive | 323.024 |
+| Cold cursor startup | 97.980 |
+| Prediction calls, including transfers and waits | 212.946 |
+| Host forecast decoding | 7.402 |
+| Uncached snapshot imports | 0.733 |
+
+An independent CUPTI activity trace attributed `205.660` ms to all 23 prediction
+kernels and `102.116` ms to a cold `cuLibraryLoadData` call. The initialization
+kernel itself took only `0.102` ms. Thus large CUDA API durations around reads
+must not be mistaken for transfer bandwidth costs: they include waiting for
+the prediction kernels. Host decoding and allocation are not the main gap.
+The trace used NVIDIA's installed injection sample, built into
+`/tmp/ft-root-cupti.so`, without modifying the application or SDK for injection.
+Evidence is `/tmp/ft-root-stages-profile.log` and
+`/tmp/ft-root-cupti-trace.log`; both preserved the source oracle's score, time,
+input hash and expected CUDA execution mode. Profiling is diagnostic, not an
+uninstrumented throughput acceptance run.
+
+An experiment reused a materialized current public view as the predecessor
+instead of rebuilding it. It passed all seven suites and strengthened tests
+that compare every previous-state property with a retained pre-step state.
+However, three alternating native/before/after triples per structure, with the
+source cursor enabled, produced before/after throughput ratios of `0.998x`
+(workbench), `1.005x` (checkpoint events), `0.994x` (conditional events), and
+`0.993x` (tick events). The eager copy also performs work when the predecessor
+is never subsequently read. The experiment was removed; the profiling and
+stronger state tests remain. Raw evidence is in
+`/tmp/ft-public-view-cursor-pairs`, with the rejected binary preserved as
+`/tmp/ft-public-view-experiment-benchmark` and its hash verified against that
+run's metadata. Native-relative wins in this series occurred with the old
+binary as well and do not establish a benefit from the rejected change.
+
+After removing the experiment, the retained profiling and expanded tests were
+rebuilt and all seven runtime suites passed
+(`/tmp/ft-root-profile-final-build.log` and
+`/tmp/ft-root-profile-final-test.log`). The retained pre-step state comparisons
+also passed CPU ASan (`/tmp/ft-public-view-asan-test.log`). No throughput gain
+is claimed for this profiling change, and the broader native-relative goal
+remains unresolved.
+
+### Allocation-Free Empty Frames
+
+Procedures with no parameters or introduced local slots now use an empty
+internal locals value rather than allocate and release a zero-length list.
+Call-stack entries, argument validation, global lookup, return behavior and
+the 64-frame recursion limit are unchanged. This applies to static and dynamic
+calls, including event handlers; private frame lists are not language values.
+A regression exercises nesting, unwinding and reuse with no arena storage,
+then verifies that the 65th call still raises the recursion error. Existing
+conditional-local/global-shadowing checks continue to pass.
+
+The optional `procedure-chain` benchmark structure wraps the current-speed
+read in eight zero-argument procedures without changing the observed state or
+result. It passed source/backend parity and result identity against the direct
+workbench. Three alternating native/before/after triples measured before/after
+ratios of `1.01056x`, `1.00932x` and `1.00428x`: a `0.9%` median throughput gain,
+not a broad performance breakthrough. Its native/after median was `0.792x`.
+Evidence is `/tmp/ft-empty-frame-chain` and
+`/tmp/ft-empty-frame-chain-pairs`.
+
+The seven existing structures were also measured with three alternating
+triples, 1024 candidates, equal 1024 batches, a 6000 ms horizon and scoring from
+time zero (`/tmp/ft-empty-frame-pairs`). Their full-execution before/after
+medians ranged from `0.989x` to `1.291x`, but the large apparent checkpoint gain
+was accompanied by changing root-phase timings: its individual mapped-phase
+ratios were only `1.060x`, `1.006x` and `1.008x`. Do not attribute the full 29%
+observation to removing empty frames. The broader consistently-higher-native-
+throughput gate remains unmet.
+
+All seven runtime suites passed in `81.52` seconds
+(`/tmp/ft-empty-frame-test.log`), and the complete CPU runtime unit suite passed
+ASan (`/tmp/ft-empty-frame-asan-final-test.log`).
+CUDA memcheck reported zero errors for both the event and feedback suites
+(`/tmp/ft-empty-frame-events-memcheck.log` and
+`/tmp/ft-empty-frame-parity-memcheck.log`).
+
+### Cold Source Cursor Gate
+
+The cursor must not become the default solely because long source walks are
+faster. A fresh comparison used the same executable with the cursor explicitly
+off/on, alternating three native/off/on triples for each existing structure.
+All 63 runs satisfied the count and timing contracts; Blocks runs matched the
+source oracle's score, evaluation time and input hash without mapped fallback.
+The native/Blocks-on paired medians were `1.099x` (workbench), `1.053x`
+(indirect), `1.054x` (broadcast), `0.693x` (tick events), `1.070x` (loop chunks),
+`1.025x` (checkpoint events), and `0.982x` (conditional events).
+The native-relative acceptance gate therefore still fails.
+
+Cursor-off/on paired medians ranged from `1.111x` to `1.864x`, but individual
+broadcast and tick-event pairs regressed. The workstation was busy, and mapped
+phase timings also changed even though this switch affects source control.
+Do not attribute every whole-run difference to the cursor. Raw runs, binary
+hashes, GPU telemetry and explicit variant environments are retained in
+`/tmp/ft-cursor-policy-complete-pairs`.
+
+`tests/block_program_source_benchmark.py` now supplies the missing cold-process
+gate. Each process executes an editable source loop with a time observation
+after every step, then publishes speed and counts one result. It alternates
+cursor off/on, checks exact result identity and the timing contract, rejects
+resident fallback, and records executable hashes, environment, raw logs and
+GPU telemetry. Each run starts a new process; these are not warmed-up cursor
+measurements or native-search comparisons. Run it with:
+
+```sh
+python3 tests/block_program_source_benchmark.py \
+  --build build/cuda-v3 --packs "$PACKS" --replay "$REPLAY" \
+  --output /tmp/source-cursor-cold
+```
+
+The output directory must not already exist. The default is three pairs each
+at 1, 10, 100 and 600 ticks. `--profile` enables diagnostic stage timers;
+normal paired measurements leave profiling disabled.
+
+The unprofiled run in `/tmp/ft-cursor-cold-verified` measured:
+
+| Source Ticks | Median Off Time | Median On Time | Median Paired Off/On Ratio |
+| --- | ---: | ---: | ---: |
+| 1 | 4.936 ms | 97.825 ms | 0.110x |
+| 10 | 7.485 ms | 43.654 ms | 0.171x |
+| 100 | 39.894 ms | 68.641 ms | 0.577x |
+| 600 | 307.354 ms | 209.938 ms | 1.465x |
+
+The paired ratio is not the ratio of separately computed median times.
+An earlier profiled set under different load made 100 ticks faster with the
+cursor, but still regressed at 1 and 10 ticks. Its one-tick cursor startup
+took `43.784` ms, versus `4.449` ms in prediction and `0.030` ms in decoding
+(`/tmp/ft-cursor-cold-pairs/1-0-on.log`). A fixed tick-count threshold inferred
+from one loaded run would not establish a robust activation policy. The next
+cursor optimization must address cold startup, not just long-walk throughput.
+The cursor remains opt-in; this investigation does not claim a runtime speedup.
+
+The benchmark and runtime-test targets built successfully. The new script
+passed Python compilation, invalid-argument checks and all 24 real cold-process
+runs. All seven CUDA runtime suites passed with the cursor enabled in `87.66`
+seconds (`/tmp/ft-cursor-policy-build.log` and
+`/tmp/ft-cursor-policy-test.log`). No runtime code changed in this investigation.
+
+### Independent Cursor Module
+
+The cursor kernels now live in `program_cuda_cursor_kernel.cu`, separate from
+the mapped interpreter kernels. Both translation units use the same private
+`program_cuda_device.cuh` definitions for physics, lane storage and kernel
+parameters. No physics operations, source scheduling policy, public API or
+precision flags changed. Initialization uses the existing runtime kernel
+launch API with the shared parameter layout. The source cursor remains opt-in.
+
+A fresh one-tick CUPTI trace attributed `60.266` ms of `62.018` ms cursor
+startup to `cuLibraryLoadData` before the split. The corresponding post-split
+diagnostic measured `16.696` ms library loading and `18.926` ms cursor startup.
+These isolated profiles are attribution, not paired speedup measurements:
+`/tmp/ft-cursor-cold-cupti.log` and `/tmp/ft-cursor-module-cupti.log`.
+The former 9.1 MiB CUDA object became a 6.0 MiB mapped object and a 3.6 MiB
+cursor object; these file sizes are not GPU residency measurements.
+Static register, stack and constant-memory reports match the previous binary
+for all 16 mapped/cursor kernel variants
+(`/tmp/ft-cursor-module-resources.json`).
+
+The source benchmark accepts `--baseline-executable` to interleave a previous
+cursor-enabled executable with the new enabled/disabled controls. It now also
+records complete subprocess wall time, separately from the established
+baseline-inputs-to-completion execution boundary. Three alternating triples
+per size measured the following cursor-enabled before/after results:
+
+| Source Ticks | Before | After | Median Paired Before/After |
+| --- | ---: | ---: | ---: |
+| 1 | 40.425 ms | 19.404 ms | 2.099x |
+| 10 | 43.150 ms | 23.503 ms | 1.850x |
+| 100 | 69.082 ms | 50.096 ms | 1.393x |
+| 600 | 210.718 ms | 190.016 ms | 1.109x |
+
+Evidence is `/tmp/ft-cursor-module-cold-pairs`. A second 36-run set that also
+measured process launch through exit reproduced execution gains of `1.697x`,
+`1.683x`, `1.356x` and `1.103x`, respectively. Its complete-process paired
+ratios were `1.0322x`, `1.0322x`, `1.0323x` and `1.0001x`
+(`/tmp/ft-cursor-module-cold-wall-pairs`). The last whole-process observation
+is effectively neutral, not a 10% end-to-end gain. Workstation load changed
+between sets. Even after this reduction, short programs can remain faster
+with the cursor disabled; its activation cliff is reduced, not eliminated.
+
+With the cursor disabled, three native/before/after triples for each of the
+seven mapped structures all satisfied source-oracle result identity, execution
+mode, count and timing checks. All 21 before/after pairs improved; per-structure
+median execution ratios ranged from `1.0043x` to `1.0124x`. Native/after medians
+were only `0.7871x`-`0.8367x`, so the broader throughput goal still fails.
+Evidence is `/tmp/ft-cursor-module-default-pairs`.
+
+A further 63 runs with the cursor enabled exercised loading both modules.
+Their per-structure before/after medians ranged from `0.9828x` to `1.0193x`:
+mixed results, including small regressions, not a demonstrated combined-path
+gain (`/tmp/ft-cursor-module-resident-pairs`). The split is retained for the
+verified source-only and default mapped improvements, but this experimental
+combined path still needs work. No general native-relative advantage is claimed.
+
+Verification of the split:
+
+- All seven CUDA runtime suites passed in `74.43` seconds
+  (`/tmp/ft-cursor-module-test.log`).
+- Forced host scheduling and forced monolithic scheduling with two-lane waves
+  each passed all five selected event, fallback, publication, snapshot and math
+  suites (`/tmp/ft-cursor-module-host-test.log` and
+  `/tmp/ft-cursor-module-monolithic-test.log`). Exact host math remains resumable
+  even when monolithic execution is requested.
+- Source/cursor and two-lane feedback CUDA memchecks both reported zero errors
+  (`/tmp/ft-cursor-module-source-memcheck.log` and
+  `/tmp/ft-cursor-module-parity-memcheck.log`).
+- Source parity also passed with `CUDA_MODULE_LOADING=EAGER`
+  (`/tmp/ft-cursor-module-eager-source-test.log`).
+- The complete application linked and the CPU runtime unit suite passed
+  (`/tmp/ft-cursor-module-app-build.log` and
+  `/tmp/ft-cursor-module-unit-test.log`).
+
+### Rejected VM Storage Experiments
+
+Two subsequent experiments were removed after measurement rather than retained
+on the strength of lower static resource counts or more coalesced stores:
+
+- A local hot-state VM cache separated the frame and random-generator storage
+  from frequently accessed interpreter metadata. All seven CUDA suites and
+  focused CPU sanitizer tests passed, but 63 alternating native/before/after
+  runs showed no consistent mapped-stage improvement. Evidence and the rejected
+  binary are in `/tmp/ft-hot-state-default-pairs` and
+  `/tmp/ft-hot-state-experiment-benchmark`.
+- Warp-cooperative initial arena and native-state copies passed all eight CUDA
+  suites in `79.82` seconds. Default, forced-host and monolithic initialization
+  memcheck/synccheck runs each reported zero errors. A two-lane-wave memcheck
+  was stopped before completion; it is not a passing result. Another 63 paired
+  runs produced whole-execution before/after medians of `1.002x`, `0.995x`,
+  `0.997x`, `0.997x`, `0.998x`, `0.993x`, and `0.996x` for workbench, indirect,
+  broadcast, tick events, loop chunks, checkpoint events and conditional events.
+  Mapped-stage measurements likewise showed no consistent gain. Evidence is
+  `/tmp/ft-cooperative-init-default-pairs`; the rejected binary is
+  `/tmp/ft-cooperative-init-experiment-benchmark`.
+
+The initialization regression test remains: 31, 32, 33 and 65 mapped lanes,
+an 8193-element shared initial payload, distinct per-lane inputs, and complete
+published-state/input comparisons against uncompiled source execution. CUDA
+must actually execute the mapped program, not silently fall back. CPU ASan
+unit and source-fixture checks passed. These tests strengthen coverage but do
+not establish the native-throughput goal. The last cooperative-copy experiment
+ran at only `0.752x` to `0.832x` native throughput across these structures.
+
+After removing both experiments, the complete application and benchmark rebuilt,
+all eight CUDA suites passed in `97.27` seconds, CPU runtime unit tests passed,
+and the initialization fixture passed with two-lane waves in `9.34` seconds.
+Final logs are `/tmp/ft-init-final-{build,test,unit,tiny}.log`.
+
+### Separate Versus Lane-Local Phases
+
+A fresh forced-scheduled, host-driven CUPTI diagnostic exposed the mapped
+phases that the earlier conditional-graph activity trace did not record:
+601 VM resumes took `323.688` ms in aggregate, including `45.490` ms for the
+first resume; 600 physics launches took `530.905` ms. The root source path
+made 601 timeline calls totaling `293.029` ms. This is instrumented attribution,
+not an acceptance benchmark (`/tmp/ft-current-scheduled-cupti.log`). Merely
+disabling graphs is insufficient for this diagnostic: the normal short-pause
+heuristic chooses monolithic replay unless scheduling is explicitly forced.
+
+A generic experimental lane-local scheduler called the same VM and physics
+phases through separate non-inlined device functions. Exact host math still
+yielded to the CPU, and all eight CUDA suites passed in `85.74` seconds.
+However, its mapped-stage before/after ratios were `0.485x` to `0.697x` across
+the seven structures, with three pairs for six structures and two for the last.
+Only 62 of 63 planned runs completed: concurrent GPU workloads caused a root
+simulation failure, subsequently reproduced with the unchanged baseline.
+Those failures are not passing parity or throughput results.
+
+A second version passed parameters by reference and used read-only grid
+parameters where supported, but did not recover the lost throughput. It passed
+all eight suites in `115.81` seconds. Another 27 alternating native/before/after
+runs produced mapped-stage ratios of `0.614x`, `0.679x` and `0.557x` for
+workbench, tick events and conditional events. These runs had competing GPU
+load; root costs varied substantially, so they are not a controlled native
+acceptance result. Both versions were removed. Lower launch counts and a
+smaller static stack than the older monolithic kernel did not translate into
+faster execution; VM cycle counts increased sharply in the lane-local loop.
+
+Evidence: `/tmp/ft-phase-pairs`, `/tmp/ft-phase-ref-pairs`, and
+`/tmp/ft-phase{,-ref}-{profile,test}.log`. Rejected binaries are preserved as
+`/tmp/ft-phase-value-benchmark` and `/tmp/ft-phase-ref-benchmark`. The existing
+separate-kernel scheduler remains unchanged. Further optimization must reduce
+actual VM or physics work rather than assume dispatch fusion is beneficial.
+
+After removal, the full application and benchmark rebuilt, all eight CUDA
+suites passed in `110.08` seconds, and CPU runtime unit tests passed. The kernel
+source matches the saved pre-experiment source exactly. Final verification is
+in `/tmp/ft-phase-final-{build,test,unit}.log`.
+
+### Rejected Cursor Warmup and Allocator Experiments
+
+Automatic resident source-cursor activation after 64 read-only advances passed
+parity, including 152 publications spanning mutations, restore, horizon changes
+and restart. It nevertheless introduced a threshold cliff: paired 65-, 100-
+and 600-tick source workloads measured before/automatic ratios of `0.574x`,
+`0.674x` and `1.538x`. Automatic activation was removed; explicit cursor policy
+is unchanged. Evidence: `/tmp/ft-auto-source-pairs` and
+`/tmp/ft-auto-cursor-verified-pairs`. The latter's native comparisons had
+competing graphics load and did not establish the native acceptance gate.
+
+Replacing allocator size-class loops with CUDA leading-zero instructions also
+failed the no-regression gate. Full allocation/release replacement was mixed
+across seven structures. Release-only replacement remained mixed in a second
+126-run alternating confirmation, with mapped-stage ratios ranging from
+`0.976x` to `1.037x`. Both versions were removed. Evidence:
+`/tmp/ft-bucket-default-pairs`, `/tmp/ft-release-bucket-default-pairs` and
+`/tmp/ft-release-bucket-confirm-pairs`. These are rejected experiments, not
+claimed throughput improvements.
+
+Retained regression coverage includes the source-transition fixture and 261
+device allocator boundary cases covering size-class transitions, overflow,
+retain/release and free-list reuse. The allocator test uses small physical
+allocations with large logical capacities and never accesses oversized payloads.
+
+### Output Arena Growth Without Physics Replay
+
+Output-capacity exhaustion now retains the completed VM result in its working
+arena and retries compaction into the larger output arena. It clears temporary
+forwarding links before recompacting every successful lane, including lanes
+whose smaller outputs already fitted. Working-arena failures still require
+execution retries. Growth respects the existing half-VRAM wave budget and
+2 MiB per-lane output ceiling; if the larger output would require fewer lanes,
+the existing wave-reduction path remains responsible for recovery.
+
+The 3- and 33-lane regression fixture checks 50-level nested shared lists,
+mixed small and large results, imported and newly captured snapshot identity,
+every publication, and physics after restoring decoded snapshots against
+uncompiled CPU execution. The full application rebuilt and all 11 CUDA suites
+passed in `111.12` seconds. CPU runtime unit tests and the CPU ASan output-growth
+fixture also passed. Evidence: `/tmp/ft-output-budget-{build,test,profile}.log`,
+`/tmp/ft-output-final-unit.log` and `/tmp/ft-output-retry-asan-{unit,growth}.log`.
+
+A separate 64-lane, 600-tick large-output workload matched source-oracle score,
+evaluation time and input hash. Six alternating unprofiled before/after pairs
+measured `2.874x` median before/after execution-time ratio, with median times
+`1.684 s` and `0.581 s`. Diagnostic profiling explains the reduction: the old
+path executed all 38,400 physics steps four times; the new path executed them
+once, followed by three output-only compactions (128 KiB to 1 MiB), without
+wave-budget reduction. Both paths used the CUDA program kernel. Competing
+graphics applications were present; telemetry and individual runs are retained
+in `/tmp/ft-output-growth-pairs`. This isolates an output-growth cliff and is
+not a native-baseline acceptance result or a claim about arbitrary programs.
+
+The ordinary-output comparison completed 63 alternating native/before/after
+runs across workbench, indirect calls, broadcasts, tick events, loop chunks,
+checkpoint events and conditional events. Every compiled run matched its
+source oracle. Median mapped-stage before/after ratios were respectively
+`1.010x`, `0.990x`, `0.992x`, `1.003x`, `1.000x`, `1.006x` and `1.000x`.
+This is approximately unchanged throughput under the recorded concurrent GPU
+load, not evidence of an ordinary-output speedup. End-to-end native/after
+ratios were `1.050x`, `1.016x`, `0.718x`, `0.732x`, `0.732x`, `0.629x` and
+`0.810x`: the broad native acceptance gate remains unmet. Individual timings,
+binary hashes and telemetry are in `/tmp/ft-output-retry-default-pairs`.
+
+An additional mixed-growth case forces one lane's working arena to overflow
+while another lane exhausts its output arena. Profiling confirms that this
+wave skips output-only retries, reruns with a 2 MiB working arena, then finishes
+with two output-only compactions. All publications and restored states match
+source execution. With this case included, all 11 CUDA suites passed again in
+`107.13` seconds, and Compute Sanitizer reported zero errors for output growth.
+The 261-case allocator memcheck also reported zero errors. Evidence:
+`/tmp/ft-output-mixed-{build,test,profile,memcheck}.log` and
+`/tmp/ft-output-allocator-memcheck.log`.
+
+The mixed-growth fixture also passed with host scheduling (`GRAPH=0`), the
+monolithic kernel, and two-lane wave splitting. Rebuilt CPU ASan unit and
+output-growth tests passed with leak detection disabled. Logs:
+`/tmp/ft-output-mixed-{host,monolithic,waves,unit}.log` and
+`/tmp/ft-output-mixed-asan-{build,unit,growth}.log`.
+
+### Smaller Source Cursor Modules
+
+Profiling separated the remaining source-root cost from mapped execution.
+Three 600-tick structures spent about `1.05-1.08 s` in individual sandbox
+advances with the cursor disabled, versus `0.26 s` with it explicitly enabled.
+All six runs matched source-oracle score, evaluation time and input hash.
+These are diagnostic runs under competing graphics load, not paired acceptance
+measurements (`/tmp/ft-root-profile-{0,1}-*.log`).
+
+The enabled cursor still spent `26-45 ms` initializing its first kernel while
+buffer preparation cost only `0.2-0.6 ms`. An eager-loading diagnostic reduced
+initialization to `0.3 ms`, identifying module loading rather than allocation
+as the main cold cost. Eager loading was not adopted: it moves work outside
+the execution timer. CUDA's loading behavior is documented in the
+[NVIDIA lazy-loading guide](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/lazy-loading.html).
+
+Initialization now has its own small module. Existing generic, legacy,
+geared-dry and geared-water prediction implementations are registered in
+separate modules; the generic module contains both collision-order variants.
+Their shared prediction/export implementation is unchanged, and all five
+prediction kernels retain identical register and stack counts. The source
+cursor remains opt-in; this does not introduce a program-pattern policy.
+
+Six alternating before/after/off triples per source size matched uncompiled
+CPU results. With normal lazy loading, paired before/after execution ratios
+were `2.312x`, `2.019x`, `1.313x`, `1.265x` and `1.053x` for 1, 10, 65, 100
+and 600 ticks. Corresponding complete-process ratios were `0.994x`, `1.003x`,
+`0.974x`, `1.003x` and `0.999x`: mixed, not a demonstrated complete-process
+speedup. The new one-tick cursor remains slower than leaving it disabled.
+Timing uses blocking process waits plus an independent timeout watchdog,
+not the coarse polling wait used in the first exploratory set. Evidence:
+`/tmp/ft-cursor-shards-precise-pairs` (95 runs including five CPU oracles).
+
+Four eager-loading triples at 1 and 600 ticks also matched their oracles.
+Whole-process before/after ratios were `1.023x` and `1.022x`; execution ratios
+were `0.933x` and `1.080x`. This configuration remains mixed rather than an
+all-size execution improvement (`/tmp/ft-cursor-shards-eager-pairs`).
+
+Another 63 native/before/after runs with the cursor disabled had mixed paired
+execution ratios of `0.982x-1.009x` and failed the native gate in every tested
+structure. Root costs changed sharply during the set; the recorded telemetry
+does not support treating it as a controlled no-regression proof. Evidence:
+`/tmp/ft-cursor-shards-default-pairs`. The measured cursor startup reduction
+does not establish the broader default-throughput goal.
+
+The full application rebuilt, all 11 existing CUDA suites passed in `107.05 s`,
+and the added module-registration test loaded all five prediction paths and
+both initialization paths. Source and transition memchecks reported zero
+errors. Source parity also passed on the B05 replay, and transition parity
+passed with eager loading. CPU runtime unit tests passed. Logs:
+`/tmp/ft-cursor-shards-{build,test,source-memcheck,transitions-memcheck,b05-source,eager-transitions,unit}.log`
+and `/tmp/ft-cursor-modules-{build,test}.log`.
+
+### Rejected Warp-Coherent Dispatch
+
+A subsequent VM experiment grouped runnable lanes by bytecode address and
+executed one instruction per matching group. Finished and externally paused
+lanes continued participating in warp votes without executing further source
+instructions. This preserved early returns, deferred physics, exact host-math
+requests and partial-warp participation. Both dispatch variants used 80
+registers and a 6,928-byte stack; the experiment did not reduce those resources.
+
+All 12 then-existing CUDA checks passed in `108.84 s`. The new divergence
+fixture additionally covers 1, 3, 31, 32, 33 and 65 lanes, different loop counts,
+recursive calls, selectively requested host math, an immediate imported
+snapshot return, scalar returns with pending physics, and subsequent snapshot
+restores. Every publication's full state, inputs and score is compared with
+uncompiled CPU execution. A separate 33-lane case cancels one long-running
+lane while the other lanes return early and checks that the caller never
+commits its continuation. CPU ASan passed; CUDA memcheck and synccheck each
+reported zero errors for the divergence and cancellation fixture.
+
+Performance nevertheless failed in all seven structures. In 63 alternating
+native/before/after runs, median mapped-stage before/after ratios were `0.958x`,
+`0.981x`, `0.986x`, `0.987x`, `0.991x`, `0.979x` and `0.953x` for workbench,
+indirect calls, broadcasts, tick events, loop chunks, checkpoint events and
+conditional events. Every compiled result matched its source oracle. Root
+costs varied, so the checkpoint fixture's positive whole-execution ratio was
+not a VM improvement. The dispatch experiment was removed; the additional
+semantic regression tests remain.
+
+Evidence: `/tmp/ft-coherent-default-pairs`, `/tmp/ft-coherent-test.log`,
+`/tmp/ft-coherent-divergence-{test,synccheck,memcheck}.log`,
+`/tmp/ft-coherent-cancel-test.log` and `/tmp/ft-divergence-cancel-asan-test.log`.
+The rejected binary and source are preserved as
+`/tmp/ft-coherent-experiment-benchmark` and
+`/tmp/ft-coherent-experiment-program-cuda-kernel.cu`. The restored kernel source
+matches the pre-experiment backup exactly.
+
+After removal, the complete application rebuilt and all 13 CUDA checks passed
+in `94.37 s`. The retained divergence/cancellation fixture also passed forced
+host scheduling and two-lane wave splitting. Final CPU ASan unit tests passed;
+final CUDA memcheck and synccheck each reported zero errors. Evidence:
+`/tmp/ft-coherent-removed-{build,test}.log`,
+`/tmp/ft-divergence-{host,waves}-test.log` and
+`/tmp/ft-divergence-final-{asan-unit,memcheck,synccheck}.log`.
+
+### Rejected Operand-Stack Cache
+
+A scoped top-of-stack cache was tested in the scheduled CUDA VM. It preserved
+instruction order and flushed the live operand before every suspension and
+contiguous builtin argument access. All 13 CUDA suites passed in `105.50 s`;
+1,536 CPU ASan differential cases compared live operands, arena ownership,
+free lists, control state and final results across capacity, operation-limit
+and cancellation boundaries. Registers remained at 80; VM stack usage grew
+from 6,928 to 6,976 bytes per thread.
+
+The 63 alternating native/before/after runs nevertheless rejected the change.
+Median mapped-stage before/after ratios were `0.967x`, `0.950x`, `0.965x`,
+`0.953x`, `0.960x`, `0.948x` and `0.949x` for workbench, indirect calls,
+broadcasts, tick events, loop chunks, checkpoint events and conditional events.
+Every Blocks result matched its source oracle. Native remains a throughput
+comparator, not a verified identical candidate corpus. The runtime headers
+were restored exactly to their pre-experiment versions. The operand tests
+remain, comparing varied suspension quanta against single-instruction resumes
+at matching operation boundaries rather than testing a removed cache.
+
+Evidence: `/tmp/ft-stack-cache-default-pairs`,
+`/tmp/ft-stack-cache-{test,unit}.log`,
+`/tmp/ft-stack-cache-ownership-test.log` and
+`/tmp/ft-stack-cache-experiment-benchmark`.
+
+After restoration, the complete application rebuilt and all 13 CUDA checks
+passed in `97.96 s`. The 1,536 retained suspension cases passed in both the
+regular unit suite and CPU ASan. Both runtime headers match their baseline
+backups byte for byte; `git diff --check` passed. Final verification logs:
+`/tmp/ft-stack-cache-removed-{rebuild,test,unit}.log` and
+`/tmp/ft-stack-cache-suspension-asan-{build,test}.log`.
+
+### Rejected Serialization Split and Register Cap
+
+The scheduled VM was also tested with completion serialization moved to a
+separate launch of the existing output compactor. This reduced the resume
+kernel's per-thread stack from 6,928 to 2,080 bytes, with 80 registers unchanged.
+All 13 CUDA checks passed in `125.39 s`, but 63 alternating paired runs did not
+show a consistent speedup. Median mapped-stage before/after ratios were
+`0.993x`, `1.016x`, `1.007x`, `1.004x`, `1.000x`, `0.990x` and `0.992x` for
+workbench, indirect calls, broadcasts, tick events, loop chunks, checkpoint
+events and conditional events.
+
+A second variant limited this smaller resume kernel to 64 registers. Its
+stack was 2,144 bytes, and all 13 CUDA checks passed in `124.21 s`. Another
+63 alternating runs returned median mapped-stage ratios of `1.002x`,
+`1.005x`, `0.999x`, `0.997x`, `0.992x`, `0.999x` and `1.005x`. Both variants
+matched every Blocks source oracle. Neither justified retaining the extra
+serialization launch or register restriction, so both were removed.
+
+The earlier indirect-call 28-second outlier was separately rechecked. Current
+profiled and unprofiled runs both took approximately 1.2 seconds in the mapped
+stage; paired runs of the restored and saved baseline binaries likewise did
+not reproduce the large stall. Shared GPU utilization and available memory
+varied substantially. Do not attribute that historical outlier to a stable
+VM bottleneck, or use smaller kernel resource counts as proof of throughput.
+
+Evidence: `/tmp/ft-serialize-pairs`, `/tmp/ft-serialize-reg64-pairs`,
+`/tmp/ft-serialize-test.log`, `/tmp/ft-serialize-reg64-test.log`,
+`/tmp/ft-indirect-current-profile.log` and `/tmp/ft-indirect-revalidated-pairs`.
+Rejected variants are preserved as `/tmp/ft-serialize-split-{kernel.cu,benchmark}`
+and `/tmp/ft-serialize-reg64-{kernel.cu,benchmark}`.
+
+After removal the full application rebuilt, all 13 CUDA checks passed in
+`99.80 s`, and the regular unit suite passed, including 1,536 operand suspension
+cases. The kernel source matches its pre-experiment backup byte for byte and
+`git diff --check` passed. Final logs: `/tmp/ft-serialize-removed-{build,test,unit}.log`.
+
+### Initial Global Read Proofs
+
+Initial-value import previously encoded globals even when every access to that
+name resolved to an initialized procedure parameter, or the program only wrote
+the global. Adding a 70,000-element global list named like the mapped parameter
+therefore exceeded the 2 MiB staging arena and forced both CUDA and compiled
+CPU execution back to the source interpreter, despite the list being unread.
+
+The compiler now records a conservative, symbol-sized initial-global read mask.
+Loads and changes require initial values unless their frame slot is a parameter,
+which is initialized on entry. Conditional locals retain global fallback;
+reads in any compiled callee retain the global even when a caller shadows its
+name. CUDA, host bytecode and uniform proofs share this metadata. Bytecode
+without it imports all globals as before. No instruction, RNG operation,
+source accounting or physics implementation changes, and genuinely read large
+globals retain the existing capacity policy. This first proof used a linear
+scan of code, parameters and local slots, rather than code size multiplied by
+argument count; the following extension adds bounded control-flow analysis.
+
+The new `shadowed-globals` diversity fixture preserves the original workbench
+source result and is now included in the default diversity set. In final
+alternating native/before/after triples, 16- and 64-candidate, 2,000 ms searches
+improved by `4.824x` and `16.082x` over the old fallback path. Median execution
+times were `1.191 -> 0.247 s` and `4.519 -> 0.281 s`; every result matched the
+uncompiled CPU oracle and every new Blocks run stayed in the CUDA program
+kernel. Native/Blocks ratios were `2.517x` and `2.167x` for these two cases.
+Native is still not a verified identical candidate corpus.
+
+Another 63 paired runs across the seven existing 1,024-candidate, 6,000 ms
+structures matched all source oracles. Median mapped-stage before/after ratios
+were `1.015x`, `0.994x`, `0.998x`, `0.989x`, `0.994x`, `0.999x` and `1.004x`.
+Those runs do not establish a general speedup; six structures still missed
+the native gate. The optimization removes the demonstrated import cliff,
+not the remaining broad-throughput gap. The complete before/after CUDA PTX
+dumps have identical SHA-256 hashes, confirming that device code is unchanged.
+
+Verification: the full application rebuilt, all 14 CUDA suites passed in
+`120.76 s`, and the CPU unit suite and ASan passed. Tests cover conditional
+locals, callee scope, change-only reads, write-only globals, unsupported but
+unread procedure values, uniform proofs and missing metadata. The new CUDA
+fixture compares every public state property and input stream at 1, 3 and 33
+lanes; it also passes forced host scheduling and two-lane wave splitting.
+CUDA memcheck and synccheck both report zero errors.
+
+Evidence: `/tmp/ft-global-import-final-pairs`,
+`/tmp/ft-global-import-default-pairs`, `/tmp/ft-global-import-cross-structure.log`,
+`/tmp/ft-global-import-final-{build,test,unit}.log`,
+`/tmp/ft-global-import-scope-asan-{build,test}.log`,
+`/tmp/ft-global-import-{host,waves}-test.log` and
+`/tmp/ft-global-import-{memcheck,synccheck}.log`.
+
+### Globals Overwritten Before Read
+
+The read proof now follows each procedure's control flow. An initial value is
+unnecessary only if no path from procedure entry reaches a read or change
+before a store or local assignment to that name. Both branches are traversed;
+backedges are visited once per symbol. Returns, stops and interpreter exits
+terminate paths. Callee reads remain conservatively analyzed from their own
+entries, so caller assignments do not incorrectly hide required callee globals.
+No instructions, branch conditions or physics operations are rewritten.
+
+Graph visits are bounded per procedure by the smaller of two million and
+64 times its instruction count. An unfinished proof retains the initial value.
+A 1,024-variable test exercises this boundary, retains 514 imports and matches
+the fully conservative executor's result and operation count. Fifteen further
+variants cover both-arm and one-arm assignments, zero-iteration loops, loop
+conditions, breaks, continues, early returns, dead reads, conditional locals
+and callee scope. Proven omissions also execute against otherwise unencodable
+initial values without falling back.
+
+The `overwritten-globals` fixture adds a large root global plus a mapped store
+followed by a change, without altering the workbench's source result. It is
+included in the default diversity set. In 18 alternating native/before/after
+runs, 16- and 64-candidate, 2,000 ms searches improved by `4.566x` and `22.893x`
+over the previous compiler, which still fell back on this fixture. Median
+execution times were `1.211 -> 0.298 s` and `10.181 -> 0.439 s`. Every Blocks
+result matched the uncompiled CPU oracle; every new run used the CUDA program
+kernel. Native/Blocks ratios were `2.997x` and `2.058x`, subject to the existing
+non-identical-corpus caveat.
+
+The seven established 1,024-candidate structures also passed source identity
+checks in 63 paired runs. Mapped-stage median before/after ratios were `0.992x`,
+`0.985x`, `1.001x`, `0.994x`, `0.992x`, `1.007x` and `0.998x`. These mixed
+measurements are not evidence of a general throughput improvement; all seven
+still missed the native gate in this set. Complete CUDA PTX dump hashes remain
+identical before and after this compiler-only change.
+
+Final verification rebuilt the application and passed all 14 CUDA suites in
+`115.50 s`, the regular unit suite and CPU ASan. The expanded global-import
+fixture verifies all public state properties and input streams at 1, 3 and
+33 lanes, including a local/global assignment split and an unassigned branch
+that must retain its initial global. Forced host scheduling, two-lane waves
+and B05 replay parity passed; CUDA memcheck and synccheck reported zero errors.
+
+Evidence: `/tmp/ft-global-flow-pairs`, `/tmp/ft-global-flow-default-pairs`,
+`/tmp/ft-global-flow-final-{build,test,unit}.log`,
+`/tmp/ft-global-flow-final-asan-{build,test}.log`,
+`/tmp/ft-global-flow-{host,waves,b05}-test.log` and
+`/tmp/ft-global-flow-{memcheck,synccheck}.log`.
+
+### Dynamic Callback Globals
+
+Dynamic calls already compiled every procedure definition, but the combined
+global-read mask also imported values used only by unrelated definitions.
+A callback selected outside the map therefore fell back when an unreachable
+procedure read a 70,000-element global list.
+
+The compiler now retains sparse per-procedure initial-read metadata and a
+dynamic-call flag. CUDA import and uniform proofs resolve possible callback
+targets from incoming arguments, required globals, nested collections, direct
+calls and reference instructions. Newly reached procedures can expose further
+global callbacks, so resolution continues to a fixed point. All procedure code
+remains available: no instructions or function implementations are specialized
+away. Host bytecode retains the existing conservative import behavior without
+adding a per-lane resolver cost.
+
+Shared lists are visited once, recursive callback graphs converge, and both
+visited-value work and queued values are bounded. Unknown targets, missing
+metadata or exhaustion return to the existing combined mask rather than guess.
+An additional bounded compiler pass distinguishes a reachable procedure's
+overwritten global from an initial read in an unrelated earlier definition;
+its separate budget preserves the previous combined-mask analysis budget.
+
+The `dynamic-globals` fixture selects its evaluator through a root-created
+procedure value and adds an unreachable definition with a large global read.
+It preserves the original workbench source output and joins the default
+diversity set. In 18 alternating native/before/after runs, 16- and 64-candidate,
+2,000 ms searches improved by `4.686x` and `16.083x`. Median execution times
+were `1.193 -> 0.257 s` and `4.551 -> 0.283 s`. Every result matched the
+uncompiled CPU oracle, and every new run stayed in the CUDA program kernel.
+Native/Blocks ratios were `2.864x` and `2.576x`, with the same unverified
+identical-corpus caveat as the other native measurements.
+
+Another 63 paired runs passed all seven established source oracles. Their
+mapped-stage before/after medians were `1.004x`, `0.996x`, `0.997x`, `1.008x`,
+`1.002x`, `1.002x` and `0.990x`. Four structures still trailed native, so this
+does not establish the broader throughput goal. Complete CUDA PTX dump hashes
+remain identical before and after this host-side change.
+
+The full application rebuilt and all 15 CUDA suites passed in `110.48 s`.
+CPU ASan and regular units cover global and argument callbacks, direct callees,
+returned callbacks, changed targets, recursive graphs, shared collections,
+unknown targets, missing metadata, bounded recovery and uniform proofs.
+The new CUDA suite checks every published state property and input stream at
+1, 3 and 33 lanes, including target changes between maps and callbacks created
+by tick handlers and subsequently called within a lane. Increasing publication
+scores ensure that each candidate is observed. Forced host scheduling, two-lane
+waves and B05 parity passed; memcheck and synccheck both reported zero errors.
+
+Evidence: `/tmp/ft-dynamic-globals-pairs`, `/tmp/ft-dynamic-globals-default-pairs`,
+`/tmp/ft-dynamic-globals-verified-{build,focus,test,unit}.log`,
+`/tmp/ft-dynamic-globals-verified-asan-{build,test}.log`,
+`/tmp/ft-dynamic-globals-{host,waves,b05}-test.log` and
+`/tmp/ft-dynamic-globals-{memcheck,synccheck}.log`.
+
+### Required Large Values
+
+Skipping unreachable globals does not help when a mapped program actually
+reads a large collection. Initial-value encoding now retries with fresh arenas
+and codecs up to a bounded 64 MiB, rebuilding every handle and imported snapshot
+token together. Cancellation is checked between attempts. Inputs beyond that
+limit still use source execution; output serialization retains its 2 MiB bound.
+The working arena can grow to twice the rounded import size, capped at 64 MiB,
+with the existing 2 MiB minimum retry limit.
+
+GPU initialization copies each imported arena using coalesced 4 KiB tiles rather
+than one lane's serial byte loop. Graph, host-scheduled and monolithic execution
+all initialize explicitly, including adaptive replay. Scheduled execution also
+resets each physical state from the origin before resuming the VM. No arithmetic,
+RNG or physics instruction semantics change.
+
+Large imports have six bounded power-of-two resource classes (2 through 64 MiB),
+each remembering working and output growth independently. Smaller maps retain
+the existing resource cache. Without this separation, one large map made a
+subsequent small 1,024-lane map retain 8 MiB per lane and split into eleven waves,
+although peak actual usage was only 262,048 bytes. With separate classes the
+same map used one 1,024-lane wave with a 256 KiB arena. This is a resource-layout
+improvement, not evidence of an unconditional end-to-end speedup.
+
+The `read-globals` fixture performs indexed reads from a required root-created
+70,000-element list. `shrinking-globals` imports that list in an earlier map,
+shrinks it, then runs the ordinary workbench search after resetting the root
+RNG. Both join the default diversity set. Uncompiled CPU results remain the
+Blocks correctness oracle; the native identical-candidate corpus is still
+unverified.
+
+The complete CUDA suite passed all 16 tests in `139.27 s`, and regular units and
+CPU ASan passed. Large-import parity covers required globals and arguments at
+1, 3 and 33 lanes, RNG before copy-on-write mutation, imported and new snapshots,
+tick callbacks and every published state property and input stream. A five-map
+sequence alternates 70,000, 3, 140,000, 5 and 70,000 elements in one executor.
+The million-element case checks bounded source fallback. Cancellation measures
+stop-request-to-return, excluding setup. Output tests additionally cross the
+large-import class boundary while growing working and serialization arenas.
+
+Additional checks passed forced host scheduling, adaptive monolithic replay,
+forced monolithic execution, two-lane waves for imports and output growth, and
+B05 large-import parity. CUDA memcheck and synccheck each reported zero errors
+for both large-import and output-growth tests. The adaptive rerun encountered
+allocation failures at nine and four lanes and recovered by reducing the wave
+without source fallback. Profile-only diagnostics now expose allocation retries
+and lane-error fallback. An earlier adaptive run fell back at one lane before
+these diagnostics existed; two subsequent runs passed, so its precise cause
+remains unclassified rather than being asserted to be fixed.
+
+Eighteen alternating native/before/after runs of `read-globals` passed the source
+oracle. At 16 and 64 candidates, median execution times were respectively
+`7.429 -> 0.676 s` and `22.039 -> 0.773 s`; paired before/after ratios were
+`10.207x` and `40.821x`. Twelve further runs comparing the intermediate serial
+import implementation against coalesced initialization measured mapped-stage
+ratios of `2.099x` and `2.141x` (`0.464 -> 0.221 s` and `0.586 -> 0.266 s`).
+These are shared-GPU observations, not isolated hardware throughput estimates.
+
+All 63 paired runs across the seven established structures also passed their
+source oracles. Mapped-stage before/after medians were `0.999x`, `1.026x`,
+`1.018x`, `1.007x`, `0.998x`, `0.998x` and `0.995x`. End-to-end ratios ranged
+from `0.973x` to `1.052x`; all seven still trailed native (`0.583x` to `0.615x`
+native/Blocks). Pre-run GPU utilization ranged from 10 to 100 percent. A strict
+idle-gated attempt could not obtain two quiet samples within its bounded wait.
+Neither general regression freedom nor the broad native throughput objective
+is established by these measurements. Benchmark metadata hashes match the
+rebuilt executable, including the profile-only fallback diagnostics.
+After adding those diagnostics, the rebuilt binary passed all 16 CUDA suites
+again plus the regular unit suite: 16 tests in `154.60 s` and the separately
+selected events test in `3.21 s`. JavaScript syntax, Python compilation and
+`git diff --check` also passed.
+
+The separate headless Blockly examples test failed tab-close assertions before
+its CUDA validation stage. Its non-physics isolated run passed; these results
+do not justify claiming that all repository tests pass.
+
+Evidence: `/tmp/ft-import-classes-verified-{build,test,unit}.log`,
+`/tmp/ft-import-diagnostic-{build,final-test,events-test}.log`,
+`/tmp/ft-import-classes-verified-asan-{unit,imports,output}.log`,
+`/tmp/ft-import-classes-{host,adaptive,mono,waves,output-waves,b05}.log`,
+`/tmp/ft-import-classes-{memcheck,synccheck,output-memcheck,output-synccheck}.log`,
+`/tmp/ft-import-classes-{read,default}-pairs`,
+`/tmp/ft-read-globals-copy-pairs`,
+`/tmp/ft-shrinking-globals-pairs` and
+`/tmp/ft-shrinking-globals-{before,after}-proof.log`.
+
+### Rejected Cursor Fusion And Timing Repair
+
+A source-root profile still attributed `1.541 s` to 600 individual sandbox
+advances before `1.219 s` of mapped CUDA execution. Native and Blocks use
+different mutation streams, so this native comparison remains workload-style,
+not an identical-candidate test. The root cost is independently observable in
+`/tmp/ft-import-classes-default-pairs/workbench-0-after.log`.
+
+An experiment deferred cursor initialization into the first physics prediction,
+including input-only resets, to avoid loading and launching a separate startup
+kernel. Five focused CUDA tests passed, as did repeated input replacements
+before the next step with both one-tick and normal lookahead. However, 36 cold
+off/original/fused runs measured original/fused execution ratios of `0.927x`,
+`0.828x`, `0.968x` and `0.996x` at 1, 10, 100 and 600 ticks. All result identities
+matched. The experiment was removed rather than retain an unproven optimization
+or enable the resident cursor by default. The consecutive-input transition
+regression tests remain.
+
+The source benchmark driver also used `subprocess.run(timeout=...)` while
+measuring complete-process wall time. Its POSIX timeout wait polls, introducing
+coarse exit-observation delays. The driver now uses blocking `wait()` with an
+independent watchdog, and records `processWaitMethod` in metadata. Timeout and
+interruption paths kill and reap the child; the watchdog is cancelled and joined.
+Four tests cover blocking waits, output, nonzero exits, timeouts and interruption.
+They are registered as `forevertas-source-benchmark-timing` when Python is present.
+Internal `executionSeconds` did not use this polling clock and is unaffected.
+Do not interpret the first fusion run's process-wall ratios as precise evidence;
+earlier experiments explicitly using independent watchdogs retain that distinction.
+
+Initial experiment evidence: `/tmp/ft-cursor-fused-{build,test}.log`,
+`/tmp/ft-cursor-fused-transitions{,-one}.log`,
+`/tmp/ft-cursor-fused-cold-pairs` and
+`/tmp/ft-cursor-fused-{before,after}-resources.log`.
+The rejected executable is retained as
+`/tmp/ft-cursor-fused-experimental-benchmark`, matching the recorded hash.
+
+The repaired driver completed 36 more cold runs, with the rejected binary as
+`before` and the restored implementation as `on`. Fused/restored execution
+ratios were `1.003x`, `1.025x`, `0.945x` and `1.131x`; complete-process ratios
+were `1.011x`, `0.993x`, `1.004x` and `0.988x`. All results matched. This mixed
+set under changing shared-GPU load still does not establish a fusion benefit.
+The one-tick restored cursor also remained slower than leaving it disabled.
+No runtime acceleration or native-relative throughput win is claimed here.
+
+The restored build passed seven focused CTest suites in `38.23 s`, including
+the four timer unit cases. The strengthened source transitions passed with
+one-tick lookahead; memcheck and synccheck each reported zero errors. Complete
+CUDA PTX dump hashes match the pre-experiment binary exactly
+(`5337205c1c9f368f0f98d4bc5c86101427f58e61df9ba8d61ce6dfb0376cdb3c`).
+Python compilation and whitespace checks passed. Final evidence:
+`/tmp/ft-cursor-restored-final-{build,test}.log`,
+`/tmp/ft-cursor-restored-{transitions-one,memcheck,synccheck}.log`,
+`/tmp/ft-source-timing-unit.log` and `/tmp/ft-cursor-fused-precise-pairs`.
+
+### Default Resident Source Physics
+
+The resident physics cursor is now selected when the CUDA source-policy variable
+is absent. Explicit `0` retains the old path; explicit `1` retains the existing
+enabled path. Uncompiled oracle runs still disable source acceleration. This
+changes policy only: no new physics kernel, block recognition, speculative source
+instruction execution or approximate state representation is introduced.
+Allocation failure retains the existing reported fallback. Input edits, restores,
+early stops and map handoffs continue to expose only consumed physical states.
+
+The source and transition CTests explicitly unset the policy, testing the actual
+default rather than forcing it on. The cold source driver accepts `--default-policy`
+for the same purpose and requires a resident execution report from that variant.
+
+All 63 alternating default-before/default-after/native runs passed the Blocks
+source oracles. At 1,024 candidates and a 6,000 ms horizon, paired median ratios
+were:
+
+| Structure | Before/After | Native/After |
+| --- | ---: | ---: |
+| Workbench | 1.755x | 1.077x |
+| Chunked loops | 1.113x | 0.970x |
+| Indirect calls | 1.109x | 0.912x |
+| Broadcasts | 1.110x | 0.937x |
+| Checkpoint events | 1.111x | 0.911x |
+| Conditional events | 1.103x | 0.902x |
+| Tick events | 1.196x | 0.906x |
+
+Competing GPU load changed during these runs (4-100 percent at run boundaries).
+Root-stage paired improvements ranged from `1.706x` to `4.942x`, while mapped-stage
+ratios stayed between `0.998x` and `1.008x`, consistent with a source-policy change.
+The policy improves the measured
+default workload, but six structures still trail native and the identical-native-
+candidate corpus remains unverified. The broad throughput objective is not met.
+
+This intentionally accepts a cold-start tradeoff, not an all-size latency claim.
+In 24 cold off/default runs, one tick took median `8.898 -> 12.596 ms` and
+10 ticks took `24.527 -> 32.561 ms`, whereas
+100 ticks took `288.447 -> 111.508 ms` and 600 ticks `1,726.099 -> 281.956 ms`.
+Whole-process paired off/default ratios were respectively `0.985x`, `1.117x`
+and `1.708x`. These source-loop probes are not native-search comparisons.
+
+The application rebuilt and all 18 selected suites passed in `158.83 s`, including
+the 16 CUDA suites, regular runtime units and benchmark timing tests. Evidence:
+`/tmp/ft-source-default-{build,app-build,test}.log`,
+`/tmp/ft-source-default-pairs` and `/tmp/ft-source-default-cold-pairs`.
+Both metadata sets verify the rebuilt executable hash and an unset policy for
+the new default. Explicit opt-out, explicit enable, one-tick lookahead and B05
+source parity also passed. CUDA memcheck and synccheck reported zero errors on
+the source suite, including the 17,000-input replacement case. The debugger test
+passed in `1.09 s`; Python compilation and whitespace checks passed. CUDA PTX
+is unchanged from the pre-policy build. Additional evidence:
+`/tmp/ft-source-default-{optout,explicit,one,b05,memcheck,synccheck,debugger}.log`.
+
+## Dense Exact Prefix Observations
+
+The resident cursor now records its consumed native frame directly, without
+restoring and recapturing the host sandbox. The bounded prefix cache retains
+128 early single-tick entries independently of 64 later coarse entries. Native
+host capture retains its previous 32-tick cadence. Checkpoints are sorted by
+tick before upload; device lookup uses an upper bound and still requires exact
+consumed-input equality, matching origin and horizon. Source events are not
+skipped. There is no recognition of procedure names or search structure.
+
+A first implementation copied the complete native state at every reused tick
+and regressed the two-structure comparison to about `0.70x` before/after. It was
+replaced before acceptance. The revised implementation assigns conservative
+extension generations by comparing every native byte except the independently
+overlaid physics and collision fields. Reuse within a generation preserves the
+immutable snapshot extension and copies those overlays only. Native extension
+writes invalidate the generation. The fixture records 130 checkpoints in one
+generation, skips 1,025 of 1,153 lane ticks, and needs 13 native snapshot versions
+for 13 lanes, including when each lane retains both its first and final snapshot.
+
+The new parity fixture checks 13 boundaries, three input divergences, every
+public current-state field, exact previous-state reference observations,
+per-tick callback counts, retained snapshots, and respawn inputs. Both source
+CPU and CUDA executions publish 26 snapshots per case. Respawn inputs in this
+fixture do not change the extension generation, so this is not evidence of a
+multi-generation transition. Existing snapshot and physics suites remain part
+of verification. The full application builds, and 19 selected tests pass in
+`148.07 s`. Graph-off, monolithic, two-lane waves, cursor-off, one-tick lookahead
+and B05 variants pass. CUDA memcheck and synccheck report zero errors for the
+prefix, source and output-growth fixtures; CPU ASan/UBSan passes the new fixture.
+
+The 63-run paired comparison preserves all source-oracle results. Median paired
+before/after throughput ratios are `1.005x`, `1.019x`, `1.014x`, `1.017x`,
+`0.992x`, `1.008x`, `1.005x` for workbench, loop chunks, indirect, broadcast,
+checkpoint events, conditional events and tick events. Native/after ratios are
+`1.087x`, `1.148x`, `1.081x`, `1.091x`, `0.884x`, `0.953x`, `0.888x`.
+This is a mixed, near-neutral elapsed-time result, not consistent superiority over native: three
+structures still lose, GPU load varies, and identical native candidate streams
+remain unverified. The overall objective remains open.
+
+A further 30-run recheck gives before/after `1.013x` for checkpoint events and
+`0.996x` for tick events, with native/after `1.218x` and `1.168x` respectively.
+The reversed native outcome and 10-100% GPU utilization in the broad sweep
+underline the load sensitivity; neither sweep proves the requested consistent
+native win. Recheck artifacts are in `recheck-pairs/`.
+
+All current artifacts are on disk under `build/verification/prefix-active/`:
+`final-{build,tests,profile}.log`, `final-pairs/`, the scheduler and sanitizer
+logs, and `asan-{build,test}.log`. The before executable is preserved at
+`build/verification/cursor-artifacts/ft-direct-prefix-before-benchmark`.
+The separate 24-run cold source probe also preserves result identity, with
+off/default median paired execution ratios `0.490x`, `0.654x`, `1.006x`,
+`1.703x` at 1, 10, 100 and 600 ticks. It compares cursor policies, not this
+prefix change or native search; short-run startup overhead remains.
+
+## Packed Checkpoints and Defined Snapshot Storage
+
+Checkpoint upload now separates the per-tick physics, collision-overflow and
+public-state overlays from shared native extensions. The public full-native
+checkpoint API is unchanged. Sorted ticks and input ranges are checked on the
+host; input lineages are established by exact value comparisons, not hashes.
+Device prefix validation remembers the matched prefix and first mismatch for
+each lineage and resets when inputs are replaced. Control folding consumes only
+new events after a cache hit. Initial native lane copies use the existing
+coalesced initialization kernel, including when the VM import arena is empty.
+
+The expanded fixture has 142 checkpoints and one native extension. Upload is
+`2,081,400` bytes rather than `9,477,648` bytes for full checkpoints, a `78.04%`
+reduction. This is an upload-volume result, not a corresponding elapsed-time
+speedup. The cache remains bounded at 128 dense and 64 coarse entries. A larger
+dense cache, inline resume experiment and separate physics-queue experiment
+were measured and rejected rather than retained as speculative optimizations.
+
+The parity fixture now covers 22 tick boundaries through tick 577. Each of four
+event-view/respawn combinations publishes 88 observations, retains both early
+and final lane snapshots, restores them on the source side, then steps the
+restored states again. Input divergences edit existing events as well as adding
+events. The host checkpoint test covers full native bytes, extension generations
+including legacy generation zero, collision-overflow retirement and 4,096
+fixed-seed input-prefix queries against a full comparison oracle. The synthetic
+multi-generation test is host-side, not proof of a GPU multi-generation scene.
+
+CUDA initcheck additionally exposed undefined serialization padding and arena
+slack, including a cold source case that also failed on the earlier binary.
+Working arenas and output storage are now initialized once per batch, and source
+descriptors and expanded output buffers are initialized before use. Native
+physics initialization preserves all bytes. Per-snapshot byte copies and
+per-snapshot clearing regressed throughput and were replaced by the once-per-
+arena initialization, while retaining zero initcheck errors.
+
+A separate overwrite-allocation path removes redundant clearing only for the
+fixed-size CUDA state views whose callers fill every element. Ordinary
+allocation retains its existing initialization and API. CUDA tests explicitly
+check overwrite allocation, default initialization after reuse, zero-length
+arrays and capacity failure. This final change was measured against the
+already-correct arena-initialization build in 63 interleaved runs:
+
+| Structure | After/Before Throughput | CUDA/Native Throughput |
+| --- | ---: | ---: |
+| Workbench | 1.010 | 0.817 |
+| Loop chunks | 1.007 | 0.959 |
+| Indirect calls | 1.017 | 0.956 |
+| Broadcast | 1.016 | 0.945 |
+| Checkpoint events | 1.001 | 0.897 |
+| Conditional events | 1.008 | 0.882 |
+| Tick events | 1.017 | 0.957 |
+
+Ratios are medians of paired execution times, with 1,024 candidates, a 6,000 ms
+horizon and scoring from time zero. Every Blocks result matches the source
+oracle, and no unexpected execution mode appears. These are native-style
+workload comparisons, not identical per-candidate native input streams. The GPU
+was also driving other applications; an idle-between-runs sample showed 46%
+utilization without a benchmark process. Load variation does not excuse the
+failed measurements: the updated target of at least 90% of native throughput
+across different structures remains unproven, with three structures below it.
+
+The final application builds; all 20 selected suites pass in `121.52 s`, and five
+additional strategy, Blocks, debugger and example suites pass in `18.77 s`.
+All six prefix scheduler/source variants pass. CUDA memcheck and initcheck
+report zero errors for the allocator, prefix, source and output-growth fixtures;
+synccheck reports zero errors for the prefix fixture. CPU runtime and prefix
+ASan/UBSan checks and the checkpoint ASan/UBSan/LSan test pass. All 24 final cold
+source runs preserve result identity; median off/default ratios are `0.502`,
+`0.697`, `1.030` and `1.714` at 1, 10, 100 and 600 ticks. Cold startup remains a
+tradeoff, not an all-size acceleration claim.
+
+Evidence is in `build/verification/prefix-refinement-final/`: `overwrite-*`,
+`final-*`, `overwrite-pairs/` and `final-cold/`. The benchmark hash recorded by
+the paired run matches the final executable (`952dd03e855b5498...`). Rejected
+experiments retain separate logs. The native baseline source export is now at
+`build/verification/v0.2.3-source/`, avoiding a dependency on temporary files.
+
+## Cooperative Native Snapshot Copies
+
+Scheduled execution now copies native snapshot payloads with one cooperative
+CUDA block per VM lane, before the next physics kernel. Public snapshot views
+are still built immediately with the same value and identity semantics. A
+bounded, single pending request retains payload handles until copying finishes;
+another snapshot without a physics yield completes that pending copy first.
+The following physics kernel releases the handles with one thread per lane,
+including copies-only final waves. Kernel ordering, rather than an in-kernel
+barrier, separates copying from reference cleanup and physics mutation.
+Monolithic execution and source cursors retain their immediate-copy path.
+Programs without snapshot/publication opcodes do not allocate or launch the
+cooperative path. `FOREVERTAS_CUDA_VM_COOPERATIVE_SNAPSHOTS=0` disables it.
+
+The strengthened snapshot fixture exercises discarded snapshots followed by
+same-size allocation reuse, retained native versions, final snapshots without
+another step, and nonuniform host-math requests while other lanes await physics.
+Initcheck exposed undefined padding in the existing host-math request array;
+the array is now initialized once per batch. Synccheck rejected the initial
+copy-kernel barrier implementation; the final kernel-boundary cleanup above
+passes all checks. Neither rejected intermediate build is the final result.
+
+The final full build passes 20 selected suites in `119.64 s` and five additional
+suites in `18.30 s`. Host-scheduled, cooperative-disabled, monolithic, small-wave,
+source-disabled, one-tick-lookahead and B05 prefix variants pass. All 15 CUDA
+sanitizer runs report zero errors: initcheck, memcheck and synccheck each cover
+dense prefixes, retained snapshots, host math, source transitions and output
+growth. The strengthened CPU snapshot fixture also passes ASan/UBSan.
+
+In 63 interleaved native/before/after runs across seven structures, the final
+build improves median paired throughput over the preceding `952dd03e...` build
+by `5.26%` to `7.05%`; all source-oracle identities and execution-mode guards
+pass. CUDA/native throughput in that run ranges from `0.942` to `1.034`.
+However, a separate broader run of 130 native/Blocks measurements, with five
+pairs per structure and 13 source oracles, does **not** meet the 90% target:
+
+| Structure | Paired CUDA/Native Throughput |
+| --- | ---: |
+| Workbench | 0.865 |
+| Loop chunks | 0.902 |
+| Indirect calls | 0.858 |
+| Broadcast | 0.875 |
+| Checkpoint events | 0.972 |
+| Conditional events | 0.957 |
+| Tick events | 1.021 |
+| Procedure chain | 0.961 |
+| Shadowed globals | 1.003 |
+| Overwritten globals | 1.000 |
+| Dynamic globals | 0.984 |
+| Read globals | 0.376 |
+| Shrinking globals | 0.997 |
+
+All 13 structures preserve exact source/backend/cross-structure result identity.
+The read-globals case reads a 70,000-element imported list and remains a major
+performance cliff. Four broader-run structures miss the target; the later
+seven-structure result does not supersede those failures. Measurements use
+1,024 candidates, a 6,000 ms horizon and scoring from time zero. These remain
+native-style comparisons, not identical per-candidate native input streams.
+Mapped snapshot restore also still has a source fallback and must not be
+represented as generic on-device execution.
+
+Final evidence is in `build/verification/vm-dispatch/`: `default-check.sh`,
+`default-*` logs, `default-diversity/` and `default-pairs/`. The final benchmark
+SHA-256 is `2f6875b8fa9fe4486d59c193e259e2d3e4814d71419950b68cb5e69302469a9e`.
+The overall throughput and generic-execution goal remains open.
+
+## Shared Immutable Imports
+
+Large imported collections now share their immutable payload bytes across CUDA
+lanes. Each lane still owns its object headers, reference counts, allocator
+links and serialization forwarding links. The mutable globals table remains
+private. Relocation preserves graph aliases and snapshot identities rather than
+merging objects by equal contents. Existing collection edits still allocate
+independent values; nested collections and mixed primitive/reference payloads
+use the same mechanism. `FOREVERTAS_CUDA_VM_SHARED_IMPORTS=0` disables sharing.
+
+The import profile identified a concurrency cliff: an 8 MiB arena per lane
+split 1,024 candidates into four waves, while copying the initial arenas itself
+took only about 14 ms. Sharing reduces the read-globals private initial image
+from `4,215,456` to `16,448` bytes, with `2,800,000` immutable bytes shared by
+the batch. Working arenas start at 256 KiB and the same workload fits one
+1,024-lane wave. Large mutable edits retain the original import class's bounded
+growth allowance, and shrinking imports do not inherit the large class's
+learned capacities. Allocation failure while packing retains source recovery.
+
+An adversarial export fixture also exposed the fixed 2 MiB output ceiling.
+Serialization can now grow lazily to the import's working-memory limit, bounded
+at 64 MiB and subject to the existing wave-memory guard. This does not reserve
+that capacity up front or rerun completed VM state merely to grow output.
+The fixture checks complete exported collections, nested equality, per-lane
+global edits, repeated snapshot identity and exact native state/input parity.
+Pure host tests additionally check mixed scalar/reference payloads, opaque
+tokens, private reference counts, immutable bytes after release and header reuse.
+
+The final full build passes 22 selected suites in `125.27 s`, the same 22 with
+sharing disabled in `123.45 s`, and five additional suites in `19.40 s`.
+Host-scheduled, monolithic and two-lane-wave variants pass for large imports
+and shared exports. All 21 CUDA sanitizer runs report zero errors: initcheck,
+memcheck and synccheck each cover shared exports, large imports, output growth,
+dense prefixes, host math, source transitions and retained snapshots. CPU
+shared-export, large-import and prefix tests pass ASan/UBSan; the pure import
+test also passes leak checking.
+
+The final 117 interleaved before/after/native runs show a `2.696x` improvement
+for read-globals over the preceding cooperative-copy build. The other twelve
+structures incur a measured `0.3-0.9%` throughput overhead, not a zero-cost
+extension. A separate 130-run, five-pair-per-structure native comparison gives
+the following results. Both experiments preserve exact source-oracle results
+and expected execution modes across all 13 structures.
+
+| Structure | Five-Pair CUDA/Native | After/Before Throughput | Three-Pair CUDA/Native |
+| --- | ---: | ---: | ---: |
+| Workbench | 0.865 | 0.997 | 0.856 |
+| Loop chunks | 0.902 | 0.996 | 1.001 |
+| Indirect calls | 0.841 | 0.995 | 0.949 |
+| Broadcast | 0.866 | 0.993 | 0.964 |
+| Checkpoint events | 0.846 | 0.996 | 0.940 |
+| Conditional events | 0.820 | 0.994 | 0.915 |
+| Tick events | 0.863 | 0.992 | 0.980 |
+| Procedure chain | 0.827 | 0.994 | 0.926 |
+| Shadowed globals | 0.861 | 0.995 | 0.968 |
+| Overwritten globals | 0.863 | 0.993 | 0.959 |
+| Dynamic globals | 0.855 | 0.991 | 0.947 |
+| Read globals | 0.873 | 2.696 | 0.967 |
+| Shrinking globals | 0.853 | 0.991 | 0.953 |
+
+The middle column is throughput after/before (execution time before/after).
+All runs use 1,024 candidates, a 6,000 ms horizon and scoring from time zero.
+An earlier complete shared-import run measured every structure at 94.2-102.9%
+of native, but the final repeated run above contradicts a robust 90% claim:
+twelve structures miss it in the five-pair run, and workbench also misses it
+in the three-pair run. The earlier favorable run must not replace the failures.
+These are native-style comparisons, not identical native candidate streams.
+Mapped restore still has a source fallback. The overall goal remains unmet.
+
+Final evidence is in `build/verification/vm-dispatch/shared-final/`; the replay
+driver is `build/verification/vm-dispatch/shared-check.sh` with
+`FT_SHARED_OUTPUT` selecting that directory. Earlier shared-import evidence is
+kept separately in the parent directory. The final benchmark SHA-256 is
+`f05defada746db180d7b9f99bdfd7d2f68bc87ff39893c10b60b8359eb40334c`.
+
+### Mapped Restore Gate and Cursor Experiments
+
+The diversity driver's default now includes all fourteen structures, including
+procedure chains and `mapped-restore`. The latter restores the origin snapshot
+inside each mapped candidate before making edits. Its source result matches
+ordinary workbench execution exactly; it is not a different search workload.
+The normal execution-mode guard intentionally rejects its current fallback.
+Passing a selected thirteen-structure run is not passing this expanded gate.
+
+A three-repeat, 64-candidate probe at 6,000 ms measured median execution times
+of 1.044467 s native, 0.897329 s workbench and 11.632582 s mapped restore.
+All source score, evaluation-time and input-hash checks passed, but restore
+fell back on 64/64 lanes. This is about thirteen times slower than workbench
+and about 9% of native throughput, using ratios of these medians.
+The uninstrumented executable was the SHA-256 recorded above. Evidence is in
+`build/verification/vm-dispatch/restore-probe/`.
+
+Temporary cursor phase instrumentation attributed 89.7% of measured cycles to
+advance and working-state assignment, 2.6% to public views and 7.7% to native
+serialization over 600 ticks. This does not isolate engine stepping from its
+state copies. The instrumentation has been removed from production code.
+
+Two direct-export experiments avoided copying working physics into the lane
+on every tick, with out-of-line and forced-inline export respectively. Both
+passed source parity, but neither improved performance. Three paired repeats
+against the same uninstrumented executable produced the following throughput
+ratios (experimental/before), with exact source-result checks on every run:
+
+| Structure | Out-of-Line Export | Inlined Export |
+| --- | ---: | ---: |
+| Workbench | 0.968 | 0.978 |
+| Checkpoint events | 0.975 | 0.970 |
+| Read globals | 0.976 | 0.975 |
+
+Both experiments were rejected; the original cursor implementation is retained.
+These experiments used 1,024 candidates and a 6,000 ms horizon. Raw logs,
+executable hashes and per-run GPU telemetry are in
+`build/verification/vm-dispatch/cursor-direct-pairs/` and
+`build/verification/vm-dispatch/cursor-inline-pairs/`. At that checkpoint,
+generic mapped restore remained unresolved.
+
+### Generic VM Restore
+
+Restore now has its own bytecode operation rather than requesting source
+interpretation. The CPU implementation follows source restoration of native
+state, inputs, horizon, previous state and history, without resetting candidates
+or the selected result. Retained event contexts are materialized before restore
+changes their underlying physics state.
+
+CUDA restores both imported snapshots and snapshots created inside a mapped
+program. Imported contexts are prepared on demand while the device scheduler is
+paused. Preparation temporarily restores the host sandbox and restores its
+exact backup afterwards. Immutable native identity, time, horizon and input
+equality can reuse baseline physics resources; this is not the only supported
+restore path. Other origins get their own native state, tick schedule and prefix
+checkpoints. Unused imported snapshots do not trigger context capture.
+
+Generated snapshots carry their context anchor when it differs from the map
+baseline. Restoration overlays their immutable native extension, physics and
+collision data, and decoding reconstructs history relative to the correct
+anchor. Pending cooperative snapshot copies finish before restoration can
+overwrite the live state. Host context requests share the existing host-service
+transport, but Restore is not classified as a scalar host-math operation.
+
+The 64-candidate, 6,000 ms mapped-restore gate now passes exact source-result
+and execution-mode checks with no fallback. Its three-pair median throughput
+ratio is 1.238 relative to native. A subsequent 1,024-candidate, 6,000 ms run
+passed all fourteen then-current structures, with five paired repeats each:
+
+| Structure | CUDA/Native Throughput |
+| --- | ---: |
+| Workbench | 0.984 |
+| Indirect calls | 0.957 |
+| Broadcast | 0.986 |
+| Tick events | 1.006 |
+| Loop chunks | 1.143 |
+| Checkpoint events | 0.966 |
+| Conditional events | 0.967 |
+| Procedure chain | 0.953 |
+| Shadowed globals | 1.213 |
+| Overwritten globals | 1.145 |
+| Dynamic globals | 0.980 |
+| Read globals | 0.997 |
+| Shrinking globals | 1.006 |
+| Mapped restore | 1.183 |
+
+All fourteen source oracles and cross-structure result identities passed.
+An additional 117-run native/before/after comparison covered the thirteen
+non-restore structures. After/before paired throughput ranged from 0.993 to
+1.011; four structures measured small slowdowns of 0.07-0.67%. This is not a
+claim of zero performance cost. All thirteen exceeded 90% of native in that
+additional comparison as well.
+
+Restore tests cover distinct earlier origins and horizons, generated snapshots,
+native continuation after export, complete public-state parity, reconstructed
+history, discarded copy requests, nonuniform host math, restoring within an
+event callback, retained event values, respawn schedules and a restore-only
+cancellation loop. The same tests passed host-scheduled execution, forced
+monolithic selection (which correctly requires scheduling for host services),
+two-lane waves, private imports and disabled cooperative copies. Compute
+Sanitizer initcheck, memcheck and synccheck each reported zero errors. CPU
+AddressSanitizer/UndefinedBehaviorSanitizer tests also passed.
+
+Evidence is in `build/verification/vm-dispatch/restore-diversity/`,
+`restore-before-after/`, `restore-gpu-64/` and the adjacent `restore-*.log`
+files. Scheduling and sanitizer runs are reproducible with `restore-check.sh`.
+The measured benchmark SHA-256 is
+`be81bb9d93d6d41cd39c05771f02094ba386f4e59420641d7110aba980d414f9`.
+
+### Historical Horizon Cliff
+
+The diversity gate was expanded to include a fifteenth structure,
+`mapped-horizon`, which sets the horizon to its existing value inside each
+candidate. Source results match the other structures exactly, but this ordinary
+block edit requested interpretation at that revision. A 64-candidate probe fell back on
+64/64 lanes: 14.784400 s versus 1.582994 s native, or 10.7% of native throughput
+in that single pair. The normal mode guard correctly rejects it. Evidence is in
+`build/verification/vm-dispatch/horizon-probe/`.
+
+Those fourteen passing structures did not satisfy the expanded gate. The
+following implementation addresses both neutral and genuinely changed horizons.
+
+### Generic VM Horizon Changes
+
+`simulation/set-horizon` now lowers to a generic VM operation on CPU and CUDA.
+It validates the new endpoint, preserves previous/event states, and changes
+neither existing history nor selected results. CUDA lanes share lazily prepared
+physical plans while retaining independent logical horizons. Extensions preserve
+the original physical anchor and verify the old plan's physical tick fields.
+Geometric growth and coalesced requests avoid rebuilding a plan for every small
+extension; older device buffers remain alive for lanes still using them.
+
+Snapshots retain immutable, copy-on-write duration logs. Same-time setters
+coalesce without changing retained snapshots. A setter at time T affects later
+history frames, not the frame already recorded at T. Decoding and deferred
+history replay preserve this distinction, including after restoration to a
+different physical origin. No native state approximation or named-program
+recognition is used.
+
+The 64-candidate neutral and dynamic/event-driven horizon fixtures passed source
+oracles and strict no-fallback checks at 1.485 and 1.370 times native throughput.
+The final-binary default-batching matrix used 1,024 candidates, a 6,000 ms horizon,
+target start 0, native batch 1,024 and five paired repeats:
+
+| Structure | CUDA/Native Throughput |
+| --- | ---: |
+| Workbench | 0.915 |
+| Indirect calls | 1.008 |
+| Broadcast | 0.916 |
+| Tick events | 0.918 |
+| Loop chunks | 1.052 |
+| Checkpoint events | 0.991 |
+| Conditional events | 1.078 |
+| Procedure chain | 1.087 |
+| Shadowed globals | 1.113 |
+| Overwritten globals | 1.001 |
+| Dynamic globals | 0.999 |
+| Read globals | 1.055 |
+| Shrinking globals | 1.124 |
+| Mapped restore | 1.122 |
+| Mapped horizon | 1.112 |
+| Event-driven horizon | 1.074 |
+
+All sixteen source oracles, cross-structure identities and mode checks passed.
+An additional explicit 1,024-job-batch run measured mapped restore at 0.887.
+A 54-run native/previous/current comparison subsequently measured it at 0.996;
+the initial low result is retained, not discarded. Across its six structures,
+current/previous paired throughput ranged from 0.984 to 1.003. In particular,
+workbench and mapped restore measured about 1.6% and 1.3% slower than the
+previous binary. This is not evidence of zero overhead or a guarantee under all
+runtime conditions.
+
+A final 27-run comparison isolated the typed-accessor change on workbench,
+broadcast and tick-event fixtures. Final/pre-accessor throughput ratios were
+1.002, 1.003 and 1.004; all three exceeded native throughput in that comparison.
+Its evidence is in `horizon-accessors-before-after/`.
+
+Horizon tests compare all fifty historical state properties against retained
+live event states. They cover starting times 0, 990 and 2,990 ms, future respawn
+actions beyond the original horizon, simultaneous old/new plan users, imported
+and generated snapshots, and native continuation. A retained-snapshot test
+executes 131,072 setters per lane without exhausting the arena. Cancellation,
+host scheduling, forced monolithic selection, two-lane waves, private imports
+and disabled cooperative copies pass. Compute Sanitizer initcheck, memcheck and
+synccheck each report zero errors. Previous-state properties and durations are
+also checked after every restored snapshot. The full 52-test suite and CPU
+AddressSanitizer/UndefinedBehaviorSanitizer runs pass, with leak detection
+enabled for the latter.
+
+The new code accesses the sandbox's legacy duration field through typed horizon
+helpers. The recorded-duration guard exempts only their complete definitions;
+negative tests reject recording-field access elsewhere, extra accesses in the
+same header, and a substituted replay-metadata parameter type.
+
+Final measurements are in `build/verification/vm-dispatch/horizon-final-diversity/`.
+Earlier evidence is in `horizon-default-diversity/`,
+`horizon-diversity/` (explicit large batches), `horizon-before-after-large/`,
+`horizon-gpu-64/` and adjacent `horizon-*.log` files. The stress entry point is
+`horizon-check.sh`. The early probes and previous/current comparison used
+`d9bd99f3171fb237bafd19d627e71f2b522c75a1d326bd2a978bd0dea5d733bc`.
+The final table and history probe use benchmark SHA-256
+`3edf21d3a02b8d301465d5c6e31fc5c7af6001665ac379b0d9aa07c1b364076c`.
+
+### Remaining History Cliff
+
+The default gate now includes a seventeenth structure, `mapped-history`, which
+reads sampled history into an unused local before evaluating each candidate.
+Its results matched source execution and the other structures, but that
+binary's history reporter requested interpretation: the 64-candidate probe fell back on
+64/64 lanes. It took 11.258375 seconds versus 1.182604 native, or 10.5% of native
+throughput in that single pair. The normal mode guard rejects it. Evidence is
+in `build/verification/vm-dispatch/history-final-probe/` (the earlier
+`history-probe/` measured 9.8% with the pre-accessor binary).
+
+The sixteen-structure milestone does not satisfy this expanded gate or the full
+objective. Generic mapped history, restart and nested mapping still need work;
+the overall robust 90% requirement remains unproven.
+
+### History VM Foundation
+
+The compiler now lowers `simulation/history` to a dedicated `History`
+instruction rather than `Interpret`. The CPU adapter flushes pending physical
+ticks, materializes the existing immutable history, and encodes an ordinary
+list of full state values. Generic list operations and state-property reads
+therefore work without source interpretation on CPU. Cancellation is checked
+between state encodings; arena exhaustion requests fallback rather than
+returning a partial list. The uniform executor does not accept this operation.
+
+At this checkpoint the CUDA adapter did not implement `History`. Its
+unsupported-operation path still requested source fallback, so the CPU
+foundation did not close the seventeenth benchmark gate. That checkpoint's
+benchmark SHA-256 was
+`17dcd8b5a03a3e7599b410c45ec9679e931406cf59451270721fc573a29227fa`.
+The CUDA implementation below replaces this remaining unsupported operation.
+
+Verification for this foundation: the complete CUDA-enabled build and all 52
+CTest cases passed (443.30 seconds). CPU ASan/UBSan checks passed for the base
+runtime suite, mixed-event native parity and horizon/restore native parity.
+The new history tests cover prefixes of 0, 3 and 130 ticks, another 131 pending
+ticks, retained-list mutation, full-state equality, traversal, restore,
+mid-materialization cancellation and bounded-arena exhaustion. Evidence:
+`build/verification/vm-dispatch/history-host-*.log`. No new CUDA throughput
+claim is made for this CPU-only history implementation.
+
+### Generic CUDA History
+
+`History` now executes on the device as an ordinary immutable list of complete
+state values. Initial history and imported prefixes that an in-device restore
+can make observable are encoded once per distinct history node, participate in
+shared-import packing, and retain their original historical horizons.
+Metadata-only imported snapshots keep their deferred histories lazy. Each
+executed physics tick records its full state before event handlers can change
+the horizon. Snapshot restore selects
+the saved history prefix rather than keeping discarded future frames.
+Checkpoint skipping remains disabled while later history reads can observe
+those frames. Arena exhaustion still retries only uncommitted work with the
+same inputs and seeds, under bounded wave sizes and memory limits.
+
+Recording is not an unconditional cost of adding a history block. A
+conservative reverse control-flow analysis tracks history reads through
+branches, loops and calls. The VM checks both its current continuation and
+every active caller before discarding its recording reference. Indirect calls
+retain the conservative path. Existing lists and snapshots keep their own
+immutable references. History-size limits are checked independently of this
+optimization, including after restoration to another imported context.
+
+Snapshots need an in-device history cache only when an in-device restore path
+exists. Omitting that cache otherwise avoids copying the complete history
+array after every publication. Output serialization also omits this private
+cache, but never removes an explicitly returned history list. Exported native
+snapshots retain the existing exact deferred-history reconstruction contract;
+the history reporter itself does not replay physics on the CPU. History-heavy
+programs have separate learned arena capacities, and a control-flow-based
+initial storage estimate avoids repeated simulation merely to grow the arena.
+
+The expanded default benchmark gate now has twenty structures: the original
+sixteen, entry history, tail history, event-driven history and history returned
+through an indirect call. The source graph names are test fixtures, not runtime
+dispatch conditions. Restart and nested mapping remain separate unresolved
+interpreter paths; adding generic history does not establish the full goal.
+
+#### History Verification And Measurements
+
+The final history build passed all 53 CTest cases (455.03 seconds) and the
+CPU ASan/UBSan base runtime suite. Mapped history passed host scheduling,
+forced monolithic dispatch, two-lane waves, private imports and serial snapshot
+copies, including 32,768 immutable-list edit cycles per lane and cancellation.
+Full mapped-history initcheck, memcheck and synccheck passed before the final
+host-only lazy-import change. The final device fatbin is byte-identical to
+that tested device code (SHA-256
+`32ddc56d3fc973b605a3376938d0f21f9303081e52a6b9cc9428de87821131e1`).
+All three sanitizers also passed the new deferred-import test on the final
+binary. These focused checks supplement, rather than replace, the full checks.
+
+On the RTX 5060, the expanded default gate used 1,024 candidates, five paired
+repetitions, a 6,000 ms horizon, target start zero, two CPU workers and native
+CUDA batch 1,024, without a Blocks batch override. Source/backend and
+cross-structure result parity passed for all twenty structures. Each measured
+Blocks run ended in `CUDA block-program kernel` without fallback. Ratios below
+are median paired execution throughput relative to the retained v0.2.3-style
+native workload, not ratios from a smaller pilot:
+
+| Structure | Native Throughput Ratio |
+| --- | ---: |
+| Workbench | 1.1524 |
+| Indirect | 1.1351 |
+| Broadcast | 1.1536 |
+| Tick events | 1.1841 |
+| Loop chunks | 1.1924 |
+| Checkpoint events | 1.1316 |
+| Conditional events | 1.1095 |
+| Procedure chain | 1.1183 |
+| Shadowed globals | 1.1710 |
+| Overwritten globals | 1.1792 |
+| Dynamic globals | 0.9326 |
+| Read globals | 0.9472 |
+| Shrinking globals | 1.0247 |
+| Mapped restore | 1.0516 |
+| Mapped horizon | 1.0464 |
+| Mapped horizon events | 1.0008 |
+| Entry history | 1.0417 |
+| Tail history | 0.9913 |
+| Event history | 0.9646 |
+| Indirect history | 1.1046 |
+
+All twenty clear 0.90; the minimum is 0.932595. Paired end-to-end ratios range
+from 1.0751 to 1.2637. The benchmark SHA-256 is
+`54fa1ba01ca0982454341083a2f077de47ab88683522298e7267bff22a3f7812`;
+the native executable is
+`d110cece172f24096135779a14a5cfc6b1d3d1f8adbd3ca35171551d23ffbd35`.
+Raw runs, source oracles, fixture hashes and environment observations are in
+`build/verification/vm-dispatch/history-final-diversity/`. Verification logs,
+the repeatable mode-check script and `history-final-audit.py` are alongside it.
+The audit checks current binary identities, all twenty ratios, run modes,
+cross-structure identity and regression/sanitizer evidence. This establishes
+the history checkpoint, not universal performance for remaining interpreter
+operations or every possible program.
+
+### Generic Restart
+
+The compiler now lowers `simulation/restart` to `Restart`, rather than
+interpreting the rest of the mapped invocation. Mapped execution carries the
+enclosing runtime's initial snapshot separately from the mapping baseline.
+This distinction matters when a program maps after advancing: restart returns
+to the program origin, not to the point at which mapping began. Direct
+bytecode callers can supply `VisualRuntimeControl::restartOrigin`; omitting it
+uses their baseline without changing existing call signatures.
+
+Both adapters preserve the current input list and horizon, restore the origin's
+native and previous state, and replace history with one current state. They do
+not reset variables, random streams, candidate counts or selected results.
+Restart is a state-change barrier, including for deferred event observations.
+The CUDA scheduler lazily prepares the origin context at the required horizon
+through the existing restore/horizon mechanism. No special source graph,
+procedure name or search pattern is involved.
+
+The private duration log also retains the history reset's initial duration.
+Changing the horizon again at the same timestamp updates the live duration
+without rewriting that historical frame. Generated snapshots preserve this
+marker across in-device restore and compact output serialization. Deferred
+host history reconstruction therefore starts from the reset prefix too;
+explicit history lists still contain actual device-recorded state values.
+Collection limits use the reset prefix size, not the discarded history length.
+
+The default diversity gate adds entry restart, an indirect restart after input
+mutation, restart followed by history observation, and restore followed by
+history observation, bringing it to twenty-four structures. The restart tests cover
+map offsets 0, 990 and 2990 ms, direct and indirect calls, lane-dependent horizon
+shrinkage/extension, frozen events, 131 pending ticks, and independent source
+replay after restoring each exported snapshot, both with and without a device
+history reporter. Resource tests retain snapshots and lists across 8,192
+double resets per lane; separate infinite loops exercise cancellation.
+Nested mapping remains a separate interpreter path, so this addition is not
+a claim that every programmable workload meets the full performance goal.
+
+Snapshot history retention also uses a conservative future-restore proof.
+The proof checks the current continuation and every active caller; indirect
+calls retain the conservative path. A restart or horizon context does not by
+itself make an earlier snapshot's private history observable. Likewise, an
+entry restore need not keep caches alive through a later evaluation that can
+never restore them. This removes repeated copying of the history array after
+publications in those cases, while retaining the cache when a future restore
+can use it. Explicit history lists and exported native snapshots keep their
+existing immutable and deferred-reconstruction contracts.
+
+Snapshots that really can be restored later still use the existing
+copy-on-write history cache. This proof does not optimize that representation;
+its retention costs remain a separate performance audit.
+
+This interaction was measured before the fix, rather than omitted from the
+gate. In a 64-candidate diagnostic, entry restart alone ran at 1.2905 times
+native throughput, but restart plus tail history fell to 0.5659 and restore
+plus tail history to 0.5540. A subsequent three-pair 64-candidate diagnostic
+measured those combinations at 1.4367 and 1.4454 respectively, with source
+parity. These small pilots are not the final throughput gate. Raw evidence is
+retained in `build/verification/vm-dispatch/restart-history-cliff/` and
+`build/verification/vm-dispatch/restart-continuation-probe/`.
+
+#### Restart Throughput Gate
+
+The full twenty-four-structure run used 1,024 candidates, five paired
+repetitions, a 6,000 ms horizon, target start zero, two CPU workers and native
+CUDA batch 1,024, with no Blocks batch override or VM environment override.
+Source/backend and cross-structure result parity passed throughout. Median
+paired execution throughput ratios against the retained v0.2.3-style native
+workload were:
+
+| Structure | Native Throughput Ratio |
+| --- | ---: |
+| Workbench | 1.1724 |
+| Indirect | 1.0342 |
+| Broadcast | 1.0568 |
+| Tick events | 1.0751 |
+| Loop chunks | 1.1106 |
+| Checkpoint events | 1.0406 |
+| Conditional events | 0.9993 |
+| Procedure chain | 1.0273 |
+| Shadowed globals | 1.1721 |
+| Overwritten globals | 1.1706 |
+| Dynamic globals | 1.1495 |
+| Read globals | 1.1605 |
+| Shrinking globals | 1.1557 |
+| Mapped restore | 1.1622 |
+| Mapped horizon | 1.0546 |
+| Mapped horizon events | 1.0192 |
+| Entry history | 1.0636 |
+| Tail history | 1.0109 |
+| Event history | 0.9687 |
+| Indirect history | 1.0203 |
+| Entry restart | 1.0490 |
+| Indirect restart after input mutation | 1.0502 |
+| Restart plus tail history | 1.0032 |
+| Restore plus tail history | 0.9923 |
+
+All twenty-four clear 0.90; the minimum is 0.968725. Paired end-to-end ratios
+range from 1.0980 to 1.2568. The measured benchmark SHA-256 is
+`bc029db3d9ee0e2ace67fd052d6d96aa59f1ea496d918c0a27da9feff2b6b9a6`;
+the native executable remains
+`d110cece172f24096135779a14a5cfc6b1d3d1f8adbd3ca35171551d23ffbd35`.
+Raw repetitions, independent source runs, modes, fixture hashes and environment
+observations are in `build/verification/vm-dispatch/restart-final-diversity/`.
+
+#### Restart Verification
+
+The measured build passed all 54 CTest cases (473.49 seconds). CPU ASan/UBSan
+passed the base runtime suite and all twelve reference/compiled-CPU restart
+checks, including the active-caller snapshot test, with leak detection disabled.
+Five CUDA configuration checks passed: host scheduling, the forced-monolithic
+request, two-lane waves, private imports and serial snapshot copies. Operations
+requiring host-prepared restore contexts retain their mandatory scheduler even
+under the forced-monolithic request.
+
+Initcheck, memcheck and synccheck each completed with zero reported errors.
+Each instrumented run included all six CUDA restart fixtures with independent
+source-control oracles, 8,192 double resets per lane with retained snapshots
+and history, and both bounded cancellation cases. The test executable SHA-256
+is `01a7c840ef6935dadf015d698dacf4b76d37c5f84c209e256f8c14a7ccab415d`.
+
+The logs, `restart-check.sh`, source/binary hash manifest and
+`restart-final-audit.py` are in `build/verification/vm-dispatch/`. The audit
+passed, checking all twenty-four structures, five pairs each, independent source
+results, kernel modes, current file identities and the regression/sanitizer
+evidence. Its result is `restart-final-audit.json`. This verifies the restart
+checkpoint; it does not close the remaining nested-map or live-history-cache
+performance work identified above.
+
+### Live Snapshot History Prefixes
+
+The twenty-fifth default fixture, `mapped-result-restore-history`, observes
+history after evaluation and restores the selected result before observing it
+again. Unlike the earlier unused-cache fixtures, its snapshots genuinely need
+their private history. Before this change, three paired 1,024-candidate runs
+measured only 0.7131 native throughput, despite passing source identity checks
+(`live-history-large-cliff/`). The corresponding 64-candidate diagnostic had
+passed at 0.9708, demonstrating why the larger gate remains necessary.
+
+Private history descriptors now retain an immutable logical prefix length
+independently of the backing allocation's physical length. Appending at the
+physical end can share storage with older snapshot prefixes. Restoring an
+earlier prefix and then advancing detaches that branch. Imported histories
+always detach before writing. Public history reporters return ordinary,
+independent lists, never the private appendable storage; generic list semantics
+and public value representation are unchanged. Final release owns all physical
+frames, including suffixes hidden from retained prefixes. Export continues to
+omit private caches and reconstruct exact native history as before.
+
+The mapped-history regression now advances a restored older snapshot along a
+different input branch, retains both histories, restores both branches again,
+and compares the full state lists and subsequent native state with source
+execution. This supplements the existing imported-prefix, horizon, restart,
+list-edit and resource tests.
+
+The three-pair large pilot improved the new fixture to 0.9882 paired throughput
+(`live-history-prefix-large/`). The full five-pair gate used 1,024 candidates,
+a 6,000 ms horizon, target start zero, two workers, native batch 1,024 and no
+Blocks batch override. Every structure passed source/backend/cross-structure
+identity checks. Median paired native/Blocks execution ratios were:
+
+| Structure | Ratio |
+| --- | ---: |
+| Workbench | 1.0721 |
+| Indirect | 1.1472 |
+| Broadcast | 1.1628 |
+| Tick events | 1.1904 |
+| Loop chunks | 1.2191 |
+| Checkpoint events | 1.1345 |
+| Conditional events | 0.9941 |
+| Procedure chain | 1.0066 |
+| Shadowed globals | 1.0583 |
+| Overwritten globals | 1.0539 |
+| Dynamic globals | 1.0356 |
+| Read globals | 1.0580 |
+| Shrinking globals | 1.0556 |
+| Mapped restore | 1.0629 |
+| Mapped horizon | 1.0680 |
+| Mapped horizon events | 1.1139 |
+| Entry history | 1.1755 |
+| Tail history | 1.1214 |
+| Event history | 1.0739 |
+| Indirect history | 1.1177 |
+| Mapped restart | 1.1664 |
+| Indirect restart | 1.4274 |
+| Restart plus tail history | 1.1053 |
+| Restore plus tail history | 1.1084 |
+| Result restore plus history | 1.0914 |
+
+Raw runs are in `build/verification/vm-dispatch/live-history-prefix-large-gate/`.
+Unrelated rendering activity was observed during this gate, so these are
+shared-machine measurements, not an isolated-hardware claim. The benchmark
+SHA-256 is `f55615fb3dddf445e7366f64e01dfdf6e5afcd1e3c24ba06c4d0aa92eb3246f5`;
+the test binary is `a96dd1f3bde79355c34876a13c3c5ff77141e656c8c034e31f0341ecd7ed3688`.
+All 54 CTest cases passed in 487.85 seconds
+(`/tmp/live-history-prefix-ctest.log`). This is evidence for the expanded
+history checkpoint, not completion of arbitrary-program acceleration:
+nested mapping still requires further work.
+
+Five history configuration runs passed: host scheduling, forced-monolithic
+request, two-lane waves, private imports and serial snapshot copies. Full
+mapped-history initcheck, memcheck and synccheck each reported zero errors.
+Every run included nine source/CPU/CUDA prefix checks, 32,768 copy/edit cycles
+per lane with retained histories and snapshots, and bounded cancellation for
+history reads and restore/step/history loops. Restore contexts still require
+scheduled execution under a forced-monolithic request.
+
+`build/verification/vm-dispatch/live-history-prefix-audit.py` passed, validating
+the current source/binary manifest, all 25 structures and five pairs, source
+identities, kernel modes, the 54-test result, five configurations and three
+sanitizers. Its report and individual configuration/sanitizer logs are in the
+same directory. The tested binaries are retained as
+`build/verification/cursor-artifacts/ft-live-history-prefix-{benchmark,tests}`.
+
+## Nested Map Checkpoint (Performance Gate Not Met)
+
+Nested `procedures/map` now executes generic bytecode scopes rather than
+returning to source execution. Child scopes preserve parent physics, globals,
+selection, event context and random streams. Transitive procedure effects
+avoid physics snapshots and global/random copies for children that cannot
+change them. Dynamic child calls remain conservatively effectful; this is
+not a claim that arbitrary nested programs are fast.
+
+The expanded suite has 28 structures, each with 1,024 candidates, a 6,000 ms
+horizon and five paired native/Blocks measurements. Both complete runs
+passed source/backend/cross-structure result identity checks, but neither
+passed the 90% throughput gate. Ratios are native execution time divided by
+Blocks execution time; higher is better.
+
+| Structure | First Run | Second Run |
+| --- | ---: | ---: |
+| Workbench | 1.1695 | 1.1793 |
+| Indirect | 1.1609 | 1.1497 |
+| Broadcast | 1.1749 | 1.1710 |
+| Tick events | 1.1840 | 1.1849 |
+| Loop chunks | 1.2104 | 1.2253 |
+| Checkpoint events | 1.1377 | 1.1318 |
+| Conditional events | 1.0196 | 0.9542 |
+| Procedure chain | 1.0237 | 0.8456 |
+| Shadowed globals | 1.1853 | 0.8958 |
+| Overwritten globals | 1.0604 | 0.8972 |
+| Dynamic globals | 1.1411 | 0.9373 |
+| Read globals | 1.1621 | 0.8706 |
+| Shrinking globals | 1.1542 | 0.8902 |
+| Mapped restore | 1.1596 | 0.9544 |
+| Mapped horizon | 1.1673 | 1.0581 |
+| Mapped horizon events | 1.1284 | 1.0169 |
+| Entry history | 1.1647 | 1.0588 |
+| Tail history | 1.1259 | 1.0069 |
+| Event history | 1.0823 | 0.9703 |
+| Indirect history | 0.5353 | 1.1102 |
+| Mapped restart | 0.8676 | 1.1681 |
+| Indirect restart | 0.8972 | 1.1718 |
+| Restart plus tail history | 0.5269 | 1.1133 |
+| Restore plus tail history | 0.5807 | 1.1084 |
+| Result restore plus history | 0.5524 | 1.0945 |
+| Nested map tail | 0.9513 | 1.1631 |
+| Nested map tick events | 0.8355 | 0.9277 |
+| Nested map physics tail | 1.0425 | 1.1416 |
+
+Raw evidence is retained under `build/verification/vm-dispatch/` in
+`nested-map-full-gate/` and `nested-map-quiet-gate/`. The second directory's
+name describes its initially quiet GPU, not guaranteed isolation throughout
+the run. Substantial unrelated GPU activity was observed during the first
+run. It does not invalidate or excuse its failed measurements, and selecting
+the best result per structure across runs would not constitute a passing gate.
+
+Before this change, the nested-tail fixture fell back for all 64 candidates
+in its pilot (about 12.6% of native execution throughput). Earlier every-tick
+fixture variants changed parent random-stream consumption and failed
+cross-structure identity; they are not valid performance comparisons. The
+final tick fixture enables mapping only inside candidate evaluation scopes.
+
+All 55 CTest cases passed in 495.99 seconds
+(`/tmp/nested-map-full-ctest.log`). The new tests cover nested physics and
+read-only maps, global/selection isolation, event contexts, random streams,
+snapshot/history continuation, 2,048 scopes per lane and parent/child
+cancellation. Further performance work remains necessary.
+
+All five nested-map configuration checks passed: host scheduling,
+forced-monolithic request, one-lane waves, private imports and serial copies.
+Full nested-map initcheck, memcheck and synccheck each reported zero errors.
+The host ASan/UBSan build and runtime tests passed (`detect_leaks=0`,
+`halt_on_error=1`). Logs and the reproducible `nested-map-check.sh` are retained
+in `build/verification/vm-dispatch/`. The audit reports evidence integrity
+separately from the failed performance gate; it does not treat parity or
+sanitizer success as proof of throughput.

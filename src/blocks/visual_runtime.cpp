@@ -3,6 +3,8 @@
 #include "blocks/block_value.h"
 #include "blocks/visual_catalog.h"
 #include "blocks/visual_debugger.h"
+#include "blocks/parallel_executor.h"
+#include "blocks/program_value_codec.h"
 #include "input_timeline_time.h"
 
 #include <algorithm>
@@ -13,8 +15,55 @@
 #include <set>
 #include <stdexcept>
 #include <thread>
+#include <mutex>
 
 namespace forevertas::blocks {
+
+namespace {
+class DeferredHistory final : public VisualHistorySpan {
+public:
+  explicit DeferredHistory(std::function<std::vector<VisualState>()> sampler) : sampler_(std::move(sampler)) {}
+  void appendTo(std::vector<VisualState> &states) const override {
+    std::call_once(once_,[&] { samples_=sampler_(); sampler_={}; });
+    states.insert(states.end(),samples_.begin(),samples_.end());
+  }
+private:
+  mutable std::function<std::vector<VisualState>()> sampler_;
+  mutable std::once_flag once_;
+  mutable std::vector<VisualState> samples_;
+};
+}
+
+std::shared_ptr<const VisualHistorySpan> DeferredVisualHistory(std::function<std::vector<VisualState>()> sample) {
+  return std::make_shared<DeferredHistory>(std::move(sample));
+}
+
+VisualAdvance VisualSimulationHost::advanceMany(std::uint32_t ticks) {
+  VisualAdvance result{read(),read(),{}};
+  std::vector<VisualState> states;
+  states.reserve(ticks);
+  for (std::uint32_t i=0;i<ticks;++i) {
+    result.previous=result.state; result.state=advance(); states.push_back(result.state);
+  }
+  if (ticks>1) result.history=DeferredVisualHistory([states=std::move(states)] { return states; });
+  return result;
+}
+
+std::vector<VisualState> VisualHistoryStates(
+    const std::shared_ptr<const VisualHistoryNode> &history) {
+  if (!history) return {};
+  std::vector<const VisualHistoryNode *> chunks;
+  for (auto current=history.get();current;current=current->previous.get()) chunks.push_back(current);
+  std::vector<VisualState> states;
+  states.reserve(history->size);
+  for (auto it=chunks.rbegin();it!=chunks.rend();++it) {
+    if ((*it)->span) (*it)->span->appendTo(states);
+    else states.push_back((*it)->state);
+    if (states.size()!=(*it)->size) throw std::runtime_error("Invalid sampled history span.");
+  }
+  return states;
+}
+
 namespace {
 
 using Snapshot = std::shared_ptr<const VisualSnapshot>;
@@ -111,7 +160,9 @@ class Runtime {
 public:
   Runtime(const VisualProgram &program, VisualSimulationHost &host, const VisualRuntimeControl &control)
       : program_(program), host_(host), control_(control), current_(host.read()), previous_(current_),
-        history_(std::make_shared<std::vector<VisualState>>(1, current_)), horizon_(control.horizonMs) {
+        inputs_(std::make_shared<const VisualInputs>(host.inputs())),
+        history_(std::make_shared<VisualHistoryNode>(VisualHistoryNode{current_, {}, 1})),
+        horizon_(control.horizonMs) {
     if (!control.tickMs || !control.collectionLimit || !control.workerCount || control.workerCount > 256 || control.horizonMs < control.tickMs ||
         control.horizonMs > kMaximumHorizonMs || control.horizonMs % control.tickMs)
       throw std::invalid_argument("Invalid visual runtime limits.");
@@ -148,7 +199,8 @@ private:
   std::vector<Frame> frames_;
   std::mt19937_64 random_{1};
   VisualState current_, previous_;
-  std::shared_ptr<std::vector<VisualState>> history_;
+  std::shared_ptr<const VisualInputs> inputs_;
+  std::shared_ptr<const VisualHistoryNode> history_;
   Snapshot initial_;
   std::uint32_t horizon_;
   const VisualNode *active_ = nullptr;
@@ -157,12 +209,18 @@ private:
   struct Event { VisualValue value; VisualState state; };
   std::vector<Event> events_;
   bool mapped_ = false;
+  ParallelExecutor executor_;
+  std::vector<std::unique_ptr<VisualSimulationHost>> mapHosts_;
+  std::vector<HostBytecodeStorage> mapStorage_;
+  std::map<std::string,BytecodeCompilation> bytecode_;
+  std::set<std::string> nonUniform_;
 
   void poll(bool inspect = false, bool executablePoint = true) {
     if (control_.stopRequested && control_.stopRequested()) throw Stop{};
     if (operationCounter_ && operationCounter_->fetch_add(1, std::memory_order_relaxed) >= control_.operationLimit)
       throw std::runtime_error("The program exceeded its operation limit.");
     ++result_.operations;
+    if ((result_.operations & 1023u) == 0 && control_.progress) control_.progress();
     if (inspect && control_.debugger && !control_.debugger->visit(
           active_ ? active_->id : 0, depth_, state(), result_.variables, frames_, control_.stopRequested, executablePoint))
       throw Stop{};
@@ -214,28 +272,31 @@ private:
   const VisualState &state() const { return current_; }
   Snapshot save() const {
     return std::make_shared<VisualSnapshot>(VisualSnapshot{
-        host_.capture(), current_, previous_, host_.inputs(), history_, horizon_, result_.candidates});
+        host_.capture(), current_, previous_, inputs_, history_, horizon_, result_.candidates});
   }
   void restore(const Snapshot &snapshot) {
-    if (!snapshot || !snapshot->native) throw std::runtime_error("Invalid snapshot.");
+    if (!snapshot || !snapshot->native || !snapshot->inputs || !snapshot->history)
+      throw std::runtime_error("Invalid snapshot.");
     // A serial mapped job can change the shared host's horizon. Establish a
     // horizon valid for both cursors before restoring, then shrink afterwards.
     host_.setHorizon(std::max(snapshot->horizonMs, static_cast<std::uint32_t>(host_.read().timeMs)));
     current_ = host_.restore(*snapshot->native);
-    host_.replaceInputs(snapshot->inputs);
+    host_.replaceInputs(*snapshot->inputs);
+    inputs_ = snapshot->inputs;
     horizon_ = snapshot->horizonMs;
     current_ = host_.setHorizon(horizon_);
     previous_ = snapshot->previous;
-    history_ = std::make_shared<std::vector<VisualState>>(*snapshot->history);
+    history_ = snapshot->history;
   }
   void restart() {
-    const auto inputs = host_.inputs();
+    const auto inputs = inputs_;
     const auto horizon = horizon_;
     restore(initial_);
-    host_.replaceInputs(inputs);
+    host_.replaceInputs(*inputs);
+    inputs_ = inputs;
     horizon_ = horizon;
     current_ = host_.setHorizon(horizon_);
-    history_->assign(1, current_);
+    history_ = std::make_shared<VisualHistoryNode>(VisualHistoryNode{current_, {}, 1});
   }
   void tick() {
     poll(true, false);
@@ -249,9 +310,9 @@ private:
     previous_ = current_;
     current_ = host_.advance();
     if (current_.timeMs <= previous_.timeMs) throw std::runtime_error("The simulation did not advance.");
-    collectionSize(history_->size()+1);
-    if (!history_.unique()) history_ = std::make_shared<std::vector<VisualState>>(*history_);
-    history_->push_back(current_);
+    collectionSize(history_->size + 1);
+    history_ = std::make_shared<VisualHistoryNode>(
+        VisualHistoryNode{current_, history_, history_->size + 1});
     poll(true, false);
     const auto emitted = current_;
     const bool checkpoint = current_.checkpointsCollected > previous_.checkpointsCollected;
@@ -334,19 +395,64 @@ private:
     for (std::size_t i=0; i<items->size(); ++i) { poll(); seeds.push_back(random_()); }
     // Nested maps reuse their worker; debugging follows input order. Neither
     // changes the isolated value semantics or deterministic random streams.
-    const auto workers = std::min<std::size_t>(items->size(),
-        mapped_ || (control_.debugger && control_.debugger->enabled()) ? 1 : requestedWorkers);
-    std::vector<std::unique_ptr<VisualSimulationHost>> hosts;
-    if (workers > 1) for (std::size_t i=0; i<workers; ++i) { poll(); hosts.push_back(host_.fork()); }
+    const auto workerLimit = mapped_ || (control_.debugger && control_.debugger->enabled())
+        ? std::size_t{1} : static_cast<std::size_t>(control_.workerCount);
+    const auto workers = std::min({items->size(), static_cast<std::size_t>(requestedWorkers), workerLimit,
+        static_cast<std::size_t>(host_.workerCapacity())});
+    if (!workers) throw std::runtime_error("The simulation host has no branch worker capacity.");
+    const ProgramBytecode *compiled=nullptr;
+    if (control_.compilePrograms && !control_.operationLimit && control_.collectionLimit==1000000 &&
+        (!control_.debugger || !control_.debugger->enabled())) {
+      auto entry=bytecode_.find(function.name);
+      if (entry==bytecode_.end()) entry=bytecode_.emplace(function.name,CompileMappedProgram(program_,function.name)).first;
+      if (entry->second.program) compiled=&*entry->second.program;
+      if (!compiled && control_.executionModeChanged) control_.executionModeChanged(entry->second.reason);
+    }
+    if (mapStorage_.size()<workers) mapStorage_.resize(workers);
+    std::vector<unsigned char> pendingLanes;
+    std::size_t fallbackLanes=0;
+    auto compiledControl=control_;
+    compiledControl.restartOrigin=initial_;
+    if (compiled) {
+      if (items->size()>1 && !nonUniform_.count(function.name)) {
+        if (auto uniform=TryUniformProgram(*compiled,baseline,result_.variables,*items,control_,mapStorage_.front())) {
+          result_.operations+=uniform->operations;
+          if (uniform->stopped) throw Stop{};
+          if (control_.executionModeChanged) control_.executionModeChanged("Uniform compiled block program");
+          return VisualValue(List(std::make_shared<VisualList>(std::move(uniform->values))));
+        }
+        nonUniform_.insert(function.name);
+      }
+      if (auto executor=host_.batchExecutor()) {
+        if (auto executed=executor->execute(*compiled,baseline,result_.variables,*items,seeds,compiledControl)) {
+          result_.operations+=executed->operations;
+          if (executed->stopped) throw Stop{};
+          if (executed->fallbackLanes.empty())
+            return VisualValue(List(std::make_shared<VisualList>(std::move(executed->values))));
+          *output=std::move(executed->values);
+          pendingLanes.resize(items->size(),0);
+          for (const auto lane : executed->fallbackLanes) pendingLanes.at(lane)=1;
+          fallbackLanes=executed->fallbackLanes.size();
+        }
+      } else if (control_.executionModeChanged) {
+        control_.executionModeChanged("Compiled block program on CPU");
+      }
+    }
+    if (workers > 1) while (mapHosts_.size() < workers) {
+      poll(); mapHosts_.push_back(host_.fork());
+    }
     std::atomic<std::size_t> next{0};
     std::atomic_bool abort{false};
+    std::atomic_bool usedInterpreter{false};
     std::vector<std::exception_ptr> failures(workers);
     std::vector<std::uint64_t> operations(workers, 0);
     const auto run = [&](std::size_t worker) {
       try {
-        VisualSimulationHost &host = workers > 1 ? *hosts[worker] : host_;
+        VisualSimulationHost &host = workers > 1 ? *mapHosts_[worker] : host_;
         auto control = control_;
+        control.restartOrigin = initial_;
         control.workerCount = 1; // Nested maps reuse this worker, not a new pool.
+        control.executionModeChanged = {};
         control.published = {};
         control.candidateCountChanged = {};
         control.candidateLimit.reset();
@@ -358,32 +464,43 @@ private:
         for (;;) {
           const auto i=next.fetch_add(1, std::memory_order_relaxed);
           if (i>=items->size() || abort.load(std::memory_order_relaxed)) break;
-          Runtime job(program_, host, control);
-          job.operationCounter_ = operationCounter_;
-          job.restore(baseline);
-          job.initial_ = initial_;
-          job.result_.variables = result_.variables;
-          job.random_.seed(seeds[i]);
-          job.depth_ = depth_;
-          job.mapped_ = true;
-          (*output)[i] = job.invoke(*found->second, {(*items)[i]}, true);
-          operations[worker] += job.result_.operations;
+          if (!pendingLanes.empty() && !pendingLanes[i]) continue;
+          bool interpreted=!compiled || !pendingLanes.empty();
+          if (compiled && pendingLanes.empty()) {
+            host.setHorizon(std::max(baseline->horizonMs,static_cast<std::uint32_t>(host.read().timeMs)));
+            host.restore(*baseline->native);
+            host.replaceInputs(*baseline->inputs);
+            host.setHorizon(baseline->horizonMs);
+            const auto executed=ExecuteHostBytecode(*compiled,host,baseline,result_.variables,(*items)[i],seeds[i],control,mapStorage_[worker]);
+            if (executed.stopped) throw Stop{};
+            operations[worker]+=executed.operations;
+            interpreted=executed.needsInterpreter;
+            if (!interpreted) (*output)[i]=executed.value;
+          }
+          if (interpreted) {
+            usedInterpreter.store(true,std::memory_order_relaxed);
+            Runtime job(program_, host, control);
+            job.operationCounter_ = operationCounter_;
+            job.restore(baseline);
+            job.initial_ = initial_;
+            job.result_.variables = result_.variables;
+            job.random_.seed(seeds[i]);
+            job.depth_ = depth_;
+            job.mapped_ = true;
+            (*output)[i] = job.invoke(*found->second, {(*items)[i]}, true);
+            operations[worker] += job.result_.operations;
+          }
         }
       } catch (...) {
         failures[worker] = std::current_exception();
         abort.store(true, std::memory_order_relaxed);
       }
     };
-    std::vector<std::thread> threads;
-    try {
-      for (std::size_t i=1; i<workers; ++i) threads.emplace_back(run,i);
-      run(0);
-    } catch (...) {
-      abort.store(true, std::memory_order_relaxed);
-      for (auto &thread : threads) thread.join();
-      throw;
-    }
-    for (auto &thread : threads) thread.join();
+    executor_.run(workers, run);
+    if (compiled && usedInterpreter.load(std::memory_order_relaxed) && control_.executionModeChanged)
+      control_.executionModeChanged(fallbackLanes ? "CUDA block-program kernel with source fallback: "+
+          std::to_string(fallbackLanes)+"/"+std::to_string(items->size())+" lanes" :
+          "Source interpreter: dynamic values or compiled arena capacity");
     if (workers == 1) restore(baseline);
     for (auto count : operations) result_.operations += count;
     // Prefer the actual job failure over Stop exceptions in sibling workers.
@@ -446,10 +563,12 @@ private:
         if (event.timeMs <= static_cast<std::int64_t>(current_.timeMs)) result.push_back(event);
       return result;
     };
-    const auto before = prefix(host_.inputs()), after = prefix(inputs);
+    const auto before = prefix(*inputs_), after = prefix(inputs);
     if (before.size() != after.size() || !std::equal(before.begin(),before.end(),after.begin(),SameInputEvent))
       throw std::runtime_error("Past inputs changed. Restart or restore a state before the first edited input.");
-    host_.replaceInputs(std::move(inputs));
+    auto shared = std::make_shared<const VisualInputs>(std::move(inputs));
+    host_.replaceInputs(*shared);
+    inputs_ = std::move(shared);
   }
 
   void publish(double score, const VisualState &evaluationState, Snapshot snapshot = {}) {
@@ -509,6 +628,7 @@ VisualValue Runtime::eval(const VisualNode &node) {
   return at(node,[&]() -> VisualValue {
     const auto &id = node.definitionId;
     if (id == "runtime/workers") return Scalar(control_.workerCount);
+    if (id == "runtime/batch-size") return Scalar(control_.batchSize);
     if (id == "values/none") return VisualValue{};
     if (id == "procedures/reference") return VisualValue(VisualProcedure{Field(node,"name")});
     if (id == "procedures/apply") {
@@ -531,7 +651,7 @@ VisualValue Runtime::eval(const VisualNode &node) {
       return VisualValue(List(list));
     }
     if (id == "values/boolean") return VisualValue(Field(node,"value") == "true");
-    if (id == "values/text" || id == "inputs/action-name") return VisualValue(Field(node,"value"));
+    if (id == "values/text" || id == "inputs/action-name" || id == "targets/plane") return VisualValue(Field(node,"value"));
     if (id == "values/number-range" || id == "values/integer-range" ||
         id == "math/number-range" || id == "math/integer-range") {
       const bool literal = id.rfind("values/",0)==0;
@@ -575,11 +695,15 @@ VisualValue Runtime::eval(const VisualNode &node) {
     if (id == "simulation/read") return ReadVisualStateProperty(As<VisualState>(value(node,"state"),"a simulation state"),Field(node,"property"));
     if (id == "simulation/snapshot") return VisualValue(save());
     if (id == "simulation/snapshot-state") return VisualValue(As<Snapshot>(value(node,"snapshot"),"a snapshot")->state);
-    if (id == "simulation/snapshot-inputs") return VisualValue(As<Snapshot>(value(node,"snapshot"),"a snapshot")->inputs);
-    if (id == "simulation/inputs") return VisualValue(host_.inputs());
+    if (id == "simulation/snapshot-inputs") {
+      const auto snapshot=As<Snapshot>(value(node,"snapshot"),"a snapshot");
+      if (!snapshot || !snapshot->inputs) throw std::runtime_error("Invalid snapshot.");
+      return VisualValue(*snapshot->inputs);
+    }
+    if (id == "simulation/inputs") return VisualValue(*inputs_);
     if (id == "simulation/history") {
       auto list = std::make_shared<VisualList>();
-      for (const auto &sample : *history_) list->emplace_back(sample);
+      for (const auto &sample : VisualHistoryStates(history_)) list->emplace_back(sample);
       return VisualValue(List(list));
     }
     static const std::map<std::string,std::string> stateReporters{
@@ -698,7 +822,9 @@ VisualValue Runtime::eval(const VisualNode &node) {
       const auto origin=vector(node,"origin");
       const double depth=number(node,"depth");
       if (depth<=0) throw std::runtime_error("Prism depth must be positive.");
-      return VisualValue(VisualVolume{origin,{},As<VisualPolygon>(value(node,"polygon"),"a polygon"),Field(node,"plane"),depth});
+      const auto plane = As<std::string>(value(node,"plane"),"a projection plane");
+      if (plane != "xy" && plane != "xz" && plane != "yz") throw std::runtime_error("Projection plane must be xy, xz or yz.");
+      return VisualValue(VisualVolume{origin,{},As<VisualPolygon>(value(node,"polygon"),"a polygon"),plane,depth});
     }
     if (id == "conditions/and") return VisualValue(boolean(node,"a") && boolean(node,"b"));
     if (id == "conditions/or") return VisualValue(boolean(node,"a") || boolean(node,"b"));
@@ -860,6 +986,7 @@ Flow Runtime::command(const VisualNode &node) {
       }
       return Flow::Next;
     }
+    if (id=="flow/section") return stack(node,"body");
     if (id=="procedures/call") { call(node,false); return Flow::Next; }
     if (id=="procedures/return") {
       const auto returned=value(node,"value");
@@ -897,7 +1024,7 @@ Flow Runtime::command(const VisualNode &node) {
       tick();
       return Flow::Next;
     }
-    if (id=="simulation/set-input") { useInputs(editedInputs(node,host_.inputs())); return Flow::Next; }
+    if (id=="simulation/set-input") { useInputs(editedInputs(node,*inputs_)); return Flow::Next; }
     if (id=="simulation/replace-inputs") { useInputs(As<VisualInputs>(value(node,"inputs"),"an input sequence")); return Flow::Next; }
     if (id=="results/publish") { const auto chosen=number(node,"score"); publish(chosen,current_); return Flow::Next; }
     if (id=="results/publish-snapshot") {
@@ -909,6 +1036,15 @@ Flow Runtime::command(const VisualNode &node) {
     }
     if (id=="results/clear") { result_.published.reset(); return Flow::Next; }
     if (id=="results/count") { count(); return Flow::Next; }
+    if (id=="results/add-count") {
+      const auto amount=static_cast<std::uint64_t>(Integer(number(node,"amount"),0));
+      if (amount>std::numeric_limits<std::uint64_t>::max()-result_.candidates)
+        throw std::runtime_error("The candidate counter would overflow.");
+      if (control_.candidateLimit && amount>*control_.candidateLimit-std::min(result_.candidates,*control_.candidateLimit)) throw Stop{};
+      result_.candidates+=amount;
+      if (control_.candidateCountChanged) control_.candidateCountChanged(result_.candidates);
+      return Flow::Next;
+    }
     throw std::runtime_error("This block is not an executable command.");
   });
 }

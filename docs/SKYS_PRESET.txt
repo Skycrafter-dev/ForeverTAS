@@ -1,0 +1,17 @@
+# Sky's input preset
+
+**Macromacroblocks → Sky's** contains the following passes in order. Times are milliseconds on the user input timeline. Steering ranges are normalized -1 to 1.
+
+| Setting | Pass 1: Input deletion | Pass 2: Existing-event perturbation | Pass 3: Input insertion |
+| --- | --- | --- | --- |
+| Minimum / maximum time | 6100 / 10500 | 6100 / 10500 | 6100 / 10500 |
+| Seed | 3749268317 | 444721321 | 4221481885 |
+| Steering | Enabled; maximum 12 deletions | Delta; delta -1..1; absolute -1..1 | Enabled; Offset; 0..5 insertions; maximum hold 0; absolute -1..1; offset -1..1 |
+| Accelerate | Enabled; maximum 1 deletion | Toggle enabled | Enabled; 0..1 insertions; maximum hold 200 |
+| Brake | Enabled; maximum 2 deletions | Toggle enabled | Enabled; 0..2 insertions; maximum hold 300 |
+| Existing event count | — | 1..12 | — |
+| Maximum timing shift | — | 0 | — |
+
+Inactive absolute ranges are retained, not omitted. The mode buttons edit the corresponding boolean source literals. Each pass is an expandable group of normal list, random, arithmetic, input-edit, and flow blocks. Disabling a pass does not delete it or disable the following passes.
+
+Each pass uses its seed plus the candidate count. All random draws and input edits remain ordinary visible source.

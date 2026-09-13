@@ -41,7 +41,7 @@ public:
     };
 
     explicit CuboidTargetModel(
-            const QVariantMap &legacySettings = {},
+            const QVariantMap &releasedSettings = {},
             QObject *parent = nullptr);
     ~CuboidTargetModel() override;
 
@@ -90,7 +90,7 @@ private:
     static bool ParseFinite(const QString &value, double *result);
     static int AxisIndex(const QString &axis);
     QString nextDefaultName() const;
-    void load(const QVariantMap &legacySettings);
+    void load(const QVariantMap &releasedSettings);
     void persist();
     void schedulePersist();
     void notifyTargetChanged(int index);

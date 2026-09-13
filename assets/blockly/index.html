@@ -10,9 +10,45 @@
   <script src="qrc:/blockly/third_party/blockly/en.js"></script>
   <script src="qrc:///qtwebchannel/qwebchannel.js"></script>
   <script src="examples.js"></script>
+  <script src="workbench.js"></script>
+  <script src="program_tabs.js"></script>
 </head>
 <body>
   <div id="editorShell">
+    <nav id="programTabBar" aria-label="Open programs">
+      <div id="programTabs" role="tablist" aria-label="Program tabs"></div>
+      <button id="newProgramTab" type="button" title="New blank program (Ctrl+N)" aria-label="New program">+</button>
+    </nav>
+    <header id="editorToolbar">
+      <details id="projectMenu" class="popupMenu">
+        <summary id="projectAction">Program</summary>
+        <div class="menuContents">
+          <button type="button" data-project="new">New blank program</button>
+          <button type="button" data-project="open">Open program…</button>
+          <button type="button" data-project="save">Save program…</button>
+          <button type="button" data-project="save-as">Save program as…</button>
+          <button type="button" data-project="rename">Rename program…</button>
+          <button type="button" data-project="close">Close tab</button>
+          <button type="button" data-project="reopen">Reopen closed tab</button>
+          <button type="button" data-project="library">Add block library…</button>
+          <button type="button" data-project="feedback">Example: feedback control</button>
+          <button type="button" data-project="branches">Example: parallel branches</button>
+        </div>
+      </details>
+      <button id="newSearch" type="button" data-write>New search…</button>
+      <div class="historyControls" role="group" aria-label="Program history">
+        <button id="undoProgram" type="button" disabled title="Undo (Ctrl+Z)">Undo</button>
+        <button id="redoProgram" type="button" disabled title="Redo (Ctrl+Shift+Z)">Redo</button>
+      </div>
+      <div class="viewModes" role="group" aria-label="Editor view">
+        <button id="configureView" type="button" aria-pressed="true">Configure</button>
+        <button id="blocksView" type="button" aria-pressed="false">Blocks</button>
+        <button id="settingsSideToggle" type="button" aria-pressed="false" title="Show blocks and configuration together">Both</button>
+      </div>
+    </header>
+    <div id="programNotice" role="alert" hidden><span></span><button type="button" aria-label="Dismiss program message">×</button></div>
+    <div id="editorBody" role="tabpanel">
+    <div id="canvasPane">
     <div id="searchDock" role="search" aria-label="Block search">
       <span class="searchIcon">⌕</span>
       <input id="blockSearch" autocomplete="off" spellcheck="false"
@@ -26,25 +62,29 @@
       <span id="viewerPickStatus" role="status" aria-live="polite"></span>
     </div>
     <div id="blocklyDiv" aria-label="Visual search workspace"></div>
-    <div id="projectDock" role="toolbar" aria-label="Block programs">
-      <select id="projectAction" aria-label="Program and library actions">
-        <option value="">Program…</option>
-        <option value="new">New program</option><option value="open">Open program…</option>
-        <option value="save">Save program…</option><option value="library">Add block library…</option>
-        <option value="feedback">Example: feedback control</option>
-        <option value="branches">Example: parallel branches</option>
-      </select>
+    </div>
+    <aside id="configurationPanel" aria-label="Program configuration">
+      <h2>Configuration</h2>
+      <p class="settingsHint">Choose a search template, then adjust its settings. Edit logic opens the same program in Blocks.</p>
+      <div id="configurationActions"></div>
+      <div id="configurationCards"></div>
+    </aside>
+    <div id="emptyPrograms" hidden><h2>No open programs</h2><p>New programs, searches and examples open in their own autosaved tabs.</p><button type="button" data-project="new">New blank program</button></div>
     </div>
     <div id="runtimeDock" role="toolbar" aria-label="Block execution">
       <button id="runProgram" type="button">Run</button>
       <button id="debugProgram" type="button" title="Start paused before the first block">Debug</button>
       <button id="pauseProgram" type="button">Pause</button>
       <button id="resumeProgram" type="button">Continue</button>
-      <button id="stepProgram" type="button">Step</button>
-      <select id="stepKind" aria-label="Step kind">
-        <option value="into">Into</option><option value="over">Over</option>
-        <option value="out">Out</option><option value="tick">Tick</option>
-      </select>
+      <details class="popupMenu" id="stepMenu">
+        <summary>Step…</summary>
+        <div class="menuContents">
+          <button id="stepProgram" type="button" data-step="into">Step into</button>
+          <button type="button" data-step="over">Step over</button>
+          <button type="button" data-step="out">Step out</button>
+          <button type="button" data-step="tick">Next tick</button>
+        </div>
+      </details>
       <button id="stopProgram" type="button">Stop</button>
       <label><input id="inspectProgram" type="checkbox">Inspect</label>
       <span id="runtimeStatus" role="status"></span>
@@ -53,12 +93,28 @@
       <input id="watchFilter" placeholder="Filter variables and state…" aria-label="Filter runtime values">
       <div id="runtimeValues"></div>
     </section>
+    <div id="sessionBar"><span id="autosaveStatus" role="status" aria-live="polite">Loading programs…</span><button id="autosaveRetry" type="button" title="Retry autosave">Retry</button></div>
     <div id="diagnostics" role="alert" aria-live="assertive" hidden></div>
-    <div id="readOnlyShield" role="status" aria-live="polite" hidden>
-      <div class="readOnlyNotice">Search is running · stop to edit blocks</div>
-    </div>
     <div id="loadingState" role="status" aria-live="polite">Loading block editor…</div>
   </div>
+  <dialog id="searchBuilder">
+    <h2>New search</h2>
+    <p>Choose how to change inputs and what to improve. Your search opens in a new autosaved tab.</p>
+    <h3>Input passes</h3><div id="builderInputs" class="templateChoices"></div>
+    <h3>Target</h3><div id="builderTargets" class="templateChoices"></div>
+    <div class="dialogActions"><button id="cancelSearchBuilder" type="button">Cancel</button><button id="createSearch" type="button">Create search</button></div>
+  </dialog>
+  <dialog id="renameProgramDialog">
+    <form method="dialog"><h2>Rename program</h2><label>Name <input id="programName" required maxlength="200" autocomplete="off"></label>
+      <div class="dialogActions"><button value="cancel" formnovalidate>Cancel</button><button value="rename">Rename</button></div>
+    </form>
+  </dialog>
+  <dialog id="closeProgramDialog">
+    <form method="dialog"><h2>Close <span id="closeProgramName"></span>?</h2>
+      <p>You will lose this program permanently if you do not save first. Save it as a file to reopen later.</p>
+      <div class="dialogActions"><button value="cancel" autofocus>Cancel</button><button value="close">Close without saving a file</button><button value="save">Save file and close</button></div>
+    </form>
+  </dialog>
   <script src="editor.js"></script>
 </body>
 </html>

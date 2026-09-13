@@ -44,10 +44,10 @@ bool FiniteRotation(const QQuaternion &rotation) {
 
 }  // namespace
 
-PoseTargetModel::PoseTargetModel(const QVariantMap &legacySettings,
+PoseTargetModel::PoseTargetModel(const QVariantMap &releasedSettings,
                                  QObject *parent)
     : QObject(parent) {
-    load(legacySettings);
+    load(releasedSettings);
 }
 
 QVariantList PoseTargetModel::targets() const {
@@ -392,7 +392,7 @@ QString PoseTargetModel::nextDefaultName() const {
     }
 }
 
-void PoseTargetModel::load(const QVariantMap &legacySettings) {
+void PoseTargetModel::load(const QVariantMap &releasedSettings) {
     const QJsonDocument document = QJsonDocument::fromJson(
             QSettings().value(QLatin1String(kPoseTargetsKey)).toByteArray());
     QString selectedId;
@@ -463,12 +463,12 @@ void PoseTargetModel::load(const QVariantMap &legacySettings) {
                  skippedTargets);
     }
     if (targets_.empty()) {
-        const auto number = [&legacySettings](
+        const auto number = [&releasedSettings](
                                     const QString &key,
                                     double fallback) {
             double value = 0.0;
             return ParseFinite(
-                           legacySettings.value(key).toString(), &value)
+                           releasedSettings.value(key).toString(), &value)
                     ? value
                     : fallback;
         };

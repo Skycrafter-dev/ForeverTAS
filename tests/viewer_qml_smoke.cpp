@@ -451,6 +451,9 @@ int main(int argc, char **argv) {
                     object->objectName());
         }
     }
+    // Navigation is enabled even without a loaded map. Probe its disabled
+    // palette explicitly, then restore it before testing tab navigation.
+    if (initialStartButton) initialStartButton->setProperty("enabled", false);
     const QColor lightDisabledButton =
             initialStartButton != nullptr
             ? initialStartButton
@@ -674,6 +677,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (initialStartButton) initialStartButton->setProperty("enabled", true);
     auto *const initialGlobalScript =
             qobject_cast<QQuickItem *>(
                     root->findChild<QObject *>(
@@ -745,15 +749,57 @@ int main(int argc, char **argv) {
             initialExpandBlocksButton != nullptr &&
             initialBruteforceContent != nullptr &&
             initialDebuggerContent != nullptr &&
-            initialToolTabs->property("count").toInt() == 3 &&
+            initialToolTabs->property("count").toInt() == 4 &&
             initialToolTabs->property("currentIndex").toInt() == 0 &&
             initialSettingsPanel->property("panelPage").toInt() == 0 &&
             initialSettingsScroll->isVisible() &&
             !initialBlockWorkspace->isVisible() &&
             !initialExpandBlocksButton->isVisible();
     if (globalSettingsVisibleAcrossTabs) {
-        initialToolTabs->setProperty("currentIndex", 1);
+        const auto navigationRects = [&] {
+            std::vector<QRectF> result;
+            for (const char *name : {"setupTab", "bruteforceTab", "runTab", "codeDebuggerTab"}) {
+                auto *item = root->findChild<QQuickItem *>(QString::fromLatin1(name));
+                if (!item) return std::vector<QRectF>{};
+                result.emplace_back(item->mapToScene(QPointF(0,0)), QSizeF(item->width(),item->height()));
+            }
+            return result;
+        };
         QCoreApplication::processEvents();
+        const auto fixedNavigation = navigationRects();
+        globalSettingsVisibleAcrossTabs &= fixedNavigation.size()==4 &&
+            std::all_of(fixedNavigation.begin(),fixedNavigation.end(),[&](const QRectF &rect) {
+                return rect.width()==82 && rect.height()==46 && rect.right()>root->property("width").toDouble()-1;
+            });
+        const auto waitForLayout = [](const auto &predicate) {
+            QElapsedTimer timer; timer.start();
+            do {
+                QCoreApplication::processEvents();
+                if (predicate()) return true;
+                QThread::msleep(5);
+            } while (timer.elapsed() < 3000);
+            return false;
+        };
+        initialToolTabs->setProperty("currentIndex", 1);
+        globalSettingsVisibleAcrossTabs &= waitForLayout([&] {
+            return initialSettingsPanel->width() >= 500.0 &&
+                root->findChild<QObject *>(QStringLiteral("blocklyWebEngineView")) != nullptr;
+        });
+        globalSettingsVisibleAcrossTabs &= waitForLayout([&] { return blockEditorBridge.editorLoaded(); });
+        if (!blockEditorBridge.editorLoaded()) std::cerr << "Embedded program editor did not complete native-channel initialization\n";
+        bool autosaveFlushed = false;
+        QString autosaveError;
+        const auto flushConnection = QObject::connect(&blockEditorBridge,
+            &forevertas::app::BlockEditorBridge::sessionFlushFinished, &application,
+            [&](const QString &error) { autosaveFlushed = true; autosaveError = error; });
+        blockEditorBridge.requestSessionFlush();
+        globalSettingsVisibleAcrossTabs &= waitForLayout([&] { return autosaveFlushed; }) && autosaveError.isEmpty();
+        QObject::disconnect(flushConnection);
+        if (!qEnvironmentVariable("FOREVERTAS_PANEL_SCREENSHOT").isEmpty()) {
+            QThread::msleep(100); QCoreApplication::processEvents();
+            if (auto *window = qobject_cast<QQuickWindow *>(root))
+                window->grabWindow().save(qEnvironmentVariable("FOREVERTAS_PANEL_SCREENSHOT"));
+        }
         globalSettingsVisibleAcrossTabs &=
                 initialSettingsPanel->property("panelPage").toInt() == 1 &&
                 !initialGlobalScript->isVisible() &&
@@ -765,6 +811,11 @@ int main(int argc, char **argv) {
                 initialBlockWorkspace->isVisible() &&
                 initialExpandBlocksButton->isVisible() &&
                 initialSettingsPanel->width() >= 500.0;
+        const QPointer<QObject> retainedEditor = root->findChild<QObject *>(QStringLiteral("blocklyWebEngineView"));
+        const double rememberedBlocksWidth = 615.0;
+        initialSettingsPanel->setProperty("blocksPreferredWidth", rememberedBlocksWidth);
+        QMetaObject::invokeMethod(initialSettingsPanel, "restorePanelWidth");
+        QCoreApplication::processEvents();
         initialToolTabs->setProperty("currentIndex", 2);
         QCoreApplication::processEvents();
         globalSettingsVisibleAcrossTabs &=
@@ -776,6 +827,26 @@ int main(int argc, char **argv) {
                 initialBruteforceContent->isVisible() &&
                 !initialDebuggerContent->isVisible() &&
                 !initialBlockWorkspace->isVisible();
+        initialToolTabs->setProperty("currentIndex", 1);
+        globalSettingsVisibleAcrossTabs &= waitForLayout([&] {
+            return std::abs(initialSettingsPanel->width() - rememberedBlocksWidth) < 2.0;
+        });
+        globalSettingsVisibleAcrossTabs &= retainedEditor &&
+            retainedEditor == root->findChild<QObject *>(QStringLiteral("blocklyWebEngineView")) &&
+            initialSettingsPanel->property("blocksPreferredWidth").toDouble() == rememberedBlocksWidth &&
+            std::abs(initialSettingsPanel->width() - rememberedBlocksWidth) < 2.0;
+        globalSettingsVisibleAcrossTabs &= navigationRects()==fixedNavigation;
+        root->setProperty("blockWorkspaceExpanded", true);
+        initialToolTabs->setProperty("currentIndex", 2);
+        QCoreApplication::processEvents();
+        globalSettingsVisibleAcrossTabs &= root->property("blockWorkspaceExpanded").toBool() &&
+            root->findChild<QQuickItem *>(QStringLiteral("workspaceContent"))->isVisible();
+        initialToolTabs->setProperty("currentIndex", 1);
+        QCoreApplication::processEvents();
+        globalSettingsVisibleAcrossTabs &= root->property("blockWorkspaceExpanded").toBool() &&
+            !root->findChild<QQuickItem *>(QStringLiteral("workspaceContent"))->isVisible();
+        globalSettingsVisibleAcrossTabs &= navigationRects()==fixedNavigation;
+        root->setProperty("blockWorkspaceExpanded", false);
         initialToolTabs->setProperty("currentIndex", 0);
         QCoreApplication::processEvents();
         globalSettingsVisibleAcrossTabs &=
@@ -2030,12 +2101,9 @@ int main(int argc, char **argv) {
                                     QStringLiteral("Copy all");
                     const bool searchControlsValid =
                             startSearchButton != nullptr &&
-                            stopSearchButton != nullptr &&
+                            stopSearchButton == nullptr &&
                             startSearchButton->property("text").toString() ==
-                                    QStringLiteral("Start") &&
-                            stopSearchButton->property("text").toString() ==
-                                    QStringLiteral("Stop") &&
-                            !stopSearchButton->property("enabled").toBool();
+                                    QStringLiteral("Open program controls");
                     const bool searchMetricsUiValid =
                             searchMetricsRow != nullptr &&
                             iterationsMetricCard != nullptr &&
@@ -2095,6 +2163,7 @@ int main(int argc, char **argv) {
                                             .toString() ==
                                     QStringLiteral("Reference") &&
                             randomizeSeedsOnStartCheckBox != nullptr &&
+                            randomizeSeedsOnStartCheckBox->isVisible() == !controller.blockProgramActive() &&
                             randomizeSeedsOnStartCheckBox
                                     ->property("checked")
                                     .toBool() &&
@@ -2174,23 +2243,23 @@ int main(int argc, char **argv) {
                                                     .toString() ==
                                             QStringLiteral("CUDA") &&
                                     cudaParallelSampleSettings != nullptr &&
-                                    cudaParallelSampleSettings->isVisible() &&
+                                    cudaParallelSampleSettings->isVisible() == !controller.blockProgramActive() &&
                                     cudaParallelSampleCountField != nullptr &&
                                     cudaParallelSampleCountField
                                                     ->property("text")
                                                     .toString() ==
                                             QStringLiteral("256") &&
                                     cudaCalibrationCheckBox != nullptr &&
-                                    cudaCalibrationCheckBox->isVisible() &&
-                                    cudaCalibrationCheckBox->y() >=
+                                    cudaCalibrationCheckBox->isVisible() == !controller.blockProgramActive() &&
+                                    (controller.blockProgramActive() || cudaCalibrationCheckBox->y() >=
                                             cudaParallelSampleSettings->y() +
                                                     cudaParallelSampleSettings
-                                                            ->height() &&
+                                                            ->height()) &&
                                     !cudaCalibrationCheckBox
                                              ->property("checked")
                                              .toBool() &&
                                     cudaSessionSpecializationSection != nullptr &&
-                                    cudaSessionSpecializationSection->isVisible() &&
+                                    cudaSessionSpecializationSection->isVisible() == !controller.blockProgramActive() &&
                                     cudaSessionSpecializationSection->parentItem() ==
                                             bruteforceTabContent &&
                                     cudaCompatibilityStatus != nullptr &&
@@ -2313,7 +2382,7 @@ int main(int argc, char **argv) {
                     const bool blocklyWorkbenchValid =
                             settingsPanel != nullptr &&
                             toolTabs != nullptr &&
-                            toolTabs->property("count").toInt() == 3 &&
+                            toolTabs->property("count").toInt() == 4 &&
                             settingsPanel->property("panelPage").toInt() == 0 &&
                             blockWorkspace != nullptr &&
                             !blockWorkspace->isVisible() &&
@@ -2750,8 +2819,6 @@ int main(int argc, char **argv) {
                     }
 
                     const QVector3D baselinePosition = viewer.carPosition();
-                    const QVector3D bestPosition =
-                            baselinePosition + QVector3D(5.0f, 0.0f, 0.0f);
                     std::vector<forevertas::SearchTimelineFrame> bestFrames;
                     bestFrames.reserve(3u);
                     for (std::int64_t timeMs : {0, 10, 20}) {
@@ -2793,8 +2860,7 @@ int main(int argc, char **argv) {
                                             true)};
                     viewer.addSearchRun(QString::fromLocal8Bit(argv[1]),
                                         QString::fromLocal8Bit(argv[2]),
-                                        bestFrames,
-                                        bestInputs);
+                                        bestFrames);
                     std::vector<forevertas::SearchTimelineFrame>
                             firstImprovement = bestFrames;
                     std::vector<forevertas::SearchTimelineFrame>
@@ -3164,13 +3230,29 @@ int main(int argc, char **argv) {
                                 << '\n';
                     }
 
+                    // The synthetic checkpoint geometry deliberately has no
+                    // input stream: an input-backed run is asynchronously
+                    // re-simulated to the viewer horizon. Exercise that path
+                    // separately instead of racing its completion while
+                    // expecting the synthetic three-frame pose to survive.
+                    viewer.addSearchRun(QString::fromLocal8Bit(argv[1]),
+                                        QString::fromLocal8Bit(argv[2]),
+                                        bestFrames, bestInputs);
+                    if (!WaitUntil([&] {
+                            return viewer.tickCount() == viewer.simulationHorizonMs()/10 + 1;
+                        }, 15000)) {
+                        std::cerr << "Input-backed best run did not rebuild to the viewer horizon\n";
+                        application.exit(1);
+                        return;
+                    }
+                    viewer.jumpToStart();
                     QTimer::singleShot(
                             250, &application,
                             [&, filled, wire, quickWindow, runSelector,
                              renderModeSelector, gpuRayTracingView,
                              rasterMapView, viewCamera,
                              mapEnvironment, daySkyTexture, mainMapLight,
-                             fillMapLight, bestPosition,
+                             fillMapLight, bestPosition = baselinePosition,
                              baseInputScriptTextArea,
                              copyCurrentRaceInputsButton,
                              rayTracingTrajectoryOverlay,
@@ -3633,7 +3715,7 @@ int main(int argc, char **argv) {
                                         viewer.runPoses().size() == 2 &&
                                         viewer.selectedRunId() ==
                                                 QStringLiteral("best") &&
-                                        viewer.tickCount() == 3 &&
+                                        viewer.tickCount() == viewer.simulationHorizonMs()/10 + 1 &&
                                         (viewer.carPosition() - bestPosition)
                                                         .length() < 0.001f &&
                                         runSelector != nullptr &&
@@ -3648,6 +3730,18 @@ int main(int argc, char **argv) {
                                                         .toString() ==
                                                 QStringLiteral("Best");
 
+                                if (!bestSelectedInitially) {
+                                    std::cerr << "best selection details: runs=" << viewer.runCount()
+                                              << ", options=" << viewer.runOptions().size()
+                                              << ", poses=" << viewer.runPoses().size()
+                                              << ", selected=" << viewer.selectedRunId().toStdString()
+                                              << ", ticks=" << viewer.tickCount()
+                                              << ", time=" << viewer.timeMs()
+                                              << ", playing=" << viewer.playing()
+                                              << ", position delta=" << (viewer.carPosition()-bestPosition).length()
+                                              << ", selector=" << (runSelector ? runSelector->property("currentValue").toString().toStdString() : "missing")
+                                              << ", display=" << (runSelector ? runSelector->property("displayText").toString().toStdString() : "missing") << '\n';
+                                }
                                 viewer.setTimeMs(10);
                                 controller.setBaseInputScript(
                                         QStringLiteral(
@@ -3691,7 +3785,7 @@ int main(int argc, char **argv) {
                                         bestActivated &&
                                         viewer.selectedRunId() ==
                                                 QStringLiteral("best") &&
-                                        viewer.tickCount() == 3 &&
+                                        viewer.tickCount() == viewer.simulationHorizonMs()/10 + 1 &&
                                         (viewer.carPosition() - bestPosition)
                                                 .length() < 0.001f;
 

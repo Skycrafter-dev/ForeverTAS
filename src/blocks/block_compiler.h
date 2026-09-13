@@ -33,7 +33,7 @@ struct SearchComponentConfiguration {
     // Optional compiler metadata used by app-level operations that act once
     // per visual mutation window (not once per lowered native modifier). It
     // does not affect search semantics and is intentionally excluded from
-    // equality so legacy/native round-trips remain category-neutral.
+    // equality so native component round-trips remain category-neutral.
     std::vector<std::size_t> modifierWindowGroups;
 };
 

@@ -114,4 +114,10 @@ VisualValue ReadVisualStateProperty(const VisualState &state, const std::string 
   if (found == properties.end()) throw std::runtime_error("Unknown simulation property: " + property);
   return found->read(state);
 }
+
+VisualValue ReadVisualStateProperty(const VisualState &state, std::size_t property) {
+  const auto &properties=Properties();
+  if (property>=properties.size()) throw std::runtime_error("Unknown simulation property index.");
+  return properties[property].read(state);
+}
 } // namespace forevertas::blocks

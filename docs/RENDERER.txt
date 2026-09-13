@@ -18,7 +18,7 @@ provide them.
 
 The rules never load game texture pixels. They select photo-scanned CC0 PBR
 materials and purpose-built ImageGen textures under `assets/materials`; every
-source is listed in `assets/materials/PROVENANCE.md`. Turbo uses right-facing
+source is listed in `assets/materials/PROVENANCE.txt`. Turbo uses right-facing
 cyan and yellow directional arrows, checkpoints use colored bands, and
 start/finish components use a checker pattern. Concrete is a deliberately flat
 gray. Broad, horizontal surface-0 meshes attached to authored blocks are

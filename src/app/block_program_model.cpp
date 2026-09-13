@@ -11,6 +11,7 @@
 #include <QJsonObject>
 #include <QSettings>
 
+#include <algorithm>
 #include <random>
 #include <set>
 #include <utility>
@@ -20,29 +21,9 @@ namespace forevertas::app {
 namespace {
 
 constexpr char kProgramKey[] = "blocks/program";
-constexpr char kProgramCorruptBackupKey[] = "blocks/program.corrupt";
 constexpr char kSearchAlgorithmKey[] = "selection/searchAlgorithm";
-constexpr char kLegacyMutationAlgorithmKey[] = "selection/mutationAlgorithm";
 constexpr char kModifierPassesKey[] = "composition/modifiers";
 constexpr char kEvaluationTargetKey[] = "selection/evaluationTarget";
-
-// Resolves option aliases ("evaluate/finish-time", registry legacy ids) to
-// their canonical atom definition ids.
-std::string CanonicalBlockDefinition(const std::string &candidate) {
-    if (blocks::FindBlock(candidate) != nullptr) return candidate;
-    const auto separator = candidate.find('/');
-    if (separator == std::string::npos) return std::string();
-    const std::string category = candidate.substr(0, separator);
-    const std::string optionId = candidate.substr(separator + 1);
-    if (category == "evaluate") {
-        return blocks::EvaluationAtomDefinitionForOption(optionId);
-    }
-    if (category == "search") {
-        return blocks::SearchAtomDefinitionForOption(optionId);
-    }
-    return std::string();
-}
-
 
 QString FromStd(const std::string &text) {
     return QString::fromStdString(text);
@@ -125,19 +106,6 @@ QVariantMap FieldData(const blocks::BlockProgram &program,
     return data;
 }
 
-void RemoveRetiredSearchBudget() {
-    const QString retiredKey = QString::fromLatin1(
-            QByteArray::fromHex("617474656d7074436f756e74"));
-    QSettings storage;
-    storage.remove(QStringLiteral("search/") + retiredKey);
-    storage.remove(QStringLiteral("configuration/search/basic-brute-force/") +
-                   retiredKey);
-    storage.remove(QStringLiteral("configuration/search/serial-brute-force/") +
-                   retiredKey);
-    storage.remove(QStringLiteral("search/minEvalTimeMs"));
-    storage.remove(QStringLiteral("search/maxEvalTimeMs"));
-}
-
 bool IsContainerNode(const blocks::BlockProgram &program,
                      blocks::BlockId id) {
     const blocks::BlockNode *const node = program.find(id);
@@ -180,7 +148,6 @@ BlockProgramModel::BlockProgramModel(QObject *parent) : QObject(parent) {
 }
 
 void BlockProgramModel::load() {
-    RemoveRetiredSearchBudget();
     QSettings storage;
     const QByteArray stored =
             storage.value(QLatin1String(kProgramKey)).toByteArray();
@@ -192,14 +159,12 @@ void BlockProgramModel::load() {
             remembered_ = parsed.remembered;
             return;
         }
-        // Keep the unreadable program under a backup key instead of
-        // silently replacing the user's work with defaults.
-        storage.setValue(QLatin1String(kProgramCorruptBackupKey),
-                         stored);
-        qWarning("ForeverTAS: the stored block program could not be "
-                 "parsed; it was backed up and defaults were loaded");
+        // This key did not exist in v0.2.3. Invalid data here can only be
+        // from an unreleased development format, so it must not shadow the
+        // one supported migration source below.
+        storage.remove(QLatin1String(kProgramKey));
     }
-    if (migrateLegacy(storage)) {
+    if (migrateReleasedV023(storage)) {
         persist();
         return;
     }
@@ -207,32 +172,57 @@ void BlockProgramModel::load() {
     persist();
 }
 
-bool BlockProgramModel::migrateLegacy(QSettings &storage) {
+bool BlockProgramModel::migrateReleasedV023(QSettings &storage) {
+    // v0.2.3 always materialized this key when its search configuration was
+    // loaded. Its absence means this is not a released v0.2.3 search state.
+    if (!storage.contains(QLatin1String(kModifierPassesKey))) return false;
+
     const OptionConfiguration defaultSearch =
             DefaultSearchAlgorithmConfiguration();
     const OptionConfiguration defaultEvaluation =
             DefaultEvaluationTargetConfiguration();
 
-    QString searchId = storage.value(QLatin1String(kSearchAlgorithmKey))
-                               .toString();
-    if (searchId.isEmpty()) searchId = FromStd(defaultSearch.id);
-    const SearchAlgorithmRegistration *searchRegistration =
-            FindSearchAlgorithm(searchId.toStdString());
-    if (searchRegistration == nullptr) {
-        searchRegistration = FindSearchAlgorithm(defaultSearch.id);
-    }
+    const auto exactSearch = [](const std::string &id) {
+        const auto &registry = SearchAlgorithmRegistry();
+        const auto found = std::find_if(
+                registry.cbegin(), registry.cend(),
+                [&id](const SearchAlgorithmRegistration &entry) {
+                    return entry.id == id;
+                });
+        return found == registry.cend() ? nullptr : &*found;
+    };
+    const auto exactEvaluation = [](const std::string &id) {
+        const auto &registry = EvaluationTargetRegistry();
+        const auto found = std::find_if(
+                registry.cbegin(), registry.cend(),
+                [&id](const EvaluationTargetRegistration &entry) {
+                    return entry.id == id;
+                });
+        return found == registry.cend() ? nullptr : &*found;
+    };
+    const auto exactModifier = [](const std::string &id) {
+        const auto &registry = ModifierRegistry();
+        const auto found = std::find_if(
+                registry.cbegin(), registry.cend(),
+                [&id](const ModifierRegistration &entry) {
+                    return entry.id == id;
+                });
+        return found == registry.cend() ? nullptr : &*found;
+    };
 
-    QString evaluationId = storage.value(QLatin1String(kEvaluationTargetKey))
-                                   .toString();
-    if (evaluationId.isEmpty()) {
-        evaluationId = FromStd(defaultEvaluation.id);
-    }
+    const QString storedSearch =
+            storage.value(QLatin1String(kSearchAlgorithmKey)).toString();
+    const SearchAlgorithmRegistration *searchRegistration =
+            storedSearch.isEmpty() ? exactSearch(defaultSearch.id)
+                                   : exactSearch(storedSearch.toStdString());
+    if (searchRegistration == nullptr) return false;
+
+    const QString storedEvaluation =
+            storage.value(QLatin1String(kEvaluationTargetKey)).toString();
     const EvaluationTargetRegistration *evaluationRegistration =
-            FindEvaluationTarget(evaluationId.toStdString());
-    if (evaluationRegistration == nullptr) {
-        evaluationRegistration =
-                FindEvaluationTarget(defaultEvaluation.id);
-    }
+            storedEvaluation.isEmpty()
+                    ? exactEvaluation(defaultEvaluation.id)
+                    : exactEvaluation(storedEvaluation.toStdString());
     if (searchRegistration == nullptr || evaluationRegistration == nullptr) {
         return false;
     }
@@ -249,54 +239,51 @@ bool BlockProgramModel::migrateLegacy(QSettings &storage) {
 
     const QJsonDocument document = QJsonDocument::fromJson(
             storage.value(QLatin1String(kModifierPassesKey)).toByteArray());
-    if (document.isArray()) {
-        for (const QJsonValue &value : document.array()) {
-            if (!value.isObject()) continue;
-            const QJsonObject object = value.toObject();
-            const ModifierRegistration *const registration = FindModifier(
-                    object.value(QStringLiteral("id"))
-                            .toString()
-                            .toStdString());
-            if (registration == nullptr) continue;
-            OptionSettings settings = registration->defaultSettings;
-            const QJsonObject storedSettings =
-                    object.value(QStringLiteral("settings")).toObject();
-            for (auto iterator = storedSettings.constBegin();
-                 iterator != storedSettings.constEnd();
-                 ++iterator) {
-                const std::string key = iterator.key().toStdString();
-                settings.erase(key);
-                settings.emplace(key,
-                                 iterator.value().toString().toStdString());
-            }
-            components.modifiers.push_back(
-                    OptionConfiguration{registration->id, settings});
+    if (!document.isArray()) return false;
+    for (const QJsonValue &value : document.array()) {
+        if (!value.isObject()) return false;
+        const QJsonObject object = value.toObject();
+        if (!object.value(QStringLiteral("id")).isString() ||
+            !object.value(QStringLiteral("settings")).isObject()) {
+            return false;
         }
+        const ModifierRegistration *const registration = exactModifier(
+                object.value(QStringLiteral("id")).toString().toStdString());
+        if (registration == nullptr) return false;
+        OptionSettings settings = registration->defaultSettings;
+        const QJsonObject storedSettings =
+                object.value(QStringLiteral("settings")).toObject();
+        for (auto iterator = storedSettings.constBegin();
+             iterator != storedSettings.constEnd();
+             ++iterator) {
+            const std::string key = iterator.key().toStdString();
+            if (settings.find(key) == settings.end() ||
+                !iterator.value().isString()) {
+                return false;
+            }
+            settings[key] = iterator.value().toString().toStdString();
+        }
+        components.modifiers.push_back(
+                OptionConfiguration{registration->id, settings});
     }
     if (components.modifiers.empty()) {
-        const ModifierRegistration &fallback = ModifierRegistry().front();
-        const QString legacyId = storage
-                .value(QLatin1String(kLegacyMutationAlgorithmKey))
-                .toString();
-        const ModifierRegistration *registration =
-                FindModifier(legacyId.toStdString());
-        if (registration == nullptr) registration = &fallback;
-        components.modifiers.push_back(OptionConfiguration{
-                registration->id,
-                ToOptionSettings(LoadPersistedOptionSettings(
-                        QStringLiteral("mutation"), *registration))});
+        components.modifiers = DefaultModifierConfigurations();
     }
 
-    program_ = blocks::BuildProgramFromComponents(components);
+    auto migrated = blocks::BuildProgramFromComponents(components);
+    if (!migrated) return false;
+    program_ = std::move(*migrated);
     return true;
 }
 
 void BlockProgramModel::buildDefault() {
-    program_ = blocks::BuildProgramFromComponents(
+    auto program = blocks::BuildProgramFromComponents(
             blocks::SearchComponentConfiguration{
                     DefaultSearchAlgorithmConfiguration(),
                     DefaultModifierConfigurations(),
                     DefaultEvaluationTargetConfiguration()});
+    Q_ASSERT(program.has_value());
+    program_ = std::move(*program);
 }
 
 void BlockProgramModel::persist() const {
@@ -435,9 +422,7 @@ QVariantMap BlockProgramModel::blockData(int blockId) const {
 }
 
 bool BlockProgramModel::addBlock(const QString &definitionId) {
-    const std::string id =
-            CanonicalBlockDefinition(definitionId.toStdString());
-    if (id.empty()) return false;
+    const std::string id = definitionId.toStdString();
     const blocks::BlockDefinition *const definition = blocks::FindBlock(id);
     if (definition == nullptr) return false;
     if (definition->shape == blocks::BlockShape::Hat) {
@@ -625,9 +610,7 @@ bool BlockProgramModel::setBlockPosition(int blockId, double x, double y) {
 int BlockProgramModel::addLooseBlock(const QString &definitionId,
                                      double x,
                                      double y) {
-    const std::string id =
-            CanonicalBlockDefinition(definitionId.toStdString());
-    if (id.empty()) return 0;
+    const std::string id = definitionId.toStdString();
     const blocks::BlockDefinition *const definition = blocks::FindBlock(id);
     if (definition == nullptr) return 0;
     if (definition->shape == blocks::BlockShape::Hat) {
@@ -793,10 +776,8 @@ bool BlockProgramModel::setEvaluatorBlockId(int blockId) {
 }
 
 bool BlockProgramModel::setEvaluator(const QString &definitionId) {
-    const std::string id =
-            CanonicalBlockDefinition(definitionId.toStdString());
-    const blocks::BlockDefinition *const definition =
-            id.empty() ? nullptr : blocks::FindBlock(id);
+    const std::string id = definitionId.toStdString();
+    const blocks::BlockDefinition *const definition = blocks::FindBlock(id);
     if (definition == nullptr || definition->optionKind != "evaluation") {
         return false;
     }
@@ -910,7 +891,7 @@ QString BlockProgramModel::evaluationTargetId() const {
                                  : FromStd(definition->optionId);
 }
 
-QVariantMap BlockProgramModel::legacyEvaluationSettings(
+QVariantMap BlockProgramModel::releasedEvaluationSettings(
         const QString &optionId) const {
     const EvaluationTargetRegistration *const registration =
             FindEvaluationTarget(optionId.toStdString());
@@ -928,13 +909,14 @@ BlockProgramModel::compiledComponents() const {
 
 bool BlockProgramModel::replaceWithComponents(
         const blocks::SearchComponentConfiguration &components) {
-    const blocks::BlockProgram replacement =
+    auto replacement =
             blocks::BuildProgramFromComponents(components);
-    const blocks::CompileResult roundTrip = blocks::CompileProgram(replacement);
+    if (!replacement) return false;
+    const blocks::CompileResult roundTrip = blocks::CompileProgram(*replacement);
     if (!roundTrip.ok || !(roundTrip.configuration == components)) {
         return false;
     }
-    program_ = replacement;
+    program_ = std::move(*replacement);
     remembered_.clear();
     persist();
     emit structureChanged();

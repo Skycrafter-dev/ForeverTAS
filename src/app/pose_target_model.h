@@ -27,7 +27,7 @@ class PoseTargetModel final : public QObject {
 
 public:
     explicit PoseTargetModel(
-            const QVariantMap &legacySettings = {},
+            const QVariantMap &releasedSettings = {},
             QObject *parent = nullptr);
 
     QVariantList targets() const;
@@ -81,7 +81,7 @@ private:
     static float NormalizeDegrees(double degrees);
     static QQuaternion Rotation(const Target &target);
     QString nextDefaultName() const;
-    void load(const QVariantMap &legacySettings);
+    void load(const QVariantMap &releasedSettings);
     void persist() const;
     void notifyTargetChanged(int index);
 

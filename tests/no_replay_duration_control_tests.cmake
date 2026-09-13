@@ -1,0 +1,30 @@
+if(NOT DEFINED FOREVERTAS_SOURCE_DIR OR NOT DEFINED FOREVERTAS_TEST_TMP_DIR)
+    message(FATAL_ERROR "Source and test temporary directories are required")
+endif()
+
+function(check_case name header extra should_pass)
+    set(root "${FOREVERTAS_TEST_TMP_DIR}/${name}")
+    file(MAKE_DIRECTORY "${root}/src/blocks")
+    file(WRITE "${root}/src/blocks/visual_state_horizon.h" "${header}")
+    file(WRITE "${root}/src/probe.cpp" "${extra}")
+    execute_process(COMMAND "${CMAKE_COMMAND}"
+        "-DFOREVERTAS_SOURCE_DIR=${root}"
+        -P "${FOREVERTAS_SOURCE_DIR}/tests/no_replay_duration_control.cmake"
+        RESULT_VARIABLE status OUTPUT_QUIET ERROR_VARIABLE diagnostic)
+    if(should_pass AND NOT status EQUAL 0)
+        message(FATAL_ERROR "Typed horizon access was rejected: ${diagnostic}")
+    elseif(NOT should_pass)
+        if(status EQUAL 0 OR NOT diagnostic MATCHES "Recorded replay duration|accessor boundary changed")
+            message(FATAL_ERROR "Recorded-duration guard did not reject ${name}: ${diagnostic}")
+        endif()
+    endif()
+endfunction()
+
+file(READ "${FOREVERTAS_SOURCE_DIR}/src/blocks/visual_state_horizon.h" header)
+check_case(typed "${header}" "" TRUE)
+check_case(recorded "${header}" "auto horizon = recording.durationMs;\n" FALSE)
+check_case(same_header "${header}\nauto horizon = recording.durationMs;\n" "" FALSE)
+string(REPLACE "const VisualState &state" "const RecordedReplay &state" wrong_type "${header}")
+check_case(wrong_type "${wrong_type}" "" FALSE)
+string(REPLACE "\n" "\r\n" windows_header "${header}")
+check_case(windows_line_endings "${windows_header}" "" TRUE)

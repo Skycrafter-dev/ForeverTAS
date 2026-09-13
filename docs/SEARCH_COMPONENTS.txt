@@ -1,0 +1,65 @@
+# Native search components
+
+ForeverTAS has two distinct programming surfaces:
+
+- **Programs / Blocks** is the general Scratch-like simulation sandbox described in `BLOCKS_SANDBOX.txt`.
+- The **native search component model** is the optimized search backend used by the non-program search UI and by the one-time import of settings from the last released version, **v0.2.3**.
+
+The native component model is not a compatibility target for intermediate development builds.
+
+## Component model
+
+A native search configuration contains exactly:
+
+- one registered search algorithm,
+- an ordered list of registered input modifiers,
+- one registered evaluation target.
+
+`SearchComponentConfiguration` is the category-neutral transport type. The registries in `src/searches/algorithm_registry.*` define the exact current IDs, field schemas, defaults, validation and factories. Lookup is exact; unknown IDs are rejected rather than canonicalized to another ID.
+
+`BlockProgramModel` stores the current native-search composition as `blocks/program`. Its serialized native-block format is current-version-only. The parser does not accept earlier prototype versions, aliases or versionless documents. Expansion from components likewise rejects unknown search, modifier and evaluation IDs rather than substituting defaults.
+
+## v0.2.3 migration
+
+The only compatibility import is from the search settings format shipped in **v0.2.3**. When no current `blocks/program` exists, `BlockProgramModel` recognizes the released search state by the `composition/modifiers` key and reads the exact released paths:
+
+```text
+selection/searchAlgorithm
+configuration/search/<canonical option id>/<field>
+composition/modifiers
+selection/evaluationTarget
+configuration/evaluation/<canonical option id>/<field>
+```
+
+The modifier array is read in its released order and only canonical v0.2.3 IDs are accepted. Per-option fields are read only from their released `configuration/...` paths. Pre-v0.2.3 aliases and layouts such as `selection/mutationAlgorithm`, `serial-brute-force`, `maximum-speed`, `finish-time`, `search/minMutateMs`, `search/maxMutateMs` and `search/mutationSeed` are not migration inputs.
+
+The imported configuration is converted once into the current native-block representation and persisted as `blocks/program`. Where the current native representation expresses a released option structurally—for example projected velocity as a dedicated speed-toward atom—the resulting components preserve the released setting semantics.
+
+Target collections (box, prism and pose targets) may use those exact v0.2.3 evaluation settings as their initial seed when their current collection has not yet been stored. That is part of the same v0.2.3 migration, not a generic fallback.
+
+## Current program and editor persistence
+
+Visual program tabs and `.forevertas.json` program files were introduced after v0.2.3, so they have **no historical format to migrate**. Their current schemas are strict:
+
+- program-tab autosave: current session schema only,
+- portable program file: current `forevertas-program` schema only,
+- internal native-block JSON: current version only.
+
+Malformed or prototype-era versions are rejected/reset; they are not interpreted, renamed, backed up into alternate compatibility keys, or inferred from filenames.
+
+## Compilation and execution
+
+Native block atoms lower into registered components through `src/blocks/block_lowering.*`; compilation validates the resulting settings against the registries before a search request is created. The search runner then instantiates the selected algorithm, modifiers and evaluator for the requested physics backend.
+
+The general Blocks sandbox does not lower arbitrary programs into this fixed component model. It executes its visible program graph through the visual runtime, including direct simulation control, procedures, events, branching and user-defined search logic.
+
+## Extension contract
+
+To add a native search component:
+
+1. Add its implementation and typed settings schema.
+2. Register one exact canonical ID in `algorithm_registry.cpp`.
+3. Add or update the native atom lowering needed to represent that current component.
+4. Add validation/parity tests for supported backends.
+
+Do not add alias lists, old-key probing, shape-based guessing, or migration code for unreleased development formats. Compatibility code belongs only to an explicitly identified released format.

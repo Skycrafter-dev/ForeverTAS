@@ -112,6 +112,11 @@ const std::vector<VisualBlockDefinition> &VisualBlockCatalog() {
 
     using T = VisualValueType;
     using F = VisualFieldDefinition;
+    auto section = Command("flow/section", "flow", "");
+    section.shape = VisualBlockShape::Control;
+    section.fields.push_back({"name", "", F::Kind::Text, "Section", {}});
+    section.statements.push_back({"body", "", "command"});
+    result.push_back(std::move(section));
     const auto number = [](std::string key, std::string label, std::string value = "0") {
       return Input(std::move(key), std::move(label), T::Scalar, "values/number", std::move(value));
     };
@@ -148,6 +153,7 @@ const std::vector<VisualBlockDefinition> &VisualBlockCatalog() {
         {Input("function", "using", T::Procedure, "procedures/reference"), Input("list", "over", T::List, "data/list"),
          Input("workers", "workers", T::Integer, "runtime/workers")}));
     result.push_back(Reporter("runtime/workers", "procedures", "backend worker count", T::Integer));
+    result.push_back(Reporter("runtime/batch-size", "procedures", "backend batch size", T::Integer));
     for (const auto &id : {"apply", "do"}) {
       auto inputs = std::vector<VisualInputDefinition>{Input("function", "block", T::Procedure, "procedures/reference"),
           Input("arguments", "arguments", T::List, "data/list")};
@@ -283,6 +289,7 @@ const std::vector<VisualBlockDefinition> &VisualBlockCatalog() {
     result.push_back(Command("results/clear", "flow", "forget kept result"));
     result.push_back(Reporter("results/iterations", "flow", "candidate count", T::Integer));
     result.push_back(Command("results/count", "flow", "count candidate"));
+    result.push_back(Command("results/add-count", "flow", "add to candidate count", {number("amount", "", "1")}));
     result.push_back(Command("math/seed", "math", "set random seed", {number("value", "", "1")}));
     result.push_back(Reporter("math/random", "math", "random", T::Scalar,
         {number("a", "from"), number("b", "to", "1")}));
@@ -363,17 +370,17 @@ const std::vector<VisualBlockDefinition> &VisualBlockCatalog() {
          Input("size", "size", VisualValueType::Vector3, "targets/size")});
     box.viewerPicker = "box";
     result.push_back(std::move(box));
+    auto plane = Reporter("targets/plane", "targets", "plane", VisualValueType::Text);
+    plane.fields.push_back({"value", "", VisualFieldDefinition::Kind::Enum,
+      "xz", {{"xy", "XY"}, {"xz", "XZ"}, {"yz", "YZ"}}});
+    result.push_back(std::move(plane));
     VisualBlockDefinition prism = Reporter(
         "targets/prism", "targets", "prism", VisualValueType::Volume,
         {Input("origin", "origin", VisualValueType::Position3, "targets/point"),
          Input("depth", "depth", VisualValueType::Meters, "values/meters", "5"),
+         Input("plane", "plane", VisualValueType::Text, "targets/plane"),
          Input("polygon", "polygon", VisualValueType::Polygon2,
                "targets/polygon-from-points")});
-    prism.fields.push_back({"plane",
-                            "plane",
-                            VisualFieldDefinition::Kind::Enum,
-                            "xz",
-                            {{"xy", "XY"}, {"xz", "XZ"}, {"yz", "YZ"}}});
     prism.viewerPicker = "prism";
     result.push_back(std::move(prism));
 

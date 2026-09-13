@@ -22,6 +22,50 @@ ApplicationWindow {
     }
     property bool codeEditorExpanded: false
     property bool blockWorkspaceExpanded: false
+    property bool closeAfterAutosave: false
+    property bool waitingForAutosave: false
+    property string autosaveCloseError: ""
+    onClosing: close => {
+        if (!closeAfterAutosave && window.blockEditorBridge.editorLoaded) {
+            close.accepted = false
+            if (!waitingForAutosave) {
+                waitingForAutosave = true
+                autosaveCloseTimer.restart()
+                window.blockEditorBridge.requestSessionFlush()
+            }
+        }
+    }
+    Timer {
+        id: autosaveCloseTimer
+        interval: 10000
+        onTriggered: {
+            window.waitingForAutosave = false
+            window.autosaveCloseError = qsTr("The program editor did not respond. Your last successful autosave is still available.")
+            autosaveCloseDialog.open()
+        }
+    }
+    Dialog {
+        id: autosaveCloseDialog
+        title: qsTr("Program autosave failed")
+        anchors.centerIn: parent
+        width: 460
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        contentItem: ColumnLayout {
+            Label { text: window.autosaveCloseError; wrapMode: Text.Wrap; Layout.fillWidth: true }
+            RowLayout {
+                ThemedButton { text: qsTr("Cancel"); onClicked: autosaveCloseDialog.close() }
+                ThemedButton {
+                    text: qsTr("Retry")
+                    onClicked: { autosaveCloseDialog.close(); window.close() }
+                }
+                ThemedButton {
+                    text: qsTr("Close without saving")
+                    onClicked: { autosaveCloseDialog.close(); window.closeAfterAutosave = true; window.close() }
+                }
+            }
+        }
+    }
     property string pendingViewerPointPickBlockId: ""
     readonly property bool rayTracingEnabled:
         renderMode === "textured-rt"
@@ -39,9 +83,25 @@ ApplicationWindow {
     Connections {
         target: window.blockEditorBridge
 
+        function onSessionFlushFinished(error) {
+            if (!window.waitingForAutosave) return
+            window.waitingForAutosave = false
+            autosaveCloseTimer.stop()
+            if (error.length) {
+                window.autosaveCloseError = error
+                autosaveCloseDialog.open()
+            } else {
+                window.closeAfterAutosave = true
+                Qt.callLater(function() { window.close() })
+            }
+        }
+
         function onViewerPointPickRequested(blockId) {
             window.pendingViewerPointPickBlockId = blockId
             manualInputFocus.forceActiveFocus()
+        }
+        function onViewerPointPickCanceled() {
+            window.pendingViewerPointPickBlockId = ""
         }
     }
 
@@ -396,6 +456,7 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         autoRepeat: true
         enabled: window.viewer.runCount > 0
+                 && !blockWorkspace.editorHasFocus
                  && !window.viewer.manualDriving
                  && !viewport.freeCamera
                  && !(window.viewer.takeOverOnInput
@@ -409,6 +470,7 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         autoRepeat: true
         enabled: window.viewer.runCount > 0
+                 && !blockWorkspace.editorHasFocus
                  && !window.viewer.manualDriving
                  && !viewport.freeCamera
                  && !(window.viewer.takeOverOnInput
@@ -420,7 +482,7 @@ ApplicationWindow {
         objectName: "saveBaseInputScriptShortcut"
         sequences: [StandardKey.Save]
         context: Qt.ApplicationShortcut
-        enabled: baseInputScriptArea.activeFocus
+        enabled: settingsPanel.panelPage === 0 && baseInputScriptArea.activeFocus
         onActivated: window.commitBaseInputScript()
     }
 
@@ -428,7 +490,7 @@ ApplicationWindow {
         objectName: "undoBaseInputScriptShortcut"
         sequences: [StandardKey.Undo]
         context: Qt.ApplicationShortcut
-        enabled: baseInputScriptArea.activeFocus
+        enabled: settingsPanel.panelPage === 0 && baseInputScriptArea.activeFocus
                  && (baseInputScriptArea.text
                      !== window.controller.baseInputScript
                      || window.controller.canUndoBaseInputScript)
@@ -442,18 +504,112 @@ ApplicationWindow {
         }
     }
 
+    Rectangle {
+        id: rightPanelRail
+        objectName: "rightPanelRail"
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: parent.right
+        width: 82
+        color: AppTheme.panelAlternate
+        border.width: 0
+
+        ColumnLayout {
+            anchors.fill: parent
+            spacing: 0
+            ColumnLayout {
+                id: rightPanelTabs
+                objectName: "toolTabs"
+                readonly property int count: 4
+                property int currentIndex: settingsPanel.panelPage
+                onCurrentIndexChanged: {
+                    if (currentIndex >= 0 && currentIndex < 4 && currentIndex !== settingsPanel.panelPage)
+                        settingsPanel.showPage(currentIndex)
+                }
+                Layout.fillWidth: true
+                spacing: 0
+                RightRailTab {
+                    objectName: "setupTab"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 46
+                    text: qsTr("Setup")
+                    active: settingsPanel.panelPage === 0
+                    onClicked: settingsPanel.showPage(0)
+                }
+                RightRailTab {
+                    objectName: "bruteforceTab"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 46
+                    text: qsTr("Programs")
+                    active: settingsPanel.panelPage === 1
+                    onClicked: settingsPanel.showPage(1)
+                }
+                RightRailTab {
+                    objectName: "runTab"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 46
+                    text: qsTr("Results")
+                    active: settingsPanel.panelPage === 2
+                    onClicked: settingsPanel.showPage(2)
+                }
+                RightRailTab {
+                    objectName: "codeDebuggerTab"
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 46
+                    text: qsTr("Code")
+                    active: settingsPanel.panelPage === 3
+                    enabled: !window.controller.running
+                    onClicked: settingsPanel.showPage(3)
+                    ToolTip.visible: hovered
+                    ToolTip.text: qsTr("Simulation code debugger")
+                }
+            }
+            Item { Layout.fillHeight: true }
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 40
+                ThemedToolButton {
+                    objectName: "expandBlocksButton"
+                    anchors.centerIn: parent
+                    width: 36
+                    height: 36
+                    visible: settingsPanel.panelPage === 1
+                    text: window.blockWorkspaceExpanded ? "↙" : "⛶"
+                    font.pixelSize: 16
+                    onClicked: window.blockWorkspaceExpanded = !window.blockWorkspaceExpanded
+                    ToolTip.visible: hovered
+                    ToolTip.text: window.blockWorkspaceExpanded ? qsTr("Restore program panel") : qsTr("Expand program panel")
+                    Accessible.name: ToolTip.text
+                }
+            }
+        }
+    }
+
     SplitView {
-        anchors.fill: parent
+        id: mainSplit
+        anchors.left: parent.left
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        anchors.right: rightPanelRail.left
         orientation: Qt.Horizontal
+        onResizingChanged: {
+            if (!resizing && !window.codeEditorExpanded
+                    && !(window.blockWorkspaceExpanded && settingsPanel.panelPage === 1)) {
+                if (settingsPanel.panelPage === 1)
+                    settingsPanel.blocksPreferredWidth = settingsPanel.width
+                else
+                    window.controller.setLayoutSettingsPanelWidth(settingsPanel.width)
+            }
+        }
 
         Rectangle {
             id: workspaceContent
 
             objectName: "workspaceContent"
             SplitView.fillWidth: true
-            SplitView.minimumWidth: 680
+            SplitView.minimumWidth: settingsPanel.panelPage === 1 ? 640 : 680
             visible: !window.codeEditorExpanded
-                     && !window.blockWorkspaceExpanded
+                     && !(window.blockWorkspaceExpanded && settingsPanel.panelPage === 1)
             color: AppTheme.window
 
             SplitView {
@@ -3865,14 +4021,26 @@ ApplicationWindow {
 
             objectName: "settingsPanel"
             property int panelPage: 0
-            readonly property real blocksPreferredWidth:
+            property real blocksPreferredWidth:
                 Math.min(760, Math.max(520, window.width * 0.48))
+            property var pageScrolls: [0, 0, 0, 0]
+
+            function restorePanelWidth() {
+                SplitView.preferredWidth = window.codeEditorExpanded
+                    || (window.blockWorkspaceExpanded && panelPage === 1)
+                    ? mainSplit.width : panelPage === 1 ? blocksPreferredWidth
+                    : window.controller.layoutSettingsPanelWidth
+            }
+            Connections {
+                target: window
+                function onBlockWorkspaceExpandedChanged() { settingsPanel.restorePanelWidth() }
+                function onCodeEditorExpandedChanged() { settingsPanel.restorePanelWidth() }
+            }
 
             function showPage(page) {
                 if (panelPage === page)
                     return
-                if (page !== 1)
-                    window.blockWorkspaceExpanded = false
+                pageScrolls[panelPage] = settingsScroll.contentItem.contentY
                 panelPage = page
                 if (page === 3) {
                     if (window.viewer.loaded)
@@ -3881,111 +4049,32 @@ ApplicationWindow {
                     window.codeEditorExpanded = false
                     window.viewer.stopSimulationDebugger()
                 }
+                restorePanelWidth()
+                Qt.callLater(function() {
+                    settingsScroll.contentItem.contentY = Math.max(0, Math.min(pageScrolls[page],
+                        settingsScroll.contentItem.contentHeight - settingsScroll.contentItem.height))
+                })
             }
 
             SplitView.fillWidth: window.codeEditorExpanded
-                                 || window.blockWorkspaceExpanded
+                                 || (window.blockWorkspaceExpanded && panelPage === 1)
             SplitView.preferredWidth: window.codeEditorExpanded
-                                      || window.blockWorkspaceExpanded
-                                      ? window.width
+                                      || (window.blockWorkspaceExpanded && panelPage === 1)
+                                      ? mainSplit.width
                                       : panelPage === 1
                                         ? blocksPreferredWidth
                                       : window.controller
                                         .layoutSettingsPanelWidth
             SplitView.minimumWidth:
-                window.codeEditorExpanded || window.blockWorkspaceExpanded ? 0
+                window.codeEditorExpanded || (window.blockWorkspaceExpanded && panelPage === 1) ? 0
                 : panelPage === 1 ? 500 : 340
             SplitView.maximumWidth:
-                window.codeEditorExpanded || window.blockWorkspaceExpanded
-                  ? window.width
+                window.codeEditorExpanded || (window.blockWorkspaceExpanded && panelPage === 1)
+                  ? mainSplit.width
                 : panelPage === 1
-                  ? Math.max(500, window.width - 680)
+                  ? Math.max(500, mainSplit.width - 648)
                   : 480
             color: AppTheme.panel
-            onWidthChanged: {
-                if (!window.codeEditorExpanded && panelPage !== 1) {
-                    window.controller.setLayoutSettingsPanelWidth(width)
-                }
-            }
-
-            Rectangle {
-                id: rightPanelHeader
-
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.top: parent.top
-                height: 44
-                color: AppTheme.panelAlternate
-                border.width: 1
-                border.color: AppTheme.border
-                z: 2
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 7
-                    anchors.rightMargin: 7
-                    anchors.topMargin: 3
-                    anchors.bottomMargin: 3
-                    spacing: 5
-
-                    TabBar {
-                        id: rightPanelTabs
-
-                        objectName: "toolTabs"
-                        Layout.fillWidth: true
-                        currentIndex: settingsPanel.panelPage < 3
-                                      ? settingsPanel.panelPage : -1
-                        onCurrentIndexChanged: {
-                            if (currentIndex >= 0 && currentIndex < 3
-                                    && currentIndex !== settingsPanel.panelPage)
-                                settingsPanel.showPage(currentIndex)
-                        }
-
-                        ThemedTabButton {
-                            objectName: "setupTab"
-                            text: qsTr("Setup")
-                        }
-
-                        ThemedTabButton {
-                            objectName: "bruteforceTab"
-                            text: qsTr("Blocks")
-                        }
-
-                        ThemedTabButton {
-                            objectName: "runTab"
-                            text: qsTr("Run")
-                        }
-                    }
-
-                    ThemedToolButton {
-                        objectName: "expandBlocksButton"
-                        visible: settingsPanel.panelPage === 1
-                        Layout.preferredWidth: 36
-                        Layout.preferredHeight: 36
-                        text: window.blockWorkspaceExpanded ? "↙" : "⛶"
-                        font.pixelSize: 13
-                        onClicked: window.blockWorkspaceExpanded =
-                                       !window.blockWorkspaceExpanded
-                        ToolTip.visible: hovered
-                        ToolTip.text: window.blockWorkspaceExpanded
-                                      ? qsTr("Restore block workspace")
-                                      : qsTr("Expand block workspace")
-                    }
-
-                    ThemedToolButton {
-                        objectName: "codeDebuggerTab"
-                        Layout.preferredWidth: 36
-                        Layout.preferredHeight: 36
-                        text: "</>"
-                        font.pixelSize: 9
-                        highlighted: settingsPanel.panelPage === 3
-                        enabled: !window.controller.running
-                        onClicked: settingsPanel.showPage(3)
-                        ToolTip.visible: hovered
-                        ToolTip.text: qsTr("Code debugger")
-                    }
-                }
-            }
 
             ScrollView {
                 id: settingsScroll
@@ -3993,7 +4082,7 @@ ApplicationWindow {
                 objectName: "settingsScroll"
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: rightPanelHeader.bottom
+                anchors.top: parent.top
                 anchors.bottom: parent.bottom
                 clip: true
                 contentWidth: availableWidth
@@ -4482,7 +4571,7 @@ ApplicationWindow {
                         SettingTextField {
                             objectName: "simulationHorizonSettings"
                             fieldObjectName: "simulationHorizonField"
-                            label: qsTr("Simulation horizon (ms)")
+                            label: qsTr("Viewer / initial duration (ms)")
                             value: window.controller.simulationHorizonMs
                             running: window.controller.running
                             minimum: 10
@@ -4496,6 +4585,7 @@ ApplicationWindow {
                         ThemedCheckBox {
                             id: randomizeSeedsOnStartCheckBox
                             objectName: "randomizeSeedsOnStartCheckBox"
+                            visible: !window.controller.blockProgramActive
                             text: qsTr("Randomize modifier seeds on Start")
                             enabled: !window.controller.running
 
@@ -4554,7 +4644,7 @@ ApplicationWindow {
 
                         SettingTextField {
                             objectName: "cudaParallelSampleSettings"
-                            visible: window.controller.simulationBackendId
+                            visible: !window.controller.blockProgramActive && window.controller.simulationBackendId
                                      === "cuda"
                             fieldObjectName: "cudaParallelSampleCountField"
                             label: qsTr("Parallel samples at a time")
@@ -4568,7 +4658,7 @@ ApplicationWindow {
                         ThemedCheckBox {
                             id: cudaCalibrationCheckBox
                             objectName: "cudaCalibrationCheckBox"
-                            visible: window.controller.simulationBackendId
+                            visible: !window.controller.blockProgramActive && window.controller.simulationBackendId
                                      === "cuda"
                             text: qsTr("Calibrate for maximum throughput")
                             enabled: !window.controller.running
@@ -4655,10 +4745,9 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
-                        visible: settingsPanel.panelPage === 0
-                                 && window.controller.simulationBackendId
-                                    === "cuda"
                         title: qsTr("CUDA fast mode")
+                        visible: !window.controller.blockProgramActive && settingsPanel.panelPage === 0
+                                 && window.controller.simulationBackendId === "cuda"
 
                         ThemedSwitch {
                             id: cudaSessionSpecializationSwitch
@@ -4731,9 +4820,7 @@ ApplicationWindow {
                         visible: settingsPanel.panelPage === 2
                                  && window.controller.running
                         wrapMode: Text.WordWrap
-                        text: qsTr("The search runs with the configuration "
-                                   + "from its Start; edits made now apply "
-                                   + "to the next search.")
+                        text: qsTr("The program is running. Execution controls are in Blocks.")
                         color: AppTheme.textMuted
                         font.pixelSize: 11
                     }
@@ -4748,22 +4835,9 @@ ApplicationWindow {
                         ThemedButton {
                             objectName: "startSearchButton"
                             Layout.fillWidth: true
-                            text: qsTr("Start")
+                            text: qsTr("Open program controls")
                             highlighted: true
-                            enabled: window.controller.canStart
-                                     && !window.viewer.manualDriving
-                            onClicked: window.controller.startSearch()
-                        }
-
-                        ThemedButton {
-                            objectName: "stopSearchButton"
-                            Layout.fillWidth: true
-                            text: window.controller.stopping
-                                  ? qsTr("Stopping...")
-                                  : qsTr("Stop")
-                            enabled: window.controller.running
-                                     && !window.controller.stopping
-                            onClicked: window.controller.stopSearch()
+                            onClicked: settingsPanel.showPage(1)
                         }
                     }
 
@@ -5055,7 +5129,7 @@ ApplicationWindow {
                 objectName: "blockWorkspace"
                 anchors.left: parent.left
                 anchors.right: parent.right
-                anchors.top: rightPanelHeader.bottom
+                anchors.top: parent.top
                 anchors.bottom: parent.bottom
                 visible: settingsPanel.panelPage === 1
                 bridge: window.blockEditorBridge

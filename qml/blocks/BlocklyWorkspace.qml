@@ -10,6 +10,10 @@ Item {
     id: root
 
     required property var bridge
+    property bool activated: false
+    readonly property bool editorHasFocus: visible && webLoader.item !== null && webLoader.item.activeFocus
+    onVisibleChanged: if (visible) activated = true
+    Component.onCompleted: if (visible) activated = true
 
     objectName: "blockWorkspace"
 
@@ -29,9 +33,9 @@ Item {
             id: webLoader
 
             anchors.fill: parent
-            // Do not spin up Chromium on application startup or QML smoke
-            // tests. The editor process exists only while Blocks is visible.
-            active: root.visible && root.bridge !== null
+            // Load lazily, then retain the editor: tab changes must preserve
+            // pending edits, undo history, viewport, and configuration cards.
+            active: root.activated && root.bridge !== null
 
             sourceComponent: Component {
                 WebEngineView {
@@ -42,7 +46,7 @@ Item {
                     webChannel: channel
                     url: "qrc:///blockly/assets/blockly/index.html"
                     backgroundColor: ThemeControls.AppTheme.panel
-                    focus: true
+                    focus: root.visible
                     activeFocusOnTab: true
                     Accessible.name: qsTr("Visual search block editor")
                     Accessible.description: qsTr("Blockly editor for composing search logic")

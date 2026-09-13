@@ -3,11 +3,11 @@
 #include "app/system_file_dialog.h"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QDir>
 #include <QSaveFile>
 
 #include "app/search_controller.h"
-#include "app/visual_program_json.h"
 #include "blocks/visual_catalog.h"
 #include "blocks/visual_macros.h"
 #include "blocks/visual_compiler.h"
@@ -32,12 +32,6 @@
 
 namespace forevertas::app {
 namespace {
-
-constexpr auto kStoredWorkspaceKey = "blockEditor/v3Workspace";
-constexpr auto kStoredProgramKey = "blockEditor/v3Program";
-constexpr auto kDraftWorkspaceKey = "blockEditor/v3DraftWorkspace";
-constexpr auto kCorruptProgramBackupKey = "blockEditor/v3ProgramCorruptBackup";
-constexpr auto kRetiredWorkspaceBackupKey = "blockEditor/v3WorkspaceRetiredBackup";
 
 QString ToQString(const std::string &value) {
   return QString::fromStdString(value);
@@ -355,6 +349,7 @@ QJsonObject BlocklyNodeForProgram(const blocks::VisualProgram &program,
   block.insert(QStringLiteral("id"),
                QString::number(static_cast<qulonglong>(node->id)));
   if (!node->enabled) block.insert(QStringLiteral("enabled"), false);
+  if (node->collapsed) block.insert(QStringLiteral("collapsed"), true);
   if (node->definitionId == "procedures/call" || node->definitionId == "procedures/value" || node->definitionId == "procedures/reference") {
     const auto parameters = node->fields.find("parameters");
     const auto name = node->fields.find("name");
@@ -365,20 +360,6 @@ QJsonObject BlocklyNodeForProgram(const blocks::VisualProgram &program,
   return block;
 }
 
-QString WorkspaceForProgram(const blocks::VisualProgram &program) {
-  QJsonArray top;
-  for (const blocks::VisualNodeId id : program.topLevel) {
-    const QJsonObject block = BlocklyNodeForProgram(program, id, true);
-    if (!block.isEmpty())
-      top.push_back(block);
-  }
-  QJsonObject blocks{{QStringLiteral("languageVersion"), 0},
-                     {QStringLiteral("blocks"), top}};
-  return QString::fromUtf8(
-      QJsonDocument(QJsonObject{{QStringLiteral("blocks"), blocks}})
-          .toJson(QJsonDocument::Compact));
-}
-
 QString JsonScalarToString(const QJsonValue &value) {
   if (value.isString())
     return value.toString();
@@ -386,6 +367,42 @@ QString JsonScalarToString(const QJsonValue &value) {
     return value.toBool() ? QStringLiteral("true") : QStringLiteral("false");
   if (value.isDouble())
     return QString::number(value.toDouble(), 'g', 17);
+  return {};
+}
+
+// Autosave is an editor document, not an executable program. Incomplete and
+// invalid blocks must survive here, along with each tab's undo/redo history.
+QString ValidateEditorSession(const QString &json) {
+  if (json.toUtf8().size() > 64 * 1024 * 1024)
+    return QStringLiteral("Program tabs exceed the 64 MiB autosave limit. Save and close unused tabs.");
+  QJsonParseError error;
+  const auto document = QJsonDocument::fromJson(json.toUtf8(), &error);
+  const auto root = document.object();
+  if (error.error != QJsonParseError::NoError || !document.isObject() ||
+      root.value("version").toInt() != 2 || !root.value("tabs").isArray())
+    return QStringLiteral("Invalid program-tab autosave.");
+  const auto tabs = root.value("tabs").toArray();
+  if (tabs.size() > 128) return QStringLiteral("Close a program before opening more than 128 tabs.");
+  std::set<QString> ids;
+  for (const auto &entry : tabs) {
+    const auto tab = entry.toObject();
+    const auto id = tab.value("id").toString();
+    if (id.isEmpty() || !ids.insert(id).second ||
+        !tab.value("title").isString() ||
+        !tab.value("path").isString() ||
+        !tab.value("fileTitle").isString() ||
+        !tab.value("fileState").isString() ||
+        !tab.value("dirty").isBool() ||
+        !tab.value("ui").isObject() ||
+        !tab.value("workspace").isObject() ||
+        !tab.value("undo").isArray() || !tab.value("redo").isArray())
+      return QStringLiteral("Invalid program tab or duplicate tab ID.");
+    if (QJsonDocument(tab.value("workspace").toObject()).toJson(QJsonDocument::Compact).size() > 4 * 1024 * 1024)
+      return QStringLiteral("A program exceeds the 4 MiB workspace limit.");
+  }
+  if ((!tabs.isEmpty() && !ids.count(root.value("active").toString())) ||
+      (tabs.isEmpty() && !root.value("active").toString().isEmpty()))
+    return QStringLiteral("The active program tab is missing.");
   return {};
 }
 
@@ -409,35 +426,25 @@ BlockEditorBridge::BlockEditorBridge(SearchController *controller,
   connect(controller_, &SearchController::darkModeChanged, this,
           &BlockEditorBridge::darkModeChanged);
   QSettings settings;
-  const QString saved = settings.value(QString::fromLatin1(kStoredProgramKey)).toString();
-  const auto parsed = ParseVisualProgramJson(saved);
-  QString workspace;
-  bool recovered = false;
-  if (!saved.isEmpty() && !parsed.program) {
-    settings.setValue(QString::fromLatin1(kCorruptProgramBackupKey), saved);
-    recovered = true;
+  QString workspace = QStringLiteral(
+      R"({"blocks":{"languageVersion":0,"blocks":[{"type":"ft_flow_when_start","id":"start"}]}})");
+  sessionJson_ = settings.value(QStringLiteral("blockEditor/tabsSession")).toString();
+  if (!sessionJson_.isEmpty()) {
+    sessionError_ = ValidateEditorSession(sessionJson_);
+    if (!sessionError_.isEmpty()) {
+      settings.remove(QStringLiteral("blockEditor/tabsSession"));
+      sessionJson_.clear();
+    } else {
+      const auto session = QJsonDocument::fromJson(sessionJson_.toUtf8()).object();
+      workspace = QStringLiteral(R"({"blocks":{"languageVersion":0,"blocks":[]}})");
+      for (const auto &entry : session.value("tabs").toArray()) {
+        const auto tab = entry.toObject();
+        if (tab.value("id") == session.value("active"))
+          workspace = JsonText(tab.value("workspace").toObject());
+      }
+    }
   }
-  const QString cached = settings.value(QString::fromLatin1(kStoredWorkspaceKey)).toString();
-  if (parsed.program) {
-    const auto cache = ParseBlocklyWorkspace(cached);
-    workspace = cache.error.isEmpty() && PrintVisualProgramJson(cache.program) == saved
-        ? cached : WorkspaceForProgram(*parsed.program);
-  }
-  const QString draft = settings.value(QString::fromLatin1(kDraftWorkspaceKey)).toString();
-  if (!draft.isEmpty() && ParseBlocklyWorkspace(draft).error.isEmpty()) workspace = draft;
-  else if (!draft.isEmpty()) {
-    settings.setValue(QString::fromLatin1(kRetiredWorkspaceBackupKey), draft);
-    recovered = true;
-  } else if (recovered && !cached.isEmpty()) {
-    settings.setValue(QString::fromLatin1(kRetiredWorkspaceBackupKey), cached);
-  }
-  if (workspace.isEmpty()) {
-    workspace = QStringLiteral(R"({"blocks":{"languageVersion":0,"blocks":[{"type":"ft_flow_when_start","id":"start"}]}})");
-  }
-  const bool applied = applyWorkspace(workspace, lastAcceptedRevision_ + 1);
-  if (recovered && applied) publishDiagnostics({QStringLiteral(
-      "The previous source uses removed or invalid blocks and was backed up in the application settings. "
-      "Macroblocks provides editable replacements for the old input, condition and target options.")}, false);
+  applyWorkspace(workspace, lastAcceptedRevision_ + 1);
 }
 
 bool BlockEditorBridge::editable() const {
@@ -494,25 +501,12 @@ void BlockEditorBridge::setBreakpoints(const QStringList &ids) {
   controller_->blockDebugger()->setBreakpoints(std::move(nodes));
 }
 
-QString BlockEditorBridge::projectFromWorkspace(const QString &json) {
-  const auto parsed=ParseBlocklyWorkspace(json);
-  if (!parsed.error.isEmpty()) {
-    publishDiagnostics({parsed.error},false);
-    return {};
-  }
-  return PrintVisualProgramJson(parsed.program);
-}
-
-QString BlockEditorBridge::workspaceFromProject(const QString &json) {
-  const auto parsed=ParseVisualProgramJson(json);
-  if (!parsed.program) {
-    publishDiagnostics({parsed.error},false);
-    return {};
-  }
-  return WorkspaceForProgram(*parsed.program);
-}
-
 QString BlockEditorBridge::openProject() {
+  const auto opened = QJsonDocument::fromJson(openProgramFile().toUtf8()).object();
+  return opened.contains("workspace") ? JsonText(opened.value("workspace").toObject()) : QString();
+}
+
+QString BlockEditorBridge::openProgramFile() {
   if (!editable()) return {};
   const QString path=OpenSystemFileDialog(QStringLiteral("Open block program or library"),
       QSettings().value(QStringLiteral("blockEditor/projectPath"),QDir::homePath()).toString());
@@ -522,26 +516,64 @@ QString BlockEditorBridge::openProject() {
     publishDiagnostics({QStringLiteral("The project must be a readable JSON file under 4 MiB.")},false);
     return {};
   }
-  const auto workspace=workspaceFromProject(QString::fromUtf8(file.read(4*1024*1024+1)));
-  if (!workspace.isEmpty()) QSettings().setValue(QStringLiteral("blockEditor/projectPath"),path);
-  return workspace;
+  const auto bytes = file.read(4*1024*1024+1);
+  QJsonParseError parseError;
+  const auto parsed = QJsonDocument::fromJson(bytes, &parseError);
+  const auto document = parsed.object();
+  const QString programName = document.value("name").toString().trimmed();
+  if (parseError.error != QJsonParseError::NoError || !parsed.isObject() ||
+      document.value("format").toString() != QStringLiteral("forevertas-program") ||
+      document.value("version").toInt() != 1 ||
+      programName.isEmpty() || programName.size() > 200 ||
+      !document.value("workspace").isObject()) {
+    publishDiagnostics({QStringLiteral(
+        "This is not a valid ForeverTAS program file from this version.")}, false);
+    return {};
+  }
+  const QString workspace = JsonText(document.value("workspace").toObject());
+  QSettings().setValue(QStringLiteral("blockEditor/projectPath"),path);
+  return JsonText({{"workspace",QJsonDocument::fromJson(workspace.toUtf8()).object()},
+      {"path",QFileInfo(path).canonicalFilePath()}, {"title",programName}});
 }
 
 bool BlockEditorBridge::saveProject(const QString &json) {
-  if (!editable()) return false;
-  const auto project=projectFromWorkspace(json);
-  if (project.isEmpty()) return false;
-  const QString path=SaveSystemFileDialog(QStringLiteral("Save block program"),
-      QSettings().value(QStringLiteral("blockEditor/projectPath"),QDir::homePath()+QStringLiteral("/program.forevertas.json")).toString());
-  if (path.isEmpty()) return false;
+  return QJsonDocument::fromJson(saveProgramFile(json, {}, {}).toUtf8()).object().contains("path");
+}
+
+QString BlockEditorBridge::saveProgramFile(const QString &json,
+                                           const QString &requestedPath,
+                                           const QString &programName) {
+  if (!editable()) return {};
+  const auto document = QJsonDocument::fromJson(json.toUtf8());
+  if (!document.isObject() || json.toUtf8().size() > 4*1024*1024)
+    return JsonText({{"error",QStringLiteral("The workspace must be valid JSON under 4 MiB.")}});
+  const QString path=requestedPath.isEmpty() ? SaveSystemFileDialog(QStringLiteral("Save block program"),
+      QSettings().value(QStringLiteral("blockEditor/projectPath"),QDir::homePath()+QStringLiteral("/program.forevertas.json")).toString())
+      : requestedPath;
+  if (path.isEmpty()) return {};
+  const QString storedName = programName.trimmed();
+  if (storedName.isEmpty() || storedName.size() > 200)
+    return JsonText({{"error",QStringLiteral("The program name must be between 1 and 200 characters.")}});
   QSaveFile file(path);
-  const auto bytes=project.toUtf8();
+  const auto bytes=QJsonDocument(QJsonObject{{"format","forevertas-program"}, {"version",1},
+      {"name",storedName}, {"workspace",document.object()}}).toJson(QJsonDocument::Indented);
   if (!file.open(QIODevice::WriteOnly) || file.write(bytes)!=bytes.size() || !file.commit()) {
-    publishDiagnostics({QStringLiteral("The block program could not be saved: ")+file.errorString()},false);
-    return false;
+    return JsonText({{"error",QStringLiteral("The block program could not be saved: ")+file.errorString()}});
   }
   QSettings().setValue(QStringLiteral("blockEditor/projectPath"),path);
-  return true;
+  return JsonText({{"path",QFileInfo(path).canonicalFilePath()}, {"title",storedName}});
+}
+
+QString BlockEditorBridge::storeSession(const QString &json) {
+  const auto error = ValidateEditorSession(json);
+  if (!error.isEmpty()) return error;
+  QSettings settings;
+  settings.setValue(QStringLiteral("blockEditor/tabsSession"), json);
+  settings.sync();
+  if (settings.status() != QSettings::NoError)
+    return QStringLiteral("Program tabs could not be autosaved. Check that the application settings directory is writable.");
+  sessionJson_ = json;
+  return {};
 }
 
 QString BlockEditorBridge::BuildCatalogJson() {
@@ -709,6 +741,7 @@ BlockEditorBridge::ParseBlocklyWorkspace(const QString &json) {
     node.definitionId = definition->id;
     node.enabled = object.value(QStringLiteral("enabled")).toBool(true) &&
         object.value(QStringLiteral("disabledReasons")).toArray().isEmpty();
+    node.collapsed = object.value(QStringLiteral("collapsed")).toBool(false);
     node.x = object.value(QStringLiteral("x")).toDouble();
     node.y = object.value(QStringLiteral("y")).toDouble();
     const QJsonObject fieldValues =
@@ -843,7 +876,6 @@ bool BlockEditorBridge::applyWorkspace(const QString &workspaceJson,
     return false;
   }
   workspaceJson_ = workspaceJson;
-  QSettings().setValue(QString::fromLatin1(kDraftWorkspaceKey), workspaceJson);
   const auto compiled = blocks::CompileVisualProgram(parsed.program);
   if (!compiled.ok) {
     QStringList messages;
@@ -864,11 +896,6 @@ bool BlockEditorBridge::applyWorkspace(const QString &workspaceJson,
   editorIds_ = parsed.editorIds;
   setBreakpoints(breakpointIds_);
   workspaceJson_ = workspaceJson;
-  QSettings settings;
-  settings.remove(QString::fromLatin1(kDraftWorkspaceKey));
-  settings.setValue(QString::fromLatin1(kStoredProgramKey),
-                    PrintVisualProgramJson(parsed.program));
-  settings.setValue(QString::fromLatin1(kStoredWorkspaceKey), workspaceJson_);
   publishDiagnostics({}, false);
   // Blockly already owns this exact state. Echoing it back through the
   // property would clear selection, viewport and undo history on every
@@ -923,11 +950,16 @@ void BlockEditorBridge::requestViewerPointPick(const QString &blockId) {
   emit viewerPointPickRequested(blockId);
 }
 
+void BlockEditorBridge::cancelViewerPointPick() {
+  pendingViewerPointBlockId_.clear();
+  emit viewerPointPickCanceled();
+}
+
 void BlockEditorBridge::completeViewerPointPick(const QString &blockId,
                                                 double x,
                                                 double y,
                                                 double z) {
-  if (blockId.isEmpty() || blockId != pendingViewerPointBlockId_ ||
+  if (!editable() || blockId.isEmpty() || blockId != pendingViewerPointBlockId_ ||
       !std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) {
     return;
   }

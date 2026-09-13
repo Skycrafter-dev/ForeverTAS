@@ -1,5 +1,8 @@
 #include "searches/search_runner.h"
 #include "blocks/visual_runtime.h"
+#if FOREVERVALIDATOR_HAS_CUDA
+#include "blocks/program_cuda.h"
+#endif
 #include "blocks/block_value.h"
 
 #include "input_timeline_time.h"
@@ -15,6 +18,8 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <condition_variable>
 #include <deque>
 #include <exception>
@@ -1314,56 +1319,391 @@ SearchResult RunMultiThreadedCpuSearch(
 
 class VisualPhysicsHost final : public blocks::VisualSimulationHost {
 public:
-    struct Snapshot final : blocks::VisualHostSnapshot {
-        forevervalidator::experimental::PhysicsSandboxState state;
-        explicit Snapshot(forevervalidator::experimental::PhysicsSandboxState value)
-            : state(std::move(value)) {}
-    };
+    using Snapshot=blocks::VisualPhysicsSnapshot;
     using Sandbox = forevervalidator::experimental::PhysicsSandbox;
     using Factory = std::function<Sandbox()>;
-    VisualPhysicsHost(Sandbox &sandbox, Factory factory, std::uint32_t horizon)
-        : sandbox_(sandbox), factory_(std::move(factory)), horizon_(horizon) {}
-    VisualPhysicsHost(std::unique_ptr<Sandbox> sandbox, Factory factory, std::uint32_t horizon)
-        : owned_(std::move(sandbox)), sandbox_(*owned_), factory_(std::move(factory)), horizon_(horizon) {}
+    struct HistoryReplay {
+        Factory factory;
+        std::mutex mutex;
+        std::unique_ptr<Sandbox> sandbox;
+        explicit HistoryReplay(Factory factory) : factory(std::move(factory)) {}
+        std::vector<blocks::VisualState> sample(const forevervalidator::experimental::PhysicsSandboxState &origin,
+                const blocks::VisualInputs &inputs,std::uint32_t skip,std::uint32_t ticks,std::uint32_t horizon) {
+            std::lock_guard<std::mutex> lock(mutex);
+            if (!sandbox) sandbox=std::make_unique<Sandbox>(factory());
+            Require(sandbox->SetSimulationHorizonMs(std::max({horizon,static_cast<std::uint32_t>(origin.View().timeMs),
+                static_cast<std::uint32_t>(Require(sandbox->ReadState(),"reading history cursor").timeMs)})),"setting history horizon");
+            Require(sandbox->RestoreState(origin),"restoring history origin");
+            Require(sandbox->SetSimulationHorizonMs(horizon),"setting history horizon");
+            Require(sandbox->ReplaceInputs(inputs),"restoring history inputs");
+            if (skip) Require(sandbox->AdvanceTicks(skip),"advancing to history span");
+            std::vector<blocks::VisualState> states; states.reserve(ticks);
+            for (std::uint32_t i=0;i<ticks;++i) states.push_back(Require(sandbox->AdvanceTicks(1),"sampling history"));
+            return states;
+        }
+    };
+    struct DeferredSnapshot final : blocks::VisualHostSnapshot {
+        forevervalidator::experimental::PhysicsSandboxState origin;
+        blocks::VisualInputs inputs;
+        std::uint32_t ticks,horizon;
+        std::shared_ptr<const unsigned char> identity;
+        mutable std::once_flag once;
+        mutable std::optional<forevervalidator::experimental::PhysicsSandboxState> resolved;
+        DeferredSnapshot(forevervalidator::experimental::PhysicsSandboxState origin,blocks::VisualInputs inputs,
+                std::uint32_t ticks,std::uint32_t horizon,std::shared_ptr<const unsigned char> identity)
+            : origin(std::move(origin)),inputs(std::move(inputs)),ticks(ticks),horizon(horizon),identity(std::move(identity)) {}
+    };
+    VisualPhysicsHost(Sandbox &sandbox, Factory factory, std::uint32_t horizon,bool sourceAcceleration=true,
+            std::function<void(const std::string &)> sourceMode={})
+        : sandbox_(sandbox), factory_(std::move(factory)), horizon_(horizon),historyReplay_(std::make_shared<HistoryReplay>(factory_)),
+          sourceAcceleration_(sourceAcceleration),sourceMode_(std::move(sourceMode)) {}
+    VisualPhysicsHost(std::unique_ptr<Sandbox> sandbox, Factory factory, std::uint32_t horizon,bool sourceAcceleration=true,
+            std::function<void(const std::string &)> sourceMode={})
+        : owned_(std::move(sandbox)), sandbox_(*owned_), factory_(std::move(factory)), horizon_(horizon),historyReplay_(std::make_shared<HistoryReplay>(factory_)),
+          sourceAcceleration_(sourceAcceleration),sourceMode_(std::move(sourceMode)) {}
+    ~VisualPhysicsHost() override {
+        if (profile_) std::fprintf(stderr,"BLOCK_SOURCE_HOST_PROFILE advances=%llu advanceMilliseconds=%.6f captures=%llu captureMilliseconds=%.6f\n",
+            static_cast<unsigned long long>(advanceCount_),std::chrono::duration<double,std::milli>(advanceTime_).count(),
+            static_cast<unsigned long long>(captureCount_),std::chrono::duration<double,std::milli>(captureTime_).count());
+    }
     std::unique_ptr<blocks::VisualSimulationHost> fork() const override {
+#if FOREVERVALIDATOR_HAS_CUDA
+        synchronizeCursor(false);
+#endif
         // The engine has a prepared-scene clone for optimized CPU. Reference
         // and CUDA branches load the same scenario on the same backend.
-        auto clone = sandbox_.Backend() == forevervalidator::SimulationBackend::OptimizedCpu
-                ? Require(ClonePhysicsSandbox(sandbox_), "cloning simulation branch") : factory_();
-        Require(clone.SetSimulationHorizonMs(horizon_), "setting branch horizon");
-        Require(clone.RestoreState(Require(sandbox_.CaptureState(), "capturing branch")), "restoring cloned branch");
-        return std::make_unique<VisualPhysicsHost>(std::make_unique<Sandbox>(std::move(clone)), factory_, horizon_);
+        const bool prepared=sandbox_.Backend()==forevervalidator::SimulationBackend::OptimizedCpu;
+        auto clone=prepared ? Require(ClonePhysicsSandbox(sandbox_),"cloning simulation branch") : factory_();
+        if (!prepared) {
+            Require(clone.SetSimulationHorizonMs(horizon_), "setting branch horizon");
+            Require(clone.RestoreState(Require(sandbox_.CaptureState(), "capturing branch")), "restoring cloned branch");
+        }
+        auto result=std::make_unique<VisualPhysicsHost>(std::make_unique<Sandbox>(std::move(clone)), factory_, horizon_,sourceAcceleration_,sourceMode_);
+        result->historyReplay_=historyReplay_;
+        result->prefixes_=prefixes_;
+        result->recordPrefixes_=false;
+        return result;
     }
-    blocks::VisualState read() const override { return Require(sandbox_.ReadState(), "reading simulation state"); }
-    blocks::VisualState advance() override { return Require(sandbox_.AdvanceTicks(1), "advancing simulation"); }
+    blocks::VisualState read() const override {
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (cudaCursorActive_) return cudaCursor_->read();
+#endif
+        return Require(sandbox_.ReadState(), "reading simulation state");
+    }
+    std::uint32_t workerCapacity() const override {
+        // GPU programs use the batched executor. Source-interpreter fallback
+        // must not load hundreds of independent GPU scenes/contexts.
+        return sandbox_.Backend()==forevervalidator::SimulationBackend::Cuda ? 1u : 256u;
+    }
+    std::shared_ptr<blocks::VisualBatchExecutor> batchExecutor() override {
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (sandbox_.Backend()==forevervalidator::SimulationBackend::Cuda) {
+            synchronizeCursor();
+            sourceCursorReported_=false;
+            if (!executor_) {
+                executor_=blocks::CreateCudaProgramExecutor(sandbox_,[replay=historyReplay_](const blocks::VisualSnapshot &base,
+                        const blocks::VisualInputs &inputs,std::uint32_t ticks) {
+                    const auto *physical=dynamic_cast<const Snapshot *>(base.native.get());
+                    if (!physical) throw std::runtime_error("Missing CUDA history origin.");
+                    return replay->sample(physical->state,inputs,0,ticks,base.horizonMs);
+                },cudaPrefixes_);
+            }
+            return executor_;
+        }
+#endif
+        return {};
+    }
+    blocks::VisualState advance() override {
+        const auto started=profile_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        const auto previous=recording_ && (recording_->ticks+1)%32==0 ? std::optional<blocks::VisualState>(read()) : std::nullopt;
+        captured_.reset();
+        identity_.reset();
+        cacheEligible_=false;
+        std::optional<blocks::VisualState> resident;
+#if FOREVERVALIDATOR_HAS_CUDA
+        const auto *cursorPolicy=std::getenv("FOREVERTAS_CUDA_SOURCE_CURSOR");
+        if (sourceAcceleration_ && !sourceCursorDisabled_ && (!cursorPolicy || std::string(cursorPolicy)!="0") &&
+                sandbox_.Backend()==forevervalidator::SimulationBackend::Cuda) {
+            try {
+                if (!cudaCursorActive_) {
+                    if (cudaCursor_) cudaCursor_->reset(sandbox_);
+                    else cudaCursor_=std::make_unique<blocks::CudaProgramPhysicsCursor>(sandbox_);
+                    cudaCursorActive_=true;
+                }
+                if (auto advanced=cudaCursor_->advance(1)) {
+                    resident=advanced->state;
+                    if (!sourceCursorReported_ && sourceMode_) sourceMode_("CUDA resident physics with source block control");
+                    sourceCursorReported_=true;
+                }
+            } catch (const std::bad_alloc &) {
+            } catch (const blocks::BytecodeNeedsInterpreter &) {
+            }
+            if (!resident) {
+                synchronizeCursor();
+                cudaCursor_.reset();
+                sourceCursorDisabled_=true;
+                if (sourceMode_) sourceMode_("CUDA physics with source block control: resident cursor unavailable");
+            }
+        }
+#endif
+        auto state=resident ? *resident : Require(sandbox_.AdvanceTicks(1), "advancing simulation");
+        recordSourceStep(state,previous);
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (cudaPrefixes_) {
+            if (cudaCursorActive_) cudaPrefixes_->observe(*cudaCursor_);
+            else cudaPrefixes_->observe(sandbox_,state);
+        }
+#endif
+        if (profile_) { ++advanceCount_; advanceTime_+=std::chrono::steady_clock::now()-started; }
+        return state;
+    }
+    blocks::VisualAdvance advanceMany(std::uint32_t ticks) override {
+        if (ticks<=1) return blocks::VisualSimulationHost::advanceMany(ticks);
+#if FOREVERVALIDATOR_HAS_CUDA
+        synchronizeCursor();
+#endif
+        recording_.reset();
+        captured_.reset();
+        const bool cacheable=cacheEligible_ && ticks>=8 && sandbox_.Backend()==forevervalidator::SimulationBackend::OptimizedCpu;
+        const auto startIdentity=identity();
+        const auto inputs=Require(sandbox_.ReadInputs(),"capturing history inputs");
+        const auto origin=historyOrigin_ ? *historyOrigin_ : Require(sandbox_.CaptureState(),"capturing history origin");
+        const auto firstTime=Require(sandbox_.ReadState(),"reading history cursor").timeMs;
+        const auto prefixEnd=[](const blocks::VisualInputs &sequence,std::uint64_t endTime) {
+            return std::upper_bound(sequence.begin(),sequence.end(),endTime,
+                [](std::uint64_t time,const SandboxInputEvent &event) { return static_cast<std::int64_t>(time)<event.timeMs; });
+        };
+        auto selected=prefixes_.end();
+        if (cacheable) for (auto it=prefixes_.begin();it!=prefixes_.end();++it) {
+            const auto &entry=*it;
+            if (entry.origin!=startIdentity || entry.ticks>ticks || entry.horizon!=horizon_ ||
+                (selected!=prefixes_.end() && entry.ticks<=selected->ticks)) continue;
+            // Pointer identity proves the complete starting physics state is
+            // identical; compare every consumed input, not a lossy state hash.
+            const auto endTime=entry.advanced.state.timeMs;
+            if (!std::equal(inputs.begin(),prefixEnd(inputs,endTime),entry.inputs.begin(),prefixEnd(entry.inputs,endTime),SameInputEvent)) continue;
+            selected=it;
+        }
+        std::uint32_t reusedTicks=0;
+        if (selected!=prefixes_.end()) {
+            const auto &entry=*selected;
+            Require(sandbox_.RestoreState(entry.end->state),"restoring shared input prefix");
+            Require(sandbox_.ReplaceInputs(inputs),"applying branch suffix");
+            identity_=entry.end->identity;
+            reusedTicks=entry.ticks;
+            // Keep shared prefixes hot instead of evicting them behind every
+            // novel suffix. The cache remains bounded and equality is exact.
+            auto hit=std::move(*selected);
+            prefixes_.erase(selected);
+            prefixes_.push_back(std::move(hit));
+            if (reusedTicks==ticks) return prefixes_.back().advanced;
+        }
+        const auto skip=static_cast<std::uint32_t>((firstTime-origin.View().timeMs)/kSearchTickDurationMs);
+        const auto remaining=ticks-reusedTicks;
+        const auto previous=remaining==1 ? Require(sandbox_.ReadState(),"reading previous simulation state") :
+            Require(sandbox_.AdvanceTicks(remaining-1),"advancing simulation");
+        const auto state=Require(sandbox_.AdvanceTicks(1),"advancing simulation");
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (cudaPrefixes_) cudaPrefixes_->observe(sandbox_,state,&previous);
+#endif
+        identity_.reset();
+        const auto horizon=horizon_;
+        const auto history=blocks::DeferredVisualHistory([replay=historyReplay_,origin,inputs,ticks,horizon,skip] {
+            return replay->sample(origin,inputs,skip,ticks,horizon);
+        });
+        blocks::VisualAdvance advanced{state,previous,history};
+        if (cacheable) {
+            if (prefixes_.size()==64) prefixes_.erase(prefixes_.begin());
+            prefixes_.push_back({startIdentity,std::make_shared<Snapshot>(Require(sandbox_.CaptureState(),"caching input prefix"),identity()),
+                inputs,ticks,horizon_,advanced});
+        }
+        // Learn one new checkpoint after a restored/shared prefix. Recording
+        // every never-reused suffix would only spend memory and clone time.
+        cacheEligible_=false;
+        return advanced;
+    }
     std::shared_ptr<const blocks::VisualHostSnapshot> capture() const override {
-        return std::make_shared<Snapshot>(Require(sandbox_.CaptureState(), "saving simulation"));
+        if (captured_) return captured_;
+        if (historyOrigin_ && sandbox_.Backend()==forevervalidator::SimulationBackend::OptimizedCpu) {
+            const auto time=Require(sandbox_.ReadState(),"reading saved cursor").timeMs;
+            const auto ticks=static_cast<std::uint32_t>((time-historyOrigin_->View().timeMs)/kSearchTickDurationMs);
+            if (ticks && ticks<=4096)
+                return captured_=std::make_shared<DeferredSnapshot>(*historyOrigin_,inputs(),ticks,horizon_,identity());
+        }
+        const auto started=profile_ ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        auto native=
+#if FOREVERVALIDATOR_HAS_CUDA
+            cudaCursorActive_ ? cudaCursor_->capture() :
+#endif
+            Require(sandbox_.CaptureState(), "saving simulation");
+        captured_=std::make_shared<Snapshot>(std::move(native),identity());
+        if (profile_) { ++captureCount_; captureTime_+=std::chrono::steady_clock::now()-started; }
+        if (recordPrefixes_ && !recording_ && sandbox_.Backend()==forevervalidator::SimulationBackend::OptimizedCpu) {
+            const auto &native=static_cast<const Snapshot &>(*captured_);
+            recording_=Recording{native.state,native.identity,0};
+        }
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (sandbox_.Backend()==forevervalidator::SimulationBackend::Cuda) {
+            if (!cudaPrefixes_) cudaPrefixes_=std::make_shared<blocks::CudaProgramPrefixCache>();
+            cudaPrefixes_->start(static_cast<const Snapshot &>(*captured_),horizon_);
+        }
+#endif
+        return captured_;
     }
     blocks::VisualState restore(const blocks::VisualHostSnapshot &snapshot) override {
+#if FOREVERVALIDATOR_HAS_CUDA
+        cudaCursorActive_=false;
+#endif
+        captured_.reset();
+        recording_.reset();
+        if (const auto *deferred=dynamic_cast<const DeferredSnapshot *>(&snapshot)) {
+            // Inputs before the cursor are immutable. Replaying from the exact
+            // native origin reconstructs the full state, not just public fields.
+            std::call_once(deferred->once,[&] {
+                Require(sandbox_.RestoreState(deferred->origin),"restoring deferred origin");
+                Require(sandbox_.SetSimulationHorizonMs(deferred->horizon),"setting deferred horizon");
+                Require(sandbox_.ReplaceInputs(deferred->inputs),"restoring deferred inputs");
+                Require(sandbox_.AdvanceTicks(deferred->ticks),"reconstructing deferred snapshot");
+                deferred->resolved=Require(sandbox_.CaptureState(),"capturing deferred snapshot");
+            });
+            const auto state=Require(sandbox_.RestoreState(*deferred->resolved),"restoring deferred snapshot");
+            identity_=deferred->identity;
+            historyOrigin_=*deferred->resolved;
+            cacheEligible_=true;
+            if (recordPrefixes_) recording_=Recording{*deferred->resolved,deferred->identity,0};
+            return state;
+        }
         const auto *native = dynamic_cast<const Snapshot *>(&snapshot);
         if (!native) throw std::invalid_argument("Snapshot belongs to another simulation host.");
-        return Require(sandbox_.RestoreState(native->state), "restoring simulation");
+        const auto state=Require(sandbox_.RestoreState(native->state), "restoring simulation");
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (cudaPrefixes_) cudaPrefixes_->start(*native,horizon_,true);
+#endif
+        identity_=native->identity;
+        historyOrigin_=native->state;
+        cacheEligible_=true;
+        if (recordPrefixes_ && sandbox_.Backend()==forevervalidator::SimulationBackend::OptimizedCpu)
+            recording_=Recording{native->state,native->identity,0};
+        return state;
     }
     blocks::VisualInputs inputs() const override { return Require(sandbox_.ReadInputs(), "reading inputs"); }
     void replaceInputs(blocks::VisualInputs inputs) override {
+#if FOREVERVALIDATOR_HAS_CUDA
+        synchronizeCursor(false);
+#endif
+        captured_.reset();
         Require(sandbox_.ReplaceInputs(std::move(inputs)), "replacing inputs");
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (cudaCursorActive_) {
+            cudaCursorActive_=false;
+            try {
+                cudaCursor_->replaceInputs(sandbox_);
+                cudaCursorActive_=true;
+                return;
+            } catch (const std::bad_alloc &) {
+            } catch (const blocks::BytecodeNeedsInterpreter &) {
+            }
+            // The authoritative sandbox already contains the validated edit.
+            cudaCursor_.reset();
+            sourceCursorDisabled_=true;
+            if (sourceMode_) sourceMode_("CUDA physics with source block control: resident cursor unavailable");
+        }
+#endif
     }
     blocks::VisualState setHorizon(std::uint32_t milliseconds) override {
+        if (milliseconds==horizon_) return read();
+#if FOREVERVALIDATOR_HAS_CUDA
+        synchronizeCursor();
+#endif
+        captured_.reset();
+        recording_.reset();
         const auto state=Require(sandbox_.SetSimulationHorizonMs(milliseconds), "setting simulation horizon");
+#if FOREVERVALIDATOR_HAS_CUDA
+        if (cudaPrefixes_) cudaPrefixes_->invalidate();
+#endif
         horizon_=milliseconds;
+        identity_.reset();
         return state;
     }
 private:
+#if FOREVERVALIDATOR_HAS_CUDA
+    void synchronizeCursor(bool discard=true) const {
+        if (!cudaCursorActive_) return;
+        Require(sandbox_.RestoreState(cudaCursor_->capture()),"synchronizing resident CUDA physics");
+        if (discard) cudaCursorActive_=false;
+    }
+#endif
+    std::shared_ptr<const unsigned char> identity() const {
+        if (!identity_) identity_=std::make_shared<const unsigned char>(0);
+        return identity_;
+    }
+    struct Prefix {
+        std::shared_ptr<const unsigned char> origin;
+        std::shared_ptr<const Snapshot> end;
+        blocks::VisualInputs inputs;
+        std::uint32_t ticks,horizon;
+        blocks::VisualAdvance advanced;
+    };
+    struct Recording {
+        forevervalidator::experimental::PhysicsSandboxState origin;
+        std::shared_ptr<const unsigned char> identity;
+        std::uint32_t ticks;
+    };
+    void recordSourceStep(const blocks::VisualState &state,const std::optional<blocks::VisualState> &previous) try {
+        if (!recording_) return;
+        if (state.timeMs!=recording_->origin.View().timeMs+(++recording_->ticks)*kSearchTickDurationMs) {
+            recording_.reset(); return;
+        }
+        if (recording_->ticks%32!=0 || !previous) return;
+        auto inputs=sandbox_.ReadInputs();
+        auto saved=sandbox_.CaptureState();
+        if (!inputs || !saved) { recording_.reset(); return; }
+        const auto end=std::make_shared<Snapshot>(std::move(saved.Value()),identity());
+        const auto history=blocks::DeferredVisualHistory([replay=historyReplay_,origin=recording_->origin,
+                events=inputs.Value(),ticks=recording_->ticks,horizon=horizon_] { return replay->sample(origin,events,0,ticks,horizon); });
+        Prefix prefix{recording_->identity,end,std::move(inputs.Value()),recording_->ticks,horizon_,{state,*previous,history}};
+        if (prefixes_.size()==64) prefixes_.erase(prefixes_.begin());
+        prefixes_.push_back(std::move(prefix));
+        captured_=end;
+        if (recording_->ticks==128) recording_=Recording{end->state,end->identity,0};
+    } catch (const std::bad_alloc &) {
+        recording_.reset();
+    }
+    mutable std::shared_ptr<const unsigned char> identity_;
+    const bool profile_=std::getenv("FOREVERTAS_CUDA_VM_PROFILE")!=nullptr;
+    std::uint64_t advanceCount_=0;
+    mutable std::uint64_t captureCount_=0;
+    std::chrono::steady_clock::duration advanceTime_{};
+    mutable std::chrono::steady_clock::duration captureTime_{};
+    // Repeated maps can share an unchanged native origin. Every sandbox
+    // mutation invalidates this cache, including future-only input edits.
+    mutable std::shared_ptr<const blocks::VisualHostSnapshot> captured_;
+    mutable std::optional<Recording> recording_;
+    bool recordPrefixes_=true;
+    std::optional<forevervalidator::experimental::PhysicsSandboxState> historyOrigin_;
+    bool cacheEligible_=true;
+    std::vector<Prefix> prefixes_;
     std::unique_ptr<Sandbox> owned_;
     forevervalidator::experimental::PhysicsSandbox &sandbox_;
     Factory factory_;
     std::uint32_t horizon_;
+    std::shared_ptr<HistoryReplay> historyReplay_;
+    std::shared_ptr<blocks::VisualBatchExecutor> executor_;
+    bool sourceAcceleration_=true;
+    std::function<void(const std::string &)> sourceMode_;
+#if FOREVERVALIDATOR_HAS_CUDA
+    mutable std::shared_ptr<blocks::CudaProgramPrefixCache> cudaPrefixes_;
+    mutable std::unique_ptr<blocks::CudaProgramPhysicsCursor> cudaCursor_;
+    mutable bool cudaCursorActive_=false;
+    bool sourceCursorDisabled_=false,sourceCursorReported_=false;
+#endif
 };
 
 std::vector<SearchTimelineFrame> VisualTimeline(const blocks::VisualSnapshot &snapshot) {
     std::vector<SearchTimelineFrame> frames;
-    frames.reserve(snapshot.history->size());
-    for (const auto &state : *snapshot.history) frames.push_back(ToTimelineFrame(state));
+    const auto history = blocks::VisualHistoryStates(snapshot.history);
+    frames.reserve(history.size());
+    for (const auto &state : history) frames.push_back(ToTimelineFrame(state));
     return frames;
 }
 
@@ -1388,41 +1728,55 @@ SearchResult RunVisualSearch(const SearchRequest &request, const SearchRunContro
     CheckCancellation(control);
     ReportProgress(control, SearchProgressStage::LoadingScenario, 0, 0);
     Require(sandbox.LoadScenario({replay.data(), replay.size()}, identity), "loading scenario");
-    Require(sandbox.ReplaceInputs(BuildBaselineOrThrow(request,
-        Require(sandbox.ReadInputs(), "reading scenario inputs"))), "applying starting inputs");
+    const auto initialInputs=Require(sandbox.ReadInputs(), "reading scenario inputs");
+    ReportProgress(control, SearchProgressStage::ApplyingBaselineInputs, 0, 0);
+    Require(sandbox.ReplaceInputs(BuildBaselineOrThrow(request,initialInputs)), "applying starting inputs");
     CheckCancellation(control);
     if (control && control->beginIteration && !control->beginIteration()) throw SearchCancelled();
     ReportProgress(control, SearchProgressStage::VisualProgram, 0, 0);
-    VisualPhysicsHost host(sandbox, [&] {
-        CheckCancellation(control);
+    VisualPhysicsHost host(sandbox, [request,replay,identity] {
         auto branch = Require(CreatePhysicsSandbox(
             Require(OpenInstalledPackDirectory(request.packDirectory), "opening branch packs"),
             CanonicalOptions(request, ToForeverValidatorBackend(request.backend))), "creating branch");
         Require(branch.LoadScenario({replay.data(), replay.size()}, identity), "loading branch scenario");
         return branch;
-    }, request.simulationHorizonMs);
+    }, request.simulationHorizonMs,!control || control->compileVisualPrograms,
+        control ? control->visualExecutionModeChanged : std::function<void(const std::string &)>{});
     blocks::VisualRuntimeControl runtime;
     runtime.horizonMs = request.simulationHorizonMs;
     runtime.tickMs = kSearchTickDurationMs;
     runtime.workerCount = request.backend == PhysicsBackend::Reference || request.backend == PhysicsBackend::OptimizedCpu
             ? 1u : request.parallelSampleCount;
+    runtime.batchSize = std::min(1024u,runtime.workerCount * 32u);
+#if FOREVERVALIDATOR_HAS_CUDA
+    if (request.backend==PhysicsBackend::Cuda) runtime.batchSize=1024u;
+#endif
+    if (request.backend==PhysicsBackend::Reference) runtime.batchSize=1;
+    if (request.backend==PhysicsBackend::OptimizedCpu) runtime.batchSize=1;
     runtime.debugger = request.debugger;
-    if (control) runtime.candidateLimit = control->iterationLimit;
+    if (control) {
+        runtime.candidateLimit = control->iterationLimit;
+        runtime.compilePrograms = control->compileVisualPrograms;
+        runtime.executionModeChanged = control->visualExecutionModeChanged;
+    }
     const auto started = std::chrono::steady_clock::now();
     auto lastStatistics = started;
     std::mutex statisticsMutex;
     std::optional<std::chrono::steady_clock::duration> lastPublication;
-    std::uint64_t publications = 0, candidates = 0;
-    runtime.candidateCountChanged = [&](std::uint64_t count) { candidates = count; };
+    std::uint64_t publications = 0;
+    std::atomic<std::uint64_t> candidates{0};
+    runtime.candidateCountChanged = [&](std::uint64_t count) { candidates.store(count,std::memory_order_relaxed); };
     runtime.stopRequested = [&] {
         CheckCancellation(control);
+        return control && control->stopRequested && control->stopRequested();
+    };
+    runtime.progress = [&] {
         std::lock_guard<std::mutex> lock(statisticsMutex);
         const auto now = std::chrono::steady_clock::now();
         if (control && control->statisticsChanged && now-lastStatistics >= std::chrono::milliseconds(100)) {
-            control->statisticsChanged({candidates, now-started});
+            control->statisticsChanged({candidates.load(std::memory_order_relaxed), now-started});
             lastStatistics = now;
         }
-        return control && control->stopRequested && control->stopRequested();
     };
     runtime.published = [&](const blocks::VisualPublishedRun &published) {
         ++publications;
@@ -1435,8 +1789,8 @@ SearchResult RunVisualSearch(const SearchRequest &request, const SearchRunContro
         live.bestState = published.evaluationState;
         live.bestEvaluationTimeMs = static_cast<double>(published.evaluationState.timeMs);
         live.bestEvaluationDescription = "Program-selected score: " + blocks::FormatNumberValue(published.score);
-        live.bestInputs = published.snapshot->inputs;
-        live.iterations = candidates;
+        live.bestInputs = *published.snapshot->inputs;
+        live.iterations = candidates.load(std::memory_order_relaxed);
         live.evaluatorCalls = publications;
         live.mutationImprovementCount = publications;
         live.elapsed = *lastPublication;
@@ -1452,7 +1806,13 @@ SearchResult RunVisualSearch(const SearchRequest &request, const SearchRunContro
     const auto elapsed = std::chrono::steady_clock::now()-started;
     if (control && control->statisticsChanged) control->statisticsChanged({execution.candidates, elapsed});
     auto timeline = !control || control->sampleBestTimeline ? VisualTimeline(*selected) : std::vector<SearchTimelineFrame>{};
-    const auto *physical = dynamic_cast<const VisualPhysicsHost::Snapshot *>(selected->native.get());
+    std::optional<PhysicsSandboxState> physical;
+    if (const auto *native=dynamic_cast<const VisualPhysicsHost::Snapshot *>(selected->native.get())) physical=native->state;
+    else if (const auto *deferred=dynamic_cast<const VisualPhysicsHost::DeferredSnapshot *>(selected->native.get())) {
+        host.setHorizon(std::max(selected->horizonMs,static_cast<std::uint32_t>(host.read().timeMs)));
+        host.restore(*deferred);
+        physical=*deferred->resolved;
+    }
     if (!physical) throw std::runtime_error("Missing physical snapshot after block execution.");
     return {SearchWinnerSource::Program,
             execution.published && execution.published->candidate
@@ -1460,8 +1820,8 @@ SearchResult RunVisualSearch(const SearchRequest &request, const SearchRunContro
             0, score, static_cast<double>(evaluationState.timeMs),
             execution.published ? "Program-selected score: " + blocks::FormatNumberValue(score)
                                 : "Program ended without keeping a result; showing its final simulation state.",
-            evaluationState, selected->inputs, std::move(timeline), execution.candidates,
-            publications, publications, 0, elapsed, lastPublication, physical->state};
+            evaluationState, *selected->inputs, std::move(timeline), execution.candidates,
+            publications, publications, 0, elapsed, lastPublication, *physical};
 }
 
 }  // namespace

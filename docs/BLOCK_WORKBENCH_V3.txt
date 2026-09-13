@@ -12,4 +12,4 @@ The embedded Blockly editor is a visual source editor, not a native search confi
 
 Visual language tests reject retired wrappers and check macro source structure, graph integrity, types and procedure validation. Runtime tests exercise every reporter, all expanded templates, single-input edit invariants, hold/collision behavior, selection provenance, branch isolation, debugging and cancellation. The Chromium test inserts every template through the actual editor, validates its serialized output in C++, and checks variable isolation, undo/redo and reload. Optional installed-game tests exercise real physics and the native debugger lifecycle.
 
-See [the sandbox guide](BLOCKS_SANDBOX.md) for user-visible semantics and [the workbench guide](BLOCK_WORKBENCH_GUIDE.md) for authoring. Package/release verification is separate from runtime verification and must be repeated for a release.
+See [the sandbox guide](BLOCKS_SANDBOX.txt) for user-visible semantics and [the workbench guide](BLOCK_WORKBENCH_GUIDE.txt) for authoring. Package/release verification is separate from runtime verification and must be repeated for a release.

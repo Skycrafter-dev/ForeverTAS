@@ -33,7 +33,7 @@ class CustomVolumeTargetModel final : public QObject {
 
 public:
     explicit CustomVolumeTargetModel(
-            const QVariantMap &legacySettings = {},
+            const QVariantMap &releasedSettings = {},
             QObject *parent = nullptr);
     ~CustomVolumeTargetModel() override;
 
@@ -111,7 +111,7 @@ private:
     static std::vector<QPointF> decodePolygon(const QString &encoded);
     QString nextDefaultName() const;
     void rebuildGeometry(Target *target);
-    void load(const QVariantMap &legacySettings);
+    void load(const QVariantMap &releasedSettings);
     void persist() const;
     void notifyTargetChanged(int index);
 

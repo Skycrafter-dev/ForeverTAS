@@ -164,6 +164,8 @@ VisualProgram ExistingEvents() {
            {"minimum steering", -9830}, {"maximum steering", 9830}})
     s.body.push_back(s.local(name, s.n(value)));
   s.body.push_back(s.local("absolute steering", s.flag(false)));
+  s.body.push_back(s.local("minimum absolute steering", s.n(-65536)));
+  s.body.push_back(s.local("maximum absolute steering", s.n(65536)));
   s.body.push_back(s.local("toggle accelerate", s.flag(true)));
   s.body.push_back(s.local("toggle brake", s.flag(true)));
   auto eligible = Eligible(s, s.either(s.eq(s.event("action"), s.action("steer")),
@@ -179,7 +181,10 @@ VisualProgram ExistingEvents() {
     s.set("inputs", s.block("inputs/with-time", {{"inputs", s.g("inputs")}, {"index", s.g("index")},
       {"time", s.clamp(s.add(s.event("time"), s.mul(s.random(s.sub(s.n(0), s.g("shift ticks")), s.g("shift ticks")), s.tick())), s.g("first ms"), s.g("last ms"))}})),
     s.branch(s.eq(s.event("action"), s.action("steer")), {
-      s.local("steering draw", s.random(s.g("minimum steering"), s.g("maximum steering"))),
+      s.local("steering draw", s.n(0)),
+      s.branch(s.g("absolute steering"),
+        {s.set("steering draw", s.random(s.g("minimum absolute steering"), s.g("maximum absolute steering")))},
+        {s.set("steering draw", s.random(s.g("minimum steering"), s.g("maximum steering")))}),
       s.branch(s.g("absolute steering"), {s.changeValue(s.g("steering draw"))},
           {s.changeValue(s.clamp(s.add(s.event("value"), s.g("steering draw")), s.n(-65536), s.n(65536)))})
     }, {s.changeValue(s.sub(s.n(1), s.event("value")))})}));
@@ -224,6 +229,8 @@ VisualProgram Insertion() {
   s.body.push_back(s.local("steering is offset", s.flag(false)));
   s.body.push_back(s.local("minimum steering", s.n(-65536)));
   s.body.push_back(s.local("maximum steering", s.n(65536)));
+  s.body.push_back(s.local("minimum steering offset", s.n(-65536)));
+  s.body.push_back(s.local("maximum steering offset", s.n(65536)));
   s.body.push_back(s.local("channels", s.list({s.action("steer"), s.action("accelerate"), s.action("brake")})));
   s.body.push_back(s.local("enabled channels", s.list({s.g("insert steering"), s.g("insert accelerate"), s.g("insert brake")})));
   s.body.push_back(s.local("minimum insertions", s.list({s.g("minimum steering insertions"), s.g("minimum accelerate insertions"), s.g("minimum brake insertions")})));
@@ -236,8 +243,9 @@ VisualProgram Insertion() {
     s.local("previous value", s.held("inputs", "start ms", s.g("channel"))),
     s.local("new value", s.n(0)),
     s.branch(s.eq(s.g("channel"), s.action("steer")), {
-      s.set("new value", s.random(s.g("minimum steering"), s.g("maximum steering"))),
-      s.branch(s.g("steering is offset"), {s.set("new value", s.clamp(s.add(s.g("previous value"), s.g("new value")), s.n(-65536), s.n(65536)))})
+      s.branch(s.g("steering is offset"), {s.set("new value", s.clamp(s.add(s.g("previous value"),
+        s.random(s.g("minimum steering offset"), s.g("maximum steering offset"))), s.n(-65536), s.n(65536)))},
+        {s.set("new value", s.random(s.g("minimum steering"), s.g("maximum steering")))})
     }, {s.set("new value", s.sub(s.n(1), s.g("previous value")))}),
     // A hold is two edits plus an explicit removal loop, never one opaque atom.
     s.each("index", s.indices("inputs", true), {
@@ -336,12 +344,19 @@ VisualProgram Target(const std::string &kind) {
   if (kind == "direction") s.body.push_back(s.local("direction", s.point(1,0,0)));
   if (entry) {
     s.body.push_back(s.local("origin", s.point(0,0,0)));
-    if (kind == "box") s.body.push_back(s.local("volume", s.block("targets/box", {
-      {"center", s.g("origin")}, {"size", s.block("targets/size", {{"x", s.n(10)}, {"y", s.n(10)}, {"z", s.n(10)}})}})));
+    if (kind == "box") {
+      s.body.push_back(s.local("box size", s.block("targets/size", {{"x", s.n(10)}, {"y", s.n(10)}, {"z", s.n(10)}})));
+      s.body.push_back(s.local("volume", s.block("targets/box", {{"center", s.g("origin")}, {"size", s.g("box size")}})));
+    }
     else {
-      s.body.push_back(s.local("points", s.list({s.point(-5,-5,0), s.point(5,-5,0), s.point(0,5,0)})));
-      s.body.push_back(s.local("volume", s.block("targets/prism", {{"origin", s.g("origin")}, {"depth", s.n(5)},
-        {"polygon", s.block("targets/polygon-from-points", {{"points", s.g("points")}})}}, {{"plane", "xz"}})));
+      s.body.push_back(s.local("point 1", s.point(-5,-5,0)));
+      s.body.push_back(s.local("point 2", s.point(5,-5,0)));
+      s.body.push_back(s.local("point 3", s.point(0,5,0)));
+      s.body.push_back(s.local("depth (m)", s.n(5)));
+      s.body.push_back(s.local("projection plane", s.block("targets/plane", {}, {{"value", "xz"}})));
+      s.body.push_back(s.local("points", s.list({s.g("point 1"), s.g("point 2"), s.g("point 3")})));
+      s.body.push_back(s.local("volume", s.block("targets/prism", {{"origin", s.g("origin")}, {"depth", s.g("depth (m)")},
+        {"plane", s.g("projection plane")}, {"polygon", s.block("targets/polygon-from-points", {{"points", s.g("points")}})}})));
     }
   }
   Id score;
@@ -386,10 +401,92 @@ VisualProgram BruteForce() {
         s.branch(s.g("promote best"), {s.set("baseline inputs", s.block("simulation/inputs"))})})})};
   return s.finish();
 }
+// Configure source copies, not native modifier settings. The screenshot's
+// normalized steering values remain literal controls; conversion to the engine's
+// analog integers is visible multiply/round source inside each pass.
+void AppendSkyPass(Source &whole, VisualProgram program, const std::string &title,
+                   const std::string &prefix, double seed,
+                   const std::map<std::string, double> &numbers,
+                   const std::map<std::string, bool> &flags,
+                   const std::set<std::string> &normalized) {
+  Source s;
+  s.program = std::move(program);
+  const auto root = s.program.topLevel.front();
+  auto body = s.program.find(root)->statements.at("body");
+  std::vector<Id> original;
+  for (const auto &[id, node] : s.program.nodes) { (void)node; original.push_back(id); }
+  for (auto id : original) {
+    auto &node = *s.program.find(id);
+    const auto found = node.fields.find("name");
+    if (found == node.fields.end()) continue;
+    const auto name = found->second;
+    if (node.definitionId == "data/local") {
+      if (numbers.count(name)) node.inputs["value"] = s.n(numbers.at(name));
+      if (flags.count(name)) node.inputs["value"] = s.flag(flags.at(name));
+      if (name == "first ms") node.inputs["value"] = s.n(6100);
+      if (name == "last ms") node.inputs["value"] = s.n(10500);
+    } else if (node.definitionId == "data/get" && normalized.count(name)) {
+      node.definitionId = "math/round";
+      node.fields.clear();
+      node.inputs = {{"value", s.mul(s.g(name), s.n(65536))}};
+    }
+  }
+  body.insert(body.begin(), s.block("math/seed", {{"value", s.add(s.g("seed"), s.block("results/iterations"))}}));
+  body.insert(body.begin(), s.local("seed", s.n(seed)));
+  for (auto &[id, node] : s.program.nodes) {
+    (void)id;
+    if (node.fields.count("name")) node.fields["name"] = prefix + node.fields["name"];
+  }
+  const Id offset = whole.program.nodes.size();
+  for (auto &[id, node] : s.program.nodes) {
+    node.id = id + offset;
+    for (auto &[key, input] : node.inputs) { (void)key; input += offset; }
+    for (auto &[key, children] : node.statements) { (void)key; for (auto &child : children) child += offset; }
+    whole.program.nodes.emplace(node.id, std::move(node));
+  }
+  // The copied hat is not executable; only the explicitly grouped pass is.
+  whole.program.find(root + offset)->statements.clear();
+  for (auto &id : body) id += offset;
+  const auto section = whole.block("flow/section", {}, {{"name", title}}, {{"body", body}});
+  whole.program.find(section)->collapsed = true;
+  whole.body.push_back(section);
+}
+
+VisualProgram Sky() {
+  Source s;
+  AppendSkyPass(s, Deletion(), "Pass 1 · Input deletion", "Pass 1 / ", 3749268317.0,
+    {{"maximum steering deletions",12}, {"maximum accelerate deletions",1}, {"maximum brake deletions",2}},
+    {{"delete steering",true}, {"delete accelerate",true}, {"delete brake",true}}, {});
+  AppendSkyPass(s, ExistingEvents(), "Pass 2 · Existing-event perturbation", "Pass 2 / ", 444721321.0,
+    {{"minimum edits",1}, {"maximum edits",12}, {"maximum shift ms",0},
+     {"minimum steering",-1}, {"maximum steering",1}, {"minimum absolute steering",-1}, {"maximum absolute steering",1}},
+    {{"absolute steering",false}, {"toggle accelerate",true}, {"toggle brake",true}},
+    {"minimum steering", "maximum steering", "minimum absolute steering", "maximum absolute steering"});
+  AppendSkyPass(s, Insertion(), "Pass 3 · Input insertion", "Pass 3 / ", 4221481885.0,
+    {{"minimum steering insertions",0}, {"maximum steering insertions",5}, {"maximum steering hold ms",0},
+     {"minimum accelerate insertions",0}, {"maximum accelerate insertions",1}, {"maximum accelerate hold ms",200},
+     {"minimum brake insertions",0}, {"maximum brake insertions",2}, {"maximum brake hold ms",300},
+     {"minimum steering",-1}, {"maximum steering",1}, {"minimum steering offset",-1}, {"maximum steering offset",1}},
+    {{"insert steering",true}, {"insert accelerate",true}, {"insert brake",true}, {"steering is offset",true}},
+    {"minimum steering", "maximum steering", "minimum steering offset", "maximum steering offset"});
+  auto result = s.finish();
+  std::set<Id> reachable;
+  const auto visit = [&](const auto &self, Id id) -> void {
+    if (!reachable.insert(id).second) return;
+    const auto &node = *result.find(id);
+    for (const auto &[key, child] : node.inputs) { (void)key; self(self, child); }
+    for (const auto &[key, children] : node.statements) { (void)key; for (auto child : children) self(self, child); }
+  };
+  for (auto id : result.topLevel) visit(visit, id);
+  for (auto it = result.nodes.begin(); it != result.nodes.end();)
+    if (!reachable.count(it->first)) it = result.nodes.erase(it); else ++it;
+  return result;
+}
 } // namespace
 
 const std::vector<VisualMacro> &VisualMacroCatalog() {
   static const std::vector<VisualMacro> macros{
+    {"sky", "Macromacroblocks", "Sky's", "Deletion, existing-event perturbation and insertion over 6100–10500 ms.", Sky()},
     {"existing-events", "Inputs", "Existing-event mutation", "Choose without replacement, shift one timestamp, edit one value, resolve collisions, then sort. Steering values are analog integers.", ExistingEvents()},
     {"input-deletion", "Inputs", "Input deletion", "Draw a deletion count for each enabled channel; explicitly find and delete one eligible event at a time.", Deletion()},
     {"input-insertion", "Inputs", "Input insertion and holds", "Choose each channel's count, start and hold time; remove intervening events, insert the new value and restore the original value.", Insertion()},

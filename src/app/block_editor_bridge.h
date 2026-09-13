@@ -28,6 +28,9 @@ class BlockEditorBridge final : public QObject {
   Q_PROPERTY(bool darkMode READ darkMode NOTIFY darkModeChanged)
   Q_PROPERTY(bool running READ running NOTIFY editableChanged)
   Q_PROPERTY(QString debugJson READ debugJson NOTIFY debugChanged)
+  Q_PROPERTY(QString sessionJson READ sessionJson CONSTANT)
+  Q_PROPERTY(QString sessionError READ sessionError CONSTANT)
+  Q_PROPERTY(bool editorLoaded READ editorLoaded NOTIFY editorReadyChanged)
 
 public:
   explicit BlockEditorBridge(SearchController *controller,
@@ -41,6 +44,9 @@ public:
   bool darkMode() const;
   bool running() const;
   QString debugJson() const { return debugJson_; }
+  QString sessionJson() const { return sessionJson_; }
+  QString sessionError() const { return sessionError_; }
+  bool editorLoaded() const { return editorReady_; }
 
   Q_INVOKABLE bool applyWorkspace(const QString &workspaceJson,
                                   qulonglong revision);
@@ -54,10 +60,16 @@ public:
   Q_INVOKABLE void setBreakpoints(const QStringList &blockIds);
   Q_INVOKABLE QString openProject();
   Q_INVOKABLE bool saveProject(const QString &workspaceJson);
-  QString projectFromWorkspace(const QString &workspaceJson);
-  QString workspaceFromProject(const QString &projectJson);
+  Q_INVOKABLE QString openProgramFile();
+  Q_INVOKABLE QString saveProgramFile(const QString &workspaceJson,
+                                      const QString &path,
+                                      const QString &programName);
+  Q_INVOKABLE QString storeSession(const QString &json);
+  Q_INVOKABLE void requestSessionFlush() { emit sessionFlushRequested(); }
+  Q_INVOKABLE void finishSessionFlush(const QString &error) { emit sessionFlushFinished(error); }
   Q_INVOKABLE QString selectedViewerTargetJson(const QString &kind) const;
   Q_INVOKABLE void requestViewerPointPick(const QString &blockId);
+  Q_INVOKABLE void cancelViewerPointPick();
   Q_INVOKABLE void completeViewerPointPick(const QString &blockId,
                                            double x,
                                            double y,
@@ -71,7 +83,10 @@ signals:
   void darkModeChanged();
   void editorReadyChanged();
   void debugChanged();
+  void sessionFlushRequested();
+  void sessionFlushFinished(const QString &error);
   void viewerPointPickRequested(const QString &blockId);
+  void viewerPointPickCanceled();
   void viewerPointPicked(const QString &blockId, double x, double y, double z);
 
 private:
@@ -95,6 +110,8 @@ private:
   QString debugJson_ = QStringLiteral("{}");
   std::map<blocks::VisualNodeId, QString> editorIds_;
   QStringList breakpointIds_;
+  QString sessionJson_;
+  QString sessionError_;
 };
 
 } // namespace forevertas::app

@@ -119,10 +119,11 @@ def source_state(manifest: dict, validator_root: Path) -> dict:
         raise SystemExit(
             "CUDA search-object output-neutral declarations are stale: " +
             ", ".join(sorted(stale_paths)))
-    validator_tag = manifest["sources"]["forevervalidator"]["tag"]
-    validator_tag_target = git("rev-parse", f"{validator_tag}^{{}}", cwd=validator_root)
-    if validator_tag_target != state["forevervalidator"]:
-        raise SystemExit("ForeverValidator tag does not point at the manifest commit")
+    validator_tag = manifest["sources"]["forevervalidator"].get("tag")
+    if validator_tag:
+        validator_tag_target = git("rev-parse", f"{validator_tag}^{{}}", cwd=validator_root)
+        if validator_tag_target != state["forevervalidator"]:
+            raise SystemExit("ForeverValidator tag does not point at the manifest commit")
     return state
 
 
@@ -181,9 +182,12 @@ def release_assets(manifest: dict, dist: Path) -> list[Path]:
 def release_notes(manifest: dict) -> str:
     return f"""ForeverTAS {manifest['release']['version']}
 
-- Regular CUDA now supports NVIDIA GPUs with compute capability 5.0+, including GeForce GTX 750/750 Ti and newer supported architectures in the release build.
-- Fast CUDA requires compute capability 7.5+ and automatically falls back to regular CUDA on older supported GPUs. The UI reports CUDA and Fast CUDA compatibility explicitly.
-- The race viewer no longer depends on the selected CUDA search backend.
+- Adds a Scratch-like Programs / Blocks workspace for building simulation and search behavior from editable primitives, control flow, events and reusable procedures.
+- Macroblocks expand to ordinary editable blocks instead of hidden native search implementations.
+- Parallel mapped procedures run on CPU or CUDA through the shared block-program VM, with explicit reporting when source execution is required.
+- Adds program tabs, autosave, portable program files, undo/redo, breakpoints, stepping and live variable/simulation inspection.
+- Imports released v0.2.3 search settings once into the current program model instead of carrying prototype-format compatibility.
+- CUDA release builds support NVIDIA compute capability 5.0+, with Fast CUDA available on 7.5+ hardware.
 - Linux x86_64 AppImage and Windows x86_64 ZIP are attached below.
 """
 

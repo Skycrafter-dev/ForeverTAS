@@ -136,7 +136,7 @@ void AssembleInsertion(const std::vector<const AtomEntry *> &atoms,
                 "' cannot share a mutation window.");
     }
     // Channel enablement is derived from which atoms are present, so the
-    // legacy per-channel flags never appear as block fields.
+    // v0.2.3 per-channel flags are represented structurally, not as block fields.
     settings["steerEnabled"] = absolute || offset ? "true" : "false";
     settings["accelerateEnabled"] = accelerate ? "true" : "false";
     settings["brakeEnabled"] = brake ? "true" : "false";
@@ -435,31 +435,25 @@ AtomExpansion ExpandEvaluationAtom(const OptionConfiguration &evaluation) {
     return {};
 }
 
-BlockProgram BuildProgramFromComponents(
+std::optional<BlockProgram> BuildProgramFromComponents(
         const SearchComponentConfiguration &components) {
     BlockProgram program;
-    std::string hatDefinition =
+    const std::string hatDefinition =
             SearchAtomDefinitionForOption(components.searchAlgorithm.id);
-    if (hatDefinition.empty()) {
-        hatDefinition = SearchAtomDefinitionForOption(
-                DefaultSearchAlgorithmConfiguration().id);
-    }
+    if (hatDefinition.empty()) return std::nullopt;
     const BlockId hat = program.createBlock(hatDefinition);
     for (const auto &[key, value] : components.searchAlgorithm.settings) {
         program.setFieldValue(hat, key, value);
     }
-    AtomExpansion evaluator = ExpandEvaluationAtom(
+    const AtomExpansion evaluator = ExpandEvaluationAtom(
             components.evaluationTarget);
-    if (evaluator.definitionId.empty()) {
-        evaluator = ExpandEvaluationAtom(
-                DefaultEvaluationTargetConfiguration());
-    }
+    if (evaluator.definitionId.empty()) return std::nullopt;
     const BlockId evaluatorId =
             program.createBlock(evaluator.definitionId, evaluator.fields);
     program.setEvaluator(hat, evaluatorId);
     for (const OptionConfiguration &modifier : components.modifiers) {
         const ModifierExpansion expansion = ExpandModifierAtoms(modifier);
-        if (expansion.atoms.empty()) continue;
+        if (expansion.atoms.empty()) return std::nullopt;
         const BlockId group =
                 program.createBlock("mutate/window", expansion.window);
         for (const AtomExpansion &atom : expansion.atoms) {
@@ -470,7 +464,7 @@ BlockProgram BuildProgramFromComponents(
         program.appendToSubstack(hat, group);
     }
     program.setScript(hat);
-    return program;
+    return std::optional<BlockProgram>(std::move(program));
 }
 
 std::string SearchAtomDefinitionForOption(const std::string &optionId) {

@@ -12,4 +12,4 @@ remain intentionally independent.
 
 Concrete is the single deliberate exception to the detailed material set: its
 base color is uniform by art direction, without white aggregate spots. See
-`PROVENANCE.md` for the source and prompt used for every material.
+`PROVENANCE.txt` for the source and prompt used for every material.

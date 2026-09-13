@@ -81,10 +81,10 @@ std::unique_ptr<viewer::CustomVolumeGeometry> NewGeometry() {
 }  // namespace
 
 CustomVolumeTargetModel::CustomVolumeTargetModel(
-        const QVariantMap &legacySettings,
+        const QVariantMap &releasedSettings,
         QObject *parent)
     : QObject(parent) {
-    load(legacySettings);
+    load(releasedSettings);
 }
 
 CustomVolumeTargetModel::~CustomVolumeTargetModel() = default;
@@ -780,7 +780,7 @@ void CustomVolumeTargetModel::rebuildGeometry(Target *target) {
     std::swap(target->geometry, target->stagingGeometry);
 }
 
-void CustomVolumeTargetModel::load(const QVariantMap &legacySettings) {
+void CustomVolumeTargetModel::load(const QVariantMap &releasedSettings) {
     const QJsonDocument document = QJsonDocument::fromJson(
             QSettings().value(QLatin1String(kCustomVolumesKey)).toByteArray());
     QString selectedId;
@@ -878,18 +878,18 @@ void CustomVolumeTargetModel::load(const QVariantMap &legacySettings) {
     }
     if (targets_.empty()) {
         const QString plane =
-                legacySettings.value(QStringLiteral("plane"), "xz")
+                releasedSettings.value(QStringLiteral("plane"), "xz")
                         .toString();
         const std::vector<QPointF> polygon = decodePolygon(
-                legacySettings
+                releasedSettings
                         .value(QStringLiteral("polygon"),
                                QStringLiteral("-5,-5;5,-5;0,5"))
                         .toString());
-        const auto number = [&legacySettings](
+        const auto number = [&releasedSettings](
                                     const QString &key,
                                     double fallback) {
             double value = 0.0;
-            return parseFinite(legacySettings.value(key).toString(), &value)
+            return parseFinite(releasedSettings.value(key).toString(), &value)
                     ? value
                     : fallback;
         };

@@ -130,6 +130,8 @@ class SearchController final : public QObject {
                     replayInputStateChanged)
     Q_PROPERTY(QString bestInputsText READ bestInputsText NOTIFY resultChanged)
 
+    Q_PROPERTY(bool blockProgramActive READ blockProgramActive NOTIFY blockStructureChanged)
+
 public:
     explicit SearchController(QObject *parent = nullptr);
     explicit SearchController(const QStringList &packsSearchPatterns,
@@ -171,6 +173,7 @@ public:
     QString programTextError() const;
     QString evaluationTargetId() const;
     std::optional<blocks::SearchComponentConfiguration> blockComponents() const;
+    bool blockProgramActive() const { return visualExecutable_ != nullptr; }
     const blocks::VisualProgram *executableBlockProgram() const { return visualExecutable_.get(); }
     bool applyBlockProgram(std::shared_ptr<const blocks::VisualProgram> program);
     std::shared_ptr<blocks::VisualDebugger> blockDebugger() const { return visualDebugger_; }

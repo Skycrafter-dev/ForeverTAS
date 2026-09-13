@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 project(ForeverTAS
-    VERSION 0.2.3
+    VERSION 0.3.0
     DESCRIPTION "Native TrackMania Nations Forever tool-assisted search tool"
     HOMEPAGE_URL "https://github.com/Skycrafter-dev/ForeverTAS"
     LANGUAGES CXX)
@@ -73,7 +73,7 @@ set(FOREVERVALIDATOR_ENABLE_CUDA ${FOREVERTAS_ENABLE_CUDA} CACHE BOOL
 FetchContent_Declare(
     ForeverValidator
     GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-    GIT_TAG 20fd361695e6a5a949cacc9bceec6ef64f18aa9f
+    GIT_TAG 49bff0372d630cc1865aa0f73f14b56a8a936218
     GIT_SHALLOW FALSE)
 FetchContent_MakeAvailable(ForeverValidator)
 
@@ -140,6 +140,16 @@ add_library(forevertas_core STATIC
     src/blocks/visual_macros.h
     src/blocks/visual_compiler.cpp
     src/blocks/visual_runtime.h
+    src/blocks/parallel_executor.cpp
+    src/blocks/parallel_executor.h
+    src/blocks/program_bytecode.cpp
+    src/blocks/program_bytecode.h
+    src/blocks/program_vm.h
+    src/blocks/program_vm_ops.h
+    src/blocks/program_value_codec.cpp
+    src/blocks/program_value_codec.h
+    src/blocks/program_host.cpp
+    src/blocks/program_uniform.cpp
     src/blocks/visual_runtime.cpp
     src/blocks/visual_runtime_state.cpp
     src/blocks/visual_runtime_validation.cpp
@@ -172,6 +182,28 @@ target_link_libraries(forevertas_core PUBLIC
     ForeverValidator::core
     ForeverValidator::native)
 
+if(FOREVERTAS_ENABLE_CUDA)
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    add_library(forevertas_program_cuda STATIC
+        src/blocks/program_cuda_kernel.cu
+        src/blocks/program_cuda_cursor_kernel.cu
+        # Load only the selected cursor physics implementation on first use.
+        src/blocks/program_cuda_cursor_generic_kernel.cu
+        src/blocks/program_cuda_cursor_legacy_kernel.cu
+        src/blocks/program_cuda_cursor_geared_dry_kernel.cu
+        src/blocks/program_cuda_cursor_geared_water_kernel.cu)
+    target_include_directories(forevertas_program_cuda PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src" "${forevervalidator_SOURCE_DIR}/include" "${forevervalidator_SOURCE_DIR}/src")
+    target_compile_options(forevertas_program_cuda PRIVATE
+        --fmad=false --prec-div=true --prec-sqrt=true --ftz=false --expt-relaxed-constexpr)
+    set_target_properties(forevertas_program_cuda PROPERTIES CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    target_link_libraries(forevertas_program_cuda PUBLIC CUDA::cudart)
+    target_sources(forevertas_core PRIVATE src/blocks/program_cuda.cpp src/blocks/program_cuda.h)
+    target_include_directories(forevertas_core PRIVATE "${forevervalidator_SOURCE_DIR}/src")
+    target_link_libraries(forevertas_core PUBLIC forevertas_program_cuda)
+endif()
+
 add_library(forevertas_gui STATIC
     src/app/compact_number_format.cpp
     src/app/compact_number_format.h
@@ -203,8 +235,6 @@ add_library(forevertas_gui STATIC
     src/app/block_program_model.h
     src/app/block_editor_bridge.cpp
     src/app/block_editor_bridge.h
-    src/app/visual_program_json.cpp
-    src/app/visual_program_json.h
     src/app/option_settings_store.h
     src/app/cuboid_target_model.cpp
     src/app/cuboid_target_model.h
@@ -364,6 +394,8 @@ set(FOREVERTAS_BLOCKLY_RESOURCE_FILES
     assets/blockly/editor.css
     assets/blockly/editor.js
     assets/blockly/examples.js
+    assets/blockly/workbench.js
+    assets/blockly/program_tabs.js
     third_party/blockly/blockly_compressed.js
     third_party/blockly/en.js
     ${FOREVERTAS_BLOCKLY_MEDIA})
@@ -409,6 +441,7 @@ qt_add_qml_module(forevertas
         qml/ThemedSwitch.qml
         qml/ThemedTabButton.qml
         qml/ThemedToolButton.qml
+        qml/RightRailTab.qml
         qml/WhiteboardOverlay.qml
         qml/WhiteboardPlanes.qml
         qml/blocks/BlocklyWorkspace.qml
@@ -588,7 +621,7 @@ install(FILES
     LICENSE
     packaging/licenses/LGPL-3.0-only.txt
     packaging/licenses/Qt-GPL-exception-1.0.txt
-    packaging/licenses/THIRD_PARTY_NOTICES.md
+    packaging/licenses/THIRD_PARTY_NOTICES.txt
     DESTINATION "${forevertas_license_destination}")
 install(FILES third_party/blockly/LICENSE
     DESTINATION "${forevertas_license_destination}"
@@ -677,6 +710,27 @@ if(BUILD_TESTING)
     target_link_libraries(forevertas-block-editor-bridge-tests PRIVATE
         forevertas_gui)
 
+    add_executable(forevertas-block-program-benchmark tests/block_program_benchmark.cpp)
+    target_link_libraries(forevertas-block-program-benchmark PRIVATE forevertas_gui)
+    set(FOREVERTAS_BENCHMARK_BASELINE_SOURCE_DIR "" CACHE PATH
+        "Exported v0.2.3 source for an optional native-search performance baseline")
+    if(FOREVERTAS_BENCHMARK_BASELINE_SOURCE_DIR)
+        file(GLOB forevertas_baseline_sources CONFIGURE_DEPENDS
+            "${FOREVERTAS_BENCHMARK_BASELINE_SOURCE_DIR}/src/evaluators/*.cpp"
+            "${FOREVERTAS_BENCHMARK_BASELINE_SOURCE_DIR}/src/mutations/*.cpp"
+            "${FOREVERTAS_BENCHMARK_BASELINE_SOURCE_DIR}/src/conditions/*.cpp"
+            "${FOREVERTAS_BENCHMARK_BASELINE_SOURCE_DIR}/src/searches/*.cpp")
+        add_library(forevertas_benchmark_baseline STATIC ${forevertas_baseline_sources}
+            "${FOREVERTAS_BENCHMARK_BASELINE_SOURCE_DIR}/src/replay_file_io.cpp")
+        target_include_directories(forevertas_benchmark_baseline PUBLIC
+            "${FOREVERTAS_BENCHMARK_BASELINE_SOURCE_DIR}/src")
+        target_link_libraries(forevertas_benchmark_baseline PUBLIC
+            ForeverValidator::core ForeverValidator::native)
+        add_executable(forevertas-native-baseline-benchmark tests/block_program_benchmark.cpp)
+        target_compile_definitions(forevertas-native-baseline-benchmark PRIVATE FOREVERTAS_BENCHMARK_NATIVE_ONLY=1)
+        target_link_libraries(forevertas-native-baseline-benchmark PRIVATE forevertas_benchmark_baseline Qt6::Core)
+    endif()
+
     add_executable(forevertas-controller-tests
         tests/search_controller_tests.cpp)
     target_link_libraries(forevertas-controller-tests PRIVATE
@@ -734,6 +788,11 @@ if(BUILD_TESTING)
     set_tests_properties(forevertas-block-editor-bridge PROPERTIES
         RESOURCE_LOCK controller-settings)
     find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME forevertas-source-benchmark-timing
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/block_program_source_benchmark_tests.py")
+        set_tests_properties(forevertas-source-benchmark-timing PROPERTIES TIMEOUT 15)
+    endif()
     find_program(FOREVERTAS_TEST_CHROMIUM NAMES chromium chromium-browser google-chrome)
     if(Python3_Interpreter_FOUND AND FOREVERTAS_TEST_CHROMIUM)
         add_test(NAME forevertas-blockly-browser
@@ -746,6 +805,11 @@ if(BUILD_TESTING)
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_replay_duration_control.cmake)
+    add_test(NAME forevertas-recorded-duration-guard-tests
+             COMMAND ${CMAKE_COMMAND}
+                -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -DFOREVERTAS_TEST_TMP_DIR=${CMAKE_CURRENT_BINARY_DIR}/recorded-duration-guard-tests
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_replay_duration_control_tests.cmake)
     add_test(NAME forevertas-system-file-dialog-control
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -754,6 +818,10 @@ if(BUILD_TESTING)
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_cache_control.cmake)
+    add_test(NAME forevertas-no-markdown-control
+             COMMAND ${CMAKE_COMMAND}
+                -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/no_markdown_control.cmake)
     add_test(NAME forevertas-blockly-offline-control
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
@@ -782,6 +850,36 @@ if(BUILD_TESTING)
             -DFOREVERTAS_CONFIG=$<CONFIG>
             -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/install_smoke.cmake)
 
+    add_executable(forevertas-cuda-import-tests tests/cuda_import_tests.cpp)
+    target_include_directories(forevertas-cuda-import-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    set_target_properties(forevertas-cuda-import-tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+    add_test(NAME forevertas-cuda-imports COMMAND forevertas-cuda-import-tests)
+    set_tests_properties(forevertas-cuda-imports PROPERTIES TIMEOUT 30)
+
+    if(FOREVERTAS_ENABLE_CUDA)
+        add_executable(forevertas-cuda-vm-allocator-tests tests/cuda_vm_allocator_tests.cu)
+        target_include_directories(forevertas-cuda-vm-allocator-tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+        target_link_libraries(forevertas-cuda-vm-allocator-tests PRIVATE CUDA::cudart)
+        set_target_properties(forevertas-cuda-vm-allocator-tests PROPERTIES
+            CUDA_STANDARD 17 CUDA_STANDARD_REQUIRED ON AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+        add_test(NAME forevertas-cuda-vm-allocator COMMAND forevertas-cuda-vm-allocator-tests)
+        set_tests_properties(forevertas-cuda-vm-allocator PROPERTIES TIMEOUT 30 RESOURCE_LOCK cuda SKIP_RETURN_CODE 77)
+        add_executable(forevertas-cuda-cursor-module-tests tests/cuda_cursor_module_tests.cpp)
+        target_include_directories(forevertas-cuda-cursor-module-tests PRIVATE
+            "${forevervalidator_SOURCE_DIR}/include" "${forevervalidator_SOURCE_DIR}/src")
+        target_link_libraries(forevertas-cuda-cursor-module-tests PRIVATE forevertas_program_cuda)
+        set_target_properties(forevertas-cuda-cursor-module-tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+        add_test(NAME forevertas-cuda-cursor-modules COMMAND forevertas-cuda-cursor-module-tests)
+        set_tests_properties(forevertas-cuda-cursor-modules PROPERTIES TIMEOUT 30 RESOURCE_LOCK cuda SKIP_RETURN_CODE 77)
+        add_executable(forevertas-cuda-checkpoint-tests tests/cuda_checkpoint_tests.cpp)
+        target_include_directories(forevertas-cuda-checkpoint-tests PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src" "${forevervalidator_SOURCE_DIR}/include" "${forevervalidator_SOURCE_DIR}/src")
+        target_link_libraries(forevertas-cuda-checkpoint-tests PRIVATE ForeverValidator::core ForeverValidator::native)
+        set_target_properties(forevertas-cuda-checkpoint-tests PROPERTIES AUTOMOC OFF AUTOUIC OFF AUTORCC OFF)
+        add_test(NAME forevertas-cuda-checkpoints COMMAND forevertas-cuda-checkpoint-tests)
+        set_tests_properties(forevertas-cuda-checkpoints PROPERTIES TIMEOUT 30)
+    endif()
+
     set(FOREVERTAS_TEST_PACK_DIRECTORY "" CACHE PATH
         "Installed TMUF Packs directory used by the optional search smoke test")
     set(FOREVERTAS_TEST_REPLAY "" CACHE FILEPATH
@@ -796,10 +894,88 @@ if(BUILD_TESTING)
         add_test(NAME forevertas-block-program-physics
             COMMAND forevertas-visual-runtime-tests
                 "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-events
+            COMMAND forevertas-visual-runtime-tests --accelerated-events
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-mixed
+            COMMAND forevertas-visual-runtime-tests --accelerated-mixed
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-publication
+            COMMAND forevertas-visual-runtime-tests --accelerated-publication
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-snapshots
+            COMMAND forevertas-visual-runtime-tests --accelerated-snapshots
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-restore
+            COMMAND forevertas-visual-runtime-tests --accelerated-restore
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-horizon
+            COMMAND forevertas-visual-runtime-tests --accelerated-horizon
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-mapped-history
+            COMMAND forevertas-visual-runtime-tests --mapped-history
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-nested-map
+            COMMAND forevertas-visual-runtime-tests --nested-map
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-mapped-restart
+            COMMAND forevertas-visual-runtime-tests --mapped-restart
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-math
+            COMMAND forevertas-visual-runtime-tests --accelerated-math
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-source
+            COMMAND "${CMAKE_COMMAND}" -E env --unset=FOREVERTAS_CUDA_SOURCE_CURSOR
+                $<TARGET_FILE:forevertas-visual-runtime-tests> --accelerated-source
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-source-transitions
+            COMMAND "${CMAKE_COMMAND}" -E env --unset=FOREVERTAS_CUDA_SOURCE_CURSOR
+                $<TARGET_FILE:forevertas-visual-runtime-tests> --source-transitions
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-initialization
+            COMMAND forevertas-visual-runtime-tests --accelerated-initialization
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-global-imports
+            COMMAND forevertas-visual-runtime-tests --global-imports
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-dynamic-globals
+            COMMAND forevertas-visual-runtime-tests --dynamic-globals
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-large-imports
+            COMMAND forevertas-visual-runtime-tests --large-imports
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-shared-imports
+            COMMAND forevertas-visual-runtime-tests --shared-imports
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-dense-prefix
+            COMMAND forevertas-visual-runtime-tests --dense-prefix
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-output-growth
+            COMMAND forevertas-visual-runtime-tests --output-growth
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-block-program-divergence
+            COMMAND forevertas-visual-runtime-tests --divergence
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         add_test(NAME forevertas-block-debugger
             COMMAND forevertas-block-editor-bridge-tests --debug-runtime
                 "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
-        set_tests_properties(forevertas-block-program-physics forevertas-block-debugger PROPERTIES
+        set_tests_properties(forevertas-block-program-physics forevertas-block-program-events
+            forevertas-block-program-mixed forevertas-block-program-publication forevertas-block-program-snapshots
+            forevertas-block-program-math forevertas-block-program-source forevertas-block-program-initialization
+            forevertas-block-program-source-transitions
+            forevertas-block-program-restore
+            forevertas-block-program-horizon
+            forevertas-block-program-mapped-history
+            forevertas-block-program-nested-map
+            forevertas-block-program-mapped-restart
+            forevertas-block-program-global-imports
+            forevertas-block-program-dynamic-globals
+            forevertas-block-program-large-imports
+            forevertas-block-program-shared-imports
+            forevertas-block-program-dense-prefix
+            forevertas-block-program-output-growth
+            forevertas-block-program-divergence
+            forevertas-block-debugger PROPERTIES
             TIMEOUT 90 RESOURCE_LOCK cuda)
         if(Python3_Interpreter_FOUND AND FOREVERTAS_TEST_CHROMIUM)
             add_test(NAME forevertas-block-program-examples

@@ -2,9 +2,7 @@
 
 #include "blocks/block_catalog.h"
 #include "blocks/block_expression.h"
-#include "blocks/block_lowering.h"
 #include "blocks/block_value.h"
-#include "searches/algorithm_registry.h"
 
 #include <algorithm>
 #include <cctype>
@@ -207,30 +205,6 @@ struct ExpressionTerm {
 
 using ExpressionPointer = std::shared_ptr<ExpressionTerm>;
 
-// Numerically evaluates a parsed expression (used by legacy option
-// entries, which carry values rather than reporter blocks).
-std::optional<double> EvaluateExpression(const ExpressionPointer &term) {
-    if (!term) return std::nullopt;
-    if (term->op == ExpressionTerm::Op::Literal) {
-        return ParseNumberValue(term->literal);
-    }
-    const auto left = EvaluateExpression(term->left);
-    const auto right = EvaluateExpression(term->right);
-    if (!left || !right) return std::nullopt;
-    switch (term->op) {
-    case ExpressionTerm::Op::Add: return *left + *right;
-    case ExpressionTerm::Op::Subtract: return *left - *right;
-    case ExpressionTerm::Op::Multiply: return *left * *right;
-    case ExpressionTerm::Op::Divide:
-        if (*right == 0.0) return std::nullopt;
-        return *left / *right;
-    case ExpressionTerm::Op::Min: return std::min(*left, *right);
-    case ExpressionTerm::Op::Max: return std::max(*left, *right);
-    case ExpressionTerm::Op::Literal: return std::nullopt;
-    }
-    return std::nullopt;
-}
-
 class TextParser final {
 public:
     explicit TextParser(const std::string &source)
@@ -316,9 +290,9 @@ private:
     BlockId parseSearch() {
         const std::string optionId = expectOptionId("search block");
         if (!error_.empty()) return 0;
-        const std::string definitionId =
-                SearchAtomDefinitionForOption(optionId);
-        if (definitionId.empty()) {
+        const std::string definitionId = "search/" + optionId;
+        const BlockDefinition *const definition = RequireBlock(definitionId);
+        if (definition == nullptr || definition->shape != BlockShape::Hat) {
             fail("unknown search block '" + optionId + "'");
             return 0;
         }
@@ -351,102 +325,56 @@ private:
         return error_.empty() ? hat : 0;
     }
 
-    // Parses one evaluation entry: either an evaluation atom or a legacy
-    // evaluation option id expanded to its atom.
     bool parseEvaluate(BlockId hat) {
         const std::string localId = expectOptionId("evaluation block");
         if (!error_.empty()) return false;
-        if (RequireBlock("evaluate/" + localId) != nullptr) {
-            const BlockId evaluator = createBlockFromDefinition(
-                    "evaluate/" + localId,
-                    "evaluation block '" + localId + "'");
-            if (evaluator == 0) return false;
-            if (!expectSymbol('{')) return false;
-            parseSettings(evaluator, "evaluation block");
-            if (!error_.empty()) return false;
-            if (!expectSymbol('}')) return false;
-            program_->setEvaluator(hat, evaluator);
-            return true;
-        }
-        const EvaluationTargetRegistration *const registration =
-                FindEvaluationTarget(localId);
-        if (registration == nullptr) {
+        const std::string definitionId = "evaluate/" + localId;
+        const BlockDefinition *const definition = RequireBlock(definitionId);
+        if (definition == nullptr || definition->optionKind != "evaluation") {
             fail("unknown evaluation block '" + localId + "'");
             return false;
         }
+        const BlockId evaluator = createBlockFromDefinition(
+                definitionId, "evaluation block '" + localId + "'");
+        if (evaluator == 0) return false;
         if (!expectSymbol('{')) return false;
-        const OptionSettings settings = parseLegacySettings(
-                registration->fields, "evaluation block");
+        parseSettings(evaluator, "evaluation block");
         if (!error_.empty()) return false;
         if (!expectSymbol('}')) return false;
-        const AtomExpansion expansion = ExpandEvaluationAtom(
-                OptionConfiguration{registration->id, settings});
-        if (expansion.definitionId.empty()) {
-            fail("unknown evaluation block '" + localId + "'");
-            return false;
-        }
-        const BlockId evaluator = program_->createBlock(
-                expansion.definitionId, expansion.fields);
         program_->setEvaluator(hat, evaluator);
         return true;
     }
 
-    // Parses one mutation entry: a mutation window with nested op blocks,
-    // or a legacy modifier option id expanded to a window with atoms.
     bool parseMutate(BlockId hat) {
         const std::string localId = expectOptionId("mutation block");
         if (!error_.empty()) return false;
-        if (localId == "window") {
-            const BlockId group = createBlockFromDefinition(
-                    "mutate/window", "mutation window");
-            if (group == 0) return false;
-            if (!expectSymbol('{')) return false;
-            while (error_.empty() &&
-                   !(current_.kind == TextToken::Kind::Symbol &&
-                     current_.text == "}")) {
-                if (current_.kind == TextToken::Kind::Word &&
-                    current_.text == "op") {
-                    advance();
-                    if (!parseOp(group)) break;
-                    continue;
-                }
-                if (current_.kind == TextToken::Kind::Word) {
-                    parseSettings(group, "mutation window");
-                    continue;
-                }
-                fail("expected a setting or 'op'");
-                break;
-            }
-            if (!expectSymbol('}')) return false;
-            if (error_.empty()) program_->appendToSubstack(hat, group);
-            return error_.empty();
-        }
-        const ModifierRegistration *const registration =
-                FindModifier(localId);
-        if (registration == nullptr) {
+        if (localId != "window") {
             fail("unknown mutator block '" + localId + "'");
             return false;
         }
+        const BlockId group = createBlockFromDefinition(
+                "mutate/window", "mutation window");
+        if (group == 0) return false;
         if (!expectSymbol('{')) return false;
-        const OptionSettings settings = parseLegacySettings(
-                registration->fields, "mutator block");
-        if (!error_.empty()) return false;
+        while (error_.empty() &&
+               !(current_.kind == TextToken::Kind::Symbol &&
+                 current_.text == "}")) {
+            if (current_.kind == TextToken::Kind::Word &&
+                current_.text == "op") {
+                advance();
+                if (!parseOp(group)) break;
+                continue;
+            }
+            if (current_.kind == TextToken::Kind::Word) {
+                parseSettings(group, "mutation window");
+                continue;
+            }
+            fail("expected a setting or 'op'");
+            break;
+        }
         if (!expectSymbol('}')) return false;
-        const ModifierExpansion expansion = ExpandModifierAtoms(
-                OptionConfiguration{registration->id, settings});
-        if (expansion.atoms.empty()) {
-            fail("unknown mutator block '" + localId + "'");
-            return false;
-        }
-        const BlockId group =
-                program_->createBlock("mutate/window", expansion.window);
-        for (const AtomExpansion &atom : expansion.atoms) {
-            const BlockId block =
-                    program_->createBlock(atom.definitionId, atom.fields);
-            program_->appendToSubstack(group, block);
-        }
-        program_->appendToSubstack(hat, group);
-        return true;
+        if (error_.empty()) program_->appendToSubstack(hat, group);
+        return error_.empty();
     }
 
     bool parseOp(BlockId group) {
@@ -499,52 +427,6 @@ private:
             }
             if (error_.empty()) fail("expected a value");
         }
-    }
-
-    // Collects settings for a legacy option entry: keys validated against
-    // the registration's schema, expressions evaluated numerically.
-    OptionSettings parseLegacySettings(const OptionFieldList &fields,
-                                       const std::string &kindWord) {
-        OptionSettings settings;
-        while (error_.empty() && current_.kind == TextToken::Kind::Word &&
-               !isSectionWord(current_.text)) {
-            const std::string key = current_.text;
-            const OptionField *field = nullptr;
-            for (const OptionField &candidate : fields) {
-                if (candidate.key == key) field = &candidate;
-            }
-            if (field == nullptr) {
-                fail("unknown setting '" + key + "' for " + kindWord);
-                break;
-            }
-            advance();
-            if (!expectSymbol('=')) break;
-            if (error_.empty() &&
-                (current_.kind == TextToken::Kind::Number ||
-                 current_.kind == TextToken::Kind::Symbol ||
-                 (current_.kind == TextToken::Kind::Word &&
-                  (current_.text == "min" || current_.text == "max")))) {
-                const ExpressionPointer expression = parseExpression();
-                if (error_.empty()) {
-                    const auto value = EvaluateExpression(expression);
-                    if (!value) {
-                        fail("setting '" + key + "' must evaluate to a number");
-                        break;
-                    }
-                    settings.emplace(key, FormatNumberValue(*value));
-                }
-                continue;
-            }
-            if (error_.empty() &&
-                (current_.kind == TextToken::Kind::String ||
-                 current_.kind == TextToken::Kind::Word)) {
-                settings.emplace(key, current_.text);
-                advance();
-                continue;
-            }
-            if (error_.empty()) fail("expected a value");
-        }
-        return settings;
     }
 
     void applyExpression(BlockId block,
@@ -970,8 +852,7 @@ private:
     std::string error_;
 };
 
-// A raw parsed node, classified before any catalog validation so version 1
-// documents (which reference retired option blocks) can migrate.
+// Raw JSON node parsed before catalog validation.
 struct RawNode {
     BlockId id = 0;
     std::string definitionId;
@@ -1055,161 +936,6 @@ bool ParseRawNodes(const JsonValue &document, std::vector<RawNode> &nodes,
     return true;
 }
 
-// Settings of one legacy option node: registry defaults overlaid with the
-// stored fields and any number reporters evaluated to literals.
-OptionSettings EffectiveLegacySettings(
-        const BlockProgram &program,
-        const BlockNode &node,
-        const OptionFieldList &fields,
-        const OptionSettings &defaults) {
-    OptionSettings settings = defaults;
-    for (const OptionField &field : fields) {
-        const auto value = EvaluateSlotValue(program, node, field.key);
-        if (value && !value->empty()) {
-            settings[field.key] = *value;
-        }
-    }
-    return settings;
-}
-
-// Rebuilds a version 1 document (option blocks) as an atom program by
-// compiling it to components first, then expanding through the lowering
-// table. Value blocks survive as loose number blocks.
-BlockProgramJson MigrateVersionOneDocument(const JsonValue &document,
-                                           const std::vector<RawNode> &raw) {
-    BlockProgramJson result;
-    BlockProgram legacy;
-    std::map<BlockId, RawNode> rawById;
-    for (const RawNode &node : raw) {
-        rawById.emplace(node.id, node);
-        BlockNode adopted;
-        adopted.id = node.id;
-        adopted.definitionId = node.definitionId;
-        adopted.fields = node.fields;
-        adopted.reporters = node.reporters;
-        adopted.substack = node.substack;
-        adopted.evaluator = node.evaluator;
-        legacy.adoptNode(std::move(adopted));
-    }
-
-    std::optional<BlockId> scriptId;
-    if (const JsonValue *const scriptValue = document.member("script");
-        scriptValue != nullptr &&
-        scriptValue->kind == JsonValue::Kind::Number &&
-        scriptValue->number > 0.0) {
-        scriptId = static_cast<BlockId>(scriptValue->number);
-    }
-    const BlockNode *const hat =
-            scriptId ? legacy.find(*scriptId) : nullptr;
-    if (hat == nullptr) {
-        result.error = "program document has no script block";
-        return result;
-    }
-
-    const auto classify = [](const std::string &definitionId) {
-        const auto separator = definitionId.find('/');
-        if (separator == std::string::npos) {
-            return std::pair<std::string, std::string>(std::string(),
-                                                       std::string());
-        }
-        return std::pair<std::string, std::string>(
-                definitionId.substr(0, separator),
-                definitionId.substr(separator + 1));
-    };
-
-    const auto searchRegistration = FindSearchAlgorithm(
-            classify(hat->definitionId).second);
-    if (searchRegistration == nullptr) {
-        result.error =
-                "unknown block definition '" + hat->definitionId + "'";
-        return result;
-    }
-    SearchComponentConfiguration components;
-    components.searchAlgorithm = OptionConfiguration{
-            searchRegistration->id,
-            EffectiveLegacySettings(legacy,
-                                    *hat,
-                                    searchRegistration->fields,
-                                    searchRegistration->defaultSettings)};
-
-    if (hat->evaluator != 0) {
-        const BlockNode *const evaluator = legacy.find(hat->evaluator);
-        if (evaluator != nullptr) {
-            const EvaluationTargetRegistration *const registration =
-                    FindEvaluationTarget(
-                            classify(evaluator->definitionId).second);
-            if (registration == nullptr) {
-                result.error = "unknown block definition '" +
-                               evaluator->definitionId + "'";
-                return result;
-            }
-            components.evaluationTarget = OptionConfiguration{
-                    registration->id,
-                    EffectiveLegacySettings(legacy,
-                                            *evaluator,
-                                            registration->fields,
-                                            registration->defaultSettings)};
-        }
-    }
-    if (components.evaluationTarget.id.empty()) {
-        components.evaluationTarget = DefaultEvaluationTargetConfiguration();
-    }
-
-    for (const BlockId mutatorId : hat->substack) {
-        const BlockNode *const mutator = legacy.find(mutatorId);
-        if (mutator == nullptr) continue;
-        const ModifierRegistration *const registration = FindModifier(
-                classify(mutator->definitionId).second);
-        if (registration == nullptr) {
-            result.error =
-                    "unknown block definition '" + mutator->definitionId + "'";
-            return result;
-        }
-        components.modifiers.push_back(OptionConfiguration{
-                registration->id,
-                EffectiveLegacySettings(legacy,
-                                        *mutator,
-                                        registration->fields,
-                                        registration->defaultSettings)});
-    }
-    if (components.modifiers.empty()) {
-        components.modifiers = DefaultModifierConfigurations();
-    }
-
-    BlockProgram program = BuildProgramFromComponents(components);
-
-    // Preserve loose value blocks as plain number blocks at their
-    // workspace positions; reporter expressions collapse to literals.
-    if (const JsonValue *const looseValue = document.member("loose");
-        looseValue != nullptr && looseValue->kind == JsonValue::Kind::Array) {
-        for (const JsonValue &item : looseValue->items) {
-            if (item.kind != JsonValue::Kind::Number) continue;
-            const auto node = rawById.find(
-                    static_cast<BlockId>(item.number));
-            if (node == rawById.end()) continue;
-            if (node->second.definitionId.rfind("values/", 0) != 0) continue;
-            const BlockNode *const legacyNode =
-                    legacy.find(node->second.id);
-            if (legacyNode == nullptr) continue;
-            std::map<std::string, std::string> fields;
-            for (const auto &[key, literal] : legacyNode->fields) {
-                const auto value =
-                        EvaluateSlotValue(legacy, *legacyNode, key);
-                fields.emplace(key,
-                               value && !value->empty() ? *value : literal);
-            }
-            const BlockId created =
-                    program.createBlock(node->second.definitionId, fields);
-            if (BlockNode *const placed = program.find(created)) {
-                placed->x = node->second.x;
-                placed->y = node->second.y;
-            }
-        }
-    }
-
-    result.program = std::move(program);
-    return result;
-}
 
 }  // namespace
 
@@ -1226,29 +952,15 @@ BlockProgramJson ParseBlockProgramJson(const std::string &json) {
         result.error = "program document must be an object";
         return result;
     }
-    int version = 1;
-    if (const JsonValue *const versionValue = document.member("version")) {
-        if (versionValue->kind != JsonValue::Kind::Number ||
-            versionValue->number < 1.0 || versionValue->number > 2.0) {
-            result.error = "unsupported program version";
-            return result;
-        }
-        version = static_cast<int>(versionValue->number);
+    const JsonValue *const versionValue = document.member("version");
+    if (versionValue == nullptr || versionValue->kind != JsonValue::Kind::Number ||
+        versionValue->number != 3.0) {
+        result.error = "unsupported program version";
+        return result;
     }
 
     std::vector<RawNode> raw;
     if (!ParseRawNodes(document, raw, result.error)) {
-        return result;
-    }
-
-    if (version == 1) {
-        const BlockProgramJson migrated =
-                MigrateVersionOneDocument(document, raw);
-        if (!migrated.program) {
-            result.error = migrated.error;
-            return result;
-        }
-        result.program = std::move(migrated.program);
         return result;
     }
 
@@ -1330,7 +1042,7 @@ std::string PrintBlockProgramJson(
         const std::map<std::string, std::map<std::string, std::string>>
                 &remembered) {
     std::ostringstream stream;
-    stream << "{\"version\":2";
+    stream << "{\"version\":3";
     if (program.script()) {
         stream << ",\"script\":" << *program.script();
     }

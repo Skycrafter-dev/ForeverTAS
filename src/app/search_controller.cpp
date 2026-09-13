@@ -7,6 +7,7 @@
 #include "app/search_worker.h"
 #include "app/system_file_dialog.h"
 #include "blocks/block_catalog.h"
+#include "blocks/block_lowering.h"
 #include "evaluators/visual_expression_evaluator.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/replay_input_script.h"
@@ -207,11 +208,11 @@ std::optional<std::string> EvaluationOptionIdForDefinition(
 
 SearchController::SearchController(QObject *parent)
     : QObject(parent),
-      cuboidTargets_(configuration_.legacyEvaluationSettings(
+      cuboidTargets_(configuration_.releasedEvaluationSettings(
               QString::fromLatin1(kVolumeEntryEvaluationId))),
-      customVolumeTargets_(configuration_.legacyEvaluationSettings(
+      customVolumeTargets_(configuration_.releasedEvaluationSettings(
               QString::fromLatin1(kCustomVolumeEntryEvaluationId))),
-      poseTargets_(configuration_.legacyEvaluationSettings(
+      poseTargets_(configuration_.releasedEvaluationSettings(
               QString::fromLatin1(kPoseTargetEvaluationId))) {
     initialize(nullptr);
 }
@@ -219,11 +220,11 @@ SearchController::SearchController(QObject *parent)
 SearchController::SearchController(const QStringList &packsSearchPatterns,
                                    QObject *parent)
     : QObject(parent),
-      cuboidTargets_(configuration_.legacyEvaluationSettings(
+      cuboidTargets_(configuration_.releasedEvaluationSettings(
               QString::fromLatin1(kVolumeEntryEvaluationId))),
-      customVolumeTargets_(configuration_.legacyEvaluationSettings(
+      customVolumeTargets_(configuration_.releasedEvaluationSettings(
               QString::fromLatin1(kCustomVolumeEntryEvaluationId))),
-      poseTargets_(configuration_.legacyEvaluationSettings(
+      poseTargets_(configuration_.releasedEvaluationSettings(
               QString::fromLatin1(kPoseTargetEvaluationId))) {
     initialize(&packsSearchPatterns);
 }
@@ -865,7 +866,9 @@ void SearchController::setRenderMode(const QString &value) {
 }
 
 void SearchController::setEvaluationTargetId(const QString &value) {
-    setEvaluatorBlock(QStringLiteral("evaluate/") + value);
+    const std::string definition =
+            blocks::EvaluationAtomDefinitionForOption(value.toStdString());
+    if (!definition.empty()) setEvaluatorBlock(QString::fromStdString(definition));
 }
 
 QVariantMap SearchController::blockData(int blockId) const {
@@ -1342,12 +1345,13 @@ SearchController::ValidationResult SearchController::validate() const {
 
     const QFileInfo replayInfo(replayPath_);
     if (replayPath_.isEmpty()) {
-        return {{}, QStringLiteral("Select a replay or challenge file.")};
+        return {{}, QStringLiteral(
+                            "Select a replay or challenge file in Setup before running.")};
     }
     if (!replayInfo.exists() || !replayInfo.isFile() ||
         !replayInfo.isReadable()) {
         return {{}, QStringLiteral(
-                            "The scenario path must be a readable file.")};
+                            "The selected replay or challenge file cannot be read. Choose an existing file in Setup.")};
     }
 
     bool horizonParsed = false;

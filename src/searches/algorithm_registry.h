@@ -33,14 +33,12 @@ inline constexpr char kPoseTargetEvaluationId[] = "pose-target";
 
 struct SearchAlgorithmRegistration {
     std::string id;
-    std::vector<std::string> legacyIds;
     std::string displayName;
     // Optional rich QML detail component for options that manage app-level
     // collections; scalar settings render from `fields` generically.
     std::string settingsComponent;
     OptionFieldList fields;
     OptionSettings defaultSettings;
-    OptionSettings legacyPersistenceKeys;
 
     // Search-policy settings do not receive the input-timeline offset.
     // Application code must use validateSettings() and create().
@@ -59,14 +57,12 @@ struct SearchAlgorithmRegistration {
 
 struct ModifierRegistration {
     std::string id;
-    std::vector<std::string> legacyIds;
     std::string displayName;
     // Optional rich QML detail component for options that manage app-level
     // collections; scalar settings render from `fields` generically.
     std::string settingsComponent;
     OptionFieldList fields;
     OptionSettings defaultSettings;
-    OptionSettings legacyPersistenceKeys;
 
     // Internal hooks receive input timing settings after the user timeline
     // origin has been translated. Application code must use validateSettings()
@@ -86,14 +82,12 @@ struct ModifierRegistration {
 
 struct EvaluationTargetRegistration {
     std::string id;
-    std::vector<std::string> legacyIds;
     std::string displayName;
     // Optional rich QML detail component for options that manage app-level
     // collections; scalar settings render from `fields` generically.
     std::string settingsComponent;
     OptionFieldList fields;
     OptionSettings defaultSettings;
-    OptionSettings legacyPersistenceKeys;
 
     // Evaluation settings use their entered simulation times directly and do
     // not receive the input-timeline offset. Application code must use
