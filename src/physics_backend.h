@@ -16,6 +16,9 @@ enum class PhysicsBackend : std::uint8_t {
 #if FOREVERVALIDATOR_HAS_CUDA
     Cuda,
 #endif
+#if FOREVERVALIDATOR_HAS_HIP
+    Hip,
+#endif
 #if FOREVERVALIDATOR_HAS_VULKAN
     Vulkan,
 #endif
@@ -32,6 +35,10 @@ constexpr std::string_view PhysicsBackendId(PhysicsBackend backend) noexcept {
 #if FOREVERVALIDATOR_HAS_CUDA
     case PhysicsBackend::Cuda:
         return "cuda";
+#endif
+#if FOREVERVALIDATOR_HAS_HIP
+    case PhysicsBackend::Hip:
+        return "hip";
 #endif
 #if FOREVERVALIDATOR_HAS_VULKAN
     case PhysicsBackend::Vulkan:
@@ -57,6 +64,11 @@ inline std::optional<PhysicsBackend> ParsePhysicsBackend(
         return PhysicsBackend::Cuda;
     }
 #endif
+#if FOREVERVALIDATOR_HAS_HIP
+    if (id == PhysicsBackendId(PhysicsBackend::Hip)) {
+        return PhysicsBackend::Hip;
+    }
+#endif
 #if FOREVERVALIDATOR_HAS_VULKAN
     if (id == PhysicsBackendId(PhysicsBackend::Vulkan)) {
         return PhysicsBackend::Vulkan;
@@ -77,6 +89,10 @@ constexpr forevervalidator::SimulationBackend ToForeverValidatorBackend(
     case PhysicsBackend::Cuda:
         return forevervalidator::SimulationBackend::Cuda;
 #endif
+#if FOREVERVALIDATOR_HAS_HIP
+    case PhysicsBackend::Hip:
+        return forevervalidator::SimulationBackend::Hip;
+#endif
 #if FOREVERVALIDATOR_HAS_VULKAN
     case PhysicsBackend::Vulkan:
         return forevervalidator::SimulationBackend::Vulkan;
@@ -88,6 +104,7 @@ constexpr forevervalidator::SimulationBackend ToForeverValidatorBackend(
 constexpr bool IsGpuSimulationBackend(
         forevervalidator::SimulationBackend backend) noexcept {
     return backend == forevervalidator::SimulationBackend::Cuda ||
+           backend == forevervalidator::SimulationBackend::Hip ||
            backend == forevervalidator::SimulationBackend::Vulkan;
 }
 

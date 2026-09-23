@@ -2276,6 +2276,7 @@ int main(int argc, char **argv) {
                             simulationBackendCombo != nullptr &&
                             simulationBackendCombo->property("count").toInt() ==
                                     3 + FOREVERVALIDATOR_HAS_CUDA +
+                                            FOREVERVALIDATOR_HAS_HIP +
                                             FOREVERVALIDATOR_HAS_VULKAN &&
                             simulationBackendCombo->property("currentValue")
                                             .toString() ==
@@ -2503,6 +2504,53 @@ int main(int argc, char **argv) {
                                                  .toBool();
                             }
                         }
+#endif
+#if FOREVERVALIDATOR_HAS_HIP
+                        controller.setSimulationBackendId(
+                                QStringLiteral("hip"));
+                        controller.setHipParallelSampleCount(
+                                QStringLiteral("128"));
+                        QCoreApplication::processEvents();
+                        auto *const hipBatch = root->findChild<QQuickItem *>(
+                                QStringLiteral("hipParallelSampleSettings"));
+                        auto *const hipStatus = root->findChild<QQuickItem *>(
+                                QStringLiteral("hipCompatibilityStatus"));
+                        auto *const hipCalibration =
+                                root->findChild<QQuickItem *>(
+                                        QStringLiteral("hipCalibrationCheckBox"));
+                        auto *const hipBatchField = root->findChild<QObject *>(
+                                QStringLiteral("hipParallelSampleCountField"));
+                        backendSelectorValid &=
+                                simulationBackendCombo
+                                                ->property("currentValue")
+                                                .toString() ==
+                                        QStringLiteral("hip") &&
+                                simulationBackendCombo
+                                                ->property("displayText")
+                                                .toString() ==
+                                        QStringLiteral("HIP") &&
+                                hipBatch && hipBatch->isVisible() &&
+                                hipBatchField &&
+                                hipBatchField->property("text").toString() ==
+                                        QStringLiteral("128") &&
+                                hipStatus && hipStatus->isVisible() &&
+                                hipStatus->property("text").toString() ==
+                                        controller.hipStatusText() &&
+                                hipCalibration && hipCalibration->isVisible();
+                        if (hipCalibration) {
+                            controller.setHipCalibrationEnabled(true);
+                            QCoreApplication::processEvents();
+                            backendSelectorValid &= hipCalibration
+                                                            ->property("checked")
+                                                            .toBool();
+                            controller.setHipCalibrationEnabled(false);
+                        }
+#if FOREVERVALIDATOR_HAS_CUDA
+                        backendSelectorValid &=
+                                !cudaSessionSpecializationSection->isVisible() &&
+                                !cudaParallelSampleSettings->isVisible() &&
+                                !cudaCompatibilityStatus->isVisible();
+#endif
 #endif
 #if FOREVERVALIDATOR_HAS_VULKAN
                         controller.setSimulationBackendId(QStringLiteral("vulkan"));

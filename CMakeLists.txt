@@ -14,12 +14,16 @@ option(FOREVERTAS_ENABLE_VULKAN
     "Build ForeverTAS with the optional ForeverValidator Vulkan backend" ON)
 option(FOREVERTAS_ENABLE_CUDA
     "Build ForeverTAS with the optional ForeverValidator CUDA backend" OFF)
+option(FOREVERTAS_ENABLE_HIP
+    "Build ForeverTAS with the optional ForeverValidator HIP backend" OFF)
 set(FOREVERTAS_WINDOWS_RUNTIME_DIR "" CACHE PATH
     "Directory containing non-Qt runtime DLLs for Windows packaging")
 set(FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR "" CACHE PATH
     "Directory containing redistributable MSVC runtime DLLs")
 set(FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR "" CACHE PATH
     "Directory containing redistributable CUDA runtime DLLs")
+set(FOREVERTAS_WINDOWS_HIP_RUNTIME_DIR "" CACHE PATH
+    "Directory containing redistributable HIP runtime DLLs")
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -69,13 +73,15 @@ set(FOREVERVALIDATOR_BUILD_TESTS OFF CACHE BOOL
     "Do not build embedded ForeverValidator tests" FORCE)
 set(FOREVERVALIDATOR_ENABLE_CUDA ${FOREVERTAS_ENABLE_CUDA} CACHE BOOL
     "Enable the embedded ForeverValidator CUDA backend" FORCE)
+set(FOREVERVALIDATOR_ENABLE_HIP ${FOREVERTAS_ENABLE_HIP} CACHE BOOL
+    "Enable the embedded ForeverValidator HIP backend" FORCE)
 set(FOREVERVALIDATOR_ENABLE_VULKAN ${FOREVERTAS_ENABLE_VULKAN} CACHE BOOL
     "Enable the embedded ForeverValidator Vulkan backend" FORCE)
 
 FetchContent_Declare(
     ForeverValidator
     GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-    GIT_TAG 18f103c2c56d9fd702b95895664868f3709ace8a
+    GIT_TAG b72ad72b2018b3c0b90b85c015ddad84b96f6a4b
     GIT_SHALLOW FALSE)
 FetchContent_MakeAvailable(ForeverValidator)
 
@@ -142,6 +148,17 @@ target_include_directories(forevertas_core PUBLIC
 target_link_libraries(forevertas_core PUBLIC
     ForeverValidator::core
     ForeverValidator::native)
+if(FOREVERTAS_ENABLE_HIP)
+    target_include_directories(forevertas_core PRIVATE
+        "${FOREVERVALIDATOR_HIP_INCLUDE_DIR}")
+    if(CMAKE_HIP_PLATFORM STREQUAL "nvidia")
+        target_compile_definitions(forevertas_core PRIVATE
+            __HIP_PLATFORM_NVIDIA__=1)
+    else()
+        target_compile_definitions(forevertas_core PRIVATE
+            __HIP_PLATFORM_AMD__=1)
+    endif()
+endif()
 
 add_library(forevertas_gui STATIC
     src/app/compact_number_format.cpp
@@ -199,6 +216,8 @@ file(GLOB_RECURSE FOREVERTAS_SIMULATION_DEBUG_SOURCE_FILES
     "${forevervalidator_SOURCE_DIR}/src/simulation/*.h"
     "${forevervalidator_SOURCE_DIR}/src/validation/api/*.cpp"
     "${forevervalidator_SOURCE_DIR}/src/validation/api/*.h")
+list(FILTER FOREVERTAS_SIMULATION_DEBUG_SOURCE_FILES EXCLUDE REGEX
+    "/src/simulation/backends/hip/generated/.*")
 list(SORT FOREVERTAS_SIMULATION_DEBUG_SOURCE_FILES)
 set(FOREVERTAS_SIMULATION_DEBUG_SOURCE_ENTRIES "")
 foreach(debug_source IN LISTS FOREVERTAS_SIMULATION_DEBUG_SOURCE_FILES)
@@ -263,10 +282,13 @@ file(GLOB_RECURSE FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES
 # facilities, not part of the editable reference simulation path.
 list(FILTER FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES EXCLUDE REGEX
     "/src/simulation/backends/cuda/(cuda_driver_shim|cuda_session_specialization)\.cpp$")
+list(FILTER FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES EXCLUDE REGEX
+    "/src/simulation/backends/hip/.*\.cpp$")
 add_executable(forevertas-simulation-debug-worker
     src/debugger/simulation_debug_worker.cpp
     src/mutations/input_event_formatter.cpp
     src/mutations/input_event_utils.cpp
+    "${forevervalidator_SOURCE_DIR}/src/simulation/backends/hip/generated/hip_backend.cpp"
     ${FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES})
 target_include_directories(forevertas-simulation-debug-worker PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -511,6 +533,15 @@ if(WIN32)
             ${forevertas_nvrtc_builtins_runtime_dlls}
             ${forevertas_nvjitlink_runtime_dlls})
     endif()
+    if(FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
+        find_file(forevertas_hip_runtime_dll
+            NAMES amdhip64.dll
+            HINTS "${FOREVERTAS_WINDOWS_HIP_RUNTIME_DIR}"
+                  "$ENV{HIP_PATH}/bin"
+                  "$ENV{ROCM_PATH}/bin"
+            REQUIRED)
+        install(FILES "${forevertas_hip_runtime_dll}" DESTINATION ".")
+    endif()
     list(LENGTH forevertas_openssl_runtime_dlls
         forevertas_openssl_runtime_dll_count)
     list(LENGTH forevertas_zlib_runtime_dlls
@@ -734,6 +765,36 @@ if(BUILD_TESTING)
         add_test(NAME forevertas-search-smoke
                  COMMAND forevertas-search-smoke
                      ${FOREVERTAS_SEARCH_SMOKE_ARGUMENTS})
+        if(FOREVERTAS_ENABLE_HIP)
+            add_executable(forevertas-hip-search-parity
+                tests/hip_search_parity_tests.cpp)
+            target_link_libraries(forevertas-hip-search-parity PRIVATE
+                forevertas_core)
+            if(FOREVERTAS_WARNING_OPTIONS)
+                target_compile_options(forevertas-hip-search-parity PRIVATE
+                    ${FOREVERTAS_WARNING_OPTIONS})
+            endif()
+            add_test(NAME forevertas-hip-search-parity
+                COMMAND forevertas-hip-search-parity
+                    "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                    "${FOREVERTAS_TEST_REPLAY}")
+            add_test(NAME forevertas-hip-precise-finish-parity
+                COMMAND forevertas-hip-search-parity --precise-finish-only
+                    "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                    "${FOREVERTAS_TEST_REPLAY}")
+            add_test(NAME forevertas-hip-calibration
+                COMMAND forevertas-hip-search-parity --calibration-only
+                    "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                    "${FOREVERTAS_TEST_REPLAY}")
+            set_tests_properties(
+                forevertas-hip-search-parity
+                forevertas-hip-precise-finish-parity
+                forevertas-hip-calibration PROPERTIES
+                    LABELS "hip;parity;stadium"
+                    RESOURCE_LOCK hip
+                    RUN_SERIAL TRUE
+                    TIMEOUT 300)
+        endif()
         if(FOREVERTAS_ENABLE_CUDA)
             set_tests_properties(forevertas-search-smoke PROPERTIES
                 RESOURCE_LOCK cuda)

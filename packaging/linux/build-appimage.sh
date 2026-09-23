@@ -76,6 +76,14 @@ if [[ -n "${FOREVERTAS_ENABLE_CUDA:-}" ]]; then
         "-DFOREVERTAS_ENABLE_CUDA=${FOREVERTAS_ENABLE_CUDA}"
     )
 fi
+if [[ -n "${FOREVERTAS_ENABLE_HIP:-}" ]]; then
+    cmake_args+=("-DFOREVERTAS_ENABLE_HIP=${FOREVERTAS_ENABLE_HIP}")
+fi
+if [[ -n "${FOREVERTAS_HIP_ARCHITECTURES:-}" ]]; then
+    cmake_args+=(
+        "-DCMAKE_HIP_ARCHITECTURES=${FOREVERTAS_HIP_ARCHITECTURES}"
+    )
+fi
 if [[ -n "${FOREVERTAS_CUDA_ARCHITECTURES:-}" ]]; then
     cmake_args+=(
         "-DCMAKE_CUDA_ARCHITECTURES=${FOREVERTAS_CUDA_ARCHITECTURES}"

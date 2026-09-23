@@ -1000,7 +1000,8 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     okay &= Check(controller.canStart(),
                   "empty base input script did not restore Start");
     constexpr qsizetype expectedBackendCount =
-            3 + FOREVERVALIDATOR_HAS_CUDA + FOREVERVALIDATOR_HAS_VULKAN;
+            3 + FOREVERVALIDATOR_HAS_CUDA + FOREVERVALIDATOR_HAS_HIP +
+            FOREVERVALIDATOR_HAS_VULKAN;
     okay &= Check(controller.simulationBackendOptions().size() ==
                           expectedBackendCount,
                   "unexpected physics backend count");
@@ -1094,6 +1095,22 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                                           .SupportsSessionSpecialization() &&
                           !controller.cudaStatusText().isEmpty(),
                   "CUDA compatibility status did not match runtime diagnostics");
+#endif
+#if FOREVERVALIDATOR_HAS_HIP
+    const auto hipDiagnostics = forevervalidator::QueryHipBackendDiagnostics();
+    okay &= Check(HasBackendOption(
+                          controller.simulationBackendOptions(),
+                          QStringLiteral("hip"), QStringLiteral("HIP"),
+                          QStringLiteral(
+                                  "HIP Compute for Stadium on compatible GPUs")),
+                  "HIP option was not exposed alongside existing backends");
+    okay &= Check(controller.hipAvailable() == hipDiagnostics.IsReady() &&
+                          !controller.hipStatusText().isEmpty(),
+                  "HIP status did not match its own runtime diagnostics");
+    okay &= Check(controller.hipParallelSampleCount() ==
+                          QString::number(forevertas::kDefaultCudaParallelSampleCount) &&
+                          !controller.hipCalibrationEnabled(),
+                  "unexpected default HIP batching settings");
 #endif
 #if FOREVERVALIDATOR_HAS_VULKAN
     const auto vulkanDiagnostics = forevervalidator::QueryVulkanBackendDiagnostics();
@@ -1234,6 +1251,39 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                                       controller.cudaStatusText(),
                       "unavailable CUDA backend did not expose its incompatibility");
     }
+    controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
+#endif
+#if FOREVERVALIDATOR_HAS_HIP
+    const QString savedCudaBatchForHip = controller.cudaParallelSampleCount();
+    const bool savedCudaCalibrationForHip = controller.cudaCalibrationEnabled();
+    const bool savedCudaFastModeForHip = controller.cudaSessionSpecializationEnabled();
+    controller.setSimulationBackendId(QStringLiteral("hip"));
+    okay &= Check(controller.simulationBackendId() == QStringLiteral("hip"),
+                  "HIP backend was not selectable");
+    if (controller.hipAvailable()) {
+        okay &= Check(controller.canStart(),
+                      "available HIP backend did not enable Start");
+        controller.setHipParallelSampleCount(QStringLiteral("0"));
+        okay &= Check(!controller.canStart(), "zero HIP batch enabled Start");
+        controller.setHipParallelSampleCount(QStringLiteral("8192"));
+        okay &= Check(controller.canStart(), "valid HIP batch disabled Start");
+        controller.setHipParallelSampleCount(QStringLiteral("4294967296"));
+        okay &= Check(!controller.canStart(), "overflow HIP batch enabled Start");
+        controller.setHipCalibrationEnabled(true);
+        okay &= Check(controller.canStart(),
+                      "HIP calibration depended on the manual batch size");
+        controller.setHipCalibrationEnabled(false);
+        okay &= Check(!controller.canStart(), "invalid manual HIP batch accepted");
+        controller.setHipParallelSampleCount(QStringLiteral("128"));
+    } else {
+        okay &= Check(!controller.canStart() &&
+                              controller.validationMessage() == controller.hipStatusText(),
+                      "unavailable HIP backend did not expose its diagnostic");
+    }
+    okay &= Check(controller.cudaParallelSampleCount() == savedCudaBatchForHip &&
+                          controller.cudaCalibrationEnabled() == savedCudaCalibrationForHip &&
+                          controller.cudaSessionSpecializationEnabled() == savedCudaFastModeForHip,
+                  "HIP configuration overwrote CUDA preferences");
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
 #endif
 #if FOREVERVALIDATOR_HAS_VULKAN

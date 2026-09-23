@@ -7,6 +7,16 @@ $BuildDirectory = Join-Path $RepoRoot "build/release"
 $DistDirectory = Join-Path $RepoRoot "dist"
 $SplitCompileJobs = $env:FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS
 $SearchArchitectureJobs = $env:FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS
+$EnableHip = if ($env:FOREVERTAS_ENABLE_HIP -eq "ON") { "ON" } else { "OFF" }
+$HipArchitectureOption = @()
+if ($EnableHip -eq "ON") {
+    $HipArchitectures = if ($env:FOREVERTAS_HIP_ARCHITECTURES) {
+        $env:FOREVERTAS_HIP_ARCHITECTURES
+    } else {
+        $env:CUDA_ARCHITECTURES
+    }
+    $HipArchitectureOption = @("-DCMAKE_HIP_ARCHITECTURES=$HipArchitectures")
+}
 
 foreach ($Name in @(
     "CUDA_PATH",
@@ -154,6 +164,8 @@ try {
         "-DFOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR=$env:CUDA_PATH/bin" `
         -DBUILD_TESTING=OFF `
         -DFOREVERTAS_ENABLE_CUDA=ON `
+        "-DFOREVERTAS_ENABLE_HIP=$EnableHip" `
+        @HipArchitectureOption `
         -DFOREVERTAS_ENABLE_VULKAN=ON `
         "-DFOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS=$SplitCompileJobs" `
         $PrebuiltOption `
@@ -170,6 +182,9 @@ try {
             $CompileCommands -notmatch "FOREVERVALIDATOR_HAS_CUDA=1" -or
             $CMakeCache -notmatch "FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS:STRING=$SplitCompileJobs") {
         throw "CUDA configuration or unchanged split-compile setting was not preserved"
+    }
+    if ($CMakeCache -notmatch "FOREVERTAS_ENABLE_HIP:BOOL=$EnableHip") {
+        throw "HIP configuration was not preserved"
     }
     if ($CacheHit) {
         if ($CompileCommands -match "cuda_search_executor\.cu") {

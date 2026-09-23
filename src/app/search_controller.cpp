@@ -36,10 +36,14 @@ constexpr char kConditionScriptKey[] = "search/conditionScript";
 constexpr char kCpuWorkerCountKey[] = "backends/cpu/workerCount";
 constexpr char kCudaParallelSampleCountKey[] =
         "backends/cuda/parallelSampleCount";
+constexpr char kHipParallelSampleCountKey[] =
+        "backends/hip/parallelSampleCount";
 constexpr char kVulkanParallelSampleCountKey[] =
         "backends/vulkan/parallelSampleCount";
 constexpr char kCudaCalibrationEnabledKey[] =
         "backends/cuda/calibrationEnabled";
+constexpr char kHipCalibrationEnabledKey[] =
+        "backends/hip/calibrationEnabled";
 constexpr char kVulkanCalibrationEnabledKey[] =
         "backends/vulkan/calibrationEnabled";
 constexpr char kCudaSessionSpecializationEnabledKey[] =
@@ -224,6 +228,12 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     cudaCalibrationEnabled_ = QSettings()
             .value(QLatin1String(kCudaCalibrationEnabledKey), false)
             .toBool();
+    hipParallelSampleCount_ = StoredValue(
+            kHipParallelSampleCountKey,
+            QString::number(kDefaultCudaParallelSampleCount));
+    hipCalibrationEnabled_ = QSettings()
+            .value(QLatin1String(kHipCalibrationEnabledKey), false)
+            .toBool();
     cudaSessionSpecializationEnabled_ = QSettings()
             .value(QLatin1String(
                            kCudaSessionSpecializationEnabledKey),
@@ -257,6 +267,18 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
 #else
     cudaStatusText_ =
             QStringLiteral("CUDA support is not compiled into this build.");
+#endif
+#if FOREVERVALIDATOR_HAS_HIP
+    const auto hip = forevervalidator::QueryHipBackendDiagnostics();
+    hipAvailable_ = hip.IsReady();
+    hipStatusText_ = hipAvailable_
+            ? QStringLiteral("HIP ready: %1")
+                      .arg(QString::fromStdString(hip.deviceName))
+            : QStringLiteral("HIP unavailable: %1")
+                      .arg(QString::fromStdString(hip.diagnostic));
+#else
+    hipStatusText_ =
+            QStringLiteral("HIP support is not compiled into this build.");
 #endif
     vulkanParallelSampleCount_ = StoredValue(
             kVulkanParallelSampleCountKey,
@@ -391,6 +413,13 @@ QVariantList SearchController::simulationBackendOptions() const {
                      "NVIDIA CUDA for Stadium; compute capability 5.0+ is "
                      "supported, with Fast CUDA on 7.5+")}});
 #endif
+#if FOREVERVALIDATOR_HAS_HIP
+    options.push_back(QVariantMap{
+            {QStringLiteral("id"), BackendId(PhysicsBackend::Hip)},
+            {QStringLiteral("label"), QStringLiteral("HIP")},
+            {QStringLiteral("description"),
+             QStringLiteral("HIP Compute for Stadium on compatible GPUs")}});
+#endif
 #if FOREVERVALIDATOR_HAS_VULKAN
     options.push_back(QVariantMap{
             {QStringLiteral("id"), BackendId(PhysicsBackend::Vulkan)},
@@ -421,12 +450,20 @@ QString SearchController::cudaParallelSampleCount() const {
     return cudaParallelSampleCount_;
 }
 
+QString SearchController::hipParallelSampleCount() const {
+    return hipParallelSampleCount_;
+}
+
 QString SearchController::vulkanParallelSampleCount() const {
     return vulkanParallelSampleCount_;
 }
 
 bool SearchController::cudaCalibrationEnabled() const {
     return cudaCalibrationEnabled_;
+}
+
+bool SearchController::hipCalibrationEnabled() const {
+    return hipCalibrationEnabled_;
 }
 
 bool SearchController::vulkanCalibrationEnabled() const {
@@ -441,6 +478,10 @@ bool SearchController::cudaAvailable() const {
     return cudaAvailable_;
 }
 
+bool SearchController::hipAvailable() const {
+    return hipAvailable_;
+}
+
 bool SearchController::vulkanAvailable() const {
     return vulkanAvailable_;
 }
@@ -451,6 +492,10 @@ bool SearchController::cudaFastModeAvailable() const {
 
 QString SearchController::cudaStatusText() const {
     return cudaStatusText_;
+}
+
+QString SearchController::hipStatusText() const {
+    return hipStatusText_;
 }
 
 QString SearchController::vulkanStatusText() const {
@@ -679,6 +724,16 @@ void SearchController::setCudaParallelSampleCount(const QString &value) {
     refreshValidation();
 }
 
+void SearchController::setHipParallelSampleCount(const QString &value) {
+    if (hipParallelSampleCount_ == value) {
+        return;
+    }
+    hipParallelSampleCount_ = value;
+    persist(kHipParallelSampleCountKey, value);
+    emit hipParallelSampleCountChanged();
+    refreshValidation();
+}
+
 void SearchController::setVulkanParallelSampleCount(const QString &value) {
     if (vulkanParallelSampleCount_ == value) {
         return;
@@ -697,6 +752,17 @@ void SearchController::setCudaCalibrationEnabled(bool value) {
     QSettings().setValue(
             QLatin1String(kCudaCalibrationEnabledKey), value);
     emit cudaCalibrationEnabledChanged();
+    refreshValidation();
+}
+
+void SearchController::setHipCalibrationEnabled(bool value) {
+    if (hipCalibrationEnabled_ == value) {
+        return;
+    }
+    hipCalibrationEnabled_ = value;
+    QSettings().setValue(
+            QLatin1String(kHipCalibrationEnabledKey), value);
+    emit hipCalibrationEnabledChanged();
     refreshValidation();
 }
 
@@ -1161,6 +1227,8 @@ void SearchController::startSearch() {
             [this](std::uint32_t batchSize) {
                 if (PhysicsBackendId(simulationBackend_) == "vulkan") {
                     setVulkanParallelSampleCount(QString::number(batchSize));
+                } else if (PhysicsBackendId(simulationBackend_) == "hip") {
+                    setHipParallelSampleCount(QString::number(batchSize));
                 } else {
                     setCudaParallelSampleCount(QString::number(batchSize));
                 }
@@ -1352,6 +1420,32 @@ SearchController::ValidationResult SearchController::validate() const {
                         QStringLiteral(
                                 "CUDA parallel samples must be a positive "
                                 "whole number.")};
+            }
+            parallelSampleCount = value;
+        }
+    }
+#endif
+#if FOREVERVALIDATOR_HAS_HIP
+    if (simulationBackend_ == PhysicsBackend::Hip) {
+        if (!hipAvailable_) {
+            return {{}, hipStatusText_};
+        }
+        if (configuration.evaluationTarget.id ==
+            kCustomVolumeEntryEvaluationId) {
+            return {
+                    {},
+                    QStringLiteral(
+                            "Custom volume targets currently require a CPU "
+                            "physics backend.")};
+        }
+        calibrateCudaParallelSampleCount = hipCalibrationEnabled_;
+        if (!calibrateCudaParallelSampleCount) {
+            bool parsed = false;
+            const QString trimmed = hipParallelSampleCount_.trimmed();
+            const uint value = trimmed.toUInt(&parsed);
+            if (!parsed || trimmed != hipParallelSampleCount_ || value == 0u) {
+                return {{}, QStringLiteral(
+                        "HIP parallel samples must be a positive whole number.")};
             }
             parallelSampleCount = value;
         }

@@ -217,7 +217,7 @@ std::vector<SearchTimelineFrame> SampleBestTimeline(
     ReportProgress(
             control, SearchProgressStage::FinalSamplingSetup, 0u, 0u);
     SearchRequest samplingRequest = request;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
     if (IsGpuBackend(samplingRequest.backend)) {
         samplingRequest.backend = PhysicsBackend::Reference;
     }
@@ -527,7 +527,7 @@ SearchResult RunLoadedSearch(
     std::vector<PhysicsSandboxCudaModifier> cudaModifiers;
     std::optional<PhysicsSandboxCudaEvaluator> cudaEvaluator;
     ReportProgress(control, SearchProgressStage::PreparingSearch, 0u, 0u);
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
     if (IsGpuBackend(request.backend)) {
         if (request.searchAlgorithm.id != kBasicBruteForceSearchId) {
             throw std::invalid_argument(
@@ -549,7 +549,7 @@ SearchResult RunLoadedSearch(
             asyncImprovementSampler;
     std::uint64_t sampledImprovementCount = 0u;
     bool sampledBaseline = false;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
     std::unique_ptr<CudaWinnerReferenceWorker> cudaWinnerWorker;
     if (IsGpuBackend(request.backend)) {
         cudaWinnerWorker = std::make_unique<CudaWinnerReferenceWorker>(
@@ -560,7 +560,7 @@ SearchResult RunLoadedSearch(
         control->sampleImprovementTimelines) {
         instrumentedControl = *control;
         const auto downstreamLiveChanged = control->liveChanged;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
         const bool asynchronousCpuSampling =
                 IsGpuBackend(request.backend) &&
                 static_cast<bool>(control->improvementTimelineSampled);
@@ -649,7 +649,7 @@ SearchResult RunLoadedSearch(
                             request.useCudaSessionSpecialization,
                     cudaModifiers.empty() ? nullptr : &cudaModifiers,
                     cudaEvaluator ? &*cudaEvaluator : nullptr,
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
                     cudaWinnerWorker
                             ? [worker = cudaWinnerWorker.get(), control](
                                       const std::vector<

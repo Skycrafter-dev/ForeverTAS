@@ -35,7 +35,15 @@ int main() {
 #else
     check(!ParsePhysicsBackend("vulkan"), "uncompiled Vulkan backend is selectable");
 #endif
-    check(!ParsePhysicsBackend("hip"), "HIP was exposed before implementation");
+#if FOREVERVALIDATOR_HAS_HIP
+    check(ParsePhysicsBackend("hip") == PhysicsBackend::Hip &&
+                  IsGpuBackend(PhysicsBackend::Hip) &&
+                  ToForeverValidatorBackend(PhysicsBackend::Hip) ==
+                          SimulationBackend::Hip,
+          "HIP must resolve to HIP, not CUDA or CPU");
+#else
+    check(!ParsePhysicsBackend("hip"), "uncompiled HIP backend is selectable");
+#endif
 
     CudaCalibrationSafetyPlanner planner;
     CudaCalibrationBatchProfile profile;

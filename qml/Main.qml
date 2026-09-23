@@ -4200,6 +4200,8 @@ ApplicationWindow {
                             text: window.controller.simulationBackendId
                                   === "cuda"
                                   ? qsTr("NVIDIA CUDA for Stadium; compute capability 5.0+ is supported, with Fast CUDA on 7.5+")
+                                  : window.controller.simulationBackendId === "hip"
+                                    ? qsTr("HIP Compute for Stadium on compatible GPUs")
                                   : window.controller.simulationBackendId === "vulkan"
                                     ? qsTr("Vulkan Compute for Stadium on compatible GPUs")
                                   : window.controller.simulationBackendId
@@ -4225,6 +4227,18 @@ ApplicationWindow {
                                    : !window.controller.cudaFastModeAvailable
                                      ? AppTheme.warning
                                      : AppTheme.success
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                        }
+
+                        Label {
+                            objectName: "hipCompatibilityStatus"
+                            Layout.fillWidth: true
+                            visible: window.controller.simulationBackendId
+                                     === "hip"
+                            text: window.controller.hipStatusText
+                            color: window.controller.hipAvailable
+                                   ? AppTheme.success : AppTheme.error
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11
                         }
@@ -4303,6 +4317,19 @@ ApplicationWindow {
                         }
 
                         SettingTextField {
+                            objectName: "hipParallelSampleSettings"
+                            visible: window.controller.simulationBackendId
+                                     === "hip"
+                            fieldObjectName: "hipParallelSampleCountField"
+                            label: qsTr("Parallel samples at a time")
+                            value: window.controller.hipParallelSampleCount
+                            running: window.controller.running
+                            minimum: 1
+                            onEdited: value =>
+                                window.controller.hipParallelSampleCount = value
+                        }
+
+                        SettingTextField {
                             objectName: "vulkanParallelSampleSettings"
                             visible: window.controller.simulationBackendId
                                      === "vulkan"
@@ -4324,6 +4351,18 @@ ApplicationWindow {
                             enabled: !window.controller.running
                             onToggled:
                                 window.controller.cudaCalibrationEnabled =
+                                    checked
+                        }
+
+                        ThemedCheckBox {
+                            objectName: "hipCalibrationCheckBox"
+                            visible: window.controller.simulationBackendId
+                                     === "hip"
+                            text: qsTr("Calibrate for maximum throughput")
+                            checked: window.controller.hipCalibrationEnabled
+                            enabled: !window.controller.running
+                            onToggled:
+                                window.controller.hipCalibrationEnabled =
                                     checked
                         }
 

@@ -21,6 +21,19 @@
 #if FOREVERVALIDATOR_HAS_CUDA
 #include <cuda_runtime_api.h>
 #endif
+#if FOREVERVALIDATOR_HAS_HIP
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#pragma GCC diagnostic ignored "-Wsign-compare"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#endif
+#include <hip/hip_runtime_api.h>
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+#endif
 
 namespace forevertas {
 namespace {
@@ -116,7 +129,7 @@ void ReportProgress(const SearchRunControl *control,
     }
 }
 
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
 void ReportCudaBatchSize(const SearchRunControl *control,
                          std::uint32_t batchSize) {
     if (control != nullptr && control->cudaBatchSizeChanged) {
@@ -204,6 +217,47 @@ void ReportCudaBatchProfile(
 
 CudaCalibrationDeviceLimits QueryGpuCalibrationDeviceLimits(
         forevervalidator::SimulationBackend backend) {
+#if FOREVERVALIDATOR_HAS_HIP
+    if (backend == forevervalidator::SimulationBackend::Hip) {
+        int device = 0;
+        hipDeviceProp_t properties{};
+        std::size_t freeMemory = 0u;
+        std::size_t totalMemory = 0u;
+        int kernelExecutionTimeoutEnabled = 0;
+        hipError_t error = hipGetDevice(&device);
+        if (error == hipSuccess) {
+            error = hipGetDeviceProperties(&properties, device);
+        }
+        if (error == hipSuccess) {
+            error = hipMemGetInfo(&freeMemory, &totalMemory);
+        }
+        if (error == hipSuccess) {
+            error = hipDeviceGetAttribute(
+                    &kernelExecutionTimeoutEnabled,
+                    hipDeviceAttributeKernelExecTimeout, device);
+        }
+        if (error != hipSuccess) {
+            throw std::runtime_error(
+                    std::string("querying HIP calibration safety limits "
+                                "failed: ") + hipGetErrorString(error));
+        }
+        CudaCalibrationDeviceLimits limits;
+        limits.totalMemoryBytes = totalMemory;
+        limits.freeMemoryBytes = freeMemory;
+        limits.maximumThreadsPerBlock = properties.maxThreadsPerBlock;
+        limits.maximumGridDimensionX = properties.maxGridSize[0];
+        limits.registersPerBlock = properties.regsPerBlock;
+        limits.registersPerMultiprocessor = properties.regsPerMultiprocessor;
+        limits.maximumThreadsPerMultiprocessor =
+                properties.maxThreadsPerMultiProcessor;
+        limits.maximumBlocksPerMultiprocessor =
+                properties.maxBlocksPerMultiProcessor;
+        limits.multiprocessorCount = properties.multiProcessorCount;
+        limits.kernelExecutionTimeoutEnabled =
+                kernelExecutionTimeoutEnabled != 0;
+        return limits;
+    }
+#endif
 #if FOREVERVALIDATOR_HAS_CUDA
     if (backend == forevervalidator::SimulationBackend::Cuda) {
         int device = 0;
@@ -434,7 +488,7 @@ void ReportLive(
             {}});
 }
 
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
 std::string CudaEvaluationDescription(
         const forevervalidator::experimental::
                 PhysicsSandboxCudaEvaluator &evaluator,
@@ -1078,7 +1132,7 @@ SearchResult BasicBruteForceSearch::Run(
     const PhysicsSandboxState branch = Require(
             context.sandbox.CaptureState(), "capturing branch state");
 
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
     if (IsGpuSimulationBackend(context.sandbox.Backend()) &&
         context.cudaEvaluator != nullptr) {
         return RunGpuBasicBruteForce(

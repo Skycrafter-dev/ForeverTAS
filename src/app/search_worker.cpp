@@ -325,7 +325,7 @@ void SearchWorker::run() {
                 FormatLive(live, QStringLiteral("Current best")),
                 latestInputsText);
     };
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
     if (IsGpuBackend(request_.backend)) {
         control.improvementTimelineSampled =
                 [publishImprovement](const SearchLiveUpdate &live) {
@@ -347,7 +347,7 @@ void SearchWorker::run() {
                 FilePathFromUtf8(request_.packDirectory);
         completion->replayPath = FilePathFromUtf8(request_.replayPath);
         PhysicsBackend resultBackend = request_.backend;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
         if (IsGpuBackend(resultBackend)) {
             resultBackend = PhysicsBackend::Reference;
         }

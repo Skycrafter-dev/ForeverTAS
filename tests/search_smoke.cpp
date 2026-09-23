@@ -1669,6 +1669,15 @@ int main(int argc, char **argv) {
                            argv[2],
                            forevertas::PhysicsBackend::Cuda)
 #endif
+#if FOREVERVALIDATOR_HAS_HIP
+            || !CheckStuntTargetBackend(
+                    argv[1],
+                    argv[2],
+                    forevertas::PhysicsBackend::Hip)
+            || !RunBackend(argv[1],
+                           argv[2],
+                           forevertas::PhysicsBackend::Hip)
+#endif
         ) {
             return 1;
         }
