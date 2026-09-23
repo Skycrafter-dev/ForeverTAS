@@ -2275,11 +2275,8 @@ int main(int argc, char **argv) {
                     bool backendSelectorValid =
                             simulationBackendCombo != nullptr &&
                             simulationBackendCombo->property("count").toInt() ==
-#if FOREVERVALIDATOR_HAS_CUDA
-                                    4 &&
-#else
-                                    3 &&
-#endif
+                                    3 + FOREVERVALIDATOR_HAS_CUDA +
+                                            FOREVERVALIDATOR_HAS_VULKAN &&
                             simulationBackendCombo->property("currentValue")
                                             .toString() ==
                                     QStringLiteral("reference") &&
@@ -2507,9 +2504,49 @@ int main(int argc, char **argv) {
                             }
                         }
 #endif
+#if FOREVERVALIDATOR_HAS_VULKAN
+                        controller.setSimulationBackendId(QStringLiteral("vulkan"));
+                        controller.setVulkanParallelSampleCount(QStringLiteral("128"));
+                        QCoreApplication::processEvents();
+                        auto *const vulkanBatch = root->findChild<QQuickItem *>(
+                                QStringLiteral("vulkanParallelSampleSettings"));
+                        auto *const vulkanStatus = root->findChild<QQuickItem *>(
+                                QStringLiteral("vulkanCompatibilityStatus"));
+                        auto *const vulkanCalibration = root->findChild<QQuickItem *>(
+                                QStringLiteral("vulkanCalibrationCheckBox"));
+                        auto *const vulkanBatchField = root->findChild<QObject *>(
+                                QStringLiteral("vulkanParallelSampleCountField"));
+                        backendSelectorValid &=
+                                simulationBackendCombo->property("currentValue").toString() ==
+                                        QStringLiteral("vulkan") &&
+                                simulationBackendCombo->property("displayText").toString() ==
+                                        QStringLiteral("Vulkan") &&
+                                vulkanBatch && vulkanBatch->isVisible() &&
+                                vulkanBatchField &&
+                                vulkanBatchField->property("text").toString() == QStringLiteral("128") &&
+                                vulkanStatus && vulkanStatus->isVisible() &&
+                                vulkanStatus->property("text").toString() == controller.vulkanStatusText() &&
+                                vulkanCalibration && vulkanCalibration->isVisible();
+                        if (vulkanCalibration) {
+                            controller.setVulkanCalibrationEnabled(true);
+                            QCoreApplication::processEvents();
+                            backendSelectorValid &= vulkanCalibration->property("checked").toBool();
+                            controller.setVulkanCalibrationEnabled(false);
+                        }
+#if FOREVERVALIDATOR_HAS_CUDA
+                        backendSelectorValid &= !cudaSessionSpecializationSection->isVisible() &&
+                                !cudaParallelSampleSettings->isVisible() &&
+                                !cudaCompatibilityStatus->isVisible();
+#endif
+#endif
                         controller.setSimulationBackendId(
                                 QStringLiteral("reference"));
                         QCoreApplication::processEvents();
+#if FOREVERVALIDATOR_HAS_VULKAN
+                        backendSelectorValid &= vulkanBatch && !vulkanBatch->isVisible() &&
+                                vulkanStatus && !vulkanStatus->isVisible() &&
+                                vulkanCalibration && !vulkanCalibration->isVisible();
+#endif
 #if FOREVERVALIDATOR_HAS_CUDA
                         backendSelectorValid &=
                                 cudaSessionSpecializationSection != nullptr &&

@@ -40,6 +40,7 @@ struct SearchRequest {
     std::string replayPath;
     PhysicsBackend backend = PhysicsBackend::Reference;
     std::uint32_t parallelSampleCount = 1u;
+    // Legacy API name: batch calibration also applies to Vulkan.
     bool calibrateCudaParallelSampleCount = false;
     OptionConfiguration searchAlgorithm =
             DefaultSearchAlgorithmConfiguration();

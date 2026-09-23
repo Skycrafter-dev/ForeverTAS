@@ -154,6 +154,7 @@ try {
         "-DFOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR=$env:CUDA_PATH/bin" `
         -DBUILD_TESTING=OFF `
         -DFOREVERTAS_ENABLE_CUDA=ON `
+        -DFOREVERTAS_ENABLE_VULKAN=ON `
         "-DFOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS=$SplitCompileJobs" `
         $PrebuiltOption `
         "-DFETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR=$ValidatorRoot"
@@ -161,6 +162,10 @@ try {
 
     $CMakeCache = Get-Content (Join-Path $BuildDirectory "CMakeCache.txt") -Raw
     $CompileCommands = Get-Content (Join-Path $BuildDirectory "compile_commands.json") -Raw
+    if ($CMakeCache -notmatch "FOREVERTAS_ENABLE_VULKAN:BOOL=ON" -or
+            $CompileCommands -notmatch "FOREVERVALIDATOR_HAS_VULKAN=1") {
+        throw "Vulkan support is missing from the combined GPU build"
+    }
     if ($CMakeCache -notmatch "FOREVERTAS_ENABLE_CUDA:BOOL=ON" -or
             $CompileCommands -notmatch "FOREVERVALIDATOR_HAS_CUDA=1" -or
             $CMakeCache -notmatch "FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS:STRING=$SplitCompileJobs") {

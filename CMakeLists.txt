@@ -10,6 +10,8 @@ project(ForeverTAS
     HOMEPAGE_URL "https://github.com/Skycrafter-dev/ForeverTAS"
     LANGUAGES CXX)
 
+option(FOREVERTAS_ENABLE_VULKAN
+    "Build ForeverTAS with the optional ForeverValidator Vulkan backend" ON)
 option(FOREVERTAS_ENABLE_CUDA
     "Build ForeverTAS with the optional ForeverValidator CUDA backend" OFF)
 set(FOREVERTAS_WINDOWS_RUNTIME_DIR "" CACHE PATH
@@ -67,11 +69,13 @@ set(FOREVERVALIDATOR_BUILD_TESTS OFF CACHE BOOL
     "Do not build embedded ForeverValidator tests" FORCE)
 set(FOREVERVALIDATOR_ENABLE_CUDA ${FOREVERTAS_ENABLE_CUDA} CACHE BOOL
     "Enable the embedded ForeverValidator CUDA backend" FORCE)
+set(FOREVERVALIDATOR_ENABLE_VULKAN ${FOREVERTAS_ENABLE_VULKAN} CACHE BOOL
+    "Enable the embedded ForeverValidator Vulkan backend" FORCE)
 
 FetchContent_Declare(
     ForeverValidator
     GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-    GIT_TAG b34eefa78727e0e0565b470bcdf94274ca8d5315
+    GIT_TAG 18f103c2c56d9fd702b95895664868f3709ace8a
     GIT_SHALLOW FALSE)
 FetchContent_MakeAvailable(ForeverValidator)
 
@@ -526,6 +530,13 @@ if(WIN32)
             "No redistributable MSVC runtime DLLs found in "
             "${FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR}")
     endif()
+    if(FOREVERTAS_ENABLE_VULKAN)
+        find_file(forevertas_vulkan_runtime_dll
+            NAMES vulkan-1.dll
+            HINTS "${FOREVERTAS_WINDOWS_RUNTIME_DIR}" "$ENV{VULKAN_SDK}/Bin"
+            NO_DEFAULT_PATH REQUIRED)
+        install(FILES "${forevertas_vulkan_runtime_dll}" DESTINATION ".")
+    endif()
     install(FILES
         ${forevertas_openssl_runtime_dlls}
         ${forevertas_zlib_runtime_dlls}
@@ -926,5 +937,29 @@ if(BUILD_TESTING)
         set_tests_properties(forevertas-viewer-qml PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
             TIMEOUT 180)
+    endif()
+endif()
+
+if(BUILD_TESTING)
+    add_executable(forevertas-gpu-backend-tests tests/gpu_backend_tests.cpp)
+    target_link_libraries(forevertas-gpu-backend-tests PRIVATE forevertas_core)
+    add_test(NAME forevertas-gpu-backends COMMAND forevertas-gpu-backend-tests)
+    if(FOREVERTAS_ENABLE_VULKAN AND FOREVERTAS_TEST_PACK_DIRECTORY AND
+       FOREVERTAS_TEST_REPLAY)
+        add_executable(forevertas-vulkan-search-parity
+            tests/vulkan_search_parity_tests.cpp)
+        target_link_libraries(forevertas-vulkan-search-parity PRIVATE forevertas_core)
+        add_test(NAME forevertas-vulkan-search-parity
+            COMMAND forevertas-vulkan-search-parity
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-vulkan-precise-finish-parity
+            COMMAND forevertas-vulkan-search-parity --precise-finish-only
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-vulkan-calibration
+            COMMAND forevertas-vulkan-search-parity --calibration-only
+                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-vulkan-search-parity
+            forevertas-vulkan-precise-finish-parity forevertas-vulkan-calibration
+            PROPERTIES LABELS "vulkan;parity;stadium" RUN_SERIAL TRUE TIMEOUT 1200)
     endif()
 endif()

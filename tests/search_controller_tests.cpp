@@ -999,11 +999,8 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     controller.setBaseInputScript({});
     okay &= Check(controller.canStart(),
                   "empty base input script did not restore Start");
-#if FOREVERVALIDATOR_HAS_CUDA
-    constexpr qsizetype expectedBackendCount = 4;
-#else
-    constexpr qsizetype expectedBackendCount = 3;
-#endif
+    constexpr qsizetype expectedBackendCount =
+            3 + FOREVERVALIDATOR_HAS_CUDA + FOREVERVALIDATOR_HAS_VULKAN;
     okay &= Check(controller.simulationBackendOptions().size() ==
                           expectedBackendCount,
                   "unexpected physics backend count");
@@ -1097,6 +1094,21 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                                           .SupportsSessionSpecialization() &&
                           !controller.cudaStatusText().isEmpty(),
                   "CUDA compatibility status did not match runtime diagnostics");
+#endif
+#if FOREVERVALIDATOR_HAS_VULKAN
+    const auto vulkanDiagnostics = forevervalidator::QueryVulkanBackendDiagnostics();
+    okay &= Check(HasBackendOption(
+                          controller.simulationBackendOptions(),
+                          QStringLiteral("vulkan"), QStringLiteral("Vulkan"),
+                          QStringLiteral("Vulkan Compute for Stadium on compatible GPUs")),
+                  "Vulkan option was not exposed alongside existing backends");
+    okay &= Check(controller.vulkanAvailable() == vulkanDiagnostics.IsReady() &&
+                          !controller.vulkanStatusText().isEmpty(),
+                  "Vulkan status did not match its own runtime diagnostics");
+    okay &= Check(controller.vulkanParallelSampleCount() ==
+                          QString::number(forevertas::kDefaultCudaParallelSampleCount) &&
+                          !controller.vulkanCalibrationEnabled(),
+                  "unexpected default Vulkan batching settings");
 #endif
     okay &= Check(controller.cudaParallelSampleCount() ==
                           QString::number(
@@ -1222,6 +1234,39 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                                       controller.cudaStatusText(),
                       "unavailable CUDA backend did not expose its incompatibility");
     }
+    controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
+#endif
+#if FOREVERVALIDATOR_HAS_VULKAN
+    const QString savedCudaBatch = controller.cudaParallelSampleCount();
+    const bool savedCudaCalibration = controller.cudaCalibrationEnabled();
+    const bool savedCudaFastMode = controller.cudaSessionSpecializationEnabled();
+    controller.setSimulationBackendId(QStringLiteral("vulkan"));
+    okay &= Check(controller.simulationBackendId() == QStringLiteral("vulkan"),
+                  "Vulkan backend was not selectable");
+    if (controller.vulkanAvailable()) {
+        okay &= Check(controller.canStart(),
+                      "available Vulkan backend did not enable Start");
+        controller.setVulkanParallelSampleCount(QStringLiteral("0"));
+        okay &= Check(!controller.canStart(), "zero Vulkan batch enabled Start");
+        controller.setVulkanParallelSampleCount(QStringLiteral("8192"));
+        okay &= Check(controller.canStart(), "valid Vulkan batch disabled Start");
+        controller.setVulkanParallelSampleCount(QStringLiteral("4294967296"));
+        okay &= Check(!controller.canStart(), "overflow Vulkan batch enabled Start");
+        controller.setVulkanCalibrationEnabled(true);
+        okay &= Check(controller.canStart(),
+                      "Vulkan calibration depended on the manual batch size");
+        controller.setVulkanCalibrationEnabled(false);
+        okay &= Check(!controller.canStart(), "invalid manual Vulkan batch accepted");
+        controller.setVulkanParallelSampleCount(QStringLiteral("128"));
+    } else {
+        okay &= Check(!controller.canStart() &&
+                              controller.validationMessage() == controller.vulkanStatusText(),
+                      "unavailable Vulkan backend did not expose its diagnostic");
+    }
+    okay &= Check(controller.cudaParallelSampleCount() == savedCudaBatch &&
+                          controller.cudaCalibrationEnabled() == savedCudaCalibration &&
+                          controller.cudaSessionSpecializationEnabled() == savedCudaFastMode,
+                  "Vulkan configuration overwrote CUDA preferences");
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
 #endif
     controller.setSimulationBackendId(QStringLiteral("missing-backend"));
@@ -1355,6 +1400,9 @@ bool TestPersistence(const QString &packsDirectory,
         controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
         controller.setCpuWorkerCount(QStringLiteral("6"));
         controller.setCudaParallelSampleCount(QStringLiteral("384"));
+        controller.setVulkanParallelSampleCount(QStringLiteral("128"));
+        controller.setVulkanCalibrationEnabled(true);
+        controller.setVulkanCalibrationEnabled(false);
         controller.setCudaCalibrationEnabled(true);
         controller.setCudaSessionSpecializationEnabled(false);
         controller.setDarkMode(true);
@@ -1389,6 +1437,14 @@ bool TestPersistence(const QString &packsDirectory,
     okay &= Check(restored.cudaParallelSampleCount() ==
                           QStringLiteral("384"),
                   "CUDA parallel sample count was not persisted");
+    okay &= Check(restored.vulkanParallelSampleCount() == QStringLiteral("128") &&
+                          !restored.vulkanCalibrationEnabled() &&
+                          QSettings().value(QStringLiteral(
+                                  "backends/vulkan/parallelSampleCount")).toString() ==
+                                  QStringLiteral("128") &&
+                          !QSettings().value(QStringLiteral(
+                                  "backends/vulkan/calibrationEnabled")).toBool(),
+                  "Vulkan preferences were not persisted independently of CUDA");
     okay &= Check(restored.cpuWorkerCount() == QStringLiteral("6"),
                   "CPU worker count was not persisted");
     okay &= Check(restored.cudaCalibrationEnabled(),
@@ -1522,6 +1578,13 @@ bool TestDescriptiveSearchStageStatuses() {
                             .contains(QStringLiteral(
                                     "across optimized CPU workers")),
             "multi-threaded CPU stages did not identify worker aggregation");
+    okay &= Check(SearchStageStatus(SearchProgressStage::CreatingSimulation, "vulkan") ==
+                          QStringLiteral("Initializing Vulkan simulation...") &&
+                          SearchStageStatus(SearchProgressStage::PreparingSearch, "vulkan", true) ==
+                          QStringLiteral("Preparing Vulkan search...") &&
+                          SearchStageStatus(SearchProgressStage::Calibration, "vulkan") ==
+                          QStringLiteral("Calibrating Vulkan throughput..."),
+                  "Vulkan status incorrectly exposed CUDA initialization or fast mode");
     const QString cudaInitialization = SearchStageStatus(
             SearchProgressStage::CreatingSimulation,
             "cuda");

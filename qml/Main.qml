@@ -4200,6 +4200,8 @@ ApplicationWindow {
                             text: window.controller.simulationBackendId
                                   === "cuda"
                                   ? qsTr("NVIDIA CUDA for Stadium; compute capability 5.0+ is supported, with Fast CUDA on 7.5+")
+                                  : window.controller.simulationBackendId === "vulkan"
+                                    ? qsTr("Vulkan Compute for Stadium on compatible GPUs")
                                   : window.controller.simulationBackendId
                                     === "optimized-cpu"
                                     ? qsTr("Faster runtime optimized for Stadium, may break compatibility in other environments")
@@ -4223,6 +4225,18 @@ ApplicationWindow {
                                    : !window.controller.cudaFastModeAvailable
                                      ? AppTheme.warning
                                      : AppTheme.success
+                            wrapMode: Text.WordWrap
+                            font.pixelSize: 11
+                        }
+
+                        Label {
+                            objectName: "vulkanCompatibilityStatus"
+                            Layout.fillWidth: true
+                            visible: window.controller.simulationBackendId
+                                     === "vulkan"
+                            text: window.controller.vulkanStatusText
+                            color: window.controller.vulkanAvailable
+                                   ? AppTheme.success : AppTheme.error
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11
                         }
@@ -4288,6 +4302,19 @@ ApplicationWindow {
                                 window.controller.cudaParallelSampleCount = value
                         }
 
+                        SettingTextField {
+                            objectName: "vulkanParallelSampleSettings"
+                            visible: window.controller.simulationBackendId
+                                     === "vulkan"
+                            fieldObjectName: "vulkanParallelSampleCountField"
+                            label: qsTr("Parallel samples at a time")
+                            value: window.controller.vulkanParallelSampleCount
+                            running: window.controller.running
+                            minimum: 1
+                            onEdited: value =>
+                                window.controller.vulkanParallelSampleCount = value
+                        }
+
                         ThemedCheckBox {
                             objectName: "cudaCalibrationCheckBox"
                             visible: window.controller.simulationBackendId
@@ -4297,6 +4324,18 @@ ApplicationWindow {
                             enabled: !window.controller.running
                             onToggled:
                                 window.controller.cudaCalibrationEnabled =
+                                    checked
+                        }
+
+                        ThemedCheckBox {
+                            objectName: "vulkanCalibrationCheckBox"
+                            visible: window.controller.simulationBackendId
+                                     === "vulkan"
+                            text: qsTr("Calibrate for maximum throughput")
+                            checked: window.controller.vulkanCalibrationEnabled
+                            enabled: !window.controller.running
+                            onToggled:
+                                window.controller.vulkanCalibrationEnabled =
                                     checked
                         }
                     }

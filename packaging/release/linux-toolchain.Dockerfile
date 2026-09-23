@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxcb-render0 libxcb-shape0 libxcb-shm0 libxcb-sync1 libxcb-util1 \
         libxcb-xfixes0 libxcb-xinerama0 libxcb-xkb-dev libxcb-xkb1 libxcb1 \
         libxi6 libxkbcommon-dev libxkbcommon-x11-0 libxrender1 locales \
-        ninja-build p7zip-full patchelf pkg-config python3 python3-pip \
+        libvulkan-dev ninja-build p7zip-full patchelf pkg-config python3 python3-pip \
         software-properties-common wget xz-utils zlib1g-dev \
     && locale-gen de_DE.UTF-8 \
     && rm -rf /var/lib/apt/lists/*

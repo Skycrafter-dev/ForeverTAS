@@ -60,6 +60,12 @@ class SearchController final : public QObject {
     Q_PROPERTY(bool cudaCalibrationEnabled READ cudaCalibrationEnabled WRITE
                        setCudaCalibrationEnabled NOTIFY
                        cudaCalibrationEnabledChanged)
+    Q_PROPERTY(QString vulkanParallelSampleCount READ vulkanParallelSampleCount WRITE
+                       setVulkanParallelSampleCount NOTIFY
+                       vulkanParallelSampleCountChanged)
+    Q_PROPERTY(bool vulkanCalibrationEnabled READ vulkanCalibrationEnabled WRITE
+                       setVulkanCalibrationEnabled NOTIFY
+                       vulkanCalibrationEnabledChanged)
     Q_PROPERTY(bool cudaSessionSpecializationEnabled READ
                        cudaSessionSpecializationEnabled WRITE
                        setCudaSessionSpecializationEnabled NOTIFY
@@ -67,6 +73,8 @@ class SearchController final : public QObject {
     Q_PROPERTY(bool cudaAvailable READ cudaAvailable CONSTANT)
     Q_PROPERTY(bool cudaFastModeAvailable READ cudaFastModeAvailable CONSTANT)
     Q_PROPERTY(QString cudaStatusText READ cudaStatusText CONSTANT)
+    Q_PROPERTY(bool vulkanAvailable READ vulkanAvailable CONSTANT)
+    Q_PROPERTY(QString vulkanStatusText READ vulkanStatusText CONSTANT)
     Q_PROPERTY(bool randomizeSeedsOnStart READ randomizeSeedsOnStart WRITE
                        setRandomizeSeedsOnStart NOTIFY
                        randomizeSeedsOnStartChanged)
@@ -139,11 +147,15 @@ public:
     QString conditionScript() const;
     QString cpuWorkerCount() const;
     QString cudaParallelSampleCount() const;
+    QString vulkanParallelSampleCount() const;
     bool cudaCalibrationEnabled() const;
+    bool vulkanCalibrationEnabled() const;
     bool cudaSessionSpecializationEnabled() const;
     bool cudaAvailable() const;
+    bool vulkanAvailable() const;
     bool cudaFastModeAvailable() const;
     QString cudaStatusText() const;
+    QString vulkanStatusText() const;
     bool randomizeSeedsOnStart() const;
     bool drawTargetsThroughBlocks() const;
     bool darkMode() const;
@@ -183,7 +195,9 @@ public slots:
     void setConditionScript(const QString &value);
     void setCpuWorkerCount(const QString &value);
     void setCudaParallelSampleCount(const QString &value);
+    void setVulkanParallelSampleCount(const QString &value);
     void setCudaCalibrationEnabled(bool value);
+    void setVulkanCalibrationEnabled(bool value);
     void setCudaSessionSpecializationEnabled(bool value);
     void setRandomizeSeedsOnStart(bool value);
     void setDrawTargetsThroughBlocks(bool value);
@@ -228,7 +242,9 @@ signals:
     void conditionScriptChanged();
     void cpuWorkerCountChanged();
     void cudaParallelSampleCountChanged();
+    void vulkanParallelSampleCountChanged();
     void cudaCalibrationEnabledChanged();
+    void vulkanCalibrationEnabledChanged();
     void cudaSessionSpecializationEnabledChanged();
     void randomizeSeedsOnStartChanged();
     void drawTargetsThroughBlocksChanged();
@@ -315,6 +331,11 @@ private:
     bool cudaAvailable_ = false;
     bool cudaFastModeAvailable_ = false;
     QString cudaStatusText_;
+    QString vulkanParallelSampleCount_ = QString::number(
+            kDefaultCudaParallelSampleCount);
+    bool vulkanCalibrationEnabled_ = false;
+    bool vulkanAvailable_ = false;
+    QString vulkanStatusText_;
     bool randomizeSeedsOnStart_ = true;
     bool drawTargetsThroughBlocks_ = false;
     bool darkMode_ = false;

@@ -38,7 +38,7 @@ if (-not $BootstrapCurrent) {
 }
 
 $env:VCPKG_BINARY_SOURCES = "clear;files,$BinaryCache,readwrite"
-& $Vcpkg install --triplet x64-windows openssl zlib
+& $Vcpkg install --triplet x64-windows openssl zlib vulkan
 if ($LASTEXITCODE -ne 0) { throw "Failed to install Windows dependencies" }
 
 $env:VCPKG_INSTALLATION_ROOT = $VcpkgRoot

@@ -89,61 +89,66 @@ CudaCalibrationSafetyDecision CudaCalibrationSafetyPlanner::Evaluate(
         return Unsafe(
                 "CUDA calibration has no measured device profile");
     }
-    if (limits.totalMemoryBytes == 0u || limits.freeMemoryBytes == 0u ||
-        limits.maximumThreadsPerBlock == 0u ||
-        limits.maximumGridDimensionX == 0u ||
-        limits.registersPerBlock == 0u ||
-        limits.registersPerMultiprocessor == 0u ||
-        limits.maximumThreadsPerMultiprocessor == 0u ||
-        limits.maximumBlocksPerMultiprocessor == 0u ||
-        limits.multiprocessorCount == 0u) {
-        return Unsafe("CUDA device limits are incomplete");
+    if (limits.totalMemoryBytes == 0u || limits.freeMemoryBytes == 0u) {
+        return Unsafe("GPU memory limits are incomplete");
     }
+    if (limits.requireCudaExecutionLimits) {
+        if (limits.totalMemoryBytes == 0u || limits.freeMemoryBytes == 0u ||
+            limits.maximumThreadsPerBlock == 0u ||
+            limits.maximumGridDimensionX == 0u ||
+            limits.registersPerBlock == 0u ||
+            limits.registersPerMultiprocessor == 0u ||
+            limits.maximumThreadsPerMultiprocessor == 0u ||
+            limits.maximumBlocksPerMultiprocessor == 0u ||
+            limits.multiprocessorCount == 0u) {
+            return Unsafe("CUDA device limits are incomplete");
+        }
 
-    const CudaCalibrationBatchProfile &profile =
-            ProfileForBatchSize(candidateBatchSize);
-    const std::uint32_t threads = profile.simulationThreadsPerBlock;
-    const std::uint32_t registers =
-            profile.simulationRegistersPerThread;
-    const std::uint32_t activeBlocks =
-            profile.simulationActiveBlocksPerMultiprocessor;
-    const double occupancy = profile.simulationTheoreticalOccupancy;
-    if (threads == 0u || threads > limits.maximumThreadsPerBlock) {
-        return Unsafe(
-                "CUDA simulation block size exceeds the device limit");
-    }
-    if (registers == 0u ||
-        static_cast<std::uint64_t>(registers) * threads >
-                limits.registersPerBlock) {
-        return Unsafe(
-                "CUDA simulation register use exceeds the block limit");
-    }
-    if (activeBlocks == 0u ||
-        activeBlocks > limits.maximumBlocksPerMultiprocessor ||
-        static_cast<std::uint64_t>(activeBlocks) * threads >
-                limits.maximumThreadsPerMultiprocessor ||
-        static_cast<std::uint64_t>(activeBlocks) * threads * registers >
-                limits.registersPerMultiprocessor) {
-        return Unsafe(
-                "CUDA simulation occupancy exceeds multiprocessor "
-                "limits");
-    }
-    if (!std::isfinite(occupancy) || occupancy <= 0.0 ||
-        occupancy > 1.0 + 1e-9) {
-        return Unsafe("CUDA simulation occupancy is invalid");
-    }
+        const CudaCalibrationBatchProfile &profile =
+                ProfileForBatchSize(candidateBatchSize);
+        const std::uint32_t threads = profile.simulationThreadsPerBlock;
+        const std::uint32_t registers =
+                profile.simulationRegistersPerThread;
+        const std::uint32_t activeBlocks =
+                profile.simulationActiveBlocksPerMultiprocessor;
+        const double occupancy = profile.simulationTheoreticalOccupancy;
+        if (threads == 0u || threads > limits.maximumThreadsPerBlock) {
+            return Unsafe(
+                    "CUDA simulation block size exceeds the device limit");
+        }
+        if (registers == 0u ||
+            static_cast<std::uint64_t>(registers) * threads >
+                    limits.registersPerBlock) {
+            return Unsafe(
+                    "CUDA simulation register use exceeds the block limit");
+        }
+        if (activeBlocks == 0u ||
+            activeBlocks > limits.maximumBlocksPerMultiprocessor ||
+            static_cast<std::uint64_t>(activeBlocks) * threads >
+                    limits.maximumThreadsPerMultiprocessor ||
+            static_cast<std::uint64_t>(activeBlocks) * threads * registers >
+                    limits.registersPerMultiprocessor) {
+            return Unsafe(
+                    "CUDA simulation occupancy exceeds multiprocessor "
+                    "limits");
+        }
+        if (!std::isfinite(occupancy) || occupancy <= 0.0 ||
+            occupancy > 1.0 + 1e-9) {
+            return Unsafe("CUDA simulation occupancy is invalid");
+        }
 
-    const std::uint64_t blocks =
-            (static_cast<std::uint64_t>(candidateBatchSize) + threads -
-             1u) /
-            threads;
-    const std::uint64_t safeGridLimit = static_cast<std::uint64_t>(
-            static_cast<double>(limits.maximumGridDimensionX) *
-            kGridLimitFraction);
-    if (blocks == 0u || blocks > safeGridLimit) {
-        return Unsafe(
-                "CUDA batch launch is too close to the grid dimension "
-                "limit");
+        const std::uint64_t blocks =
+                (static_cast<std::uint64_t>(candidateBatchSize) + threads -
+                 1u) /
+                threads;
+        const std::uint64_t safeGridLimit = static_cast<std::uint64_t>(
+                static_cast<double>(limits.maximumGridDimensionX) *
+                kGridLimitFraction);
+        if (blocks == 0u || blocks > safeGridLimit) {
+            return Unsafe(
+                    "CUDA batch launch is too close to the grid dimension "
+                    "limit");
+        }
     }
 
     CudaCalibrationSafetyDecision result;
@@ -311,6 +316,10 @@ std::uint64_t
 CudaCalibrationSafetyPlanner::EstimateLocalWorkingSetBytes(
         std::uint32_t candidateBatchSize,
         const CudaCalibrationDeviceLimits &limits) const {
+    if (!limits.requireCudaExecutionLimits) {
+        return 0u;
+    }
+
     if (profiles_.empty()) {
         return 0u;
     }

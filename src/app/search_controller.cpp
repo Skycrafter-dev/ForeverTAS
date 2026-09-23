@@ -36,8 +36,12 @@ constexpr char kConditionScriptKey[] = "search/conditionScript";
 constexpr char kCpuWorkerCountKey[] = "backends/cpu/workerCount";
 constexpr char kCudaParallelSampleCountKey[] =
         "backends/cuda/parallelSampleCount";
+constexpr char kVulkanParallelSampleCountKey[] =
+        "backends/vulkan/parallelSampleCount";
 constexpr char kCudaCalibrationEnabledKey[] =
         "backends/cuda/calibrationEnabled";
+constexpr char kVulkanCalibrationEnabledKey[] =
+        "backends/vulkan/calibrationEnabled";
 constexpr char kCudaSessionSpecializationEnabledKey[] =
         "backends/cuda/sessionSpecializationEnabled";
 constexpr char kRandomizeSeedsOnStartKey[] =
@@ -254,6 +258,18 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     cudaStatusText_ =
             QStringLiteral("CUDA support is not compiled into this build.");
 #endif
+    vulkanParallelSampleCount_ = StoredValue(
+            kVulkanParallelSampleCountKey,
+            QString::number(kDefaultCudaParallelSampleCount));
+    vulkanCalibrationEnabled_ = QSettings()
+            .value(QLatin1String(kVulkanCalibrationEnabledKey), false).toBool();
+    const auto vulkan = forevervalidator::QueryVulkanBackendDiagnostics();
+    vulkanAvailable_ = vulkan.IsReady();
+    vulkanStatusText_ = vulkanAvailable_
+            ? QStringLiteral("Vulkan ready: %1")
+                      .arg(QString::fromStdString(vulkan.deviceName))
+            : QStringLiteral("Vulkan unavailable: %1")
+                      .arg(QString::fromStdString(vulkan.diagnostic));
     QSettings settings;
     randomizeSeedsOnStart_ = settings
             .value(QLatin1String(kRandomizeSeedsOnStartKey), true)
@@ -375,6 +391,13 @@ QVariantList SearchController::simulationBackendOptions() const {
                      "NVIDIA CUDA for Stadium; compute capability 5.0+ is "
                      "supported, with Fast CUDA on 7.5+")}});
 #endif
+#if FOREVERVALIDATOR_HAS_VULKAN
+    options.push_back(QVariantMap{
+            {QStringLiteral("id"), BackendId(PhysicsBackend::Vulkan)},
+            {QStringLiteral("label"), QStringLiteral("Vulkan")},
+            {QStringLiteral("description"),
+             QStringLiteral("Vulkan Compute for Stadium on compatible GPUs")}});
+#endif
     return options;
 }
 
@@ -398,8 +421,16 @@ QString SearchController::cudaParallelSampleCount() const {
     return cudaParallelSampleCount_;
 }
 
+QString SearchController::vulkanParallelSampleCount() const {
+    return vulkanParallelSampleCount_;
+}
+
 bool SearchController::cudaCalibrationEnabled() const {
     return cudaCalibrationEnabled_;
+}
+
+bool SearchController::vulkanCalibrationEnabled() const {
+    return vulkanCalibrationEnabled_;
 }
 
 bool SearchController::cudaSessionSpecializationEnabled() const {
@@ -410,12 +441,20 @@ bool SearchController::cudaAvailable() const {
     return cudaAvailable_;
 }
 
+bool SearchController::vulkanAvailable() const {
+    return vulkanAvailable_;
+}
+
 bool SearchController::cudaFastModeAvailable() const {
     return cudaFastModeAvailable_;
 }
 
 QString SearchController::cudaStatusText() const {
     return cudaStatusText_;
+}
+
+QString SearchController::vulkanStatusText() const {
+    return vulkanStatusText_;
 }
 
 bool SearchController::randomizeSeedsOnStart() const {
@@ -640,6 +679,16 @@ void SearchController::setCudaParallelSampleCount(const QString &value) {
     refreshValidation();
 }
 
+void SearchController::setVulkanParallelSampleCount(const QString &value) {
+    if (vulkanParallelSampleCount_ == value) {
+        return;
+    }
+    vulkanParallelSampleCount_ = value;
+    persist(kVulkanParallelSampleCountKey, value);
+    emit vulkanParallelSampleCountChanged();
+    refreshValidation();
+}
+
 void SearchController::setCudaCalibrationEnabled(bool value) {
     if (cudaCalibrationEnabled_ == value) {
         return;
@@ -648,6 +697,17 @@ void SearchController::setCudaCalibrationEnabled(bool value) {
     QSettings().setValue(
             QLatin1String(kCudaCalibrationEnabledKey), value);
     emit cudaCalibrationEnabledChanged();
+    refreshValidation();
+}
+
+void SearchController::setVulkanCalibrationEnabled(bool value) {
+    if (vulkanCalibrationEnabled_ == value) {
+        return;
+    }
+    vulkanCalibrationEnabled_ = value;
+    QSettings().setValue(
+            QLatin1String(kVulkanCalibrationEnabledKey), value);
+    emit vulkanCalibrationEnabledChanged();
     refreshValidation();
 }
 
@@ -1099,8 +1159,11 @@ void SearchController::startSearch() {
             &SearchWorker::cudaBatchSizeChanged,
             this,
             [this](std::uint32_t batchSize) {
-                setCudaParallelSampleCount(
-                        QString::number(batchSize));
+                if (PhysicsBackendId(simulationBackend_) == "vulkan") {
+                    setVulkanParallelSampleCount(QString::number(batchSize));
+                } else {
+                    setCudaParallelSampleCount(QString::number(batchSize));
+                }
             });
     connect(worker,
             &SearchWorker::bestChanged,
@@ -1294,6 +1357,39 @@ SearchController::ValidationResult SearchController::validate() const {
         }
     }
 #endif
+#if FOREVERVALIDATOR_HAS_VULKAN
+    if (simulationBackend_ == PhysicsBackend::Vulkan) {
+        if (!vulkanAvailable_) {
+            return {{}, vulkanStatusText_};
+        }
+        if (configuration.evaluationTarget.id ==
+            kCustomVolumeEntryEvaluationId) {
+            return {
+                    {},
+                    QStringLiteral(
+                            "Custom volume targets currently require a CPU "
+                            "physics backend.")};
+        }
+        calibrateCudaParallelSampleCount =
+                vulkanCalibrationEnabled_;
+        if (!calibrateCudaParallelSampleCount) {
+            bool parsed = false;
+            const QString trimmed =
+                    vulkanParallelSampleCount_.trimmed();
+            const uint value = trimmed.toUInt(&parsed);
+            if (!parsed ||
+                trimmed != vulkanParallelSampleCount_ ||
+                value == 0u) {
+                return {
+                        {},
+                        QStringLiteral(
+                                "Vulkan parallel samples must be a positive "
+                                "whole number.")};
+            }
+            parallelSampleCount = value;
+        }
+    }
+#endif
 
     SearchRequest request{
             packsInfo.absoluteFilePath().toUtf8().toStdString(),
@@ -1307,6 +1403,7 @@ SearchController::ValidationResult SearchController::validate() const {
     request.evaluationTarget = configuration.evaluationTarget;
     request.baseInputCommands = parsedBaseInputCommands_;
     request.useCudaSessionSpecialization =
+            PhysicsBackendId(simulationBackend_) == "cuda" &&
             cudaSessionSpecializationEnabled_ && cudaFastModeAvailable_;
     request.simulationHorizonMs = simulationHorizonMs;
     request.condition = std::move(condition.program);

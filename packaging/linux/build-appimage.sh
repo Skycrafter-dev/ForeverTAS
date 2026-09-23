@@ -68,6 +68,9 @@ cmake_args=(
     -DCMAKE_INSTALL_PREFIX=/usr
     -DBUILD_TESTING=OFF
 )
+if [[ -n "${FOREVERTAS_ENABLE_VULKAN:-}" ]]; then
+    cmake_args+=("-DFOREVERTAS_ENABLE_VULKAN=${FOREVERTAS_ENABLE_VULKAN}")
+fi
 if [[ -n "${FOREVERTAS_ENABLE_CUDA:-}" ]]; then
     cmake_args+=(
         "-DFOREVERTAS_ENABLE_CUDA=${FOREVERTAS_ENABLE_CUDA}"
@@ -240,7 +243,20 @@ else
     export NO_STRIP=1
 fi
 
-"${linuxdeploy}" \
+# Bundle the portable loader, never a vendor GPU driver. An explicit library
+# also works when linuxdeploy's default exclusion list contains libvulkan.
+vulkan_deploy_args=()
+if grep -q 'FOREVERTAS_ENABLE_VULKAN:BOOL=ON' "${build_dir}/CMakeCache.txt"; then
+    vulkan_loader="$(ldd "${appdir}/usr/bin/ForeverTAS" |
+        awk '$1 == "libvulkan.so.1" { print $3 }')"
+    if [[ ! -f "${vulkan_loader}" ]]; then
+        echo "Vulkan-enabled AppImage requires a deployable Vulkan loader." >&2
+        exit 1
+    fi
+    vulkan_deploy_args+=(--library "${vulkan_loader}")
+fi
+
+"${linuxdeploy}" "${vulkan_deploy_args[@]}" \
     --appdir "${appdir}" \
     --desktop-file "${appdir}/usr/share/applications/dev.skycrafter.forevertas.desktop" \
     --icon-file "${appdir}/usr/share/icons/hicolor/256x256/apps/dev.skycrafter.forevertas.png" \
@@ -266,6 +282,10 @@ test -f "${extracted_appdir}/usr/plugins/wayland-graphics-integration-client/lib
 test -f "${extracted_appdir}/usr/plugins/wayland-decoration-client/libadwaita.so"
 if [[ "${FOREVERTAS_ENABLE_CUDA:-OFF}" == "ON" ]]; then
     test -f "${extracted_appdir}/usr/lib/libnvrtc-builtins.so.12.8"
+fi
+
+if [[ ${#vulkan_deploy_args[@]} -ne 0 ]]; then
+    test -f "${extracted_appdir}/usr/lib/libvulkan.so.1"
 fi
 
 if find "${extracted_appdir}" \

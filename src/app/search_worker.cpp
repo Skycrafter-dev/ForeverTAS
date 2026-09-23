@@ -93,6 +93,28 @@ QString FilePathFromUtf8(const std::string &path) {
 QString SearchStageStatus(SearchProgressStage stage,
                           std::string_view backendId,
                           bool useCudaSessionSpecialization) {
+    if (backendId == "vulkan") {
+        switch (stage) {
+        case SearchProgressStage::CreatingSimulation:
+            return QStringLiteral("Initializing Vulkan simulation...");
+        case SearchProgressStage::LoadingScenario:
+            return QStringLiteral("Loading the map onto Vulkan...");
+        case SearchProgressStage::RestoringSimulation:
+            return QStringLiteral("Restoring the prepared Vulkan simulation...");
+        case SearchProgressStage::ApplyingBaselineInputs:
+            return QStringLiteral("Applying baseline inputs to Vulkan...");
+        case SearchProgressStage::PreparingSearch:
+            return QStringLiteral("Preparing Vulkan search...");
+        case SearchProgressStage::Baseline:
+            return QStringLiteral("Evaluating Vulkan baseline...");
+        case SearchProgressStage::Calibration:
+            return QStringLiteral("Calibrating Vulkan throughput...");
+        case SearchProgressStage::Mutations:
+            return QStringLiteral("Searching on Vulkan...");
+        default:
+            break;
+        }
+    }
     const bool cuda = backendId == "cuda";
     const bool multiThreadedCpu =
             backendId == "multi-threaded-cpu";
@@ -303,8 +325,8 @@ void SearchWorker::run() {
                 FormatLive(live, QStringLiteral("Current best")),
                 latestInputsText);
     };
-#if FOREVERVALIDATOR_HAS_CUDA
-    if (request_.backend == PhysicsBackend::Cuda) {
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+    if (IsGpuBackend(request_.backend)) {
         control.improvementTimelineSampled =
                 [publishImprovement](const SearchLiveUpdate &live) {
                     publishImprovement(
@@ -325,8 +347,8 @@ void SearchWorker::run() {
                 FilePathFromUtf8(request_.packDirectory);
         completion->replayPath = FilePathFromUtf8(request_.replayPath);
         PhysicsBackend resultBackend = request_.backend;
-#if FOREVERVALIDATOR_HAS_CUDA
-        if (resultBackend == PhysicsBackend::Cuda) {
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN
+        if (IsGpuBackend(resultBackend)) {
             resultBackend = PhysicsBackend::Reference;
         }
 #endif

@@ -18,6 +18,8 @@ struct CudaCalibrationDeviceLimits {
     std::uint32_t maximumBlocksPerMultiprocessor = 0u;
     std::uint32_t multiprocessorCount = 0u;
     bool kernelExecutionTimeoutEnabled = false;
+    // Preserve strict CUDA validation; Vulkan supplies memory limits only.
+    bool requireCudaExecutionLimits = true;
 };
 
 struct CudaCalibrationBatchProfile {

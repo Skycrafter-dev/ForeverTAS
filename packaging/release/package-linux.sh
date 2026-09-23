@@ -119,12 +119,15 @@ cmake -S "${repo_root}" -B "${build_dir}" -G Ninja \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DBUILD_TESTING=OFF \
     -DFOREVERTAS_ENABLE_CUDA=ON \
+    -DFOREVERTAS_ENABLE_VULKAN=ON \
     "-DFOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS=${split_compile_jobs}" \
     "${prebuilt_option}" \
     "-DFETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR=${validator_root}"
 
 grep -q 'FOREVERTAS_ENABLE_CUDA:BOOL=ON' "${build_dir}/CMakeCache.txt"
 grep -q 'FOREVERVALIDATOR_HAS_CUDA=1' "${build_dir}/compile_commands.json"
+grep -q 'FOREVERTAS_ENABLE_VULKAN:BOOL=ON' "${build_dir}/CMakeCache.txt"
+grep -q 'FOREVERVALIDATOR_HAS_VULKAN=1' "${build_dir}/compile_commands.json"
 grep -q "FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS:STRING=${split_compile_jobs}" \
     "${build_dir}/CMakeCache.txt"
 if [[ "${cache_hit}" == true ]]; then
@@ -173,6 +176,7 @@ verify_cache_integrity "${search_cache_dir}"
 FOREVERTAS_BUILD_DIR="${build_dir}" \
 FOREVERTAS_DIST_DIR="${dist_dir}" \
 FOREVERTAS_ENABLE_CUDA=ON \
+FOREVERTAS_ENABLE_VULKAN=ON \
 FOREVERTAS_CUDA_ARCHITECTURES="${CUDA_ARCHITECTURES}" \
 FOREVERTAS_VALIDATOR_SOURCE="${validator_root}" \
 FOREVERTAS_TOOLS_DIR="${cache_root}/appimage-tools" \
@@ -186,6 +190,7 @@ cmake -S "${repo_root}" -B "${verify_build_dir}" -G Ninja \
     -DCMAKE_CXX_COMPILER_LAUNCHER=sccache \
     -DBUILD_TESTING=ON \
     -DFOREVERTAS_ENABLE_CUDA=OFF \
+    -DFOREVERTAS_ENABLE_VULKAN=OFF \
     -DFOREVERVALIDATOR_ENABLE_RELEASE_IPO=OFF \
     "-DFETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR=${validator_root}"
 cmake --build "${verify_build_dir}" --parallel
