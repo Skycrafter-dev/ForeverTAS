@@ -1,19 +1,25 @@
-# Portable application bundles
+# Application bundles
 
 ForeverTAS uses one CMake installation definition as the source of truth for
 all release artifacts. Platform scripts build that install tree, deploy the
-native Qt runtime, and wrap it in the expected portable format.
+native Qt runtime, and wrap it in the expected platform format.
 
 ## Artifacts
 
 | Platform | Artifact | User workflow |
 | --- | --- | --- |
-| Linux | `ForeverTAS-<version>-linux-<arch>.AppImage` | Mark executable and run |
-| Windows | `ForeverTAS-<version>-windows-<arch>.zip` | Extract and run `ForeverTAS.exe` |
+| Linux | `ForeverTAS-<version>-linux-<flavor>-<arch>.AppImage` | Mark executable and run; choose or update the compute package in app |
+| Windows | `ForeverTAS-<version>-windows-<flavor>-<arch>-Setup.exe` | Install once; choose or update the compute package in app |
+| Windows portable | `ForeverTAS-<version>-windows-<arch>.zip` | Extract and run; no in-app self-update |
 
 Each artifact is native to its operating system. The search and physics code is
 compiled directly for the target platform; Wine or another compatibility layer
 is not part of the release runtime.
+
+The public entry points are stable `ForeverTAS-Windows-Setup.exe` and
+`ForeverTAS-Linux.AppImage` aliases of the universal package. The full
+hardware-specific release matrix and its publication checks are documented
+in [UPDATES.md](UPDATES.md).
 
 macOS is not supported, and CMake rejects attempts to configure a macOS build.
 
@@ -82,7 +88,7 @@ supports. The produced executable cannot be more compatible than the glibc and
 other non-bundled system interfaces of its build environment. The release
 workflow currently uses Ubuntu 22.04 with Qt 6.9.3.
 
-## Windows portable ZIP
+## Windows installer and portable ZIP
 
 Run from PowerShell on a native Windows host with Qt and Ninja available:
 
@@ -94,8 +100,11 @@ CMake's Qt QML deployment script invokes the native Windows deployment tooling
 during installation. CPack then creates a ZIP containing the executable,
 compiler runtime, Qt DLLs, QML modules, plugins, icons, and licenses. No
 installer or registry write is required to launch it.
-Code signing is recommended for public downloads but remains separate from the
-portable layout.
+The same script then wraps the ZIP in a per-user Inno Setup installer. Install
+Inno Setup 6 or 7 on the Windows build host; for a custom location, set
+`ISCC_PATH` to `ISCC.exe`. The installer creates shortcuts, an uninstall entry,
+and a marker used to enable in-app updates. Code signing is recommended for public
+downloads; sign the final installer before publishing it.
 
 ## Reproducible local release builds
 

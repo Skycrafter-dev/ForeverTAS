@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 project(ForeverTAS
-    VERSION 0.2.3
+    VERSION 0.2.4
     DESCRIPTION "Native TrackMania Nations Forever tool-assisted search tool"
     HOMEPAGE_URL "https://github.com/Skycrafter-dev/ForeverTAS"
     LANGUAGES CXX)
@@ -16,6 +16,8 @@ option(FOREVERTAS_ENABLE_CUDA
     "Build ForeverTAS with the optional ForeverValidator CUDA backend" OFF)
 option(FOREVERTAS_ENABLE_HIP
     "Build ForeverTAS with the optional ForeverValidator HIP backend" OFF)
+set(FOREVERTAS_DISTRIBUTION_FLAVOR "" CACHE STRING
+    "Public package flavor: universal, nvidia-smNN, or amd-rx7000-rx9000")
 set(FOREVERTAS_WINDOWS_RUNTIME_DIR "" CACHE PATH
     "Directory containing non-Qt runtime DLLs for Windows packaging")
 set(FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR "" CACHE PATH
@@ -50,6 +52,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Concurrent
     Core
     Gui
+    Network
     Qml
     Quick
     Quick3D
@@ -63,6 +66,7 @@ if(Qt6_VERSION VERSION_GREATER_EQUAL 6.7)
 endif()
 if(BUILD_TESTING)
     find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
+    find_package(Python3 COMPONENTS Interpreter QUIET)
 endif()
 qt_standard_project_setup(REQUIRES 6.5)
 qt_policy(SET QTP0004 NEW)
@@ -333,7 +337,13 @@ else()
 endif()
 
 qt_add_executable(forevertas
-    src/app/main.cpp)
+    src/app/main.cpp
+    src/app/update_controller.cpp
+    src/app/update_controller.h
+    src/app/update_hardware.cpp
+    src/app/update_hardware.h
+    src/app/update_release.cpp
+    src/app/update_release.h)
 add_dependencies(forevertas forevertas-simulation-debug-worker)
 
 set(forevertas_icon_svg
@@ -429,6 +439,7 @@ endif()
 target_link_libraries(forevertas PRIVATE
     forevertas_gui
     Qt6::Gui
+    Qt6::Network
     Qt6::Qml
     Qt6::Quick
     Qt6::Quick3D
@@ -535,7 +546,7 @@ if(WIN32)
     endif()
     if(FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
         find_file(forevertas_hip_runtime_dll
-            NAMES amdhip64.dll
+            NAMES amdhip64_7.dll amdhip64_6.dll amdhip64.dll
             HINTS "${FOREVERTAS_WINDOWS_HIP_RUNTIME_DIR}"
                   "$ENV{HIP_PATH}/bin"
                   "$ENV{ROCM_PATH}/bin"
@@ -622,6 +633,66 @@ else()
     set(CPACK_GENERATOR "TGZ")
 endif()
 
+if(FOREVERTAS_DISTRIBUTION_FLAVOR)
+    if(FOREVERTAS_DISTRIBUTION_FLAVOR STREQUAL "universal")
+        if(FOREVERTAS_ENABLE_CUDA OR FOREVERTAS_ENABLE_HIP OR
+           NOT FOREVERTAS_ENABLE_VULKAN)
+            message(FATAL_ERROR "Universal packages require Vulkan without CUDA or HIP")
+        endif()
+    elseif(FOREVERTAS_DISTRIBUTION_FLAVOR MATCHES
+           "^nvidia-sm(50|52|53|60|61|62|70|72|75|80|86|87|89|90|100|101|120)$")
+        set(forevertas_package_sm "${CMAKE_MATCH_1}")
+        if(NOT FOREVERTAS_ENABLE_CUDA OR NOT FOREVERTAS_ENABLE_HIP OR
+           NOT FOREVERTAS_ENABLE_VULKAN OR
+           NOT CMAKE_HIP_PLATFORM STREQUAL "nvidia")
+            message(FATAL_ERROR "NVIDIA packages require CUDA, NVIDIA HIP, and Vulkan")
+        endif()
+        if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL
+               "${forevertas_package_sm}-real;${forevertas_package_sm}-virtual" OR
+           NOT CMAKE_HIP_ARCHITECTURES STREQUAL "${forevertas_package_sm}")
+            message(FATAL_ERROR "NVIDIA package must contain only its named SM target")
+        endif()
+    elseif(FOREVERTAS_DISTRIBUTION_FLAVOR STREQUAL "amd-rx7000-rx9000")
+        if(FOREVERTAS_ENABLE_CUDA OR NOT FOREVERTAS_ENABLE_HIP OR
+           NOT FOREVERTAS_ENABLE_VULKAN OR
+           NOT CMAKE_HIP_PLATFORM STREQUAL "amd")
+            message(FATAL_ERROR "AMD packages require AMD HIP and Vulkan without CUDA")
+        endif()
+        if(NOT CMAKE_HIP_ARCHITECTURES STREQUAL
+               "gfx1100;gfx1101;gfx1102;gfx1200;gfx1201")
+            message(FATAL_ERROR "AMD package must contain the RX 7000/9000 gfx targets")
+        endif()
+    else()
+        message(FATAL_ERROR "Unknown ForeverTAS distribution flavor")
+    endif()
+    set(forevertas_package_id "${FOREVERTAS_DISTRIBUTION_FLAVOR}")
+    set(forevertas_update_asset_parts
+        "${forevertas_package_platform};${forevertas_package_id}")
+else()
+    set(forevertas_package_id "legacy")
+    set(forevertas_update_asset_parts "${forevertas_package_platform}")
+    if(FOREVERTAS_ENABLE_CUDA)
+        list(APPEND forevertas_update_asset_parts "cuda")
+    endif()
+    if(FOREVERTAS_ENABLE_VULKAN)
+        list(APPEND forevertas_update_asset_parts "vulkan")
+    endif()
+    if(FOREVERTAS_ENABLE_HIP)
+        if(NOT CMAKE_HIP_PLATFORM MATCHES "^(amd|nvidia)$")
+            message(FATAL_ERROR "HIP updates require an AMD or NVIDIA HIP platform")
+        endif()
+        list(APPEND forevertas_update_asset_parts "hip-${CMAKE_HIP_PLATFORM}")
+    endif()
+endif()
+list(APPEND forevertas_update_asset_parts "${forevertas_package_arch}")
+list(JOIN forevertas_update_asset_parts "-" FOREVERTAS_UPDATE_ASSET_ID)
+set(FOREVERTAS_UPDATE_ASSET_ID "${FOREVERTAS_UPDATE_ASSET_ID}" CACHE INTERNAL
+    "Platform and backend identity of public update artifacts" FORCE)
+target_compile_definitions(forevertas PRIVATE
+    FOREVERTAS_PACKAGE_ID="${forevertas_package_id}"
+    FOREVERTAS_UPDATE_PLATFORM="${forevertas_package_platform}"
+    FOREVERTAS_UPDATE_ARCH="${forevertas_package_arch}")
+
 set(CPACK_PACKAGE_NAME "${FOREVERTAS_DISPLAY_NAME}")
 set(CPACK_PACKAGE_VENDOR "Skycrafter-dev")
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_DESCRIPTION}")
@@ -652,6 +723,30 @@ if(FOREVERTAS_WARNING_OPTIONS)
 endif()
 
 if(BUILD_TESTING)
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME forevertas-distribution-matrix
+                 COMMAND "${Python3_EXECUTABLE}"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/distribution_tests.py")
+    endif()
+    add_executable(forevertas-update-release-tests
+        src/app/update_release.cpp
+        tests/update_release_tests.cpp)
+    target_include_directories(forevertas-update-release-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(forevertas-update-release-tests PRIVATE
+        Qt6::Core Qt6::Test)
+    add_test(NAME forevertas-update-release
+             COMMAND forevertas-update-release-tests)
+    if(UNIX AND NOT APPLE)
+        add_test(NAME forevertas-appimage-update-smoke
+                 COMMAND bash ${CMAKE_CURRENT_SOURCE_DIR}/tests/update_appimage_smoke.sh
+                         $<TARGET_FILE:forevertas>)
+    endif()
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-update-release-tests PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+
     add_executable(forevertas-strategy-tests
         tests/search_component_tests.cpp)
     target_link_libraries(forevertas-strategy-tests PRIVATE forevertas_core)

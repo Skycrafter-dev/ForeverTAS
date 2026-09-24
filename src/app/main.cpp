@@ -1,5 +1,6 @@
 #include "app/search_controller.h"
 #include "app/input_preview_binding.h"
+#include "app/update_controller.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
 
@@ -13,6 +14,16 @@
 #include <QVariant>
 
 int main(int argc, char **argv) {
+#if defined(Q_OS_LINUX)
+    if (argc == 4 && QString::fromLocal8Bit(argv[1]) ==
+                             QStringLiteral("--apply-update")) {
+        QCoreApplication updaterProcess(argc, argv);
+        return forevertas::app::ApplyAppImageUpdate(
+                qEnvironmentVariable("APPIMAGE"),
+                QString::fromLocal8Bit(argv[2]),
+                QString::fromLocal8Bit(argv[3]).toLongLong());
+    }
+#endif
 #if defined(Q_OS_LINUX)
     const QString currentDesktop =
             qEnvironmentVariable("XDG_CURRENT_DESKTOP");
@@ -38,6 +49,7 @@ int main(int argc, char **argv) {
             QIcon(QStringLiteral(":/icons/forevertas.svg")));
 
     forevertas::app::SearchController controller;
+    forevertas::app::UpdateController updates;
     forevertas::viewer::RaceViewerController viewer;
     forevertas::app::BindInputPreview(controller, viewer);
     QObject::connect(
@@ -70,7 +82,9 @@ int main(int argc, char **argv) {
             {QStringLiteral("controller"),
              QVariant::fromValue(static_cast<QObject *>(&controller))},
             {QStringLiteral("viewer"),
-             QVariant::fromValue(static_cast<QObject *>(&viewer))}});
+             QVariant::fromValue(static_cast<QObject *>(&viewer))},
+            {QStringLiteral("updater"),
+             QVariant::fromValue(static_cast<QObject *>(&updates))}});
     QObject::connect(
             &engine,
             &QQmlApplicationEngine::objectCreationFailed,
@@ -83,6 +97,9 @@ int main(int argc, char **argv) {
     if (application.arguments().contains(
                 QStringLiteral("--qml-smoke-test"))) {
         QTimer::singleShot(0, &application, &QCoreApplication::quit);
+    } else {
+        QTimer::singleShot(0, &updates,
+                           &forevertas::app::UpdateController::checkForUpdates);
     }
     return application.exec();
 }

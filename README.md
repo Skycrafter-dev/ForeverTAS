@@ -1,5 +1,17 @@
 # ForeverTAS
 
+## Get ForeverTAS
+
+Download the [Windows installer](https://github.com/Skycrafter-dev/ForeverTAS/releases/latest/download/ForeverTAS-Windows-Setup.exe)
+or [Linux AppImage](https://github.com/Skycrafter-dev/ForeverTAS/releases/latest/download/ForeverTAS-Linux.AppImage).
+The first download runs on any supported computer. On launch, the app offers
+the matching NVIDIA or AMD compute package; you can change packages later in
+the Bruteforce panel without losing settings. These links become active with
+the first hardware-specific release. Users who know their GPU can instead
+download a matching, separately packaged installer/AppImage directly from the
+[latest release assets](https://github.com/Skycrafter-dev/ForeverTAS/releases/latest).
+See [installation and updates](docs/UPDATES.md).
+
 ForeverTAS is the TAS client for
 [ForeverValidator](https://github.com/Skycrafter-dev/ForeverValidator).
 ForeverValidator remains the source of truth for deterministic physics
@@ -202,14 +214,18 @@ map-specific drawings across application sessions. Complete drawing sets can
 also be exported to, or imported from, a location selected with the native
 file picker.
 
-## Portable bundles
+## Install and updates
 
-ForeverTAS can be packaged natively as a Linux AppImage or Windows portable
-ZIP. Both artifacts use the same CMake installation definition and include the
-required Qt and QML runtime files. macOS is not supported.
+ForeverTAS is distributed as a Linux AppImage or a per-user Windows installer.
+Install or save it once: on later launches, the application checks the latest
+stable GitHub release and offers an in-app update when a matching build is
+available. A Windows portable ZIP is also available, but it is not
+self-updating. macOS is not supported.
 
 See [docs/PACKAGING.md](docs/PACKAGING.md) for local packaging commands,
 artifact layouts, signing notes, and clean-machine release checks.
+See [docs/UPDATES.md](docs/UPDATES.md) for the update contract and release
+checklist.
 
 See `docs/SEARCH_COMPONENTS.md` for the registry, persistence, composition, and
 extension contracts.

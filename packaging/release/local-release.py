@@ -63,6 +63,15 @@ def load_manifest(path: Path) -> dict:
         raise SystemExit("manifest has no CUDA search-object source identity")
     if manifest["release"]["tag"] != f"v{manifest['release']['version']}":
         raise SystemExit("release tag and version do not match")
+    version = manifest["release"]["version"]
+    expected_updates = {
+        "linux": f"ForeverTAS-{version}-linux-cuda-vulkan-x86_64.AppImage",
+        "windows_installer":
+            f"ForeverTAS-{version}-windows-cuda-vulkan-x86_64-Setup.exe",
+    }
+    for platform, filename in expected_updates.items():
+        if manifest["artifacts"].get(platform) != filename:
+            raise SystemExit(f"release update asset name is wrong for {platform}")
     return manifest
 
 
@@ -169,13 +178,10 @@ def prepare_tree(manifest: dict, validator_root: Path, state: dict, destination:
 
 
 def release_assets(manifest: dict, dist: Path) -> list[Path]:
-    artifacts = [dist / manifest["artifacts"][name] for name in ("linux", "windows")]
-    return [
-        artifacts[0],
-        Path(str(artifacts[0]) + ".sha256"),
-        artifacts[1],
-        Path(str(artifacts[1]) + ".sha256"),
-    ]
+    artifacts = [dist / manifest["artifacts"][name]
+                 for name in ("linux", "windows", "windows_installer")]
+    return [item for artifact in artifacts
+            for item in (artifact, Path(str(artifact) + ".sha256"))]
 
 
 def release_notes(manifest: dict) -> str:
@@ -184,7 +190,8 @@ def release_notes(manifest: dict) -> str:
 - Regular CUDA now supports NVIDIA GPUs with compute capability 5.0+, including GeForce GTX 750/750 Ti and newer supported architectures in the release build.
 - Fast CUDA requires compute capability 7.5+ and automatically falls back to regular CUDA on older supported GPUs. The UI reports CUDA and Fast CUDA compatibility explicitly.
 - The race viewer no longer depends on the selected CUDA search backend.
-- Linux x86_64 AppImage and Windows x86_64 ZIP are attached below.
+- Linux x86_64 AppImage and Windows x86_64 installer are attached below. The Windows ZIP remains available for portable use.
+- Installed Windows builds and writable Linux AppImages check this release feed on launch and offer one-click updates.
 """
 
 
@@ -207,7 +214,8 @@ def verify_artifacts(manifest: dict, manifest_path: Path, dist: Path) -> dict:
         character not in "0123456789abcdef" for character in tas_commit
     ):
         raise SystemExit("release source lock has an invalid ForeverTAS commit")
-    expected = [manifest["artifacts"]["linux"], manifest["artifacts"]["windows"]]
+    expected = [manifest["artifacts"][name]
+                for name in ("linux", "windows", "windows_installer")]
     for name in expected:
         artifact = dist / name
         checksum = Path(str(artifact) + ".sha256")
@@ -224,9 +232,14 @@ def verify_artifacts(manifest: dict, manifest_path: Path, dist: Path) -> dict:
                     raise SystemExit("Windows bundle does not contain ForeverTAS.exe")
                 if any(name.startswith("/") or ".." in Path(name).parts for name in names):
                     raise SystemExit("unsafe path in Windows bundle")
-        else:
+        elif artifact.suffix == ".AppImage":
             if artifact.stat().st_mode & 0o111 == 0:
                 raise SystemExit("Linux AppImage is not executable")
+        elif artifact.suffix == ".exe":
+            with artifact.open("rb") as stream:
+                signature = stream.read(2)
+            if artifact.stat().st_size < 1024 * 1024 or signature != b"MZ":
+                raise SystemExit("Windows installer is invalid")
     for platform in ("linux", "windows"):
         evidence = dist / f"cuda-fatbinary-{platform}.json"
         data = json.loads(evidence.read_text(encoding="utf-8"))
@@ -291,12 +304,17 @@ def command_windows(args: argparse.Namespace, manifest: dict) -> None:
     run(["ssh", host, f"& '{remote}/packaging/release/build-windows-local.ps1' -Manifest '{remote}/packaging/release/manifest.json'{cache_rebuild}"])
     dist = Path(args.dist).resolve()
     dist.mkdir(parents=True, exist_ok=True)
-    artifact = manifest["artifacts"]["windows"]
-    for name in (artifact, artifact + ".sha256", "cuda-fatbinary-windows.json"):
+    windows_assets = [manifest["artifacts"][name]
+                      for name in ("windows", "windows_installer")]
+    for name in [item for artifact in windows_assets
+                 for item in (artifact, artifact + ".sha256")] + \
+            ["cuda-fatbinary-windows.json"]:
         run(["scp", f"{host}:{remote}/dist/{name}", str(dist) + "/"])
 
 
 def command_draft(args: argparse.Namespace, manifest: dict) -> None:
+    if "distribution" in manifest:
+        raise SystemExit("use distribution.py draft for the complete hardware matrix")
     tag = manifest["release"]["tag"]
     repository = manifest["release"]["repository"]
     target = git("rev-list", "-n", "1", tag)
@@ -334,6 +352,8 @@ def command_draft(args: argparse.Namespace, manifest: dict) -> None:
 
 
 def command_publish(args: argparse.Namespace, manifest: dict) -> None:
+    if "distribution" in manifest:
+        raise SystemExit("use distribution.py publish for the complete hardware matrix")
     if args.confirm != manifest["release"]["tag"]:
         raise SystemExit("publish requires --confirm with the exact release tag")
     tag = manifest["release"]["tag"]
@@ -350,6 +370,13 @@ def command_publish(args: argparse.Namespace, manifest: dict) -> None:
                 raise SystemExit(f"downloaded draft checksum mismatch: {name}")
         appimage = downloaded / manifest["artifacts"]["linux"]
         appimage.chmod(appimage.stat().st_mode | 0o111)
+        release = json.loads(run(["gh", "api", f"repos/{repository}/releases/tags/{tag}"],
+                                 capture=True))
+        hosted = {asset["name"]: asset for asset in release.get("assets", [])}
+        for name in (manifest["artifacts"]["linux"],
+                     manifest["artifacts"]["windows_installer"]):
+            if hosted.get(name, {}).get("digest") != f"sha256:{sha256(downloaded / name)}":
+                raise SystemExit(f"GitHub has no matching SHA-256 digest for {name}")
     run(["gh", "release", "edit", tag, "--repo", repository, "--draft=false"])
 
 

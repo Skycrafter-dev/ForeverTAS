@@ -79,10 +79,19 @@ fi
 if [[ -n "${FOREVERTAS_ENABLE_HIP:-}" ]]; then
     cmake_args+=("-DFOREVERTAS_ENABLE_HIP=${FOREVERTAS_ENABLE_HIP}")
 fi
+if [[ -n "${FOREVERTAS_DISTRIBUTION_FLAVOR:-}" ]]; then
+    cmake_args+=("-DFOREVERTAS_DISTRIBUTION_FLAVOR=${FOREVERTAS_DISTRIBUTION_FLAVOR}")
+fi
+if [[ -n "${FOREVERTAS_HIP_PLATFORM:-}" ]]; then
+    cmake_args+=("-DCMAKE_HIP_PLATFORM=${FOREVERTAS_HIP_PLATFORM}")
+fi
 if [[ -n "${FOREVERTAS_HIP_ARCHITECTURES:-}" ]]; then
     cmake_args+=(
         "-DCMAKE_HIP_ARCHITECTURES=${FOREVERTAS_HIP_ARCHITECTURES}"
     )
+fi
+if [[ -n "${FOREVERTAS_HIP_FLAGS:-}" ]]; then
+    cmake_args+=("-DCMAKE_HIP_FLAGS=${FOREVERTAS_HIP_FLAGS}")
 fi
 if [[ -n "${FOREVERTAS_CUDA_ARCHITECTURES:-}" ]]; then
     cmake_args+=(
@@ -99,7 +108,7 @@ if [[ "${FOREVERTAS_SKIP_BUILD:-0}" == "1" ]]; then
     test -x "${build_dir}/bin/ForeverTAS"
 else
     cmake "${cmake_args[@]}"
-    cmake --build "${build_dir}" --parallel
+    cmake --build "${build_dir}" --parallel "${FOREVERTAS_BUILD_JOBS:-$(nproc)}"
 fi
 
 rm -rf "${appdir}"
@@ -127,6 +136,12 @@ fi
 version="$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "${build_dir}/CMakeCache.txt")"
 if [[ -z "${version}" ]]; then
     version="0.0.0"
+fi
+update_asset_id="$(sed -n 's/^FOREVERTAS_UPDATE_ASSET_ID:INTERNAL=//p' \
+    "${build_dir}/CMakeCache.txt")"
+if [[ ! "${update_asset_id}" =~ ^linux(-[a-z0-9-]+)?-(x86_64|arm64)$ ]]; then
+    echo "Invalid update asset identity in the build directory" >&2
+    exit 1
 fi
 
 find_qt6_qmake() {
@@ -239,7 +254,7 @@ export FOREVERTAS_FILTERED_QT_PLUGINS="${filtered_qt_plugins}"
 export QMAKE="${qmake_wrapper}"
 export QML_SOURCES_PATHS="${repo_root}/qml"
 export EXTRA_PLATFORM_PLUGINS="${EXTRA_PLATFORM_PLUGINS:-libqoffscreen.so;libqwayland-egl.so;libqwayland-generic.so}"
-output="${dist_dir}/ForeverTAS-${version}-linux-${appimage_arch}.AppImage"
+output="${dist_dir}/ForeverTAS-${version}-${update_asset_id}.AppImage"
 rm -f "${output}" "${output}.sha256"
 export LDAI_OUTPUT="${output}"
 export APPIMAGE_EXTRACT_AND_RUN=1
@@ -254,6 +269,12 @@ fi
 # Bundle the portable loader, never a vendor GPU driver. An explicit library
 # also works when linuxdeploy's default exclusion list contains libvulkan.
 vulkan_deploy_args=()
+if [[ "${FOREVERTAS_ENABLE_HIP:-OFF}" == "ON" &&
+      "${FOREVERTAS_HIP_PLATFORM:-}" == "amd" ]]; then
+    # ROCm's runtime lives outside the loader's default search path in the
+    # build image; linuxdeploy must see it to bundle its transitive libraries.
+    export LD_LIBRARY_PATH="${HIP_PATH:-/opt/rocm}/lib:${LD_LIBRARY_PATH:-}"
+fi
 if grep -q 'FOREVERTAS_ENABLE_VULKAN:BOOL=ON' "${build_dir}/CMakeCache.txt"; then
     vulkan_loader="$(ldd "${appdir}/usr/bin/ForeverTAS" |
         awk '$1 == "libvulkan.so.1" { print $3 }')"
@@ -290,6 +311,13 @@ test -f "${extracted_appdir}/usr/plugins/wayland-graphics-integration-client/lib
 test -f "${extracted_appdir}/usr/plugins/wayland-decoration-client/libadwaita.so"
 if [[ "${FOREVERTAS_ENABLE_CUDA:-OFF}" == "ON" ]]; then
     test -f "${extracted_appdir}/usr/lib/libnvrtc-builtins.so.12.8"
+fi
+if [[ "${FOREVERTAS_ENABLE_HIP:-OFF}" == "ON" &&
+      "${FOREVERTAS_HIP_PLATFORM:-}" == "amd" ]]; then
+    for library in libamdhip64.so.7 libhsa-runtime64.so.1 \
+            librocprofiler-register.so.0; do
+        test -f "${extracted_appdir}/usr/lib/${library}"
+    done
 fi
 
 if [[ ${#vulkan_deploy_args[@]} -ne 0 ]]; then
