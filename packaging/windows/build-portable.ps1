@@ -108,7 +108,13 @@ $ErrorActionPreference = "Stop"
 if ($ConfigureExitCode -ne 0) { throw "CMake configure failed" }
 
 $ErrorActionPreference = "Continue"
-cmake --build $BuildDirectory --parallel
+$BuildJobs = if ($env:FOREVERTAS_RELEASE_JOBS) {
+    $env:FOREVERTAS_RELEASE_JOBS
+} else { "2" }
+if ($BuildJobs -notmatch '^[1-9][0-9]*$') {
+    throw "FOREVERTAS_RELEASE_JOBS must be a positive integer"
+}
+cmake --build $BuildDirectory --parallel $BuildJobs
 $BuildExitCode = $LASTEXITCODE
 $ErrorActionPreference = "Stop"
 if ($BuildExitCode -ne 0) { throw "Build failed" }
