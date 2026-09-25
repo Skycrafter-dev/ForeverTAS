@@ -104,6 +104,15 @@ void CudaBatchCalibrator::RejectUnsafeCurrent() {
     RejectCurrent(true);
 }
 
+bool CudaBatchCalibrator::CompleteWithBestMeasurement() {
+    if (measurements_.empty()) {
+        return false;
+    }
+    phase_ = Phase::Complete;
+    SetCurrent(bestBatchSize_);
+    return true;
+}
+
 void CudaBatchCalibrator::RejectCurrent(bool upperBound) {
     if (Complete()) {
         return;

@@ -1756,6 +1756,20 @@ bool TestCudaBatchCalibrationStrategy() {
             isolatedFastPass.BestBatchSize() == 1u,
             "CUDA calibration selected an isolated fast pass");
 
+    forevertas::CudaBatchCalibrator budgetLimited;
+    okay &= Check(
+            !budgetLimited.CompleteWithBestMeasurement(),
+            "CUDA calibration completed without a reliable measurement");
+    observe(&budgetLimited, 100.0);
+    observe(&budgetLimited, 200.0);
+    okay &= Check(
+            budgetLimited.CompleteWithBestMeasurement() &&
+                    budgetLimited.Complete() &&
+                    budgetLimited.BestBatchSize() == 2u &&
+                    budgetLimited.CurrentBatchSize() == 2u,
+            "CUDA calibration did not select its best measured batch "
+            "when the candidate budget was reached");
+
     forevertas::CudaBatchCalibrator unstable;
     observeSamples(
             &unstable,

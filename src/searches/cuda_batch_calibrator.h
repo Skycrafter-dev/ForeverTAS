@@ -22,6 +22,7 @@ public:
                  std::chrono::steady_clock::duration elapsed);
     void CapacityUnavailable();
     void RejectUnsafeCurrent();
+    bool CompleteWithBestMeasurement();
 
 private:
     enum class Phase : std::uint8_t {

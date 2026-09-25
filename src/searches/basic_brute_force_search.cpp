@@ -588,6 +588,17 @@ SearchResult RunGpuBasicBruteForce(
     if (context.calibrateCudaBatchSize) {
         calibrator.emplace();
     }
+    // Keep calibration from consuming a bounded search before mutations begin.
+    constexpr std::uint64_t maximumCalibrationCandidates = 1'000'000u;
+    const std::uint64_t calibrationCandidateBudget =
+            context.control != nullptr &&
+                            context.control->iterationLimit
+                    ? std::min<std::uint64_t>(
+                              maximumCalibrationCandidates,
+                              std::max<std::uint64_t>(
+                                      1u,
+                                      *context.control->iterationLimit / 10u))
+                    : maximumCalibrationCandidates;
     std::uint32_t sessionCapacity = initialBatchSize;
     const std::uint64_t timelineTickCount =
             static_cast<std::uint64_t>(
@@ -778,6 +789,15 @@ SearchResult RunGpuBasicBruteForce(
     while (!StopRequested(context.control) &&
            !IterationLimitReached(context.control, iterations)) {
         CheckCancellation(context.control);
+        if (calibrator && !calibrator->Complete() &&
+            iterations >= calibrationCandidateBudget &&
+            calibrator->CompleteWithBestMeasurement()) {
+            ReportCudaBatchSize(context.control,
+                                calibrator->CurrentBatchSize());
+            ReportCudaCalibrationSelection(*calibrator);
+            ReportProgress(context.control,
+                           SearchProgressStage::Mutations, iterations);
+        }
         std::uint32_t batchSize = calibrator
                 ? calibrator->CurrentBatchSize()
                 : context.cudaBatchSize;
