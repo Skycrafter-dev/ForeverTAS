@@ -139,10 +139,11 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
                                     ROOT.parent / "ForeverValidator")).resolve()
     if not (validator / "CMakeLists.txt").is_file():
         raise ValueError(f"ForeverValidator source is missing: {validator}")
+    source_commit = run("git", "rev-parse", "HEAD")
+    validator_commit = run("git", "-C", str(validator), "rev-parse", "HEAD")
     if run("git", "status", "--porcelain=v1", "--untracked-files=all"):
         raise ValueError("commit the ForeverTAS source before building packages")
-    if run("git", "-C", str(validator), "rev-parse", "HEAD") != \
-            manifest["sources"]["forevervalidator"]["commit"]:
+    if validator_commit != manifest["sources"]["forevervalidator"]["commit"]:
         raise ValueError("ForeverValidator does not match the release pin")
     if run("git", "-C", str(validator), "status", "--porcelain=v1"):
         raise ValueError("ForeverValidator has uncommitted changes")
@@ -190,8 +191,14 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
             command.extend(("--env", f"{key}={value}"))
         command.extend((hip if nvidia or amd else base,
                         "bash", "packaging/linux/build-appimage.sh"))
-        print(f"Building Linux {flavor}", flush=True)
+        print(f"Building Linux {flavor} from ForeverTAS {source_commit} "
+              f"and ForeverValidator {validator_commit}", flush=True)
         subprocess.run(command, check=True, cwd=ROOT)
+        if run("git", "rev-parse", "HEAD") != source_commit or \
+                run("git", "status", "--porcelain=v1", "--untracked-files=all") or \
+                run("git", "-C", str(validator), "rev-parse", "HEAD") != validator_commit or \
+                run("git", "-C", str(validator), "status", "--porcelain=v1"):
+            raise ValueError(f"sources changed while building Linux {flavor}")
         if nvidia:
             binary = f"/workspace/build/distribution-{flavor}/bin/ForeverTAS"
             inspection = command[:command.index(hip)] + [hip, "cuobjdump", "--list-elf", binary]
