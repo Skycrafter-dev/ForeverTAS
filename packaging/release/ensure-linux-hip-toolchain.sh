@@ -11,4 +11,4 @@ if ! docker image inspect "${image}" >/dev/null 2>&1; then
     docker build --file "${dockerfile}" --build-arg "BASE_IMAGE=${base_image}" \
         --tag "${image}" "${repo_root}/packaging/release" >&2
 fi
-docker image inspect --format '{{.Id}}' "${image}"
+printf '%s\n' "${image}"

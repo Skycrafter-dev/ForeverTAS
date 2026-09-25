@@ -20,4 +20,4 @@ else
 fi
 
 docker image inspect "${image}" >/dev/null
-docker image inspect --format '{{.Id}}' "${image}"
+printf '%s\n' "${image}"
