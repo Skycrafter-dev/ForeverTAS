@@ -21,6 +21,13 @@ RestartApplications=no
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
 Source: "{#AddBackslash(SourcePath)}installed.marker"; DestDir: "{app}"; DestName: ".forevertas-installed"; Flags: ignoreversion
 
+[InstallDelete]
+Type: files; Name: "{app}\amdhip64*.dll"
+Type: files; Name: "{app}\cudart64_*.dll"
+Type: files; Name: "{app}\nvrtc64_*.dll"
+Type: files; Name: "{app}\nvrtc-builtins64_*.dll"
+Type: files; Name: "{app}\nvJitLink_*.dll"
+
 [Icons]
 Name: "{autoprograms}\ForeverTAS"; Filename: "{app}\ForeverTAS.exe"
 Name: "{autodesktop}\ForeverTAS"; Filename: "{app}\ForeverTAS.exe"; Tasks: desktopicon
