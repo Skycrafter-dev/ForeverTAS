@@ -10,6 +10,7 @@
 #include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
+#include <QSslSocket>
 #include <QTimer>
 #include <QVariant>
 #include <QJSValue>
@@ -113,9 +114,10 @@ int main(int argc, char **argv) {
             const bool valid = inspector != nullptr && renderMode != nullptr &&
                     rows.value<QJSValue>().toVariant().toList().size() >= 5 &&
                     renderMode->property("currentValue").toString() ==
-                            QStringLiteral("textured");
+                            QStringLiteral("textured") &&
+                    QSslSocket::supportsSsl();
             if (!valid)
-                std::cerr << "Graphics inspector failed to initialize\n";
+                std::cerr << "Graphics inspector or TLS failed to initialize\n";
             QCoreApplication::exit(valid ? 0 : 1);
         });
     } else {

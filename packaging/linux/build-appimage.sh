@@ -295,6 +295,12 @@ fi
 # Bundle the portable loader, never a vendor GPU driver. An explicit library
 # also works when linuxdeploy's default exclusion list contains libvulkan.
 vulkan_deploy_args=()
+openssl_runtime="/usr/lib/$(gcc -print-multiarch)/libssl.so.3"
+if [[ ! -f "${openssl_runtime}" ]]; then
+    echo "The AppImage requires the OpenSSL 3 runtime." >&2
+    exit 1
+fi
+openssl_deploy_args=(--library "${openssl_runtime}")
 if [[ "${FOREVERTAS_ENABLE_HIP:-OFF}" == "ON" &&
       "${FOREVERTAS_HIP_PLATFORM:-}" == "amd" ]]; then
     # ROCm's runtime lives outside the loader's default search path in the
@@ -312,6 +318,7 @@ if grep -q 'FOREVERTAS_ENABLE_VULKAN:BOOL=ON' "${build_dir}/CMakeCache.txt"; the
 fi
 
 "${linuxdeploy}" "${vulkan_deploy_args[@]}" "${hip_deploy_args[@]}" \
+    "${openssl_deploy_args[@]}" \
     --appdir "${appdir}" \
     --desktop-file "${appdir}/usr/share/applications/dev.skycrafter.forevertas.desktop" \
     --icon-file "${appdir}/usr/share/icons/hicolor/256x256/apps/dev.skycrafter.forevertas.png" \
@@ -340,6 +347,8 @@ done
 test -f "${extracted_appdir}/usr/plugins/wayland-shell-integration/libxdg-shell.so"
 test -f "${extracted_appdir}/usr/plugins/wayland-graphics-integration-client/libqt-plugin-wayland-egl.so"
 test -f "${extracted_appdir}/usr/plugins/wayland-decoration-client/libadwaita.so"
+test -f "${extracted_appdir}/usr/lib/libssl.so.3"
+test -f "${extracted_appdir}/usr/lib/libcrypto.so.3"
 if [[ "${FOREVERTAS_ENABLE_CUDA:-OFF}" == "ON" ]]; then
     test -f "${extracted_appdir}/usr/lib/libnvrtc-builtins.so.12.8"
 fi
