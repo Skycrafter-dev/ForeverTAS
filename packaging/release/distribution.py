@@ -205,6 +205,16 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
             cubins = set(re.findall(r"sm_([0-9]+)\.cubin", run(*inspection)))
             if cubins != {cuda_arch}:
                 raise ValueError(f"{flavor} contains unexpected CUDA cubins: {cubins}")
+        if amd:
+            inspection = command[:command.index(hip)] + [
+                hip, "bash", "-lc",
+                "cp /workspace/build/distribution-amd-rx7000-rx9000/bin/ForeverTAS "
+                "/tmp/ForeverTAS && cd /tmp && "
+                "/opt/rocm/lib/llvm/bin/llvm-objdump --offloading ForeverTAS"]
+            targets = set(re.findall(
+                r"hipv4-amdgcn-amd-amdhsa--(gfx[0-9]+)", run(*inspection)))
+            if targets != set(SUPPORTED_GFX):
+                raise ValueError(f"AMD package has unexpected HIP targets: {targets}")
     verify(manifest, ROOT / "dist", "linux") if set(selected) == set(flavors(manifest)) else None
 
 
