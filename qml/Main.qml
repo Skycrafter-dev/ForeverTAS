@@ -11,6 +11,7 @@ ApplicationWindow {
 
     required property var controller
     required property var viewer
+    property var updater: null
 
     property string renderMode: "textured"
     property bool codeEditorExpanded: false
@@ -281,6 +282,178 @@ ApplicationWindow {
     visible: true
     title: qsTr("ForeverTAS")
     color: AppTheme.window
+
+    Connections {
+        target: window.updater
+        function onUpdateAvailableChanged() {
+            if (window.updater.updateAvailable)
+                updateDialog.open()
+        }
+    }
+
+    Dialog {
+        id: updateDialog
+        objectName: "updateDialog"
+        anchors.centerIn: parent
+        modal: true
+        width: Math.min(560, window.width - 48)
+        title: qsTr("Compute package")
+        closePolicy: window.updater && window.updater.downloading
+                     ? Popup.NoAutoClose : Popup.CloseOnEscape
+
+        contentItem: ColumnLayout {
+            spacing: 12
+
+            Label {
+                Layout.fillWidth: true
+                text: window.updater && window.updater.catalogReady
+                      ? qsTr("ForeverTAS %1 · Installed: %2")
+                            .arg(window.updater.latestVersion,
+                                 window.updater.installedPackageId)
+                      : window.updater && window.updater.checking
+                        ? qsTr("Checking available packages…")
+                        : qsTr("No package catalog is available.")
+                color: AppTheme.text
+                wrapMode: Text.WordWrap
+            }
+
+            ThemedCheckBox {
+                objectName: "automaticComputePackageCheckBox"
+                visible: window.updater && window.updater.catalogReady
+                text: qsTr("Choose automatically for this computer")
+                checked: window.updater && window.updater.automaticSelection
+                enabled: !window.updater.downloading
+                onClicked: {
+                    if (checked)
+                        window.updater.useAutomaticPackage()
+                    else
+                        window.updater.selectPackage(
+                            window.updater.selectedPackageId)
+                }
+            }
+
+            ListView {
+                id: updatePackageList
+                objectName: "updatePackageList"
+                Layout.fillWidth: true
+                Layout.preferredHeight: Math.min(260, contentHeight)
+                visible: window.updater && window.updater.catalogReady
+                clip: true
+                spacing: 3
+                model: window.updater ? window.updater.packages : []
+                delegate: Rectangle {
+                    required property var modelData
+                    width: updatePackageList.width
+                    height: 44
+                    radius: 5
+                    color: modelData.id === window.updater.selectedPackageId
+                           ? AppTheme.controlHover : AppTheme.surface
+                    border.width: 1
+                    border.color: modelData.id === window.updater.selectedPackageId
+                                  ? AppTheme.accent : AppTheme.border
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 10
+                        spacing: 8
+                        Label {
+                            text: modelData.id === window.updater.selectedPackageId
+                                  ? "●" : "○"
+                            color: AppTheme.accent
+                        }
+                        Label {
+                            Layout.fillWidth: true
+                            text: modelData.label
+                            color: AppTheme.text
+                            elide: Text.ElideRight
+                        }
+                        Label {
+                            visible: modelData.recommended || modelData.installed
+                            text: modelData.recommended
+                                  ? qsTr("Recommended") : qsTr("Installed")
+                            color: AppTheme.textMuted
+                            font.pixelSize: 10
+                        }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !window.updater.downloading
+                        onClicked: window.updater.selectPackage(modelData.id)
+                    }
+                }
+            }
+
+            Label {
+                Layout.fillWidth: true
+                visible: window.updater && window.updater.catalogReady
+                         && !window.updater.selectedPackageCompatible
+                text: qsTr("No matching GPU was detected. CPU and Vulkan will still be available in this package.")
+                color: AppTheme.warning
+                wrapMode: Text.WordWrap
+            }
+
+            ProgressBar {
+                Layout.fillWidth: true
+                visible: window.updater && window.updater.downloading
+                from: 0
+                to: 100
+                value: window.updater ? window.updater.downloadProgress : 0
+            }
+
+            Label {
+                Layout.fillWidth: true
+                visible: window.updater && window.updater.downloading
+                text: window.updater
+                      ? qsTr("Downloading %1%").arg(window.updater.downloadProgress)
+                      : ""
+                color: AppTheme.textMuted
+            }
+
+            Label {
+                Layout.fillWidth: true
+                visible: window.updater && window.updater.errorMessage.length > 0
+                text: window.updater ? window.updater.errorMessage : ""
+                color: AppTheme.error
+                wrapMode: Text.WordWrap
+            }
+        }
+
+        footer: DialogButtonBox {
+            spacing: 8
+
+            ThemedButton {
+                text: qsTr("Release notes")
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: Qt.openUrlExternally(window.updater.releaseUrl)
+            }
+
+            ThemedButton {
+                text: window.updater && window.updater.downloading
+                      ? qsTr("Cancel download") : qsTr("Later")
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: {
+                    if (window.updater && window.updater.downloading)
+                        window.updater.cancelDownload()
+                    else
+                        updateDialog.close()
+                }
+            }
+
+            ThemedButton {
+                objectName: "installUpdateButton"
+                text: window.updater && window.updater.updateAvailable
+                      ? qsTr("Install selected") : qsTr("Installed")
+                highlighted: true
+                enabled: window.updater && window.updater.updateAvailable
+                         && !window.updater.downloading
+                DialogButtonBox.buttonRole: DialogButtonBox.ActionRole
+                onClicked: window.updater.downloadAndInstall()
+            }
+
+            background: Rectangle { color: AppTheme.panel }
+        }
+    }
 
     Dialog {
         id: replaceBaseInputScriptDialog
@@ -4760,6 +4933,17 @@ ApplicationWindow {
                             color: AppTheme.textMuted
                             wrapMode: Text.WordWrap
                             font.pixelSize: 11
+                        }
+
+                        ThemedButton {
+                            objectName: "changeComputePackageButton"
+                            Layout.fillWidth: true
+                            text: qsTr("Change compute package…")
+                            enabled: window.updater && window.updater.supported
+                            onClicked: {
+                                updateDialog.open()
+                                window.updater.checkForUpdates()
+                            }
                         }
 
                         Label {

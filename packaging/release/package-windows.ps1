@@ -300,6 +300,13 @@ try {
     }
     & (Join-Path $RepoRoot "packaging/windows/test-portable.ps1") `
         -Archive $Artifact.FullName @PortableTestOptions
+    $CMakeCache = Get-Content (Join-Path $BuildDirectory "CMakeCache.txt") -Raw
+    if ($CMakeCache -notmatch '(?m)^FOREVERTAS_UPDATE_ASSET_ID:INTERNAL=(windows(?:-[a-z0-9-]+)?-(?:x86_64|arm64))\r?$') {
+        throw "Build has no Windows update asset identity"
+    }
+    & (Join-Path $RepoRoot "packaging/windows/build-installer.ps1") `
+        -Archive $Artifact.FullName -AssetId $Matches[1] `
+        -DistDirectory $DistDirectory
 
     [ordered]@{
         cuda = "12.8.1"

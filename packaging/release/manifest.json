@@ -2,8 +2,8 @@
   "schema": 1,
   "release": {
     "product": "ForeverTAS",
-    "version": "0.2.3",
-    "tag": "v0.2.3",
+    "version": "0.2.4",
+    "tag": "v0.2.4",
     "repository": "Skycrafter-dev/ForeverTAS"
   },
   "sources": {
@@ -12,9 +12,9 @@
     },
     "forevervalidator": {
       "repository": "https://github.com/Skycrafter-dev/ForeverValidator.git",
-      "commit": "b72ad72b2018b3c0b90b85c015ddad84b96f6a4b",
+      "commit": "7714a32fb24d9effd944e4422c56b0a7c98e4f0c",
       "version": "0.2.3",
-      "tag": "v0.2.3"
+      "tag": null
     }
   },
   "cuda": {
@@ -25,7 +25,7 @@
     "architecture_key": "sm50-sm52-sm61-sm70-sm75-sm86-sm89-sm120-ptx120",
     "split_compile_jobs": 4,
     "search_object_architecture_jobs": 2,
-    "search_object_source_commit": "b72ad72b2018b3c0b90b85c015ddad84b96f6a4b",
+    "search_object_source_commit": "7714a32fb24d9effd944e4422c56b0a7c98e4f0c",
     "search_object_output_neutral_paths": []
   },
   "toolchains": {
@@ -50,8 +50,14 @@
     "linux": ".release-cache/linux",
     "windows": "C:\\release-cache\\forevertas"
   },
+  "distribution": {
+    "nvidia_sm": [50, 52, 53, 60, 61, 62, 70, 72, 75, 80, 86, 87, 89, 90, 100, 101, 120],
+    "amd_gfx": ["gfx1100", "gfx1101", "gfx1102", "gfx1200", "gfx1201"],
+    "bootstrap_flavor": "universal"
+  },
   "artifacts": {
-    "linux": "ForeverTAS-0.2.3-linux-x86_64.AppImage",
-    "windows": "ForeverTAS-0.2.3-windows-x86_64.zip"
+    "linux": "ForeverTAS-0.2.4-linux-cuda-vulkan-x86_64.AppImage",
+    "windows": "ForeverTAS-0.2.4-windows-x86_64.zip",
+    "windows_installer": "ForeverTAS-0.2.4-windows-cuda-vulkan-x86_64-Setup.exe"
   }
 }
