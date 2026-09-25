@@ -3,6 +3,7 @@
 #include "app/compact_number_format.h"
 #include "app/packs_directory_finder.h"
 #include "app/search_worker.h"
+#include "app/search_session_store.h"
 #include "app/system_file_dialog.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/replay_input_script.h"
@@ -17,11 +18,14 @@
 #include <QFileInfo>
 #include <QPalette>
 #include <QRandomGenerator>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QThread>
 #include <QTimer>
 
 #include <algorithm>
+#include <chrono>
+#include <limits>
 #include <utility>
 
 namespace forevertas::app {
@@ -50,10 +54,37 @@ constexpr char kCudaSessionSpecializationEnabledKey[] =
         "backends/cuda/sessionSpecializationEnabled";
 constexpr char kRandomizeSeedsOnStartKey[] =
         "search/randomizeSeedsOnStart";
+constexpr char kAutoRestartModeKey[] = "search/autoRestartMode";
+constexpr char kAutoRestartDurationKey[] = "search/autoRestartDuration";
+constexpr char kAutoRestartAttemptsKey[] = "search/autoRestartAttempts";
 constexpr char kDrawTargetsThroughBlocksKey[] =
         "viewer/drawTargetsThroughBlocks";
 constexpr char kDarkModeKey[] = "appearance/darkMode";
 std::atomic_bool gAutomaticPacksSearchScheduled{false};
+
+std::optional<std::chrono::seconds> ParseRestartDuration(
+        const QString &value) {
+    static const QRegularExpression format(
+            QStringLiteral("^([0-9]{2,}):([0-5][0-9]):([0-5][0-9])$"));
+    const auto match = format.match(value);
+    if (!match.hasMatch()) return std::nullopt;
+    bool valid = false;
+    const qulonglong hours = match.captured(1).toULongLong(&valid);
+    const int remainingSeconds =
+            match.captured(2).toInt() * 60 + match.captured(3).toInt();
+    if (!valid || hours > static_cast<qulonglong>(
+                          (std::numeric_limits<std::int64_t>::max() -
+                           remainingSeconds) / 3600)) {
+        return std::nullopt;
+    }
+    const auto seconds = static_cast<std::int64_t>(
+            hours * 3600 + remainingSeconds);
+    const auto maximum = std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::steady_clock::duration::max()).count();
+    return seconds > 0 && seconds <= maximum
+            ? std::optional(std::chrono::seconds(seconds))
+            : std::nullopt;
+}
 
 void ApplyApplicationPalette(bool dark) {
     auto *const application =
@@ -296,6 +327,15 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     randomizeSeedsOnStart_ = settings
             .value(QLatin1String(kRandomizeSeedsOnStartKey), true)
             .toBool();
+    autoRestartMode_ = settings.value(
+            QLatin1String(kAutoRestartModeKey), QStringLiteral("off"))
+            .toString();
+    autoRestartDuration_ = settings.value(
+            QLatin1String(kAutoRestartDurationKey),
+            QStringLiteral("00:05:00")).toString();
+    autoRestartAttempts_ = settings.value(
+            QLatin1String(kAutoRestartAttemptsKey),
+            QStringLiteral("1000")).toString();
     if (!settings.contains(QLatin1String(kRandomizeSeedsOnStartKey))) {
         settings.setValue(
                 QLatin1String(kRandomizeSeedsOnStartKey), true);
@@ -322,6 +362,7 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     synchronizeSelectedCustomVolume();
     synchronizeSelectedPoseTarget();
     refreshValidation();
+    refreshSessions();
 }
 
 SearchController::~SearchController() {
@@ -614,6 +655,58 @@ QString SearchController::bestInputsText() const {
     return bestInputsText_;
 }
 
+QString SearchController::autoRestartMode() const {
+    return autoRestartMode_;
+}
+
+QString SearchController::autoRestartDuration() const {
+    return autoRestartDuration_;
+}
+
+QString SearchController::autoRestartAttempts() const {
+    return autoRestartAttempts_;
+}
+
+QVariantList SearchController::sessionOptions() const {
+    return sessionOptions_;
+}
+
+QString SearchController::selectedSessionDirectory() const {
+    return selectedSessionDirectory_;
+}
+
+QVariantList SearchController::cycleRows() const {
+    return cycleRows_;
+}
+
+QString SearchController::selectedInputsText() const {
+    return selectedInputsText_;
+}
+
+void SearchController::setAutoRestartMode(const QString &value) {
+    if (autoRestartMode_ == value) return;
+    autoRestartMode_ = value;
+    persist(kAutoRestartModeKey, value);
+    emit autoRestartChanged();
+    refreshValidation();
+}
+
+void SearchController::setAutoRestartDuration(const QString &value) {
+    if (autoRestartDuration_ == value) return;
+    autoRestartDuration_ = value;
+    persist(kAutoRestartDurationKey, value);
+    emit autoRestartChanged();
+    refreshValidation();
+}
+
+void SearchController::setAutoRestartAttempts(const QString &value) {
+    if (autoRestartAttempts_ == value) return;
+    autoRestartAttempts_ = value;
+    persist(kAutoRestartAttemptsKey, value);
+    emit autoRestartChanged();
+    refreshValidation();
+}
+
 void SearchController::setReplayPath(const QString &value) {
     if (replayPath_ == value) {
         return;
@@ -623,6 +716,7 @@ void SearchController::setReplayPath(const QString &value) {
     emit replayPathChanged();
     emit replayInputStateChanged();
     refreshValidation();
+    refreshSessions();
 }
 
 void SearchController::setBaseInputScript(const QString &value) {
@@ -1057,6 +1151,7 @@ void SearchController::setPacksDirectory(const QString &value) {
     emit packsDirectoryChanged();
     emit replayInputStateChanged();
     refreshValidation();
+    refreshSessions();
 }
 
 void SearchController::browseForPacksDirectory() {
@@ -1185,13 +1280,23 @@ void SearchController::startSearch() {
     cancellationRequested_ = std::make_shared<std::atomic_bool>(false);
     iterationPhase_ = std::make_shared<std::atomic<SearchIterationPhase>>(
             SearchIterationPhase::Pending);
+    AutoRestartPolicy restartPolicy;
+    if (autoRestartMode_ == QLatin1String("duration")) {
+        restartPolicy.mode = AutoRestartPolicy::Mode::Duration;
+        restartPolicy.duration = *ParseRestartDuration(autoRestartDuration_);
+    } else if (autoRestartMode_ == QLatin1String("attempts")) {
+        restartPolicy.mode = AutoRestartPolicy::Mode::Attempts;
+        restartPolicy.attempts = autoRestartAttempts_.toULongLong();
+    }
+    restartPolicy.randomizeSeeds = randomizeSeedsOnStart_;
     QThread *const thread = new QThread(this);
     SearchWorker *const worker = new SearchWorker(
             *validation.request,
             ++searchSerial_,
             stopRequested_,
             cancellationRequested_,
-            iterationPhase_);
+            iterationPhase_,
+            restartPolicy);
     worker->moveToThread(thread);
     workerThread_ = thread;
 
@@ -1245,6 +1350,15 @@ void SearchController::startSearch() {
             this,
             [this](SearchImprovementPtr improvement) {
                 emit searchImprovement(std::move(improvement));
+            });
+    connect(worker, &SearchWorker::cycleSaved, this,
+            [this](const QString &mapKey, const QString &directory,
+                   std::uint64_t) {
+                sessionOptions_ = SearchSessionStore::SessionsForMap(mapKey);
+                selectedSessionDirectory_ = directory;
+                cycleRows_ = SearchSessionStore::Cycles(directory);
+                emit historyChanged();
+                selectCycle(static_cast<int>(cycleRows_.size()) - 1);
             });
     connect(worker,
             &SearchWorker::succeeded,
@@ -1303,6 +1417,28 @@ void SearchController::stopSearch() {
 }
 
 SearchController::ValidationResult SearchController::validate() const {
+    if (autoRestartMode_ != QLatin1String("off") &&
+        autoRestartMode_ != QLatin1String("duration") &&
+        autoRestartMode_ != QLatin1String("attempts")) {
+        return {{}, QStringLiteral("Choose an autorestart mode.")};
+    }
+    if (autoRestartMode_ == QLatin1String("duration") &&
+        !ParseRestartDuration(autoRestartDuration_)) {
+        return {{}, QStringLiteral(
+                "Autorestart duration must be HH:MM:SS and greater than zero.")};
+    }
+    if (autoRestartMode_ == QLatin1String("attempts")) {
+        bool valid = false;
+        const qulonglong attempts =
+                autoRestartAttempts_.toULongLong(&valid);
+        if (!valid || attempts == 0 || attempts > 9007199254740991ULL ||
+            !QRegularExpression(QStringLiteral("^[0-9]+$"))
+                     .match(autoRestartAttempts_).hasMatch()) {
+            return {{}, QStringLiteral(
+                    "Autorestart attempts must be a positive whole number "
+                    "no greater than 9,007,199,254,740,991.")};
+        }
+    }
     const QFileInfo packsInfo(packsDirectory_);
     if (packsDirectory_.isEmpty()) {
         return {{}, QStringLiteral("Select a Packs directory.")};
@@ -1502,6 +1638,61 @@ SearchController::ValidationResult SearchController::validate() const {
     request.simulationHorizonMs = simulationHorizonMs;
     request.condition = std::move(condition.program);
     return {std::move(request), {}};
+}
+
+void SearchController::refreshSessions() {
+    if (!QFileInfo(packsDirectory_).isDir() ||
+        !QFileInfo(replayPath_).isFile()) {
+        sessionOptions_.clear();
+        cycleRows_.clear();
+        selectedSessionDirectory_.clear();
+        selectedInputsText_.clear();
+        emit historyChanged();
+        return;
+    }
+    try {
+        SearchRequest request{
+                packsDirectory_.toUtf8().toStdString(),
+                replayPath_.toUtf8().toStdString()};
+        const QString mapKey = SearchSessionStore::Identify(request).mapKey;
+        sessionOptions_ = SearchSessionStore::SessionsForMap(mapKey);
+        if (sessionOptions_.isEmpty()) {
+            selectedSessionDirectory_.clear();
+            cycleRows_.clear();
+            selectedInputsText_.clear();
+            emit historyChanged();
+            return;
+        }
+        selectSession(static_cast<int>(sessionOptions_.size()) - 1);
+    } catch (const std::exception &) {
+        sessionOptions_.clear();
+        cycleRows_.clear();
+        selectedSessionDirectory_.clear();
+        selectedInputsText_.clear();
+        emit historyChanged();
+    }
+}
+
+void SearchController::selectSession(int index) {
+    if (index < 0 || index >= sessionOptions_.size()) return;
+    selectedSessionDirectory_ = sessionOptions_[index].toMap()
+                                        .value(QStringLiteral("directory"))
+                                        .toString();
+    cycleRows_ = SearchSessionStore::Cycles(selectedSessionDirectory_);
+    selectedInputsText_.clear();
+    emit historyChanged();
+    if (!cycleRows_.isEmpty()) selectCycle(
+            static_cast<int>(cycleRows_.size()) - 1);
+}
+
+void SearchController::selectCycle(int index) {
+    if (index < 0 || index >= cycleRows_.size()) return;
+    const QString fileName = cycleRows_[index].toMap()
+                                     .value(QStringLiteral("inputFile"))
+                                     .toString();
+    selectedInputsText_ = SearchSessionStore::Inputs(
+            selectedSessionDirectory_, fileName);
+    emit historyChanged();
 }
 
 void SearchController::refreshValidation() {

@@ -5,6 +5,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 #include <forevervalidator/experimental/physics_sandbox.h>
 
@@ -43,6 +44,29 @@ struct ConditionCompileResult {
     std::optional<ConditionProgram> program;
     std::optional<std::string> error;
 };
+
+class ScalarExpressionProgram {
+public:
+    std::optional<double> Evaluate(
+            const forevervalidator::experimental::PhysicsSandboxStateView
+                    &previous,
+            const forevervalidator::experimental::PhysicsSandboxStateView
+                    &current,
+            const ConditionExecutionContext &context) const;
+
+    std::vector<forevervalidator::experimental::
+                        PhysicsSandboxCudaConditionInstruction>
+            instructions;
+};
+
+struct ScalarExpressionCompileResult {
+    std::optional<ScalarExpressionProgram> program;
+    std::optional<std::string> error;
+};
+
+ScalarExpressionCompileResult CompileScalarExpression(
+        const std::string &source,
+        const ConditionVariables &variables = {});
 
 ConditionCompileResult CompileConditionScript(
         const std::string &source,

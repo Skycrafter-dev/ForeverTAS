@@ -133,6 +133,19 @@ class SearchController final : public QObject {
     Q_PROPERTY(QString elapsedText READ elapsedText NOTIFY metricsChanged)
     Q_PROPERTY(QString resultText READ resultText NOTIFY resultChanged)
     Q_PROPERTY(QString bestInputsText READ bestInputsText NOTIFY resultChanged)
+    Q_PROPERTY(QString autoRestartMode READ autoRestartMode WRITE
+                       setAutoRestartMode NOTIFY autoRestartChanged)
+    Q_PROPERTY(QString autoRestartDuration READ autoRestartDuration WRITE
+                       setAutoRestartDuration NOTIFY autoRestartChanged)
+    Q_PROPERTY(QString autoRestartAttempts READ autoRestartAttempts WRITE
+                       setAutoRestartAttempts NOTIFY autoRestartChanged)
+    Q_PROPERTY(QVariantList sessionOptions READ sessionOptions NOTIFY
+                       historyChanged)
+    Q_PROPERTY(QString selectedSessionDirectory READ
+                       selectedSessionDirectory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList cycleRows READ cycleRows NOTIFY historyChanged)
+    Q_PROPERTY(QString selectedInputsText READ selectedInputsText NOTIFY
+                       historyChanged)
 
 public:
     explicit SearchController(QObject *parent = nullptr);
@@ -197,6 +210,13 @@ public:
     QString elapsedText() const;
     QString resultText() const;
     QString bestInputsText() const;
+    QString autoRestartMode() const;
+    QString autoRestartDuration() const;
+    QString autoRestartAttempts() const;
+    QVariantList sessionOptions() const;
+    QString selectedSessionDirectory() const;
+    QVariantList cycleRows() const;
+    QString selectedInputsText() const;
 
 public slots:
     void setPacksDirectory(const QString &value);
@@ -214,6 +234,9 @@ public slots:
     void setVulkanCalibrationEnabled(bool value);
     void setCudaSessionSpecializationEnabled(bool value);
     void setRandomizeSeedsOnStart(bool value);
+    void setAutoRestartMode(const QString &value);
+    void setAutoRestartDuration(const QString &value);
+    void setAutoRestartAttempts(const QString &value);
     void setDrawTargetsThroughBlocks(bool value);
     void setDarkMode(bool value);
     void setSearchAlgorithmId(const QString &value);
@@ -244,6 +267,8 @@ public slots:
     Q_INVOKABLE void focusSelectedPoseTarget();
     Q_INVOKABLE void startSearch();
     Q_INVOKABLE void stopSearch();
+    Q_INVOKABLE void selectSession(int index);
+    Q_INVOKABLE void selectCycle(int index);
 
 signals:
     void packsDirectoryChanged();
@@ -278,6 +303,8 @@ signals:
     void statusChanged();
     void metricsChanged();
     void resultChanged();
+    void autoRestartChanged();
+    void historyChanged();
     void searchImprovement(
             forevertas::app::SearchImprovementPtr improvement);
     void searchCompleted(forevertas::app::SearchCompletionPtr completion);
@@ -326,6 +353,7 @@ private:
     void synchronizePoseTargetSetting(const QString &key,
                                       const QString &value);
     void applyBaseInputScript(const QString &value, bool recordUndo);
+    void refreshSessions();
 
     QString packsDirectory_;
     QString autoDetectedPacksDirectory_;
@@ -371,6 +399,13 @@ private:
     QString elapsedText_;
     QString resultText_;
     QString bestInputsText_;
+    QString autoRestartMode_ = QStringLiteral("off");
+    QString autoRestartDuration_ = QStringLiteral("00:05:00");
+    QString autoRestartAttempts_ = QStringLiteral("1000");
+    QVariantList sessionOptions_;
+    QVariantList cycleRows_;
+    QString selectedSessionDirectory_;
+    QString selectedInputsText_;
     bool valid_ = false;
     bool liveMetricsVisible_ = false;
     bool running_ = false;

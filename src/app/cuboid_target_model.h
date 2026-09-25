@@ -71,6 +71,7 @@ public:
     Q_INVOKABLE bool translateSelected(double x, double y, double z);
     Q_INVOKABLE bool moveSelectedTo(double x, double y, double z);
     Q_INVOKABLE bool resizeSelected(const QString &axis, double delta);
+    Q_INVOKABLE bool restoreTargets(const QVariantList &snapshot);
     void setEditingEnabled(bool enabled);
 
 signals:

@@ -77,6 +77,21 @@ set(FOREVERVALIDATOR_ENABLE_HIP ${FOREVERTAS_ENABLE_HIP} CACHE BOOL
     "Enable the embedded ForeverValidator HIP backend" FORCE)
 set(FOREVERVALIDATOR_ENABLE_VULKAN ${FOREVERTAS_ENABLE_VULKAN} CACHE BOOL
     "Enable the embedded ForeverValidator Vulkan backend" FORCE)
+if(WIN32 AND FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "nvidia")
+    set(CMAKE_HIP_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreaded
+        -Xcompiler=-MT)
+    set(CMAKE_HIP_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDLL
+        -Xcompiler=-MD)
+    set(CMAKE_HIP_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDebug
+        -Xcompiler=-MTd)
+    set(CMAKE_HIP_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreadedDebugDLL
+        -Xcompiler=-MDd)
+    set(CMAKE_HIP_ARCHIVE_CREATE
+        "<CMAKE_AR> /nologo /out:<TARGET> <LINK_FLAGS> <OBJECTS>")
+    set(CMAKE_HIP_ARCHIVE_APPEND
+        "<CMAKE_AR> /nologo /out:<TARGET> <LINK_FLAGS> <TARGET> <OBJECTS>")
+    set(CMAKE_HIP_ARCHIVE_FINISH "")
+endif()
 
 FetchContent_Declare(
     ForeverValidator
@@ -84,6 +99,15 @@ FetchContent_Declare(
     GIT_TAG b72ad72b2018b3c0b90b85c015ddad84b96f6a4b
     GIT_SHALLOW FALSE)
 FetchContent_MakeAvailable(ForeverValidator)
+if(FOREVERTAS_ENABLE_HIP AND UNIX)
+    if(CMAKE_HIP_PLATFORM STREQUAL "nvidia")
+        target_compile_options(forevervalidator_core PRIVATE
+            $<$<COMPILE_LANGUAGE:HIP>:-Xcompiler=-fPIC>)
+    else()
+        target_compile_options(forevervalidator_core PRIVATE
+            $<$<COMPILE_LANGUAGE:HIP>:-fPIC>)
+    endif()
+endif()
 
 add_library(forevertas_core STATIC
     src/input_timeline_time.h
@@ -100,6 +124,8 @@ add_library(forevertas_core STATIC
     src/evaluators/point_target_evaluator.h
     src/evaluators/pose_target_evaluator.cpp
     src/evaluators/pose_target_evaluator.h
+    src/evaluators/scripted_target_evaluator.cpp
+    src/evaluators/scripted_target_evaluator.h
     src/evaluators/stunt_points_evaluator.cpp
     src/evaluators/stunt_points_evaluator.h
     src/evaluators/velocity_evaluator.cpp
@@ -149,6 +175,9 @@ target_link_libraries(forevertas_core PUBLIC
     ForeverValidator::core
     ForeverValidator::native)
 if(FOREVERTAS_ENABLE_HIP)
+    target_sources(forevertas_core PRIVATE
+        src/searches/hip_calibration_limits.cpp
+        src/searches/hip_calibration_limits.h)
     target_include_directories(forevertas_core PRIVATE
         "${FOREVERVALIDATOR_HIP_INCLUDE_DIR}")
     if(CMAKE_HIP_PLATFORM STREQUAL "nvidia")
@@ -179,6 +208,10 @@ add_library(forevertas_gui STATIC
     src/viewer/race_timeline_item.h
     src/viewer/race_viewer_controller.cpp
     src/viewer/race_viewer_controller.h
+    src/viewer/map_identity.cpp
+    src/viewer/map_identity.h
+    src/app/search_session_store.cpp
+    src/app/search_session_store.h
     src/viewer/simulation_debugger_model.cpp
     src/viewer/simulation_debugger_model.h
     src/viewer/visual_scene_pipeline.cpp
@@ -369,11 +402,16 @@ qt_add_qml_module(forevertas
     VERSION 1.0
     QML_FILES
         qml/AppTheme.qml
+        qml/EvaluationOverlay.qml
+        qml/EditHistory.qml
+        qml/GraphicsInspector.qml
         qml/Main.qml
+        qml/SearchSessionHistory.qml
         qml/SimulationDebuggerPanel.qml
         qml/SliderValueField.qml
         qml/ThemedButton.qml
         qml/ThemedCheckBox.qml
+        qml/ThemedIconButton.qml
         qml/ThemedItemDelegate.qml
         qml/ThemedMenuItem.qml
         qml/ThemedSlider.qml
@@ -394,6 +432,7 @@ qt_add_qml_module(forevertas
         qml/settings/PoseTargetEvaluationSettings.qml
         qml/settings/RandomSteeringMutationSettings.qml
         qml/settings/ScrubNumberField.qml
+        qml/settings/ScriptedTargetEvaluationSettings.qml
         qml/settings/SettingCombo.qml
         qml/settings/SettingSlider.qml
         qml/settings/SettingSwitch.qml
@@ -411,6 +450,12 @@ qt_add_resources(forevertas "replacement-materials"
     PREFIX "/materials"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials"
     FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
+file(GLOB FOREVERTAS_LUCIDE_ICONS CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/*.svg")
+qt_add_resources(forevertas "lucide-icons"
+    PREFIX "/icons"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons"
+    FILES ${FOREVERTAS_LUCIDE_ICONS})
 file(GLOB FOREVERTAS_ENVIRONMENT_TEXTURES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment/*.png")
 qt_add_resources(forevertas "environment-textures"
@@ -533,15 +578,7 @@ if(WIN32)
             ${forevertas_nvrtc_builtins_runtime_dlls}
             ${forevertas_nvjitlink_runtime_dlls})
     endif()
-    if(FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
-        find_file(forevertas_hip_runtime_dll
-            NAMES amdhip64.dll
-            HINTS "${FOREVERTAS_WINDOWS_HIP_RUNTIME_DIR}"
-                  "$ENV{HIP_PATH}/bin"
-                  "$ENV{ROCM_PATH}/bin"
-            REQUIRED)
-        install(FILES "${forevertas_hip_runtime_dll}" DESTINATION ".")
-    endif()
+    # AMD GPU drivers supply the matching HIP runtime; do not redistribute it.
     list(LENGTH forevertas_openssl_runtime_dlls
         forevertas_openssl_runtime_dll_count)
     list(LENGTH forevertas_zlib_runtime_dlls
@@ -977,6 +1014,11 @@ if(BUILD_TESTING)
             PREFIX "/environment"
             BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment"
             FILES ${FOREVERTAS_ENVIRONMENT_TEXTURES})
+        qt_add_resources(forevertas-viewer-qml-smoke
+            "lucide-icons-test"
+            PREFIX "/icons"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons"
+            FILES ${FOREVERTAS_LUCIDE_ICONS})
         target_compile_definitions(forevertas-viewer-qml-smoke PRIVATE
             FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(forevertas-viewer-qml-smoke PRIVATE

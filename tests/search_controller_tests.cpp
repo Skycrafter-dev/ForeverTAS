@@ -6,6 +6,7 @@
 #include "app/search_configuration_model.h"
 #include "app/search_controller.h"
 #include "app/search_worker.h"
+#include "app/search_session_store.h"
 
 #include <forevervalidator/validation.h>
 
@@ -13,6 +14,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -1144,8 +1146,13 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
             "auto-promote search mode was unexpectedly enabled by default");
     okay &= Check(controller.modifierOptions().size() == 5,
                   "required modifier options were not exposed");
-    okay &= Check(controller.evaluationTargetOptions().size() == 7,
+    okay &= Check(controller.evaluationTargetOptions().size() == 8,
                   "required evaluation targets were not exposed");
+    okay &= Check(HasOption(
+                          controller.evaluationTargetOptions(),
+                          QStringLiteral("scripted-target"),
+                          QStringLiteral("ScriptedTargetEvaluationSettings.qml")),
+                  "custom scripted target metadata was not exposed");
     okay &= Check(
             HasOption(controller.modifierOptions(),
                       QStringLiteral("existing-event-perturbation"),
@@ -1592,6 +1599,42 @@ bool TestExtractionWorkerShutdown(const QString &packsDirectory,
     }
     return Check(elapsed.elapsed() < 5000,
                  "input extraction worker did not stop during shutdown");
+}
+
+bool TestAutorestartSettings(const QString &packsDirectory,
+                             const QString &replayPath) {
+    QSettings().clear();
+    SearchController controller;
+    SetValidPaths(controller, packsDirectory, replayPath);
+    controller.setAutoRestartMode(QStringLiteral("duration"));
+    controller.setAutoRestartDuration(QStringLiteral("00:00:00"));
+    bool okay = Check(controller.validationMessage().contains(
+                              QStringLiteral("HH:MM:SS")),
+                      "zero autorestart duration was accepted");
+    controller.setAutoRestartDuration(QStringLiteral("00:00:02"));
+    okay &= Check(controller.autoRestartDuration() ==
+                          QStringLiteral("00:00:02") &&
+                          !controller.validationMessage().contains(
+                                  QStringLiteral("HH:MM:SS")),
+                  "valid autorestart duration was rejected");
+    controller.setAutoRestartMode(QStringLiteral("attempts"));
+    controller.setAutoRestartAttempts(QStringLiteral("0"));
+    okay &= Check(controller.validationMessage().contains(
+                          QStringLiteral("positive whole number")),
+                  "zero autorestart attempts were accepted");
+    controller.setAutoRestartAttempts(QStringLiteral("3"));
+    okay &= Check(!controller.validationMessage().contains(
+                          QStringLiteral("positive whole number")),
+                  "valid autorestart attempt limit was rejected");
+    SearchController restored;
+    okay &= Check(restored.autoRestartMode() ==
+                          QStringLiteral("attempts") &&
+                          restored.autoRestartAttempts() ==
+                                  QStringLiteral("3") &&
+                          restored.autoRestartDuration() ==
+                                  QStringLiteral("00:00:02"),
+                  "autorestart settings were not persisted");
+    return okay;
 }
 
 bool TestDescriptiveSearchStageStatuses() {
@@ -2056,6 +2099,166 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
     return okay;
 }
 
+bool TestAutorestartHistory(const QString &packsDirectory,
+                            const QString &replayPath) {
+    QSettings().clear();
+    SearchController controller;
+    SetValidPaths(controller, packsDirectory, replayPath);
+    controller.setBaseInputScript(QStringLiteral("0.00 press up"));
+    controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
+    controller.setRandomizeSeedsOnStart(false);
+    controller.setModifierPassSetting(0, QStringLiteral("minTimeMs"),
+                                      QStringLiteral("0"));
+    controller.setModifierPassSetting(0, QStringLiteral("maxTimeMs"),
+                                      QStringLiteral("20"));
+    controller.setEvaluationTargetSetting(QStringLiteral("minTimeMs"),
+                                          QStringLiteral("0"));
+    controller.setEvaluationTargetSetting(QStringLiteral("maxTimeMs"),
+                                          QStringLiteral("20"));
+    controller.setAutoRestartMode(QStringLiteral("attempts"));
+    controller.setAutoRestartAttempts(QStringLiteral("3"));
+    if (!Check(controller.canStart(),
+               "autorestart test configuration could not start")) {
+        return false;
+    }
+    controller.startSearch();
+    bool okay = Check(WaitUntil(
+            [&controller]() { return controller.cycleRows().size() >= 2; },
+            30000), "autorestart did not save threshold-completed cycles");
+    controller.stopSearch();
+    okay &= Check(WaitUntil([&controller]() {
+                      return !controller.running();
+                  }, 30000), "autorestart Stop did not finish and save");
+    const QVariantList rows = controller.cycleRows();
+    const QString selectedInputFile = rows.isEmpty() ? QString{} :
+            rows.last().toMap().value(QStringLiteral("inputFile"))
+                    .toString();
+    okay &= Check(rows.size() >= 2 &&
+                          rows[0].toMap().value(QStringLiteral("attempts"))
+                                  .toLongLong() == 3 &&
+                          rows[1].toMap().value(QStringLiteral("attempts"))
+                                  .toLongLong() == 3 &&
+                          QFileInfo::exists(
+                                  controller.selectedSessionDirectory() +
+                                  '/' + selectedInputFile),
+                  "cycle table lost exact attempts or selected inputs");
+    if (rows.size() >= 2) {
+        okay &= Check(rows[0].toMap()
+                              .value(QStringLiteral("modifierSeeds")) ==
+                              rows[1].toMap()
+                                      .value(QStringLiteral("modifierSeeds")),
+                      "disabled seed randomization changed cycle seeds");
+        const QVariantMap first = rows[0].toMap();
+        const QVariantList labels = first.value(
+                QStringLiteral("metricLabels")).toList();
+        const QVariantList values = first.value(
+                QStringLiteral("metrics")).toList();
+        okay &= Check(labels.size() == values.size() &&
+                              labels.size() == 2 &&
+                              labels[0].toString() ==
+                                      QStringLiteral("Speed (m/s)"),
+                      "saved cycle did not expose target-specific numeric metrics");
+    }
+    const QString metadataPath = controller.selectedSessionDirectory() +
+            QStringLiteral("/restart-000000.json");
+    okay &= Check(QFileInfo::exists(metadataPath),
+                  "cycle metadata was not saved atomically");
+    SearchController restored;
+    SetValidPaths(restored, packsDirectory, replayPath);
+    okay &= Check(restored.cycleRows().size() >= 2 &&
+                          !restored.sessionOptions().isEmpty(),
+                  "saved map sessions did not reload");
+    if (restored.cycleRows().size() >= 2) {
+        restored.selectCycle(0);
+        const QString firstFile = restored.cycleRows()[0].toMap()
+                                          .value(QStringLiteral("inputFile"))
+                                          .toString();
+        okay &= Check(restored.selectedInputsText() ==
+                              forevertas::app::SearchSessionStore::Inputs(
+                                      restored.selectedSessionDirectory(),
+                                      firstFile) &&
+                              !restored.selectedInputsText().isEmpty(),
+                      "selecting a saved row did not load its inputs");
+    }
+    return okay;
+}
+
+bool TestDurationAutorestartAndSaveFailure(
+        const QString &packsDirectory, const QString &replayPath) {
+    QSettings().clear();
+    SearchController controller;
+    SetValidPaths(controller, packsDirectory, replayPath);
+    controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
+    controller.setRandomizeSeedsOnStart(true);
+    controller.setModifierPassSetting(0, QStringLiteral("minTimeMs"),
+                                      QStringLiteral("0"));
+    controller.setModifierPassSetting(0, QStringLiteral("maxTimeMs"),
+                                      QStringLiteral("20"));
+    controller.setEvaluationTargetSetting(QStringLiteral("minTimeMs"),
+                                          QStringLiteral("0"));
+    controller.setEvaluationTargetSetting(QStringLiteral("maxTimeMs"),
+                                          QStringLiteral("20"));
+    controller.setAutoRestartMode(QStringLiteral("duration"));
+    controller.setAutoRestartDuration(QStringLiteral("00:00:01"));
+    const QString previousSession =
+            controller.selectedSessionDirectory();
+    controller.startSearch();
+    bool okay = Check(WaitUntil(
+            [&controller, &previousSession]() {
+                return controller.selectedSessionDirectory() !=
+                               previousSession &&
+                        controller.cycleRows().size() >= 2;
+            },
+            30000), "duration autorestart did not complete two cycles");
+    controller.stopSearch();
+    okay &= Check(WaitUntil([&controller]() {
+                      return !controller.running();
+                  }, 30000), "duration autorestart did not stop");
+    const QVariantList rows = controller.cycleRows();
+    if (rows.size() >= 2) {
+        okay &= Check(rows[0].toMap().value(QStringLiteral("attempts"))
+                                      .toLongLong() > 0 &&
+                              rows[1].toMap().value(QStringLiteral("attempts"))
+                                      .toLongLong() > 0,
+                      "duration cycles ended before any attempts");
+        okay &= Check(rows[0].toMap()
+                              .value(QStringLiteral("modifierSeeds")) !=
+                              rows[1].toMap()
+                                      .value(QStringLiteral("modifierSeeds")),
+                      "enabled seed randomization reused cycle seeds");
+    }
+
+    forevertas::SearchRequest request{
+            packsDirectory.toUtf8().toStdString(),
+            replayPath.toUtf8().toStdString()};
+    request.backend = forevertas::PhysicsBackend::OptimizedCpu;
+    request.modifiers[0].settings["minTimeMs"] = "0";
+    request.modifiers[0].settings["maxTimeMs"] = "20";
+    request.evaluationTarget.settings["minTimeMs"] = "0";
+    request.evaluationTarget.settings["maxTimeMs"] = "20";
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 0u;
+    control.sampleBestTimeline = false;
+    const forevertas::SearchResult result =
+            forevertas::RunSearch(request, &control);
+    QTemporaryDir root;
+    QFile blocked(root.filePath(QStringLiteral("blocked")));
+    okay &= Check(blocked.open(QIODevice::WriteOnly),
+                  "could not prepare save failure fixture");
+    blocked.close();
+    bool failedActionably = false;
+    try {
+        forevertas::app::SearchSessionStore::SaveCycle(
+                {{}, {}, blocked.fileName()}, request, 0u, result);
+    } catch (const std::exception &error) {
+        failedActionably = QString::fromUtf8(error.what())
+                                    .contains(QStringLiteral("Could not save"));
+    }
+    okay &= Check(failedActionably,
+                  "cycle save failure was silently discarded");
+    return okay;
+}
+
 bool TestMetricsWhenConditionExcludesBaseline(
         const QString &packsDirectory,
         const QString &replayPath) {
@@ -2164,6 +2367,10 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName(
             QStringLiteral("SearchControllerTests"));
     QStandardPaths::setTestModeEnabled(true);
+    QTemporaryDir savedSessions;
+    if (!savedSessions.isValid()) return 1;
+    qputenv("FOREVERTAS_AUTORESTARTS_ROOT",
+            savedSessions.path().toUtf8());
 
     QTemporaryDir packsDirectory;
     if (!packsDirectory.isValid()) {
@@ -2189,6 +2396,7 @@ int main(int argc, char **argv) {
             TestCustomVolumeTargets() &&
             TestPoseTargets() &&
             TestAutomaticPacksDetection() &&
+            TestAutorestartSettings(packsDirectory.path(), replayPath) &&
             TestDescriptiveSearchStageStatuses() &&
             TestIterationBoundaryArbitration() &&
             TestUserTimelineConfigurationBoundary() &&
@@ -2210,7 +2418,9 @@ int main(int argc, char **argv) {
         QString::fromLocal8Bit(argv[1]) == QStringLiteral("--lifecycle")) {
         const QString packs = QString::fromLocal8Bit(argv[2]);
         const QString replay = QString::fromLocal8Bit(argv[3]);
-        okay = TestMetricsWhenConditionExcludesBaseline(packs, replay) &&
+        okay = TestAutorestartHistory(packs, replay) &&
+                TestDurationAutorestartAndSaveFailure(packs, replay) &&
+                TestMetricsWhenConditionExcludesBaseline(packs, replay) &&
                 TestIndefiniteSearchLifecycle(packs, replay);
     }
     QSettings().clear();

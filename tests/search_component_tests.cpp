@@ -1,5 +1,6 @@
 #include "app/rolling_throughput.h"
 #include "evaluators/iteration_evaluator.h"
+#include "evaluators/scripted_target_evaluator.h"
 #include "input_timeline_time.h"
 #include "mutations/composite_input_mutator.h"
 #include "mutations/input_event_formatter.h"
@@ -1454,7 +1455,7 @@ bool TestRegistries() {
     }
     okay &= Check(forevertas::ModifierRegistry().size() == 5u,
                   "not all required modifiers are registered");
-    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 7u,
+    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 8u,
                   "not all required evaluation targets are registered");
     return okay;
 }
@@ -1940,14 +1941,14 @@ bool TestCudaConfigurationCoverage() {
     for (const auto &registration :
          forevertas::EvaluationTargetRegistry()) {
         if (registration.id ==
-            forevertas::kCustomVolumeEntryEvaluationId) {
+                    forevertas::kCustomVolumeEntryEvaluationId) {
             try {
                 static_cast<void>(forevertas::BuildCudaEvaluator(
                         {registration.id, registration.defaultSettings},
                         10u));
                 okay &= Check(
                         false,
-                        "custom volume unexpectedly used an inexact CUDA "
+                        "unsupported target unexpectedly used a CUDA "
                         "evaluator");
             } catch (const std::invalid_argument &) {
             }
@@ -2158,6 +2159,81 @@ bool TestConditionLanguageParity() {
     return okay;
 }
 
+bool TestScriptedTarget() {
+    OptionSettings settings = forevertas::DefaultScriptedTargetOptionSettings();
+    settings["script"] =
+            "# BfV2-style objectives\nmax kmh(car.speed) # speed\n"
+            "min car.y\ntarget 100 car.x";
+    bool okay = Check(
+            !forevertas::ValidateScriptedTargetOptionSettings(
+                    settings, 10u),
+            "valid custom target script did not compile");
+    const auto gpu = forevertas::BuildCudaEvaluator(
+            {forevertas::kScriptedTargetEvaluationId, settings}, 10u);
+    const auto *gpuScript = gpu
+            ? std::get_if<forevervalidator::experimental::
+                                  PhysicsSandboxCudaScriptedEvaluator>(
+                      &*gpu)
+            : nullptr;
+    okay &= Check(gpuScript && gpuScript->objectives.size() == 3u &&
+                          gpuScript->objectives[2].target == 100.0 &&
+                          !gpuScript->objectives[0].instructions.empty(),
+                  "custom target did not expose GPU objective instructions");
+    const auto evaluator = forevertas::CreateScriptedTargetEvaluator(
+            settings, 10u);
+    okay &= Check(evaluator->CompareAtEndOnly() &&
+                          evaluator->Plan(6000, 1000, 10).startTimeMs == 10 &&
+                          evaluator->Plan(6000, 1000, 10).endTimeMs == 6000,
+                  "custom target lost the pre-mutation evaluation window");
+    auto session = evaluator->CreateSession();
+    PhysicsSandboxStateView previous;
+    PhysicsSandboxStateView current;
+    current.timeMs = 1000;
+    current.car.linearSpeed = {10.0f, 0.0f, 0.0f};
+    current.car.position = {90.0f, 5.0f, 0.0f};
+    const auto first = session->Observe(previous, current);
+    okay &= Check(first && first->objectiveScores.size() == 3u &&
+                          first->metricValues.size() == 3u &&
+                          std::abs(first->metricValues[0] - 36.0) < 1e-9,
+                  "custom target did not expose all objective metrics");
+    previous = current;
+    current.timeMs = 1010;
+    current.car.linearSpeed = {9.0f, 0.0f, 0.0f};
+    current.car.position = {95.0f, 6.0f, 0.0f};
+    const auto accumulated = session->Observe(previous, current);
+    okay &= Check(accumulated &&
+                          accumulated->metricValues[0] == 36.0 &&
+                          accumulated->metricValues[1] == 5.0 &&
+                          accumulated->metricValues[2] == 95.0,
+                  "custom target did not accumulate per-objective bests");
+    EvaluationSample better = *accumulated;
+    better.objectiveScores[2] += 1.0;
+    okay &= Check(evaluator->IsBetter(better, *accumulated),
+                  "Pareto improvement was rejected");
+    better.objectiveScores[1] -= 1.0;
+    okay &= Check(!evaluator->IsBetter(better, *accumulated),
+                  "incomparable Pareto result was accepted");
+    settings["script"] = "max car.speed\nmin unknown.value";
+    const auto invalid =
+            forevertas::ValidateScriptedTargetOptionSettings(settings, 10u);
+    okay &= Check(invalid && invalid->find("line 2") != std::string::npos,
+                  "custom target error did not identify the line");
+    settings["script"] = "max car.speed\nmin kmh((1,2,3))";
+    const auto nonScalar =
+            forevertas::ValidateScriptedTargetOptionSettings(settings, 10u);
+    okay &= Check(nonScalar &&
+                          nonScalar->find("line 2") != std::string::npos &&
+                          nonScalar->find("finite scalar") != std::string::npos,
+                  "non-scalar custom target was not rejected at compile time");
+    settings["script"] = "max car.speed\nmin iterations";
+    const auto dynamicMetric =
+            forevertas::ValidateScriptedTargetOptionSettings(settings, 10u);
+    okay &= Check(dynamicMetric &&
+                          dynamicMetric->find("line 2") != std::string::npos,
+                  "search-time custom metric was not rejected at its line");
+    return okay;
+}
+
 }  // namespace
 
 int main() {
@@ -2186,6 +2262,7 @@ int main() {
             TestCudaCalibrationSafety() &&
             TestCudaConfigurationCoverage() &&
             TestConditionLanguageParity() &&
+            TestScriptedTarget() &&
             TestReplayPathRobustness();
     return okay ? 0 : 1;
 }

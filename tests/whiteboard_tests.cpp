@@ -197,6 +197,17 @@ int main(int argc, char **argv) {
     expect(!model.setText(0, QStringLiteral("not text")),
            "non-text items cannot be edited as text");
 
+    const quint64 whiteboardHistoryToken = model.captureHistorySnapshot();
+    expect(model.setText(4, QStringLiteral("Changed annotation")) &&
+                   model.restoreHistorySnapshot(whiteboardHistoryToken) &&
+                   model.items().back().toMap()
+                                   .value(QStringLiteral("text"))
+                                   .toString() ==
+                           QStringLiteral("Edited annotation"),
+           "whiteboard history restores in-progress drawing edits");
+    model.pruneHistorySnapshots(
+            {QVariant::fromValue(whiteboardHistoryToken)});
+
     model.setTool(QStringLiteral("select"));
     expect(model.itemAt(0.5, 0.5) >= 0,
            "persistent selection input can hit-test drawing items");

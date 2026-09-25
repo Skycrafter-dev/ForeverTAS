@@ -3,6 +3,7 @@
 #include "mutations/replay_input_script.h"
 #include "replay_file_io.h"
 #include "searches/basic_brute_force_search.h"
+#include "searches/algorithm_registry.h"
 #include "searches/search_runner.h"
 
 #include <forevervalidator/native.h>
@@ -11,6 +12,7 @@
 #endif
 
 #include <chrono>
+#include <cmath>
 #include <exception>
 #include <filesystem>
 #include <iostream>
@@ -1211,13 +1213,18 @@ bool CheckSandboxCloneAndWindowParity(
                                PhysicsSandboxInputValueKind::Analog;
             });
     if (steering == patch.events.end()) {
-        std::cerr << "clone parity replay has no steering event in window\n";
-        return false;
+        PhysicsSandboxInputEvent inserted;
+        inserted.timeMs = 500;
+        inserted.action = forevertas::SandboxInputAction::Steer;
+        inserted.value.kind = PhysicsSandboxInputValueKind::Analog;
+        inserted.value.analog = 12345;
+        patch.events.push_back(inserted);
+    } else {
+        steering->timeMs = std::min<std::int32_t>(
+                steering->timeMs + 10, 1000);
+        steering->value.analog = forevertas::SaturateAnalogInputState(
+                static_cast<std::int64_t>(steering->value.analog) + 12345);
     }
-    steering->timeMs = std::min<std::int32_t>(
-            steering->timeMs + 10, 1000);
-    steering->value.analog = forevertas::SaturateAnalogInputState(
-            static_cast<std::int64_t>(steering->value.analog) + 12345);
     forevertas::NormalizeInputEvents(
             patch.events, forevertas::kSearchTickDurationMs);
     const std::vector<PhysicsSandboxInputEvent> expectedInputs =
@@ -1374,6 +1381,55 @@ bool CheckInputAfterHorizonAccepted(const char *packsDirectory,
     control.iterationLimit = 0u;
     control.sampleBestTimeline = false;
     static_cast<void>(forevertas::RunSearch(request, &control));
+    return true;
+}
+
+bool CheckScriptedTargetIntegration(const char *packsDirectory,
+                                    const char *replayPath) {
+    forevertas::SearchRequest request{packsDirectory, replayPath};
+    request.backend = forevertas::PhysicsBackend::OptimizedCpu;
+    request.evaluationTarget = {
+            forevertas::kScriptedTargetEvaluationId,
+            {{"minTimeMs", "1000"}, {"maxTimeMs", "1010"},
+             {"script", "# objectives\nmax car.speed\nmin car.y"}}};
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 2u;
+    control.sampleBestTimeline = false;
+    const forevertas::SearchResult result =
+            forevertas::RunSearch(request, &control);
+    if (result.iterations != 2u ||
+        result.objectiveScores.size() != 2u ||
+        result.metricValues.size() != 2u ||
+        !std::isfinite(result.metricValues[0]) ||
+        !std::isfinite(result.metricValues[1])) {
+        std::cerr << "scripted target did not retain structured metrics\n";
+        return false;
+    }
+    request.backend = forevertas::PhysicsBackend::MultiThreadedCpu;
+    request.parallelSampleCount = 2u;
+    const forevertas::SearchResult parallel =
+            forevertas::RunSearch(request, &control);
+    if (parallel.iterations != result.iterations ||
+        parallel.winningIterationIndex !=
+                result.winningIterationIndex ||
+        parallel.objectiveScores != result.objectiveScores ||
+        parallel.metricValues != result.metricValues ||
+        parallel.bestInputs.size() != result.bestInputs.size()) {
+        std::cerr << "multi-worker custom target lost ordered Pareto parity\n";
+        return false;
+    }
+    request.backend = forevertas::PhysicsBackend::OptimizedCpu;
+    request.evaluationTarget.settings = {
+            {"minTimeMs", "0"}, {"maxTimeMs", "20"},
+            {"script", "max car.speed"}};
+    const forevertas::SearchResult prefix =
+            forevertas::RunSearch(request, &control);
+    if (prefix.iterations != 2u ||
+        prefix.bestEvaluationTimeMs != 20.0 ||
+        prefix.winnerSource != forevertas::SearchWinnerSource::Baseline) {
+        std::cerr << "scripted target lost the shared prefix before mutation\n";
+        return false;
+    }
     return true;
 }
 
@@ -1628,6 +1684,7 @@ int main(int argc, char **argv) {
                     : 1;
         }
         if (!CheckAutoPromoteSemantics(argv[1], argv[2]) ||
+            !CheckScriptedTargetIntegration(argv[1], argv[2]) ||
             !CheckEquivalentResultPrefersFewerInputs(argv[1], argv[2]) ||
             !CheckModifierWindowClampedToHorizon(argv[1], argv[2]) ||
             !CheckStatisticsWithoutEligibleBest(argv[1], argv[2]) ||
@@ -1677,6 +1734,13 @@ int main(int argc, char **argv) {
             || !RunBackend(argv[1],
                            argv[2],
                            forevertas::PhysicsBackend::Hip)
+#endif
+#if FOREVERVALIDATOR_HAS_VULKAN
+            || !CheckStuntTargetBackend(
+                    argv[1], argv[2],
+                    forevertas::PhysicsBackend::Vulkan)
+            || !RunBackend(argv[1], argv[2],
+                           forevertas::PhysicsBackend::Vulkan)
 #endif
         ) {
             return 1;

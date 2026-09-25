@@ -2,6 +2,7 @@
 
 #include "input_timeline_time.h"
 #include "searches/algorithm_registry.h"
+#include "evaluators/scripted_target_evaluator.h"
 #include "searches/option_settings_utils.h"
 
 #include <cmath>
@@ -239,6 +240,9 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
     }
     if (configuration.id == kStuntPointsEvaluationId) {
         return PhysicsSandboxCudaStuntPointsEvaluator{};
+    }
+    if (configuration.id == kScriptedTargetEvaluationId) {
+        return BuildCudaScriptedTargetEvaluator(settings, tickDurationMs);
     }
     throw std::invalid_argument(
             "CUDA does not support evaluator: " + configuration.id);

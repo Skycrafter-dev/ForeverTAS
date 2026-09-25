@@ -133,6 +133,40 @@ QVariantMap CuboidTargetModel::selectedTarget() const {
             targets_[static_cast<std::size_t>(selectedIndex_)], true);
 }
 
+bool CuboidTargetModel::restoreTargets(const QVariantList &snapshot) {
+    if (!editingEnabled_ || snapshot.isEmpty() ||
+        snapshot.size() > maximumCount()) return false;
+    std::vector<Target> restored;
+    restored.reserve(static_cast<std::size_t>(snapshot.size()));
+    int selected = 0;
+    for (const QVariant &entry : snapshot) {
+        const QVariantMap item = entry.toMap();
+        const QString id = item.value(QStringLiteral("id")).toString();
+        const QString name = item.value(QStringLiteral("name")).toString();
+        const QVector3D center(
+                item.value(QStringLiteral("centerX")).toFloat(),
+                item.value(QStringLiteral("centerY")).toFloat(),
+                item.value(QStringLiteral("centerZ")).toFloat());
+        const QVector3D size(
+                item.value(QStringLiteral("sizeX")).toFloat(),
+                item.value(QStringLiteral("sizeY")).toFloat(),
+                item.value(QStringLiteral("sizeZ")).toFloat());
+        if (id.isEmpty() || name.isEmpty() || !IsFinite(center) ||
+            !HasPositiveComponents(size)) return false;
+        if (item.value(QStringLiteral("selected")).toBool())
+            selected = static_cast<int>(restored.size());
+        restored.push_back(Target{id, name, center, size});
+    }
+    beginResetModel();
+    targets_ = std::move(restored);
+    selectedIndex_ = selected;
+    endResetModel();
+    persist();
+    emit targetsChanged();
+    emit selectedTargetChanged();
+    return true;
+}
+
 int CuboidTargetModel::addTarget(double centerX,
                                  double centerY,
                                  double centerZ) {

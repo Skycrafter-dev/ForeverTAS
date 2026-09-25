@@ -1,13 +1,20 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Archive,
-    [string]$WorkingDirectory = ""
+    [string]$WorkingDirectory = "",
+    [string]$ExternalRuntimeDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $Archive = (Resolve-Path $Archive).Path
+if ($ExternalRuntimeDirectory) {
+    $ExternalRuntimeDirectory = (Resolve-Path $ExternalRuntimeDirectory).Path
+    if (-not (Test-Path (Join-Path $ExternalRuntimeDirectory "amdhip64_7.dll") -PathType Leaf)) {
+        throw "AMD HIP driver runtime is missing from $ExternalRuntimeDirectory"
+    }
+}
 $RemoveWorkingDirectory = [string]::IsNullOrWhiteSpace($WorkingDirectory)
 if ($RemoveWorkingDirectory) {
     $WorkingDirectory = Join-Path ([IO.Path]::GetTempPath()) `
@@ -88,11 +95,13 @@ try {
             $BesideApplication = Join-Path $ApplicationDirectory $Dependency
             $BesideBinary = Join-Path $Binary.Directory.FullName $Dependency
             $InSystemDirectory = Join-Path $SystemDirectory $Dependency
+            $IsExternalHipRuntime = $ExternalRuntimeDirectory -and
+                $Dependency -ieq "amdhip64_7.dll"
             $IsPackaged = (Test-Path $BesideApplication -PathType Leaf) -or
                 (Test-Path $BesideBinary -PathType Leaf)
             $MustBePackaged = $Dependency -match `
                 "^(concrt|msvcp|vcruntime)[0-9_]*\.dll$"
-            if (-not $IsPackaged -and
+            if (-not $IsPackaged -and -not $IsExternalHipRuntime -and
                     ($MustBePackaged -or
                         -not (Test-Path $InSystemDirectory -PathType Leaf))) {
                 [void]$MissingDependencies.Add(
@@ -105,7 +114,11 @@ try {
         throw "The portable tree has unresolved DLL dependencies:`n  $Details"
     }
 
-    $env:PATH = "$SystemDirectory;$env:SystemRoot"
+    $env:PATH = if ($ExternalRuntimeDirectory) {
+        "$ExternalRuntimeDirectory;$SystemDirectory;$env:SystemRoot"
+    } else {
+        "$SystemDirectory;$env:SystemRoot"
+    }
     Remove-Item Env:QT_PLUGIN_PATH -ErrorAction SilentlyContinue
     Remove-Item Env:QML2_IMPORT_PATH -ErrorAction SilentlyContinue
     Remove-Item Env:QML_IMPORT_PATH -ErrorAction SilentlyContinue

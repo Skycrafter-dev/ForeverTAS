@@ -8,11 +8,13 @@ ColumnLayout {
     property var settings: ({})
     property var updateSetting
     property bool running: false
+    property var viewer
 
     Layout.fillWidth: true
     spacing: 6
 
     TimeWindowSettings {
+        viewer: root.viewer
         settings: root.settings
         updateSetting: root.updateSetting
         running: root.running

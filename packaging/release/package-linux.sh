@@ -9,6 +9,7 @@ cache_root="${FOREVERTAS_CACHE_ROOT:-/cache}"
 search_cache_root="${cache_root}/cuda-search"
 split_compile_jobs="${FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS:-4}"
 search_architecture_jobs="${FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS:-2}"
+release_jobs="${FOREVERTAS_RELEASE_JOBS:-1}"
 hip_enabled="${FOREVERTAS_ENABLE_HIP:-OFF}"
 hip_architectures="${FOREVERTAS_HIP_ARCHITECTURES:-${CUDA_ARCHITECTURES:-}}"
 
@@ -20,6 +21,10 @@ hip_architectures="${FOREVERTAS_HIP_ARCHITECTURES:-${CUDA_ARCHITECTURES:-}}"
 : "${FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS:?FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS is required}"
 : "${FOREVERTAS_VERSION:?FOREVERTAS_VERSION is required}"
 : "${FOREVERTAS_TOOLCHAIN_IMAGE:?FOREVERTAS_TOOLCHAIN_IMAGE is required}"
+[[ "${release_jobs}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "FOREVERTAS_RELEASE_JOBS must be a positive integer" >&2
+    exit 2
+}
 
 if [[ -d "${validator_root}/.git" ]]; then
     actual_validator_commit="$(git -C "${validator_root}" rev-parse HEAD)"
@@ -151,7 +156,7 @@ else
     grep -q 'cuda_search_executor\.cu' "${build_dir}/compile_commands.json"
 fi
 
-cmake --build "${build_dir}" --parallel
+cmake --build "${build_dir}" --parallel "${release_jobs}"
 
 built_search_object="${build_dir}/_deps/forevervalidator-build/CMakeFiles/forevervalidator_core.dir/src/simulation/backends/cuda/cuda_search_executor.cu.o"
 if [[ "${cache_hit}" == false ]]; then
@@ -206,7 +211,7 @@ cmake -S "${repo_root}" -B "${verify_build_dir}" -G Ninja \
     -DFOREVERTAS_ENABLE_VULKAN=OFF \
     -DFOREVERVALIDATOR_ENABLE_RELEASE_IPO=OFF \
     "-DFETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR=${validator_root}"
-cmake --build "${verify_build_dir}" --parallel
+cmake --build "${verify_build_dir}" --parallel "${release_jobs}"
 QT_QPA_PLATFORM=offscreen QSG_RHI_BACKEND=software \
     ctest --test-dir "${verify_build_dir}" --output-on-failure --parallel 4
 
@@ -214,6 +219,7 @@ cuda_objects=()
 while IFS= read -r -d '' object; do
     cuda_objects+=("${object}")
 done < <(find "${build_dir}/_deps/forevervalidator-build" -type f \
+    -path '*/backends/cuda/*' \
     \( -name '*.cu.o' -o -name '*.cu.obj' \) -print0)
 if [[ ${#cuda_objects[@]} -eq 0 ]]; then
     echo "No CUDA objects were produced" >&2

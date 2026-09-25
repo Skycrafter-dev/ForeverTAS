@@ -5,6 +5,7 @@
 #include "evaluators/custom_volume_entry_evaluator.h"
 #include "evaluators/point_target_evaluator.h"
 #include "evaluators/pose_target_evaluator.h"
+#include "evaluators/scripted_target_evaluator.h"
 #include "evaluators/stunt_points_evaluator.h"
 #include "evaluators/velocity_evaluator.h"
 #include "evaluators/volume_entry_evaluator.h"
@@ -280,7 +281,15 @@ const std::vector<EvaluationTargetRegistration> &EvaluationTargetRegistry() {
              DefaultPoseTargetOptionSettings(),
              {},
              &ValidatePoseTargetOptionSettings,
-             &CreatePoseTargetEvaluator}};
+             &CreatePoseTargetEvaluator},
+            {kScriptedTargetEvaluationId,
+             {},
+             "Custom target",
+             "ScriptedTargetEvaluationSettings.qml",
+             DefaultScriptedTargetOptionSettings(),
+             {},
+             &ValidateScriptedTargetOptionSettings,
+             &CreateScriptedTargetEvaluator}};
     return registrations;
 }
 

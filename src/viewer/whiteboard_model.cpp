@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <set>
 
 namespace forevertas::viewer {
 namespace {
@@ -137,6 +138,78 @@ QRectF ClampedBounds(const QPointF &first, const QPointF &second) {
 WhiteboardModel::WhiteboardModel(QObject *parent)
     : QObject(parent) {
     loadPersistedBoards();
+    const auto changed = [this]() {
+        ++historyRevision_;
+        currentHistoryToken_ = 0;
+    };
+    connect(this, &WhiteboardModel::itemsChanged, this, changed);
+    connect(this, &WhiteboardModel::selectionChanged, this, changed);
+    connect(this, &WhiteboardModel::boardsChanged, this, changed);
+    connect(this, &WhiteboardModel::boardSelectionChanged, this, changed);
+    connect(this, &WhiteboardModel::activeChanged, this, changed);
+    connect(this, &WhiteboardModel::toolChanged, this, changed);
+    connect(this, &WhiteboardModel::colorChanged, this, changed);
+    connect(this, &WhiteboardModel::sizeChanged, this, changed);
+}
+
+quint64 WhiteboardModel::captureHistorySnapshot() {
+    if (capturedRevision_ == historyRevision_ &&
+        historySnapshots_.find(capturedToken_) != historySnapshots_.end()) {
+        currentHistoryToken_ = capturedToken_;
+        return capturedToken_;
+    }
+    const quint64 token = nextHistoryToken_++;
+    historySnapshots_.emplace(token, HistorySnapshot{
+            items_, boards_, selectedIndex_, selectedBoardIndex_, active_,
+            tool_, color_, size_});
+    capturedRevision_ = historyRevision_;
+    capturedToken_ = token;
+    currentHistoryToken_ = token;
+    return token;
+}
+
+bool WhiteboardModel::restoreHistorySnapshot(quint64 token) {
+    const auto found = historySnapshots_.find(token);
+    if (found == historySnapshots_.end()) return false;
+    if (currentHistoryToken_ == token) return true;
+    const HistorySnapshot snapshot = found->second;
+    items_ = snapshot.items;
+    boards_ = snapshot.boards;
+    selectedIndex_ = snapshot.selectedIndex;
+    selectedBoardIndex_ = snapshot.selectedBoardIndex;
+    active_ = snapshot.active;
+    tool_ = snapshot.tool;
+    color_ = snapshot.color;
+    size_ = snapshot.size;
+    drawing_ = false;
+    draftIndex_ = -1;
+    persistBoards();
+    emit itemsChanged();
+    emit selectionChanged();
+    emit boardsChanged();
+    emit boardSelectionChanged();
+    emit activeChanged();
+    emit toolChanged();
+    emit colorChanged();
+    emit sizeChanged();
+    emit drawingChanged();
+    currentHistoryToken_ = token;
+    capturedToken_ = token;
+    capturedRevision_ = historyRevision_;
+    return true;
+}
+
+void WhiteboardModel::pruneHistorySnapshots(const QVariantList &tokens) {
+    std::set<quint64> retained;
+    for (const QVariant &token : tokens)
+        retained.insert(token.toULongLong());
+    for (auto entry = historySnapshots_.begin();
+         entry != historySnapshots_.end();) {
+        if (retained.find(entry->first) == retained.end())
+            entry = historySnapshots_.erase(entry);
+        else
+            ++entry;
+    }
 }
 
 bool WhiteboardModel::active() const {

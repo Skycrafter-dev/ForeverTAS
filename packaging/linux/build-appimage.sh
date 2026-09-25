@@ -8,6 +8,11 @@ tools_dir="${FOREVERTAS_TOOLS_DIR:-${repo_root}/build/package-tools}"
 appdir="${FOREVERTAS_APPDIR:-${build_dir}/AppDir}"
 linuxdeploy_version="${LINUXDEPLOY_VERSION:-1-alpha-20251107-1}"
 qt_plugin_version="${LINUXDEPLOY_PLUGIN_QT_VERSION:-1-alpha-20250213-1}"
+release_jobs="${FOREVERTAS_RELEASE_JOBS:-1}"
+[[ "${release_jobs}" =~ ^[1-9][0-9]*$ ]] || {
+    echo "FOREVERTAS_RELEASE_JOBS must be a positive integer" >&2
+    exit 2
+}
 
 case "$(uname -m)" in
     x86_64|amd64)
@@ -99,7 +104,7 @@ if [[ "${FOREVERTAS_SKIP_BUILD:-0}" == "1" ]]; then
     test -x "${build_dir}/bin/ForeverTAS"
 else
     cmake "${cmake_args[@]}"
-    cmake --build "${build_dir}" --parallel
+    cmake --build "${build_dir}" --parallel "${release_jobs}"
 fi
 
 rm -rf "${appdir}"
@@ -244,6 +249,27 @@ rm -f "${output}" "${output}.sha256"
 export LDAI_OUTPUT="${output}"
 export APPIMAGE_EXTRACT_AND_RUN=1
 export PATH="$(dirname "${qt_plugin}"):${PATH}"
+original_ld_library_path="${LD_LIBRARY_PATH-}"
+hip_deploy_args=()
+if [[ "${FOREVERTAS_ENABLE_HIP:-OFF}" == "ON" &&
+      "${HIP_PLATFORM:-amd}" == "amd" ]]; then
+    hip_root="${HIP_PATH:-${ROCM_PATH:-}}"
+    hip_runtime_dir="${hip_root}/lib"
+    hip_runtime="${hip_runtime_dir}/libamdhip64.so.7"
+    if [[ ! -f "${hip_runtime}" ]]; then
+        echo "AMD HIP runtime is missing: ${hip_runtime}" >&2
+        exit 1
+    fi
+    export LD_LIBRARY_PATH="${hip_runtime_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+    hip_deploy_args+=(--library "${hip_runtime}")
+    license_dir="${appdir}/usr/share/doc/ForeverTAS/licenses"
+    cp "${hip_root}/share/doc/hip/LICENSE.md" "${license_dir}/AMD-HIP-LICENSE.txt"
+    cp "${hip_root}/share/doc/hsa-rocr/LICENSE.md" "${license_dir}/AMD-ROCr-LICENSE.txt"
+    cp "${hip_root}/share/doc/rocprofiler-register/LICENSE.md" \
+        "${license_dir}/AMD-rocprofiler-register-LICENSE.txt"
+    cp /usr/share/doc/libdrm-amdgpu1/copyright \
+        "${license_dir}/libdrm-amdgpu-copyright.txt"
+fi
 
 if [[ "${FOREVERTAS_ENABLE_STRIP:-0}" == "1" ]]; then
     unset NO_STRIP
@@ -264,7 +290,7 @@ if grep -q 'FOREVERTAS_ENABLE_VULKAN:BOOL=ON' "${build_dir}/CMakeCache.txt"; the
     vulkan_deploy_args+=(--library "${vulkan_loader}")
 fi
 
-"${linuxdeploy}" "${vulkan_deploy_args[@]}" \
+"${linuxdeploy}" "${vulkan_deploy_args[@]}" "${hip_deploy_args[@]}" \
     --appdir "${appdir}" \
     --desktop-file "${appdir}/usr/share/applications/dev.skycrafter.forevertas.desktop" \
     --icon-file "${appdir}/usr/share/icons/hicolor/256x256/apps/dev.skycrafter.forevertas.png" \
@@ -272,6 +298,11 @@ fi
     --executable "${appdir}/usr/bin/ForeverTAS" \
     --plugin qt \
     --output appimage
+if [[ -n "${original_ld_library_path}" ]]; then
+    export LD_LIBRARY_PATH="${original_ld_library_path}"
+else
+    unset LD_LIBRARY_PATH
+fi
 
 smoke_root="$(mktemp -d)"
 trap 'rm -rf "${smoke_root}"' EXIT
@@ -290,6 +321,9 @@ test -f "${extracted_appdir}/usr/plugins/wayland-graphics-integration-client/lib
 test -f "${extracted_appdir}/usr/plugins/wayland-decoration-client/libadwaita.so"
 if [[ "${FOREVERTAS_ENABLE_CUDA:-OFF}" == "ON" ]]; then
     test -f "${extracted_appdir}/usr/lib/libnvrtc-builtins.so.12.8"
+fi
+if [[ ${#hip_deploy_args[@]} -ne 0 ]]; then
+    test -f "${extracted_appdir}/usr/lib/libamdhip64.so.7"
 fi
 
 if [[ ${#vulkan_deploy_args[@]} -ne 0 ]]; then

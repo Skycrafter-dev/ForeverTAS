@@ -6,10 +6,14 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <forevervalidator/experimental/physics_sandbox.h>
 
 namespace forevertas {
+
+struct ConditionExecutionContext;
 
 struct EvaluationPlan {
     std::int64_t startTimeMs = 0;
@@ -17,14 +21,27 @@ struct EvaluationPlan {
 };
 
 struct EvaluationSample {
+    EvaluationSample() = default;
+    EvaluationSample(double scoreValue, double timeValue,
+                     std::string descriptionValue,
+                     std::vector<double> objectiveScoreValues = {},
+                     std::vector<double> metricValueValues = {})
+        : score(scoreValue), timeMs(timeValue),
+          description(std::move(descriptionValue)),
+          objectiveScores(std::move(objectiveScoreValues)),
+          metricValues(std::move(metricValueValues)) {}
+
     double score = 0.0;
     double timeMs = 0.0;
     std::string description;
+    std::vector<double> objectiveScores;
+    std::vector<double> metricValues;
 };
 
 class IterationEvaluationSession {
 public:
     virtual ~IterationEvaluationSession() = default;
+    virtual void SetExecutionContext(const ConditionExecutionContext &) {}
     virtual std::optional<EvaluationSample> Observe(
             const std::optional<
                     forevervalidator::experimental::PhysicsSandboxStateView>
@@ -43,6 +60,11 @@ public:
             const = 0;
     virtual bool IsBetter(const EvaluationSample &iteration,
                           const EvaluationSample &incumbent) const = 0;
+    virtual bool IsEquivalent(const EvaluationSample &iteration,
+                              const EvaluationSample &incumbent) const {
+        return iteration.score == incumbent.score;
+    }
+    virtual bool CompareAtEndOnly() const { return false; }
 };
 
 inline bool ImprovesSearchResult(
@@ -57,7 +79,7 @@ inline bool ImprovesSearchResult(
     // EvaluationSample::score is the evaluator ordering key. Once the
     // candidate is not strictly better, a different score is strictly worse;
     // only an equal score is eligible for the input-count tie break.
-    if (candidate.score != incumbent.score) {
+    if (!evaluator.IsEquivalent(candidate, incumbent)) {
         return false;
     }
     return candidateInputCount < incumbentInputCount;

@@ -82,6 +82,7 @@ struct SearchTimelineFrame {
     float cameraSupportUpX = 0.0f;
     float cameraSupportUpY = 1.0f;
     float cameraSupportUpZ = 0.0f;
+    std::optional<std::uint32_t> stuntsScore = std::nullopt;
 };
 
 struct SearchLiveUpdate {
@@ -101,6 +102,8 @@ struct SearchLiveUpdate {
     std::optional<std::chrono::steady_clock::duration>
             lastImprovementElapsed;
     std::vector<SearchTimelineFrame> bestTimeline;
+    std::vector<double> objectiveScores;
+    std::vector<double> metricValues;
 };
 
 struct SearchStatisticsUpdate {
@@ -115,6 +118,9 @@ struct SearchRunControl {
     std::function<bool()> beginIteration;
     std::function<void(const SearchStatisticsUpdate &)> statisticsChanged;
     std::function<void(const SearchLiveUpdate &)> liveChanged;
+    // Every CPU attempt is reported, including incomparable Pareto samples.
+    std::function<void(std::optional<std::uint64_t>,
+                       std::optional<SearchLiveUpdate>)> attemptCompleted;
     std::function<void(const SearchLiveUpdate &)>
             improvementTimelineSampled;
     std::function<void(std::uint32_t)> cudaBatchSizeChanged;
@@ -141,6 +147,7 @@ struct SearchExecutionContext {
     struct ResolvedCudaWinner {
         forevervalidator::experimental::PhysicsSandboxStateView view;
         forevervalidator::experimental::PhysicsSandboxState snapshot;
+        std::optional<EvaluationSample> evaluation;
     };
 
     forevervalidator::experimental::PhysicsSandbox &sandbox;
@@ -159,7 +166,9 @@ struct SearchExecutionContext {
     std::function<ResolvedCudaWinner(
             const std::vector<forevervalidator::experimental::
                                       PhysicsSandboxInputEvent> &,
-            std::uint32_t)>
+            std::int64_t,
+            std::uint32_t,
+            const ConditionExecutionContext &)>
             resolveCudaWinner = {};
     std::uint32_t simulationHorizonMs = 6000u;
     const ConditionProgram *condition = nullptr;
@@ -184,6 +193,8 @@ struct SearchResult {
     std::optional<std::chrono::steady_clock::duration>
             lastImprovementElapsed;
     forevervalidator::experimental::PhysicsSandboxState bestSnapshot;
+    std::vector<double> objectiveScores;
+    std::vector<double> metricValues;
 };
 
 class SearchAlgorithm {

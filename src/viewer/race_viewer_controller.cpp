@@ -1,10 +1,12 @@
 #include "viewer/race_viewer_controller.h"
 
+#include "conditions/condition_program.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/input_event_utils.h"
 #include "replay_file_io.h"
 #include "time_format.h"
 #include "viewer/material_classifier.h"
+#include "viewer/map_identity.h"
 
 #include <forevervalidator/camera.h>
 #include <forevervalidator/experimental/physics_sandbox.h>
@@ -13,6 +15,9 @@
 #include <QCryptographicHash>
 #include <QFileInfo>
 #include <QMetaObject>
+#include <QJsonDocument>
+#include <QQmlEngine>
+#include <QColor>
 #include <QRegularExpression>
 #include <QSettings>
 #include <QThread>
@@ -34,8 +39,18 @@ namespace forevertas::viewer {
 namespace {
 
 constexpr auto kTelemetryScriptKey = "viewer/telemetryScript";
+constexpr auto kVisualStylesKey = "viewer/visualStyles";
+constexpr double kUnavailableTelemetryNumber =
+        std::numeric_limits<double>::quiet_NaN();
 
 const QString &DefaultTelemetryScript() {
+    static const QString script = QStringLiteral(
+            "Camera pos: X {camera.x:2}   Y {camera.y:2}   Z {camera.z:2}\n"
+            "{target.readout}\n{conditions.acceptance}");
+    return script;
+}
+
+const QString &LegacyTelemetryScript() {
     static const QString script = QStringLiteral(
             "Camera pos: X {camera.x:2}   Y {camera.y:2}   Z {camera.z:2}");
     return script;
@@ -85,8 +100,15 @@ RaceViewerFrame SampleTelemetryFrame(
 }
 
 struct TelemetryValue {
+    TelemetryValue(QVariant value, bool numeric, bool available = true,
+                   QColor color = {})
+        : value(std::move(value)), numeric(numeric), available(available),
+          color(std::move(color)) {}
+
     QVariant value;
     bool numeric = false;
+    bool available = true;
+    QColor color;
 };
 
 std::optional<TelemetryValue> ResolveTelemetryValue(
@@ -94,7 +116,8 @@ std::optional<TelemetryValue> ResolveTelemetryValue(
         const QVector3D &cameraPosition,
         const RaceViewerFrame &frame,
         const QString &runName,
-        qint64 tick) {
+        qint64 tick,
+        const QVariantMap &context) {
     const auto number = [](double value) {
         return TelemetryValue{value, true};
     };
@@ -148,6 +171,30 @@ std::optional<TelemetryValue> ResolveTelemetryValue(
         return number(tick);
     if (name == QStringLiteral("run.name"))
         return TelemetryValue{runName, false};
+    if (name == QStringLiteral("stunt.score")) {
+        return frame.stuntsScore
+                ? number(*frame.stuntsScore)
+                : TelemetryValue{QVariant{}, true, false};
+    }
+    if (name == QStringLiteral("stunt.deadline") ||
+        name == QStringLiteral("target.score")) {
+        const QVariant value = context.value(name);
+        return value.isValid()
+                ? number(value.toDouble())
+                : TelemetryValue{QVariant{}, true, false};
+    }
+    if (name == QStringLiteral("target.name") ||
+        name == QStringLiteral("target.summary") ||
+        name == QStringLiteral("target.now") ||
+        name == QStringLiteral("target.readout")) {
+        return TelemetryValue{context.value(name).toString(), false};
+    }
+    if (name == QStringLiteral("conditions.acceptance")) {
+        const QVariantMap condition = context.value(name).toMap();
+        return TelemetryValue{
+                condition.value(QStringLiteral("text")).toString(), false,
+                true, condition.value(QStringLiteral("color")).value<QColor>()};
+    }
     return std::nullopt;
 }
 
@@ -162,6 +209,192 @@ QString FormatTelemetryNumber(double value, int precision) {
     return QString::number(value, 'f', precision);
 }
 
+class TelemetryExpression {
+public:
+    TelemetryExpression(const QString &expression,
+                        const QVector3D &cameraPosition,
+                        const RaceViewerFrame &frame,
+                        const QString &runName,
+                        qint64 tick,
+                        const QVariantMap &context)
+        : input_(expression), cameraPosition_(cameraPosition), frame_(frame),
+          runName_(runName), tick_(tick), context_(context) {}
+
+    double evaluate() {
+        if (input_.size() > 256) {
+            error_ = QStringLiteral("Math expression is too long");
+            return kUnavailableTelemetryNumber;
+        }
+        const double value = expression();
+        spaces();
+        if (error_.isEmpty() && position_ != input_.size())
+            error_ = QStringLiteral("Unexpected character in math expression");
+        return value;
+    }
+
+    QString error() const { return error_; }
+
+private:
+    void spaces() {
+        while (position_ < input_.size() && input_.at(position_).isSpace())
+            ++position_;
+    }
+
+    bool take(QChar character) {
+        spaces();
+        if (position_ < input_.size() && input_.at(position_) == character) {
+            ++position_;
+            return true;
+        }
+        return false;
+    }
+
+    double expression() {
+        double value = term();
+        while (error_.isEmpty()) {
+            if (take(QLatin1Char('+')))
+                value += term();
+            else if (take(QLatin1Char('-')))
+                value -= term();
+            else
+                break;
+        }
+        return value;
+    }
+
+    double term() {
+        double value = unary();
+        while (error_.isEmpty()) {
+            if (take(QLatin1Char('*')))
+                value *= unary();
+            else if (take(QLatin1Char('/'))) {
+                const double divisor = unary();
+                value = divisor == 0.0
+                        ? kUnavailableTelemetryNumber : value / divisor;
+            } else
+                break;
+        }
+        return value;
+    }
+
+    double unary() {
+        if (take(QLatin1Char('+')))
+            return unary();
+        if (take(QLatin1Char('-')))
+            return -unary();
+        return primary();
+    }
+
+    double primary() {
+        spaces();
+        if (++depth_ > 32) {
+            error_ = QStringLiteral("Math expression is nested too deeply");
+            return kUnavailableTelemetryNumber;
+        }
+        double value = kUnavailableTelemetryNumber;
+        if (take(QLatin1Char('('))) {
+            value = expression();
+            if (!take(QLatin1Char(')')) && error_.isEmpty())
+                error_ = QStringLiteral("Missing ')' in math expression");
+        } else if (position_ < input_.size() &&
+                   (input_.at(position_).isDigit() ||
+                    input_.at(position_) == QLatin1Char('.'))) {
+            const qsizetype start = position_;
+            bool digit = false;
+            while (position_ < input_.size() && input_.at(position_).isDigit()) {
+                digit = true;
+                ++position_;
+            }
+            if (position_ < input_.size() &&
+                input_.at(position_) == QLatin1Char('.')) {
+                ++position_;
+                while (position_ < input_.size() && input_.at(position_).isDigit()) {
+                    digit = true;
+                    ++position_;
+                }
+            }
+            if (!digit) {
+                error_ = QStringLiteral("Invalid number in math expression");
+            } else {
+                if (position_ < input_.size() &&
+                    (input_.at(position_) == QLatin1Char('e') ||
+                     input_.at(position_) == QLatin1Char('E'))) {
+                    ++position_;
+                    if (position_ < input_.size() &&
+                        (input_.at(position_) == QLatin1Char('+') ||
+                         input_.at(position_) == QLatin1Char('-')))
+                        ++position_;
+                    const qsizetype exponentStart = position_;
+                    while (position_ < input_.size() && input_.at(position_).isDigit())
+                        ++position_;
+                    if (position_ == exponentStart)
+                        error_ = QStringLiteral("Invalid exponent in math expression");
+                }
+                if (error_.isEmpty()) {
+                    bool okay = false;
+                    value = input_.mid(start, position_ - start).toDouble(&okay);
+                    if (!okay || !std::isfinite(value))
+                        error_ = QStringLiteral("Invalid number in math expression");
+                }
+            }
+        } else if (position_ < input_.size() && input_.at(position_).isLetter()) {
+            const qsizetype start = position_++;
+            while (position_ < input_.size() &&
+                   (input_.at(position_).isLetterOrNumber() ||
+                    input_.at(position_) == QLatin1Char('.')))
+                ++position_;
+            const QString name = input_.mid(start, position_ - start);
+            if (take(QLatin1Char('('))) {
+                const double first = expression();
+                const bool hasSecond = take(QLatin1Char(','));
+                const double second = hasSecond
+                        ? expression() : kUnavailableTelemetryNumber;
+                if (!take(QLatin1Char(')')) && error_.isEmpty())
+                    error_ = QStringLiteral("Missing ')' in math function");
+                if (name == QStringLiteral("abs") && !hasSecond)
+                    value = std::abs(first);
+                else if (name == QStringLiteral("sqrt") && !hasSecond)
+                    value = std::sqrt(first);
+                else if (name == QStringLiteral("round") && !hasSecond)
+                    value = std::round(first);
+                else if (name == QStringLiteral("min") && hasSecond)
+                    value = std::isfinite(first) && std::isfinite(second)
+                            ? std::min(first, second)
+                            : kUnavailableTelemetryNumber;
+                else if (name == QStringLiteral("max") && hasSecond)
+                    value = std::isfinite(first) && std::isfinite(second)
+                            ? std::max(first, second)
+                            : kUnavailableTelemetryNumber;
+                else if (error_.isEmpty())
+                    error_ = QStringLiteral("Unknown math function %1").arg(name);
+            } else {
+                const auto resolved = ResolveTelemetryValue(
+                        name, cameraPosition_, frame_, runName_, tick_, context_);
+                if (!resolved)
+                    error_ = QStringLiteral("Unknown telemetry field {%1}").arg(name);
+                else if (!resolved->numeric)
+                    error_ = QStringLiteral("Telemetry field {%1} is not numeric").arg(name);
+                else if (resolved->available)
+                    value = resolved->value.toDouble();
+            }
+        } else if (error_.isEmpty()) {
+            error_ = QStringLiteral("Expected a number or field in math expression");
+        }
+        --depth_;
+        return value;
+    }
+
+    QString input_;
+    QVector3D cameraPosition_;
+    const RaceViewerFrame &frame_;
+    const QString &runName_;
+    qint64 tick_;
+    const QVariantMap &context_;
+    qsizetype position_ = 0;
+    int depth_ = 0;
+    QString error_;
+};
+
 struct TelemetryRenderResult {
     QString text;
     QString error;
@@ -172,11 +405,12 @@ TelemetryRenderResult RenderTelemetryTemplate(
         const QVector3D &cameraPosition,
         const RaceViewerFrame &frame,
         const QString &runName,
-        qint64 tick) {
+        qint64 tick,
+        const QVariantMap &context = {},
+        bool richText = false) {
     TelemetryRenderResult result;
-    static const QRegularExpression tokenExpression(
-            QStringLiteral("^([A-Za-z][A-Za-z0-9.]*)"
-                           "(?::([0-6]))?$"));
+    static const QRegularExpression fieldExpression(
+            QStringLiteral("^[A-Za-z][A-Za-z0-9.]*$"));
     for (qsizetype index = 0; index < script.size();) {
         if (script.at(index) == QLatin1Char('{') &&
             index + 1 < script.size() &&
@@ -198,7 +432,13 @@ TelemetryRenderResult RenderTelemetryTemplate(
                         "Unexpected '}' at character %1").arg(index + 1);
                 return result;
             }
-            result.text += script.at(index++);
+            const QChar character = script.at(index++);
+            result.text += richText && character == QLatin1Char('&')
+                    ? QStringLiteral("&amp;")
+                    : richText && character == QLatin1Char('<')
+                      ? QStringLiteral("&lt;")
+                      : richText && character == QLatin1Char('>')
+                        ? QStringLiteral("&gt;") : QString(character);
             continue;
         }
         const qsizetype close = script.indexOf(
@@ -209,38 +449,65 @@ TelemetryRenderResult RenderTelemetryTemplate(
             return result;
         }
         const QString token = script.mid(index + 1, close - index - 1);
-        const QRegularExpressionMatch match = tokenExpression.match(token);
-        if (!match.hasMatch()) {
-            result.error = QStringLiteral(
-                    "Invalid telemetry field {%1}").arg(token);
+        const qsizetype colon = token.lastIndexOf(QLatin1Char(':'));
+        const QString source = (colon < 0 ? token : token.left(colon)).trimmed();
+        const QString precisionText = colon < 0 ? QString{} : token.mid(colon + 1);
+        if (source.isEmpty() || (colon >= 0 &&
+            (precisionText.size() != 1 || precisionText.at(0) < QLatin1Char('0') ||
+             precisionText.at(0) > QLatin1Char('6')))) {
+            result.error = QStringLiteral("Invalid telemetry field {%1}").arg(token);
             return result;
         }
-        const QString name = match.captured(1);
-        const std::optional<TelemetryValue> value = ResolveTelemetryValue(
-                name, cameraPosition, frame, runName, tick);
-        if (!value) {
-            result.error = QStringLiteral(
-                    "Unknown telemetry field {%1}").arg(name);
-            return result;
+        std::optional<TelemetryValue> value;
+        if (fieldExpression.match(source).hasMatch()) {
+            value = ResolveTelemetryValue(source, cameraPosition, frame,
+                                          runName, tick, context);
+            if (!value) {
+                result.error = QStringLiteral(
+                        "Unknown telemetry field {%1}").arg(source);
+                return result;
+            }
+        } else {
+            TelemetryExpression math(source, cameraPosition, frame,
+                                     runName, tick, context);
+            const double numeric = math.evaluate();
+            if (!math.error().isEmpty()) {
+                result.error = math.error();
+                return result;
+            }
+            value = TelemetryValue{numeric, true, std::isfinite(numeric)};
         }
-        const QString precisionText = match.captured(2);
         if (!precisionText.isEmpty() && !value->numeric) {
             result.error = QStringLiteral(
                     "Telemetry field {%1} does not accept precision")
-                    .arg(name);
+                    .arg(source);
             return result;
         }
+        QString formatted;
         if (value->numeric) {
             const int precision = precisionText.isEmpty()
                     ? 2
                     : precisionText.toInt();
-            result.text += FormatTelemetryNumber(
-                    value->value.toDouble(), precision);
+            formatted = value->available
+                    ? FormatTelemetryNumber(value->value.toDouble(), precision)
+                    : QStringLiteral("--");
         } else {
-            result.text += value->value.toString();
+            formatted = value->value.toString();
         }
+        if (richText) {
+            formatted = formatted.toHtmlEscaped();
+            if (value->color.isValid()) {
+                formatted = QStringLiteral("<span style=\"color:%1\">%2</span>")
+                        .arg(value->color.name(QColor::HexRgb), formatted);
+            }
+        }
+        result.text += formatted;
         index = close + 1;
     }
+    while (result.text.endsWith(QLatin1Char('\n')))
+        result.text.chop(1);
+    if (richText)
+        result.text.replace(QLatin1Char('\n'), QStringLiteral("<br/>"));
     return result;
 }
 
@@ -699,54 +966,6 @@ std::shared_ptr<const RaceCameraResources> LoadCameraResources(
     return resources;
 }
 
-QString CollisionSceneKey(
-        const forevervalidator::experimental::PhysicsSandboxSceneView &scene) {
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    QByteArray chunk;
-    chunk.reserve(64 * 1024);
-    const auto flush = [&hash, &chunk]() {
-        if (!chunk.isEmpty()) {
-            hash.addData(QByteArrayView(chunk));
-            chunk.clear();
-        }
-    };
-    const auto appendU32 = [&chunk, &flush](std::uint32_t value) {
-        const quint32 bigEndian = qToBigEndian(static_cast<quint32>(value));
-        chunk.append(
-                reinterpret_cast<const char *>(&bigEndian),
-                sizeof(bigEndian));
-        if (chunk.size() >= 64 * 1024) {
-            flush();
-        }
-    };
-    const auto appendFloat = [&appendU32](float value) {
-        std::uint32_t bits = 0;
-        static_assert(sizeof(bits) == sizeof(value));
-        std::memcpy(&bits, &value, sizeof(bits));
-        appendU32(bits);
-    };
-
-    const std::uint64_t triangleCount = scene.collisionTriangles.size();
-    appendU32(static_cast<std::uint32_t>(triangleCount >> 32u));
-    appendU32(static_cast<std::uint32_t>(triangleCount));
-    for (const PhysicsSandboxCollisionTriangle &triangle :
-         scene.collisionTriangles) {
-        const auto appendVertex =
-                [&appendFloat](
-                        const forevervalidator::Vector3 &vertex) {
-            appendFloat(vertex.x);
-            appendFloat(vertex.y);
-            appendFloat(vertex.z);
-        };
-        appendVertex(triangle.a);
-        appendVertex(triangle.b);
-        appendVertex(triangle.c);
-    }
-    flush();
-    return QStringLiteral("collision-sha256:")
-            + QString::fromLatin1(hash.result().toHex());
-}
-
 bool IsDriverInput(PhysicsSandboxInputAction action) {
     return action == PhysicsSandboxInputAction::Accelerate ||
             action == PhysicsSandboxInputAction::Gas ||
@@ -884,7 +1103,7 @@ void ExpandBounds(const QVector3D &point,
     maximum.setZ(std::max(maximum.z(), point.z()));
 }
 
-constexpr int kCarPaletteCount = 6;
+constexpr int kCarPaletteCount = 16;
 
 std::array<float, 4u> FaceColor(const ViewerTriangle &triangle,
                                 int carPalette) {
@@ -897,6 +1116,10 @@ std::array<float, 4u> FaceColor(const ViewerTriangle &triangle,
     const float y = std::fabs(normal.y());
     const float z = std::fabs(normal.z());
     switch (carPalette) {
+    case -2: {
+        const float shade = 0.69f + 0.22f * y + 0.09f * z;
+        return {shade, shade, shade, 1.0f};
+    }
     case 0:
         // Preserve the original orange collision-car palette exactly.
         return {0.78f + 0.16f * y,
@@ -928,6 +1151,36 @@ std::array<float, 4u> FaceColor(const ViewerTriangle &triangle,
                 0.62f + 0.20f * y,
                 0.68f + 0.18f * z,
                 1.0f};
+    case 6:
+        return {0.80f + 0.16f * y, 0.23f + 0.12f * z,
+                0.25f + 0.12f * x, 1.0f};
+    case 7:
+        return {0.31f + 0.12f * x, 0.39f + 0.14f * z,
+                0.81f + 0.16f * y, 1.0f};
+    case 8:
+        return {0.56f + 0.16f * y, 0.70f + 0.14f * z,
+                0.12f + 0.10f * x, 1.0f};
+    case 9:
+        return {0.77f + 0.15f * y, 0.33f + 0.13f * z,
+                0.59f + 0.12f * x, 1.0f};
+    case 10:
+        return {0.13f + 0.12f * x, 0.56f + 0.13f * z,
+                0.77f + 0.16f * y, 1.0f};
+    case 11:
+        return {0.61f + 0.13f * y, 0.50f + 0.12f * z,
+                0.22f + 0.10f * x, 1.0f};
+    case 12:
+        return {0.72f + 0.13f * y, 0.18f + 0.11f * z,
+                0.14f + 0.10f * x, 1.0f};
+    case 13:
+        return {0.45f + 0.12f * x, 0.31f + 0.12f * z,
+                0.73f + 0.15f * y, 1.0f};
+    case 14:
+        return {0.11f + 0.10f * x, 0.56f + 0.13f * z,
+                0.43f + 0.12f * y, 1.0f};
+    case 15:
+        return {0.72f + 0.13f * y, 0.25f + 0.11f * z,
+                0.57f + 0.13f * x, 1.0f};
     default:
         return {0.26f + 0.20f * x,
                 0.36f + 0.26f * y,
@@ -1075,7 +1328,8 @@ RaceViewerMeshBuffers BuildTrajectoryMesh(
 
 RaceViewerMeshBuffers BuildTrajectoryLineMesh(
         const std::vector<RaceViewerFrame> &frames,
-        float stationaryMarkerRadius) {
+        float stationaryMarkerRadius,
+        bool dashed = false) {
     RaceViewerMeshBuffers result;
     if (frames.empty()) {
         return result;
@@ -1088,14 +1342,36 @@ RaceViewerMeshBuffers BuildTrajectoryLineMesh(
     const auto append = [&vertices](const QVector3D &point) {
         vertices.push_back({point.x(), point.y(), point.z()});
     };
+    float traveled = 0.0f;
+    const float dashLength = std::max(1.5f, stationaryMarkerRadius * 15.0f);
     for (std::size_t index = 1u; index < frames.size(); ++index) {
         const QVector3D &start = frames[index - 1u].position;
         const QVector3D &end = frames[index].position;
-        if ((end - start).lengthSquared() < 0.000001f) {
+        const float distance = (end - start).length();
+        if (distance < 0.001f) {
             continue;
         }
-        append(start);
-        append(end);
+        if (!dashed) {
+            append(start);
+            append(end);
+        } else {
+            float local = 0.0f;
+            while (local < distance) {
+                const float phase = std::fmod(traveled + local,
+                                              dashLength * 2.0f);
+                const bool draw = phase < dashLength;
+                const float remaining = draw ? dashLength - phase
+                                             : dashLength * 2.0f - phase;
+                const float next = std::min(distance,
+                                            local + std::max(remaining, 0.001f));
+                if (draw) {
+                    append(start + (end - start) * (local / distance));
+                    append(start + (end - start) * (next / distance));
+                }
+                local = next;
+            }
+        }
+        traveled += distance;
     }
     if (vertices.empty()) {
         const QVector3D center = frames.front().position;
@@ -1201,13 +1477,14 @@ RaceViewerLoadResult LoadMapData(const QString &packsDirectory,
                                  const QString &replayPath,
                                  PhysicsBackend backend,
                                  std::uint32_t simulationHorizonMs) {
+    static_cast<void>(backend);
     using namespace forevervalidator;
     using namespace forevervalidator::experimental;
 
     RaceViewerLoadResult result;
     result.packsDirectory = packsDirectory;
     result.replayPath = replayPath;
-    result.backend = backend;
+    result.backend = kAuxiliarySimulationBackend;
     try {
         const std::string replayPathUtf8 =
                 replayPath.toUtf8().toStdString();
@@ -1220,7 +1497,8 @@ RaceViewerLoadResult LoadMapData(const QString &packsDirectory,
                 ReadReplayFileUtf8(replayPathUtf8, identity),
                 "reading scenario failed");
         PhysicsSandboxOptions options;
-        options.backend = ToForeverValidatorBackend(backend);
+        options.backend = ToForeverValidatorBackend(
+                kAuxiliarySimulationBackend);
         options.tickDurationMs = kViewerTickDurationMs;
         options.timelineMode = PhysicsSandboxTimelineMode::Canonical;
         options.simulationHorizonMs = simulationHorizonMs;
@@ -1367,6 +1645,7 @@ std::shared_ptr<ManualDriveRuntime> LoadInputPreviewRuntime(
         const QString &replayPath,
         PhysicsBackend backend,
         std::uint32_t simulationHorizonMs) {
+    static_cast<void>(backend);
     using namespace forevervalidator;
     using namespace forevervalidator::experimental;
 
@@ -1380,7 +1659,8 @@ std::shared_ptr<ManualDriveRuntime> LoadInputPreviewRuntime(
             ReadReplayFileUtf8(replayPathUtf8, identity),
             "reading scenario for input preview failed");
     PhysicsSandboxOptions options;
-    options.backend = ToForeverValidatorBackend(backend);
+    options.backend = ToForeverValidatorBackend(
+            kAuxiliarySimulationBackend);
     options.tickDurationMs = kViewerTickDurationMs;
     options.timelineMode = PhysicsSandboxTimelineMode::Canonical;
     options.simulationHorizonMs = simulationHorizonMs;
@@ -1415,7 +1695,7 @@ std::vector<RaceViewerFrame> ToViewerFrames(
     std::vector<RaceViewerFrame> result;
     result.reserve(frames.size());
     for (const SearchTimelineFrame &frame : frames) {
-        result.push_back({
+        RaceViewerFrame viewerFrame{
                 frame.timeMs,
                 QVector3D(frame.positionX,
                           frame.positionY,
@@ -1445,7 +1725,9 @@ std::vector<RaceViewerFrame> ToViewerFrames(
                 frame.wheelHasSurface,
                 QVector3D(frame.cameraSupportUpX,
                           frame.cameraSupportUpY,
-                          frame.cameraSupportUpZ)});
+                          frame.cameraSupportUpZ),
+                frame.stuntsScore};
+        result.push_back(std::move(viewerFrame));
     }
     return result;
 }
@@ -1469,7 +1751,7 @@ bool IsViewableTrajectory(
 }
 
 RaceViewerFrame ToViewerFrame(const PhysicsSandboxStateView &state) {
-    return {
+    RaceViewerFrame frame{
             static_cast<std::int64_t>(state.timeMs),
             ToQt(state.car.position),
             QQuaternion(state.car.rotationW,
@@ -1493,7 +1775,9 @@ RaceViewerFrame ToViewerFrame(const PhysicsSandboxStateView &state) {
             state.car.gearChanged,
             state.car.wheelContact,
             state.car.wheelHasSurface,
-            ToQt(state.car.cameraSupportUp)};
+            ToQt(state.car.cameraSupportUp),
+            state.stuntsScore};
+    return frame;
 }
 
 RaceViewerInputPreviewResult BuildInputPreview(
@@ -1806,6 +2090,14 @@ RaceViewerController::RaceViewerController(QObject *parent)
             .value(QLatin1String(kTelemetryScriptKey),
                    DefaultTelemetryScript())
             .toString();
+    if (telemetryScript_ == LegacyTelemetryScript())
+        telemetryScript_ = DefaultTelemetryScript();
+    const QJsonDocument styles = QJsonDocument::fromJson(
+            QSettings().value(QLatin1String(kVisualStylesKey))
+                    .toByteArray());
+    if (styles.isObject()) {
+        visualStyles_ = styles.toVariant().toMap();
+    }
     playbackTimer_.setInterval(5);
     playbackTimer_.setTimerType(Qt::PreciseTimer);
     connect(&playbackTimer_,
@@ -1845,7 +2137,7 @@ RaceViewerController::RaceViewerController(QObject *parent)
     ellipsoidFilledGeometries_.reserve(kCarPaletteCount);
     for (int palette = 0; palette < kCarPaletteCount; ++palette) {
         const RaceViewerMeshBuffers ellipsoid =
-                BuildMeshBuffers(ellipsoidTriangles, palette);
+                BuildMeshBuffers(ellipsoidTriangles, -2);
         auto geometry = std::make_unique<RaceGeometry>();
         geometry->setMesh(
                 ellipsoid.filled,
@@ -1935,6 +2227,82 @@ QVariantList RaceViewerController::trajectoryPaths() const {
     return trajectoryPaths_;
 }
 
+quint64 RaceViewerController::visualStyleRevision() const {
+    return visualStyleRevision_;
+}
+
+QVariantMap RaceViewerController::visualStyle(const QString &id) const {
+    return visualStyles_.value(id).toMap();
+}
+
+QVariantMap RaceViewerController::visualStylesSnapshot() const {
+    return visualStyles_;
+}
+
+void RaceViewerController::restoreVisualStyles(const QVariantMap &styles) {
+    if (visualStyles_ == styles) return;
+    visualStyles_ = styles;
+    QSettings().setValue(
+            QLatin1String(kVisualStylesKey),
+            QJsonDocument::fromVariant(visualStyles_).toJson(
+                    QJsonDocument::Compact));
+    ++visualStyleRevision_;
+    emit visualStylesChanged();
+    refreshStyledTrajectory(QStringLiteral("best"));
+    refreshStyledTrajectory(QStringLiteral("preview"));
+}
+
+void RaceViewerController::setVisualStyle(
+        const QString &id,
+        const QString &property,
+        const QVariant &value) {
+    if (id.isEmpty() || id.size() > 160 ||
+        !QList<QString>{QStringLiteral("visible"),
+                        QStringLiteral("throughBlocks"),
+                        QStringLiteral("color"),
+                        QStringLiteral("width"),
+                        QStringLiteral("opacity"),
+                        QStringLiteral("linePattern")}
+                 .contains(property)) {
+        return;
+    }
+    QVariant normalized = value;
+    if (property == QLatin1String("visible") ||
+        property == QLatin1String("throughBlocks")) {
+        normalized = value.toBool();
+    } else if (property == QLatin1String("color")) {
+        const QColor color(value.toString());
+        if (!color.isValid()) return;
+        normalized = color.name(QColor::HexRgb);
+    } else if (property == QLatin1String("width") ||
+               property == QLatin1String("opacity")) {
+        bool okay = false;
+        const double number = value.toDouble(&okay);
+        if (!okay || !std::isfinite(number)) return;
+        normalized = property == QLatin1String("width")
+                ? std::clamp(number, 0.5, 20.0)
+                : std::clamp(number, 0.0, 1.0);
+    } else if (property == QLatin1String("linePattern")) {
+        if (value != QLatin1String("solid") &&
+            value != QLatin1String("dash")) return;
+    }
+    QVariantMap style = visualStyle(id);
+    if (style.value(property) == normalized) return;
+    style.insert(property, normalized);
+    visualStyles_.insert(id, style);
+    QSettings().setValue(
+            QLatin1String(kVisualStylesKey),
+            QJsonDocument::fromVariant(visualStyles_).toJson(
+                    QJsonDocument::Compact));
+    ++visualStyleRevision_;
+    emit visualStylesChanged();
+    if (property == QLatin1String("width") &&
+        (id == QLatin1String("trajectory:best") ||
+         id == QLatin1String("trajectory:preview"))) {
+        refreshStyledTrajectory(id.mid(QStringLiteral("trajectory:").size()));
+    }
+}
+
 qint64 RaceViewerController::trajectoryCount() const {
     return static_cast<qint64>(trajectoryPaths_.size());
 }
@@ -2004,6 +2372,322 @@ QQuaternion RaceViewerController::carRotation() const {
     return carRotation_;
 }
 
+QVector3D RaceViewerController::carVelocity() const {
+    const RaceViewerRun *const run = selectedRun();
+    return run == nullptr ? QVector3D{}
+                          : SampleTelemetryFrame(run->frames, timeMs_).linearSpeed;
+}
+
+QVector3D RaceViewerController::carHeading() const {
+    return carRotation_.rotatedVector(QVector3D(0.0f, 0.0f, -1.0f));
+}
+
+QVariantList RaceViewerController::selectedRunSamples() const {
+    QVariantList samples;
+    const RaceViewerRun *const run = selectedRun();
+    if (run == nullptr) return samples;
+    samples.reserve(static_cast<qsizetype>(run->frames.size()));
+    for (const RaceViewerFrame &frame : run->frames) {
+        QVariantMap sample;
+        sample.insert(QStringLiteral("timeMs"),
+                      static_cast<qlonglong>(frame.timeMs));
+        sample.insert(QStringLiteral("position"), frame.position);
+        sample.insert(QStringLiteral("rotation"), frame.rotation);
+        sample.insert(QStringLiteral("velocity"), frame.linearSpeed);
+        sample.insert(QStringLiteral("checkpointsCollected"),
+                      frame.checkpointsCollected);
+        sample.insert(QStringLiteral("raceCompleted"), frame.raceCompleted);
+        if (frame.finishTimeMs) {
+            sample.insert(QStringLiteral("finishTimeMs"),
+                          *frame.finishTimeMs);
+        }
+        if (frame.stuntsScore) {
+            sample.insert(QStringLiteral("stuntsScore"), *frame.stuntsScore);
+        }
+        samples.push_back(std::move(sample));
+    }
+    return samples;
+}
+
+QQuick3DGeometry *RaceViewerController::timeRangeGeometry(
+        const QString &id, const QString &runId,
+        qint64 minimumMs, qint64 maximumMs, bool dashed) {
+    if (maximumMs < minimumMs) return nullptr;
+    const auto run = std::find_if(
+            runs_.begin(), runs_.end(), [&runId](const RaceViewerRun &entry) {
+                return entry.id == runId;
+            });
+    if (run == runs_.end() || run->frames.empty()) return nullptr;
+    const QString key = runId + QLatin1Char(':') + id;
+    const qint64 start = std::clamp<qint64>(
+            minimumMs, run->frames.front().timeMs,
+            run->frames.back().timeMs);
+    const qint64 end = std::clamp<qint64>(
+            maximumMs, start, run->frames.back().timeMs);
+    const auto cached = timeRangeCacheStates_.find(key);
+    const auto geometryIt = timeRangeGeometries_.find(key);
+    if (cached != timeRangeCacheStates_.end() &&
+        geometryIt != timeRangeGeometries_.end() && geometryIt->second &&
+        cached->second.start == start && cached->second.end == end &&
+        cached->second.dashed == dashed &&
+        cached->second.runRevision == runGeometryRevision_) {
+        return geometryIt->second.get();
+    }
+    std::vector<RaceViewerFrame> frames;
+    frames.push_back(SampleTelemetryFrame(run->frames, start));
+    for (const RaceViewerFrame &frame : run->frames) {
+        if (frame.timeMs > start && frame.timeMs < end)
+            frames.push_back(frame);
+    }
+    if (end > start)
+        frames.push_back(SampleTelemetryFrame(run->frames, end));
+    const RaceViewerMeshBuffers mesh = BuildTrajectoryLineMesh(
+            frames, static_cast<float>(
+                    std::clamp(sceneRadius_ * 0.0008, 0.03, 0.3)), dashed);
+    if (mesh.wire.isEmpty()) return nullptr;
+    auto &geometry = timeRangeGeometries_[key];
+    if (!geometry) {
+        geometry = std::make_unique<RaceGeometry>();
+        QQmlEngine::setObjectOwnership(geometry.get(), QQmlEngine::CppOwnership);
+    }
+    geometry->setMesh(mesh.wire,
+                      static_cast<int>(sizeof(WireVertex)),
+                      QQuick3DGeometry::PrimitiveType::Lines,
+                      false,
+                      mesh.boundsMin,
+                      mesh.boundsMax);
+    timeRangeCacheStates_[key] = {start, end, dashed, runGeometryRevision_};
+    return geometry.get();
+}
+
+QQuick3DGeometry *RaceViewerController::visualLineGeometry(
+        const QString &id, const QVariantList &points, bool closed) {
+    if (id.isEmpty() || points.size() < 2 || points.size() > 64)
+        return nullptr;
+    std::vector<WireVertex> vertices;
+    vertices.reserve(static_cast<std::size_t>(points.size() * 2));
+    QVector3D minimum;
+    QVector3D maximum;
+    for (qsizetype index = 0; index < points.size(); ++index) {
+        if (!closed && index == points.size() - 1) break;
+        const QVector3D start = points[index].value<QVector3D>();
+        const QVector3D end = points[(index + 1) % points.size()]
+                                      .value<QVector3D>();
+        if (index == 0) minimum = maximum = start;
+        ExpandBounds(start, minimum, maximum);
+        ExpandBounds(end, minimum, maximum);
+        vertices.push_back({start.x(), start.y(), start.z()});
+        vertices.push_back({end.x(), end.y(), end.z()});
+    }
+    QByteArray bytes;
+    bytes.resize(static_cast<qsizetype>(
+            vertices.size() * sizeof(WireVertex)));
+    std::memcpy(bytes.data(), vertices.data(),
+                static_cast<std::size_t>(bytes.size()));
+    auto &geometry = timeRangeGeometries_[QStringLiteral("visual:") + id];
+    if (!geometry) {
+        geometry = std::make_unique<RaceGeometry>();
+        QQmlEngine::setObjectOwnership(geometry.get(), QQmlEngine::CppOwnership);
+    }
+    geometry->setMesh(std::move(bytes),
+                      static_cast<int>(sizeof(WireVertex)),
+                      QQuick3DGeometry::PrimitiveType::Lines,
+                      false, minimum, maximum);
+    return geometry.get();
+}
+
+QVariantMap RaceViewerController::conditionPreview(
+        const QString &script) const {
+    if (script.trimmed().isEmpty()) return {};
+    const auto compiled = CompileConditionScript(script.toStdString());
+    if (!compiled.program) {
+        return {{QStringLiteral("available"), false},
+                {QStringLiteral("message"),
+                 QString::fromStdString(compiled.error.value_or(
+                         "Condition cannot be parsed"))}};
+    }
+    using Value = forevervalidator::experimental::
+            PhysicsSandboxCudaConditionValue;
+    using Opcode = forevervalidator::experimental::
+            PhysicsSandboxCudaConditionOpcode;
+    const auto &instructions = compiled.program->cuda.instructions;
+    for (const auto &instruction : instructions) {
+        if (instruction.opcode != Opcode::Scalar &&
+            instruction.opcode != Opcode::Vector) {
+            continue;
+        }
+        switch (instruction.value) {
+        case Value::Position:
+        case Value::PreviousPosition:
+        case Value::Velocity:
+        case Value::PreviousVelocity:
+        case Value::Yaw:
+        case Value::Pitch:
+        case Value::Roll:
+        case Value::PreviousYaw:
+        case Value::PreviousPitch:
+        case Value::PreviousRoll:
+        case Value::Speed:
+        case Value::PreviousSpeed:
+        case Value::CheckpointCount:
+        case Value::WheelGroundContact0:
+        case Value::WheelGroundContact1:
+        case Value::WheelGroundContact2:
+        case Value::WheelGroundContact3:
+            break;
+        default:
+            return {{QStringLiteral("available"), false},
+                    {QStringLiteral("message"), QStringLiteral(
+                         "Condition uses telemetry not stored in this run")}};
+        }
+    }
+    const RaceViewerRun *const run = selectedRun();
+    if (run == nullptr || run->frames.empty()) {
+        return {{QStringLiteral("available"), false},
+                {QStringLiteral("message"), QStringLiteral(
+                     "No selected run to preview")}};
+    }
+    const RaceViewerFrame current =
+            SampleTelemetryFrame(run->frames, timeMs_);
+    const RaceViewerFrame previous = SampleTelemetryFrame(
+            run->frames, std::max<qint64>(0, timeMs_ - kViewerTickDurationMs));
+    const auto toState = [](const RaceViewerFrame &frame) {
+        forevervalidator::experimental::PhysicsSandboxStateView state;
+        state.timeMs = static_cast<std::uint64_t>(frame.timeMs);
+        state.car.position = {frame.position.x(), frame.position.y(),
+                              frame.position.z()};
+        state.car.linearSpeed = {frame.linearSpeed.x(),
+                                 frame.linearSpeed.y(),
+                                 frame.linearSpeed.z()};
+        state.car.rotationX = frame.rotation.x();
+        state.car.rotationY = frame.rotation.y();
+        state.car.rotationZ = frame.rotation.z();
+        state.car.rotationW = frame.rotation.scalar();
+        state.car.wheelContact = frame.wheelContact;
+        state.checkpointsCollected = frame.checkpointsCollected;
+        return state;
+    };
+    const bool passed = compiled.program->Evaluate(
+            toState(previous), toState(current),
+            ConditionExecutionContext{
+                    0u, 0.0, 0.0, static_cast<double>(timeMs_) / 1000.0});
+    QStringList readouts;
+    for (const auto &instruction : instructions) {
+        if (instruction.opcode != Opcode::Scalar &&
+            instruction.opcode != Opcode::Vector) {
+            continue;
+        }
+        if (instruction.value == Value::Position ||
+            instruction.value == Value::PreviousPosition) {
+            const bool prior = instruction.value == Value::PreviousPosition;
+            const QVector3D position = prior ? previous.position
+                                             : current.position;
+            const QString prefix = prior ? QStringLiteral("Prev ") : QString();
+            const int component = static_cast<int>(instruction.x);
+            if (component >= 1 && component <= 3) {
+                const char axis = "XYZ"[component - 1];
+                const float value = component == 1 ? position.x()
+                        : component == 2 ? position.y() : position.z();
+                readouts.push_back(QStringLiteral("%1%2 %3 m")
+                                           .arg(prefix)
+                                           .arg(QChar(axis))
+                                           .arg(value, 0, 'f', 1));
+            } else {
+                readouts.push_back(QStringLiteral("%1position %2, %3, %4 m")
+                                           .arg(prefix)
+                                           .arg(position.x(), 0, 'f', 1)
+                                           .arg(position.y(), 0, 'f', 1)
+                                           .arg(position.z(), 0, 'f', 1));
+            }
+        } else if (instruction.value == Value::Speed ||
+                   instruction.value == Value::PreviousSpeed) {
+            const bool prior = instruction.value == Value::PreviousSpeed;
+            const float speed = (prior ? previous.linearSpeed
+                                       : current.linearSpeed).length() * 3.6f;
+            readouts.push_back(QStringLiteral("%1%2 km/h")
+                                       .arg(prior ? QStringLiteral("Prev ")
+                                                  : QString())
+                                       .arg(speed, 0, 'f', 1));
+        } else if (instruction.value == Value::CheckpointCount) {
+            readouts.push_back(QStringLiteral("%1 checkpoints")
+                                       .arg(current.checkpointsCollected));
+        } else if (instruction.value == Value::Velocity ||
+                   instruction.value == Value::PreviousVelocity) {
+            const bool prior = instruction.value == Value::PreviousVelocity;
+            const QVector3D velocity = prior ? previous.linearSpeed
+                                             : current.linearSpeed;
+            readouts.push_back(QStringLiteral("%1velocity %2, %3, %4 m/s")
+                                       .arg(prior ? QStringLiteral("Prev ")
+                                                  : QString())
+                                       .arg(velocity.x(), 0, 'f', 1)
+                                       .arg(velocity.y(), 0, 'f', 1)
+                                       .arg(velocity.z(), 0, 'f', 1));
+        } else if (instruction.value >= Value::Yaw &&
+                   instruction.value <= Value::PreviousRoll) {
+            const int raw = static_cast<int>(instruction.value);
+            const bool prior = raw >= static_cast<int>(Value::PreviousYaw);
+            const int component = prior
+                    ? raw - static_cast<int>(Value::PreviousYaw)
+                    : raw - static_cast<int>(Value::Yaw);
+            const QQuaternion rotation = prior ? previous.rotation
+                                               : current.rotation;
+            const double x = rotation.x();
+            const double y = rotation.y();
+            const double z = rotation.z();
+            const double w = rotation.scalar();
+            const double sinPitch = 2.0 * (w * x - y * z);
+            const double radians = component == 0
+                    ? std::atan2(2.0 * (w * y + x * z),
+                                 1.0 - 2.0 * (x * x + y * y))
+                    : component == 1
+                    ? std::asin(std::clamp(sinPitch, -1.0, 1.0))
+                    : std::atan2(2.0 * (w * z + x * y),
+                                 1.0 - 2.0 * (x * x + z * z));
+            const double angle = radians * 180.0 / 3.14159265358979323846;
+            readouts.push_back(QStringLiteral("%1%2 %3°")
+                                       .arg(prior ? QStringLiteral("Prev ")
+                                                  : QString())
+                                       .arg(QStringList{
+                                               QStringLiteral("yaw"),
+                                               QStringLiteral("pitch"),
+                                               QStringLiteral("roll")}
+                                                    .at(component))
+                                       .arg(angle, 0, 'f', 1));
+        } else if (instruction.value >= Value::WheelGroundContact0 &&
+                   instruction.value <= Value::WheelGroundContact3) {
+            const int wheel = static_cast<int>(instruction.value) -
+                    static_cast<int>(Value::WheelGroundContact0);
+            readouts.push_back(QStringLiteral("Wheel %1 %2")
+                                       .arg(wheel + 1)
+                                       .arg(current.wheelContact[wheel]
+                                                    ? QStringLiteral("grounded")
+                                                    : QStringLiteral("airborne")));
+        }
+    }
+    readouts.removeDuplicates();
+    QVariantMap result{
+            {QStringLiteral("available"), true},
+            {QStringLiteral("passed"), passed},
+            {QStringLiteral("message"),
+             QStringLiteral("%1 · %2")
+                     .arg(passed ? QStringLiteral("Pass")
+                                 : QStringLiteral("Fail"))
+                     .arg(readouts.join(QStringLiteral(" · ")))}};
+    if (instructions.size() == 3 &&
+        instructions[0].opcode == Opcode::Scalar &&
+        instructions[0].value == Value::Position &&
+        instructions[1].opcode == Opcode::Constant &&
+        (instructions[2].opcode == Opcode::Greater ||
+         instructions[2].opcode == Opcode::GreaterOrEqual ||
+         instructions[2].opcode == Opcode::Less ||
+         instructions[2].opcode == Opcode::LessOrEqual)) {
+        result.insert(QStringLiteral("thresholdAxis"),
+                      static_cast<int>(instructions[0].x));
+        result.insert(QStringLiteral("thresholdValue"), instructions[1].x);
+    }
+    return result;
+}
+
 int RaceViewerController::cameraPreset() const {
     return cameraPreset_;
 }
@@ -2062,6 +2746,24 @@ QString RaceViewerController::renderTelemetry(
             frame,
             run == nullptr ? QString{} : run->name,
             currentTick());
+    return result.error.isEmpty()
+            ? result.text
+            : QStringLiteral("Telemetry: %1").arg(result.error);
+}
+
+QString RaceViewerController::renderTelemetryWithContext(
+        const QString &script,
+        const QVector3D &cameraPosition,
+        const QVariantMap &context,
+        bool richText) const {
+    const RaceViewerRun *const run = selectedRun();
+    const RaceViewerFrame frame = run == nullptr
+            ? RaceViewerFrame{}
+            : SampleTelemetryFrame(run->frames, timeMs_);
+    const TelemetryRenderResult result = RenderTelemetryTemplate(
+            script, cameraPosition, frame,
+            run == nullptr ? QString{} : run->name,
+            currentTick(), context, richText);
     return result.error.isEmpty()
             ? result.text
             : QStringLiteral("Telemetry: %1").arg(result.error);
@@ -2344,7 +3046,7 @@ void RaceViewerController::addSearchRun(
     PendingRun pending{
             packsDirectory,
             replayPath,
-            *backend,
+            kAuxiliarySimulationBackend,
             ToViewerFrames(frames),
             inputs};
     if (loaded_ && loadedPacksDirectory_ == packsDirectory &&
@@ -2360,7 +3062,8 @@ void RaceViewerController::addSearchRun(
     }
     pendingRun_ = std::move(pending);
     if (workerThread_ == nullptr) {
-        beginMapLoad(packsDirectory, replayPath, *backend);
+        beginMapLoad(packsDirectory, replayPath,
+                     kAuxiliarySimulationBackend);
     }
 }
 
@@ -2388,7 +3091,7 @@ void RaceViewerController::addSearchImprovement(
         PendingImprovement pending{
                 packsDirectory,
                 replayPath,
-                *backend,
+                kAuxiliarySimulationBackend,
                 searchId,
                 improvementNumber,
                 ToViewerFrames(frames)};
@@ -2429,7 +3132,8 @@ void RaceViewerController::addSearchImprovement(
         }
         pendingImprovements_.push_back(std::move(pending));
         if (workerThread_ == nullptr) {
-            beginMapLoad(packsDirectory, replayPath, *backend);
+            beginMapLoad(packsDirectory, replayPath,
+                         kAuxiliarySimulationBackend);
         }
     } catch (const std::exception &exception) {
         setStatusText(
@@ -2487,12 +3191,19 @@ bool RaceViewerController::appendImprovementTrajectory(
         QVariantMap path;
         path.insert(QStringLiteral("kind"),
                     QStringLiteral("improvement"));
+        path.insert(QStringLiteral("visualId"), key);
         path.insert(
                 QStringLiteral("name"),
                 QStringLiteral("Improvement %1")
                         .arg(improvementNumber));
+        static constexpr std::array<const char *, 12> improvementColors{
+                "#ffb84d", "#77cfa1", "#e88ac4", "#80b9f0",
+                "#d5cf6b", "#b695e7", "#f18b75", "#70d1d0",
+                "#c7a369", "#a9d879", "#de84a0", "#92a9ed"};
         path.insert(QStringLiteral("color"),
-                    QStringLiteral("#ffb84d"));
+                    QString::fromLatin1(improvementColors[
+                            (improvementNumber - 1u) %
+                            improvementColors.size()]));
         path.insert(QStringLiteral("opacity"), 0.96);
         path.insert(QStringLiteral("visible"), true);
         path.insert(QStringLiteral("searchId"),
@@ -2534,7 +3245,10 @@ void RaceViewerController::updateBestTrajectory(
         const std::vector<RaceViewerFrame> &frames) {
     try {
         const float radius = static_cast<float>(
-                std::clamp(sceneRadius_ * 0.0004, 0.015, 0.15));
+                std::clamp(sceneRadius_ * 0.0004, 0.015, 0.15) *
+                visualStyle(QStringLiteral("trajectory:best"))
+                        .value(QStringLiteral("width"), 3.0).toDouble() /
+                3.0);
         RaceViewerMeshBuffers mesh = BuildTrajectoryMesh(frames, radius);
         if (mesh.filled.isEmpty()) {
             return;
@@ -2561,6 +3275,7 @@ void RaceViewerController::updateBestTrajectory(
         QVariantMap path;
         path.insert(QStringLiteral("kind"), QStringLiteral("run"));
         path.insert(QStringLiteral("runId"), QStringLiteral("best"));
+        path.insert(QStringLiteral("visualId"), QStringLiteral("trajectory:best"));
         path.insert(QStringLiteral("name"), name);
         path.insert(QStringLiteral("color"), QStringLiteral("#58a6ff"));
         path.insert(QStringLiteral("opacity"), 0.9);
@@ -2584,6 +3299,27 @@ void RaceViewerController::updateBestTrajectory(
         setStatusText(QStringLiteral(
                 "Updating the Best trajectory failed unexpectedly."));
     }
+}
+
+void RaceViewerController::refreshStyledTrajectory(const QString &runId) {
+    const auto run = std::find_if(
+            runs_.begin(), runs_.end(), [&runId](const RaceViewerRun &entry) {
+                return entry.id == runId;
+            });
+    if (run == runs_.end() || run->frames.empty()) return;
+    const QString visualId = QStringLiteral("trajectory:") + runId;
+    const float radius = static_cast<float>(
+            std::clamp(sceneRadius_ * 0.0004, 0.015, 0.15) *
+            visualStyle(visualId)
+                    .value(QStringLiteral("width"), 3.0).toDouble() / 3.0);
+    const RaceViewerMeshBuffers mesh = BuildTrajectoryMesh(run->frames, radius);
+    if (mesh.filled.isEmpty()) return;
+    RaceGeometry &geometry = runId == QLatin1String("best")
+            ? bestTrajectoryGeometry_ : inputPreviewGeometry_;
+    geometry.setMesh(mesh.filled,
+                     static_cast<int>(sizeof(FilledVertex)),
+                     QQuick3DGeometry::PrimitiveType::Triangles,
+                     true, mesh.boundsMin, mesh.boundsMax);
 }
 
 void RaceViewerController::setTimeMs(qint64 value) {
@@ -2642,6 +3378,10 @@ void RaceViewerController::setPreviewInputScript(const QString &value) {
     if (loaded_ && !loading_ && !manualDriving_) {
         scheduleInputPreviewRebuild();
     }
+}
+
+void RaceViewerController::refreshInputPreview() {
+    scheduleInputPreviewRebuild();
 }
 
 void RaceViewerController::setSimulationHorizonMs(qint64 value) {
@@ -3688,6 +4428,7 @@ void RaceViewerController::applyInputPreviewResult(
     QVariantMap path;
     path.insert(QStringLiteral("kind"), QStringLiteral("preview"));
     path.insert(QStringLiteral("runId"), QStringLiteral("preview"));
+    path.insert(QStringLiteral("visualId"), QStringLiteral("trajectory:preview"));
     path.insert(QStringLiteral("name"), QStringLiteral("Inputs"));
     path.insert(QStringLiteral("color"), QStringLiteral("#41c979"));
     path.insert(QStringLiteral("opacity"), 0.94);
@@ -3729,6 +4470,10 @@ void RaceViewerController::applyInputPreviewResult(
             std::move(result.inputs),
             false,
             result.runtime);
+    if (visualStyle(QStringLiteral("trajectory:preview"))
+                .contains(QStringLiteral("width"))) {
+        refreshStyledTrajectory(QStringLiteral("preview"));
+    }
     if (resumePlayback) {
         play();
     }
@@ -3784,9 +4529,7 @@ void RaceViewerController::startStoredRunRebuilds() {
         jobs.push_back({run.id,
                         run.name,
                         QString::fromStdString(FormatInputScript(run.inputs)),
-                        run.id == QStringLiteral("best")
-                                ? PhysicsBackend::Reference
-                                : loadedBackend_,
+                        kAuxiliarySimulationBackend,
                         run.runtime});
     }
     storedRunBuildPending_ = false;
@@ -3944,12 +4687,14 @@ void RaceViewerController::loadMap(const QString &packsDirectory,
     pendingImprovements_.clear();
     if (workerThread_ != nullptr) {
         queuedMapLoad_ =
-                MapLoadRequest{packsDirectory, replayPath, *backend};
+                MapLoadRequest{packsDirectory, replayPath,
+                               kAuxiliarySimulationBackend};
         setLoading(true);
         setStatusText(QStringLiteral("Waiting to load selected map..."));
         return;
     }
-    beginMapLoad(packsDirectory, replayPath, *backend);
+    beginMapLoad(packsDirectory, replayPath,
+                 kAuxiliarySimulationBackend);
 }
 
 void RaceViewerController::beginMapLoad(const QString &packsDirectory,
@@ -4279,6 +5024,7 @@ void RaceViewerController::upsertRun(QString id,
     if (frames.empty()) {
         return;
     }
+    ++runGeometryRevision_;
     if (id == QStringLiteral("best")) {
         updateBestTrajectory(name, frames);
     }
@@ -4457,7 +5203,20 @@ void RaceViewerController::appendSimulationDebuggerFrame(
                     ? QVector3D(linearSpeed[0].toFloat(),
                                 linearSpeed[1].toFloat(),
                                 linearSpeed[2].toFloat())
-                    : QVector3D{}};
+                    : QVector3D{},
+            0.0f,
+            0.0f,
+            0.0f,
+            false,
+            false,
+            {{true, true, true, true}},
+            {{true, true, true, true}},
+            QVector3D(0.0f, 1.0f, 0.0f),
+            frame.contains(QStringLiteral("stuntsScore"))
+                    ? std::optional<std::uint32_t>(
+                              frame.value(QStringLiteral("stuntsScore"))
+                                      .toUInt())
+                    : std::nullopt};
 
     auto found = std::find_if(
             runs_.begin(), runs_.end(), [](const RaceViewerRun &run) {

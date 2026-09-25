@@ -79,6 +79,42 @@ QVariantMap PoseTargetModel::selectedTarget() const {
             targets_[static_cast<std::size_t>(selectedIndex_)], true);
 }
 
+bool PoseTargetModel::restoreTargets(const QVariantList &snapshot) {
+    if (!editingEnabled_ || snapshot.isEmpty() ||
+        snapshot.size() > static_cast<qsizetype>(kMaximumTargets))
+        return false;
+    std::vector<Target> restored;
+    restored.reserve(static_cast<std::size_t>(snapshot.size()));
+    int selected = 0;
+    for (const QVariant &entry : snapshot) {
+        const QVariantMap item = entry.toMap();
+        const QString id = item.value(QStringLiteral("id")).toString();
+        const QString name = item.value(QStringLiteral("name")).toString();
+        const QVector3D position(
+                item.value(QStringLiteral("x")).toFloat(),
+                item.value(QStringLiteral("y")).toFloat(),
+                item.value(QStringLiteral("z")).toFloat());
+        const double yaw = item.value(QStringLiteral("yawDegrees")).toDouble();
+        const double pitch = item.value(QStringLiteral("pitchDegrees")).toDouble();
+        const double roll = item.value(QStringLiteral("rollDegrees")).toDouble();
+        if (id.isEmpty() || name.isEmpty() || !FinitePosition(position) ||
+            !std::isfinite(yaw) || !std::isfinite(pitch) ||
+            !std::isfinite(roll)) return false;
+        if (item.value(QStringLiteral("selected")).toBool())
+            selected = static_cast<int>(restored.size());
+        restored.push_back(Target{id, name, position,
+                                  NormalizeDegrees(yaw),
+                                  NormalizeDegrees(pitch),
+                                  NormalizeDegrees(roll)});
+    }
+    targets_ = std::move(restored);
+    selectedIndex_ = selected;
+    persist();
+    emit targetsChanged();
+    emit selectedTargetChanged();
+    return true;
+}
+
 bool PoseTargetModel::editingEnabled() const {
     return editingEnabled_;
 }

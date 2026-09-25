@@ -11,6 +11,8 @@
 #include <QQuickStyle>
 #include <QTimer>
 #include <QVariant>
+#include <QJSValue>
+#include <iostream>
 
 int main(int argc, char **argv) {
 #if defined(Q_OS_LINUX)
@@ -82,7 +84,26 @@ int main(int argc, char **argv) {
 
     if (application.arguments().contains(
                 QStringLiteral("--qml-smoke-test"))) {
-        QTimer::singleShot(0, &application, &QCoreApplication::quit);
+        QTimer::singleShot(100, &application, [&]() {
+            QObject *const root = engine.rootObjects().value(0);
+            QObject *const inspector = root != nullptr
+                    ? root->findChild<QObject *>(
+                              QStringLiteral("graphicsInspector"))
+                    : nullptr;
+            QObject *const renderMode = root != nullptr
+                    ? root->findChild<QObject *>(
+                              QStringLiteral("renderModeSelector"))
+                    : nullptr;
+            const QVariant rows = inspector != nullptr
+                    ? inspector->property("rows") : QVariant{};
+            const bool valid = inspector != nullptr && renderMode != nullptr &&
+                    rows.value<QJSValue>().toVariant().toList().size() >= 5 &&
+                    renderMode->property("currentValue").toString() ==
+                            QStringLiteral("textured");
+            if (!valid)
+                std::cerr << "Graphics inspector failed to initialize\n";
+            QCoreApplication::exit(valid ? 0 : 1);
+        });
     }
     return application.exec();
 }

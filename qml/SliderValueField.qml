@@ -9,6 +9,7 @@ TextField {
     property real to: 100
     property bool maximumEnabled: true
     property bool integer: false
+    property int displayDecimals: -1
     property string suffix: ""
     property string accessibleName: ""
     property color fieldColor: AppTheme.surface
@@ -67,9 +68,13 @@ TextField {
 
     function persistedText() {
         const number = Number(control.value)
-        return Number.isFinite(number)
+        const full = Number.isFinite(number)
                 ? control.formatNumber(number)
                 : control.formatNumber(control.from)
+        if (control.activeFocus || control.displayDecimals < 0
+            || control.integer || !Number.isFinite(number))
+            return full
+        return Number(number.toFixed(control.displayDecimals)).toString()
     }
 
     function synchronizeText(force) {
@@ -109,6 +114,7 @@ TextField {
     onFromChanged: synchronizeConfiguration()
     onToChanged: synchronizeConfiguration()
     onIntegerChanged: synchronizeConfiguration()
+    onActiveFocusChanged: synchronizeText(true)
     onEnabledChanged: {
         if (!enabled) {
             validationFailed = false

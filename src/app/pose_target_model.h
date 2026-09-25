@@ -58,6 +58,7 @@ public:
                                     const QQuaternion &rotation);
     Q_INVOKABLE bool rotateSelected(const QString &axis,
                                     double degrees);
+    Q_INVOKABLE bool restoreTargets(const QVariantList &snapshot);
     void setEditingEnabled(bool enabled);
 
 signals:

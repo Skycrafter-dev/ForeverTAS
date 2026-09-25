@@ -208,11 +208,11 @@ void RaceTimelineItem::paint(QPainter *painter) {
 
     const qreal centerY = area.height() * 0.5;
     const qreal centerX = area.width() * 0.5;
-    constexpr qreal rulerWidth = 52.0;
-    constexpr qreal rulerRight = 50.0;
-    constexpr qreal accelerationWidth = 24.0;
-    constexpr qreal brakeWidth = accelerationWidth * 0.5;
-    constexpr qreal controlWidth = accelerationWidth + 2.0 * brakeWidth;
+    const qreal rulerWidth = area.width() < 210.0 ? 42.0 : 52.0;
+    const qreal rulerRight = rulerWidth - 2.0;
+    const qreal accelerationWidth = area.width() < 210.0 ? 18.0 : 24.0;
+    const qreal brakeWidth = accelerationWidth * 0.5;
+    const qreal controlWidth = accelerationWidth + 2.0 * brakeWidth;
     const qreal controlLeft = centerX - controlWidth * 0.5;
     const qreal controlRight = controlLeft + controlWidth;
     const qreal steeringWidth = std::max<qreal>(

@@ -7,9 +7,39 @@ $BuildDirectory = Join-Path $RepoRoot "build/release"
 $DistDirectory = Join-Path $RepoRoot "dist"
 $SplitCompileJobs = $env:FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS
 $SearchArchitectureJobs = $env:FOREVERVALIDATOR_CUDA_SEARCH_ARCHITECTURE_JOBS
+$BuildParallelism = if ($env:FOREVERTAS_RELEASE_JOBS) { $env:FOREVERTAS_RELEASE_JOBS } else { "1" }
+if ($BuildParallelism -notmatch '^[1-9][0-9]*$') {
+    throw "FOREVERTAS_RELEASE_JOBS must be a positive integer"
+}
 $EnableHip = if ($env:FOREVERTAS_ENABLE_HIP -eq "ON") { "ON" } else { "OFF" }
 $HipArchitectureOption = @()
+$HipCompilerOption = @()
 if ($EnableHip -eq "ON") {
+    if (-not $env:HIP_PATH) { throw "HIP_PATH is required when HIP is enabled" }
+    $HipRoot = ($env:HIP_PATH -replace '\\', '/').TrimEnd('/')
+    $HipPlatform = if ($env:HIP_PLATFORM) {
+        $env:HIP_PLATFORM.ToLowerInvariant()
+    } else { "amd" }
+    if ($HipPlatform -eq "amd") {
+        $HipCompiler = "$HipRoot/bin/clang-cl.exe"
+    } elseif ($HipPlatform -eq "nvidia") {
+        $HipCompiler = Join-Path $env:CUDA_PATH "bin/nvcc.exe"
+    } else {
+        throw "Unsupported HIP_PLATFORM: $HipPlatform"
+    }
+    if (-not (Test-Path $HipCompiler)) {
+        throw "HIP compiler is missing: $HipCompiler"
+    }
+    $HipCompilerOption = @(
+        "-DCMAKE_HIP_PLATFORM=$HipPlatform",
+        "-DCMAKE_HIP_COMPILER=$HipCompiler",
+        "-DCMAKE_HIP_COMPILER_ROCM_ROOT=$HipRoot"
+    )
+    if ($HipPlatform -eq "nvidia") {
+        # CMake 4.4 uses Unix link/archive syntax for its NVIDIA-HIP compiler probe.
+        # The full application build and portable startup test still verify linking.
+        $HipCompilerOption += "-DCMAKE_HIP_COMPILER_FORCED=ON"
+    }
     $HipArchitectures = if ($env:FOREVERTAS_HIP_ARCHITECTURES) {
         $env:FOREVERTAS_HIP_ARCHITECTURES
     } else {
@@ -166,6 +196,7 @@ try {
         -DFOREVERTAS_ENABLE_CUDA=ON `
         "-DFOREVERTAS_ENABLE_HIP=$EnableHip" `
         @HipArchitectureOption `
+        @HipCompilerOption `
         -DFOREVERTAS_ENABLE_VULKAN=ON `
         "-DFOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS=$SplitCompileJobs" `
         $PrebuiltOption `
@@ -195,9 +226,9 @@ try {
     }
 
     cmake --build $BuildDirectory --config Release `
-        --target forevertas-simulation-debug-worker --parallel
+        --target forevertas-simulation-debug-worker --parallel $BuildParallelism
     if ($LASTEXITCODE -ne 0) { throw "Windows debugger worker build failed" }
-    cmake --build $BuildDirectory --config Release --parallel
+    cmake --build $BuildDirectory --config Release --parallel $BuildParallelism
     if ($LASTEXITCODE -ne 0) { throw "Windows build failed" }
 
     $BuiltSearchObject = Join-Path $BuildDirectory `
@@ -234,7 +265,10 @@ try {
 
     $CudaObjects = @(Get-ChildItem `
         (Join-Path $BuildDirectory "_deps/forevervalidator-build") `
-        -Recurse -File | Where-Object { $_.Name -like "*.cu.obj" })
+        -Recurse -File | Where-Object {
+            $_.Name -like "*.cu.obj" -and
+            $_.FullName -match '[\\/]backends[\\/]cuda[\\/]'
+        })
     if ($CudaObjects.Count -eq 0) {
         throw "No Windows CUDA objects were produced"
     }
@@ -260,8 +294,12 @@ try {
     $Hash = Get-FileHash -Algorithm SHA256 $Artifact.FullName
     "$($Hash.Hash.ToLowerInvariant())  $($Artifact.Name)" |
         Set-Content -NoNewline -Path "$($Artifact.FullName).sha256"
+    $PortableTestOptions = @{}
+    if ($EnableHip -eq "ON" -and $HipPlatform -eq "amd") {
+        $PortableTestOptions.ExternalRuntimeDirectory = "$HipRoot/bin"
+    }
     & (Join-Path $RepoRoot "packaging/windows/test-portable.ps1") `
-        -Archive $Artifact.FullName
+        -Archive $Artifact.FullName @PortableTestOptions
 
     [ordered]@{
         cuda = "12.8.1"

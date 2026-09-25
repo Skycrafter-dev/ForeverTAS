@@ -253,7 +253,31 @@ int main(int argc, char **argv) {
             settingsProbe.telemetryScriptError(
                     QStringLiteral("{missing.field}")) !=
                     QStringLiteral(
-                            "Unknown telemetry field {missing.field}")) {
+                            "Unknown telemetry field {missing.field}") ||
+            settingsProbe.renderTelemetry(
+                    QStringLiteral("{(car.x - camera.x) * 2:1} "
+                                   "{max(abs(-3), sqrt(16)):0} "
+                                   "{stunt.score:0}"),
+                    QVector3D(1.25f, 0.0f, 0.0f)) !=
+                    QStringLiteral("-2.5 4 --") ||
+            settingsProbe.telemetryScriptError(
+                    QStringLiteral("{car.speed / :2}")).isEmpty() ||
+            !settingsProbe.telemetryScriptError(
+                    QStringLiteral("{conditions.acceptance}")).isEmpty() ||
+            settingsProbe.renderTelemetryWithContext(
+                    QStringLiteral("{target.readout}\n"
+                                   "{conditions.acceptance}"), {},
+                    {{QStringLiteral("target.readout"),
+                      QStringLiteral("Target: <finish>")},
+                     {QStringLiteral("conditions.acceptance"),
+                      QVariantMap{{QStringLiteral("text"),
+                                   QStringLiteral("Conditions: Passed")},
+                                  {QStringLiteral("color"),
+                                   QColor(QStringLiteral("#168040"))}}}},
+                    true) !=
+                    QStringLiteral("Target: &lt;finish&gt;<br/>"
+                                   "<span style=\"color:#168040\">"
+                                   "Conditions: Passed</span>")) {
             std::cerr << "scripted telemetry defaults are invalid\n";
             return 1;
         }
@@ -270,6 +294,17 @@ int main(int argc, char **argv) {
             return 1;
         }
         settingsProbe.setCameraPreset(1);
+        settingsProbe.setTelemetryScript(
+                QStringLiteral("Camera pos: X {camera.x:2}   "
+                               "Y {camera.y:2}   Z {camera.z:2}"));
+    }
+    {
+        RaceViewerController settingsProbe;
+        if (settingsProbe.telemetryScript() !=
+                settingsProbe.defaultTelemetryScript()) {
+            std::cerr << "legacy telemetry default was not upgraded\n";
+            return 1;
+        }
         settingsProbe.setTelemetryScript(
                 settingsProbe.defaultTelemetryScript());
     }
@@ -595,6 +630,19 @@ int main(int argc, char **argv) {
                             return viewer.runCount() == 1 &&
                                     FindActivityTick(viewer, 'l') >= 0;
                         });
+                        int refreshedTrajectories = 0;
+                        const auto refreshConnection = QObject::connect(
+                                &viewer,
+                                &RaceViewerController::trajectoriesChanged,
+                                [&refreshedTrajectories]() {
+                                    ++refreshedTrajectories;
+                                });
+                        viewer.refreshInputPreview();
+                        const bool previewRefreshReady = WaitUntil([&]() {
+                            return refreshedTrajectories > 0 &&
+                                    viewer.runCount() == 1;
+                        });
+                        QObject::disconnect(refreshConnection);
                         trajectoryPreviewValid =
                                 trajectoryGeometryValid &&
                                 previewToggleInitiallyVisible &&
@@ -605,6 +653,7 @@ int main(int argc, char **argv) {
                                 playbackContinuedAfterEdit &&
                                 invalidEditCleared &&
                                 finalPreviewReady &&
+                                previewRefreshReady &&
                                 viewer.previewInputScript().contains(
                                         QStringLiteral("press left")) &&
                                 viewer.trajectoryCount() == 1 &&
@@ -1731,6 +1780,29 @@ int main(int argc, char **argv) {
                             }
                         }
                     }
+                    const QVariantList overlaySamples =
+                            viewer.selectedRunSamples();
+                    const QVariantMap supportedCondition =
+                            viewer.conditionPreview(QStringLiteral(
+                                    "car.x >= -10000000"));
+                    const QVariantMap unsupportedCondition =
+                            viewer.conditionPreview(QStringLiteral(
+                                    "car.rpm >= 0"));
+                    const bool overlayDataValid =
+                            !overlaySamples.isEmpty() &&
+                            overlaySamples.front().toMap().contains(
+                                    QStringLiteral("position")) &&
+                            overlaySamples.front().toMap().contains(
+                                    QStringLiteral("velocity")) &&
+                            supportedCondition.value(
+                                    QStringLiteral("available")).toBool() &&
+                            supportedCondition.value(
+                                    QStringLiteral("passed")).toBool() &&
+                            supportedCondition.value(
+                                    QStringLiteral("thresholdAxis")).toInt()
+                                    == 1 &&
+                            !unsupportedCondition.value(
+                                    QStringLiteral("available")).toBool();
                     const bool sceneValid = mapOnlyStateObserved &&
                             manualDriveValid &&
                             cameraPresetsValid &&
@@ -1757,6 +1829,7 @@ int main(int argc, char **argv) {
                             viewer.diagnosticCount() > 0 &&
                             visibleMaterialClasses.size() >= 3 &&
                             viewer.ellipsoidCount() > 0 &&
+                            overlayDataValid &&
                             viewer.durationMs() > 0 &&
                             viewer.tickCount() ==
                                     viewer.durationMs() /

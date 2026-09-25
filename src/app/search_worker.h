@@ -8,10 +8,18 @@
 #include <QString>
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <string_view>
 
 namespace forevertas::app {
+
+struct AutoRestartPolicy {
+    enum class Mode { Off, Duration, Attempts } mode = Mode::Off;
+    std::chrono::seconds duration{0};
+    std::uint64_t attempts = 0;
+    bool randomizeSeeds = false;
+};
 
 QString SearchStageStatus(SearchProgressStage stage,
                           std::string_view backendId,
@@ -30,7 +38,8 @@ public:
                  std::shared_ptr<std::atomic_bool> stopRequested,
                  std::shared_ptr<std::atomic_bool> cancellationRequested,
                  std::shared_ptr<std::atomic<SearchIterationPhase>>
-                         iterationPhase);
+                         iterationPhase,
+                 AutoRestartPolicy restartPolicy = {});
 
 public slots:
     void run();
@@ -45,6 +54,8 @@ signals:
     void bestChanged(const QString &summary, const QString &inputsText);
     void improvementFound(
             forevertas::app::SearchImprovementPtr improvement);
+    void cycleSaved(const QString &mapKey, const QString &directory,
+                    std::uint64_t restartNumber);
     void succeeded(forevertas::app::SearchCompletionPtr completion);
     void cancelled();
     void failed(const QString &message);
@@ -56,6 +67,7 @@ private:
     std::shared_ptr<std::atomic_bool> stopRequested_;
     std::shared_ptr<std::atomic_bool> cancellationRequested_;
     std::shared_ptr<std::atomic<SearchIterationPhase>> iterationPhase_;
+    AutoRestartPolicy restartPolicy_;
 };
 
 }  // namespace forevertas::app

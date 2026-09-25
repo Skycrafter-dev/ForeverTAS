@@ -24,9 +24,12 @@ Item {
         AppTheme.dark ? AppTheme.viewerOverlayText : AppTheme.text
     property var captureViewpoint: function() { return ({}) }
     property var restoreViewpoint: function(board) {}
+    property var afterPickUp: function() {}
     property var exportBackgroundImage: function(index, fileUrl) {
         return false
     }
+    signal editGestureStarted()
+    signal editGestureFinished()
 
     function chooseImageExport(index, mode) {
         if (imageExportInProgress
@@ -140,6 +143,7 @@ Item {
             property real lastBoardY: 0
 
             onPressed: mouse => {
+                root.editGestureStarted()
                 lastBoardX = mouse.x
                 lastBoardY = mouse.y
                 if (root.model.tool === "text") {
@@ -197,8 +201,12 @@ Item {
             onReleased: {
                 if (root.model.drawing)
                     root.model.finishItem()
+                root.editGestureFinished()
             }
-            onCanceled: root.model.cancelItem()
+            onCanceled: {
+                root.model.cancelItem()
+                root.editGestureFinished()
+            }
             onDoubleClicked: mouse => {
                 if (root.model.tool !== "select")
                     return
@@ -278,6 +286,7 @@ Item {
                 property real lastBoardX: 0
                 property real lastBoardY: 0
                 onPressed: mouse => {
+                    root.editGestureStarted()
                     const point = resizeHandle.mapToItem(
                                     boardArea, mouse.x, mouse.y)
                     lastBoardX = point.x
@@ -296,6 +305,8 @@ Item {
                     lastBoardX = point.x
                     lastBoardY = point.y
                 }
+                onReleased: root.editGestureFinished()
+                onCanceled: root.editGestureFinished()
             }
         }
 
@@ -597,8 +608,11 @@ Item {
                         height: 32
                         elideText: false
                         text: qsTr("Pick up")
-                        onClicked: root.model.pickUpBoard(
-                                       root.model.selectedBoardIndex)
+                        onClicked: {
+                            if (root.model.pickUpBoard(
+                                    root.model.selectedBoardIndex))
+                                root.afterPickUp()
+                        }
                         ToolTip.visible: hovered
                         ToolTip.delay: 350
                         ToolTip.text: qsTr(

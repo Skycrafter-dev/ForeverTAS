@@ -74,7 +74,7 @@ forevervalidator::experimental::PhysicsSandboxOptions CanonicalOptions(
 
 SearchTimelineFrame ToTimelineFrame(
         const forevervalidator::experimental::PhysicsSandboxStateView &view) {
-    return {
+    SearchTimelineFrame frame{
             static_cast<std::int64_t>(view.timeMs),
             view.car.position.x,
             view.car.position.y,
@@ -104,7 +104,9 @@ SearchTimelineFrame ToTimelineFrame(
             view.car.wheelHasSurface,
             view.car.cameraSupportUp.x,
             view.car.cameraSupportUp.y,
-            view.car.cameraSupportUp.z};
+            view.car.cameraSupportUp.z,
+            view.stuntsScore};
+    return frame;
 }
 
 struct TimelineSamplingRuntime {
@@ -124,7 +126,7 @@ TimelineSamplingRuntime CreateTimelineSamplingRuntime(
             OpenInstalledPackDirectory(request.packDirectory),
             "opening pack directory for timeline sampling");
     PhysicsSandboxOptions options = CanonicalOptions(
-            request, ToForeverValidatorBackend(request.backend));
+            request, ToForeverValidatorBackend(kAuxiliarySimulationBackend));
     PhysicsSandbox sandbox = Require(
             CreatePhysicsSandbox(std::move(source), options),
             "creating timeline-sampling sandbox");
@@ -216,14 +218,8 @@ std::vector<SearchTimelineFrame> SampleBestTimeline(
         const SearchRunControl *control) {
     ReportProgress(
             control, SearchProgressStage::FinalSamplingSetup, 0u, 0u);
-    SearchRequest samplingRequest = request;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
-    if (IsGpuBackend(samplingRequest.backend)) {
-        samplingRequest.backend = PhysicsBackend::Reference;
-    }
-#endif
     TimelineSamplingRuntime runtime =
-            CreateTimelineSamplingRuntime(samplingRequest, replay, identity);
+            CreateTimelineSamplingRuntime(request, replay, identity);
     return SampleTimeline(runtime, inputs, control, true);
 }
 
@@ -240,7 +236,7 @@ public:
           identity_(std::move(identity)),
           control_(control),
           callback_(std::move(callback)) {
-        request_.backend = PhysicsBackend::Reference;
+        request_.backend = kAuxiliarySimulationBackend;
         samplingControl_.cancellationRequested = [this]() {
             return discardRequested_.load(std::memory_order_relaxed) ||
                     (control_ != nullptr &&
@@ -351,20 +347,20 @@ private:
     std::thread worker_;
 };
 
-class CudaWinnerReferenceWorker final {
+class OptimizedCpuWinnerWorker final {
 public:
-    CudaWinnerReferenceWorker(
+    OptimizedCpuWinnerWorker(
             SearchRequest request,
             forevervalidator::AssetBytes replay,
             forevervalidator::ReplayIdentity identity)
         : request_(std::move(request)),
           replay_(std::move(replay)),
           identity_(std::move(identity)) {
-        request_.backend = PhysicsBackend::Reference;
+        request_.backend = kAuxiliarySimulationBackend;
         worker_ = std::thread([this]() { Run(); });
     }
 
-    ~CudaWinnerReferenceWorker() {
+    ~OptimizedCpuWinnerWorker() {
         {
             std::lock_guard<std::mutex> guard(mutex_);
             stopRequested_ = true;
@@ -378,17 +374,21 @@ public:
     SearchExecutionContext::ResolvedCudaWinner Resolve(
             const std::vector<forevervalidator::experimental::
                                       PhysicsSandboxInputEvent> &inputs,
-            std::uint32_t tick) {
+            std::int64_t evaluationStartTimeMs,
+            std::uint32_t tick,
+            const ConditionExecutionContext &context) {
         Task task;
         task.inputs = inputs;
+        task.evaluationStartTimeMs = evaluationStartTimeMs;
         task.tick = tick;
+        task.context = context;
         std::future<SearchExecutionContext::ResolvedCudaWinner> future =
                 task.result.get_future();
         {
             std::lock_guard<std::mutex> guard(mutex_);
             if (stopRequested_ || pending_) {
                 throw std::runtime_error(
-                        "reference winner worker is unavailable");
+                    "optimized CPU winner worker is unavailable");
             }
             pending_.emplace(std::move(task));
         }
@@ -402,11 +402,14 @@ private:
                             PhysicsSandboxInputEvent>
                 inputs;
         std::uint32_t tick = 0u;
+        std::int64_t evaluationStartTimeMs = 0;
+        ConditionExecutionContext context;
         std::promise<SearchExecutionContext::ResolvedCudaWinner> result;
     };
 
     void Run() noexcept {
         std::optional<TimelineSamplingRuntime> runtime;
+        std::unique_ptr<IterationEvaluator> evaluator;
         for (;;) {
             std::optional<Task> task;
             {
@@ -424,26 +427,53 @@ private:
                 if (!runtime) {
                     runtime.emplace(CreateTimelineSamplingRuntime(
                             request_, replay_, identity_));
+                    const EvaluationTargetRegistration *registration =
+                            FindEvaluationTarget(
+                                    request_.evaluationTarget.id);
+                    if (registration == nullptr) {
+                        throw std::invalid_argument(
+                                "winner target registration is unavailable");
+                    }
+                    evaluator = registration->create(
+                            request_.evaluationTarget.settings,
+                            kSearchTickDurationMs);
                 }
                 if (task->tick > runtime->finalTickCount) {
                     throw std::out_of_range(
                             "CUDA winner tick exceeds the Simulation horizon");
                 }
                 Require(runtime->sandbox.RestoreState(runtime->initialState),
-                        "restoring reference winner worker");
+                        "restoring optimized CPU winner worker");
                 Require(runtime->sandbox.ReplaceInputs(task->inputs),
-                        "replacing reference winner inputs");
-                forevervalidator::experimental::PhysicsSandboxStateView view =
-                        task->tick == 0u
-                        ? Require(runtime->sandbox.ReadState(),
-                                  "reading reference winner state")
-                        : Require(runtime->sandbox.AdvanceTicks(task->tick),
-                                  "simulating reference winner");
+                "replacing optimized CPU winner inputs");
+                auto view = Require(runtime->sandbox.ReadState(),
+                                    "reading optimized CPU winner state");
+                auto session = evaluator->CreateSession();
+                std::optional<EvaluationSample> evaluation;
+                for (std::uint32_t simulatedTick = 1u;
+                     simulatedTick <= task->tick; ++simulatedTick) {
+                    const auto previous = view;
+                    view = Require(runtime->sandbox.AdvanceTicks(1u),
+                                   "simulating optimized CPU winner");
+                    if (static_cast<std::int64_t>(view.timeMs) >=
+                        task->evaluationStartTimeMs) {
+                        session->SetExecutionContext(task->context);
+                        const bool eligible = !request_.condition ||
+                                request_.condition->Evaluate(
+                                        previous, view, task->context);
+                        if (auto sample = eligible
+                                    ? session->Observe(previous, view)
+                                    : std::nullopt) {
+                            evaluation = std::move(sample);
+                        }
+                    }
+                }
                 forevervalidator::experimental::PhysicsSandboxState snapshot =
                         Require(
                                 runtime->sandbox.CaptureState(),
                                 "capturing reference winner state");
-                task->result.set_value({view, std::move(snapshot)});
+                task->result.set_value(
+                        {view, std::move(snapshot), std::move(evaluation)});
             } catch (...) {
                 task->result.set_exception(std::current_exception());
             }
@@ -550,9 +580,9 @@ SearchResult RunLoadedSearch(
     std::uint64_t sampledImprovementCount = 0u;
     bool sampledBaseline = false;
 #if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
-    std::unique_ptr<CudaWinnerReferenceWorker> cudaWinnerWorker;
+    std::unique_ptr<OptimizedCpuWinnerWorker> cudaWinnerWorker;
     if (IsGpuBackend(request.backend)) {
-        cudaWinnerWorker = std::make_unique<CudaWinnerReferenceWorker>(
+        cudaWinnerWorker = std::make_unique<OptimizedCpuWinnerWorker>(
                 request, replay, identity);
     }
 #endif
@@ -654,20 +684,26 @@ SearchResult RunLoadedSearch(
                             ? [worker = cudaWinnerWorker.get(), control](
                                       const std::vector<
                                               PhysicsSandboxInputEvent>
-                                              &inputs,
-                                      std::uint32_t tick) {
+                                      &inputs,
+                                      std::int64_t evaluationStartTimeMs,
+                                      std::uint32_t tick,
+                                      const ConditionExecutionContext &context) {
                                   if (control != nullptr &&
                                       control->cudaWinnerResolved) {
                                       control->cudaWinnerResolved();
                                   }
-                                  return worker->Resolve(inputs, tick);
+                                  return worker->Resolve(
+                                          inputs, evaluationStartTimeMs,
+                                          tick, context);
                               }
                             : std::function<SearchExecutionContext::
                                       ResolvedCudaWinner(
                                               const std::vector<
-                                                      PhysicsSandboxInputEvent>
-                                                      &,
-                                              std::uint32_t)>{},
+                                              PhysicsSandboxInputEvent>
+                                              &,
+                                              std::int64_t,
+                                              std::uint32_t,
+                                              const ConditionExecutionContext &)>{},
 #else
                     {},
 #endif
@@ -725,40 +761,32 @@ struct CpuWorkerState {
 };
 
 bool BetterEvaluation(const IterationEvaluator &evaluator,
-                      double candidateScore,
-                      double candidateTimeMs,
+                      const EvaluationSample &candidate,
                       std::size_t candidateInputCount,
-                      double incumbentScore,
-                      double incumbentTimeMs,
+                      const EvaluationSample &incumbent,
                       std::size_t incumbentInputCount) {
     return ImprovesSearchResult(
             evaluator,
-            {candidateScore, candidateTimeMs, {}},
+            candidate,
             candidateInputCount,
-            {incumbentScore, incumbentTimeMs, {}},
+            incumbent,
             incumbentInputCount);
 }
 
 bool PreferEvaluation(
         const IterationEvaluator &evaluator,
-        double candidateScore,
-        double candidateTimeMs,
+        const EvaluationSample &candidate,
         std::size_t candidateInputCount,
         SearchWinnerSource candidateSource,
         std::optional<std::uint64_t> candidateIteration,
-        double incumbentScore,
-        double incumbentTimeMs,
+        const EvaluationSample &incumbent,
         std::size_t incumbentInputCount,
         SearchWinnerSource incumbentSource,
         std::optional<std::uint64_t> incumbentIteration) {
-    const EvaluationSample candidate{
-            candidateScore, candidateTimeMs, {}};
-    const EvaluationSample incumbent{
-            incumbentScore, incumbentTimeMs, {}};
     if (evaluator.IsBetter(candidate, incumbent)) {
         return true;
     }
-    if (candidateScore != incumbentScore) {
+    if (!evaluator.IsEquivalent(candidate, incumbent)) {
         return false;
     }
     if (candidateInputCount != incumbentInputCount) {
@@ -769,6 +797,18 @@ bool PreferEvaluation(
     }
     return candidateIteration.value_or(0u) <
             incumbentIteration.value_or(0u);
+}
+
+EvaluationSample SampleOf(const SearchLiveUpdate &live) {
+    return {live.bestScore, live.bestEvaluationTimeMs,
+            live.bestEvaluationDescription, live.objectiveScores,
+            live.metricValues};
+}
+
+EvaluationSample SampleOf(const SearchResult &result) {
+    return {result.bestScore, result.bestEvaluationTimeMs,
+            result.bestEvaluationDescription, result.objectiveScores,
+            result.metricValues};
 }
 
 SearchResult RunMultiThreadedCpuSearch(
@@ -823,6 +863,9 @@ SearchResult RunMultiThreadedCpuSearch(
                     request,
                     canonicalInputs)),
             "applying shared CPU baseline");
+    const std::vector<SandboxInputEvent> originalBaselineInputs =
+            Require(sourceSandbox.ReadInputs(),
+                    "reading shared CPU baseline inputs");
 
     std::vector<PhysicsSandbox> workerSandboxes;
     workerSandboxes.reserve(workerCount);
@@ -842,52 +885,40 @@ SearchResult RunMultiThreadedCpuSearch(
                     kSearchTickDurationMs);
     std::mutex evaluatorMutex;
     const auto betterShared =
-            [&](double candidateScore,
-                double candidateTimeMs,
-                std::size_t candidateInputCount,
-                double incumbentScore,
-                double incumbentTimeMs,
-                std::size_t incumbentInputCount) {
+            [&](const auto &candidate, const auto &incumbent) {
                 std::lock_guard<std::mutex> guard(evaluatorMutex);
                 return BetterEvaluation(
                         *evaluator,
-                        candidateScore,
-                        candidateTimeMs,
-                        candidateInputCount,
-                        incumbentScore,
-                        incumbentTimeMs,
-                        incumbentInputCount);
+                        SampleOf(candidate), candidate.bestInputs.size(),
+                        SampleOf(incumbent), incumbent.bestInputs.size());
             };
     const auto preferShared =
-            [&](double candidateScore,
-                double candidateTimeMs,
-                std::size_t candidateInputCount,
-                SearchWinnerSource candidateSource,
-                std::optional<std::uint64_t> candidateIteration,
-                double incumbentScore,
-                double incumbentTimeMs,
-                std::size_t incumbentInputCount,
-                SearchWinnerSource incumbentSource,
-                std::optional<std::uint64_t> incumbentIteration) {
+            [&](const auto &candidate, const auto &incumbent) {
                 std::lock_guard<std::mutex> guard(evaluatorMutex);
                 return PreferEvaluation(
                         *evaluator,
-                        candidateScore,
-                        candidateTimeMs,
-                        candidateInputCount,
-                        candidateSource,
-                        candidateIteration,
-                        incumbentScore,
-                        incumbentTimeMs,
-                        incumbentInputCount,
-                        incumbentSource,
-                        incumbentIteration);
+                        SampleOf(candidate), candidate.bestInputs.size(),
+                        candidate.winnerSource,
+                        candidate.winningIterationIndex,
+                        SampleOf(incumbent), incumbent.bestInputs.size(),
+                        incumbent.winnerSource,
+                        incumbent.winningIterationIndex);
             };
     std::mutex stateMutex;
     std::mutex upstreamControlMutex;
     std::condition_variable stateChanged;
     std::vector<CpuWorkerState> states(workerCount);
     std::atomic_bool internalCancellation{false};
+    const bool scripted = request.evaluationTarget.id ==
+            kScriptedTargetEvaluationId;
+    std::optional<SearchLiveUpdate> scriptedBest;
+    std::map<std::uint64_t, std::optional<SearchLiveUpdate>>
+            scriptedPending;
+    std::uint64_t scriptedNextIteration = 0u;
+    std::uint64_t scriptedImprovementCount = 0u;
+    std::optional<std::chrono::steady_clock::duration>
+            scriptedLastImprovementElapsed;
+    bool scriptedBaselineSeen = false;
     const bool autoPromoteBest = *ParseBoolean(
             request.searchAlgorithm.settings.at(
                     "autoPromoteBest"));
@@ -959,21 +990,17 @@ SearchResult RunMultiThreadedCpuSearch(
                                     const SearchLiveUpdate &live) {
                                 std::lock_guard<std::mutex> guard(
                                         stateMutex);
-                                if (autoPromoteBest &&
+                                if (autoPromoteBest && !scripted &&
                                     live.winnerSource ==
                                             SearchWinnerSource::Mutation &&
                                     (!promotedEvaluation ||
-                                     betterShared(
-                                             live.bestScore,
-                                             live.bestEvaluationTimeMs,
+                                     ImprovesSearchResult(
+                                             *evaluator,
+                                             SampleOf(live),
                                              live.bestInputs.size(),
-                                             promotedEvaluation->score,
-                                             promotedEvaluation->timeMs,
+                                             *promotedEvaluation,
                                              promotedInputs.size()))) {
-                                    promotedEvaluation = {
-                                            live.bestScore,
-                                            live.bestEvaluationTimeMs,
-                                            {}};
+                                    promotedEvaluation = SampleOf(live);
                                     promotedInputs =
                                             live.bestInputs;
                                 }
@@ -981,6 +1008,52 @@ SearchResult RunMultiThreadedCpuSearch(
                                 ++revision;
                                 stateChanged.notify_one();
                             };
+                    if (scripted) {
+                        workerControl.attemptCompleted =
+                                [&](std::optional<std::uint64_t> index,
+                                    std::optional<SearchLiveUpdate> attempt) {
+                                    std::lock_guard<std::mutex> guard(
+                                            stateMutex);
+                                    if (!index) {
+                                        if (!scriptedBaselineSeen) {
+                                            scriptedBaselineSeen = true;
+                                            scriptedBest = std::move(attempt);
+                                        }
+                                    } else {
+                                        scriptedPending.emplace(
+                                                *index,
+                                                std::move(attempt));
+                                    }
+                                    while (scriptedBaselineSeen) {
+                                        auto pending = scriptedPending.find(
+                                                scriptedNextIteration);
+                                        if (pending == scriptedPending.end()) {
+                                            break;
+                                        }
+                                        if (pending->second &&
+                                            (!scriptedBest || betterShared(
+                                                    *pending->second,
+                                                    *scriptedBest))) {
+                                            scriptedBest =
+                                                    *pending->second;
+                                            ++scriptedImprovementCount;
+                                            scriptedLastImprovementElapsed =
+                                                    std::chrono::steady_clock::now() -
+                                                    started;
+                                            if (autoPromoteBest) {
+                                                promotedEvaluation =
+                                                        SampleOf(*scriptedBest);
+                                                promotedInputs =
+                                                        scriptedBest->bestInputs;
+                                            }
+                                        }
+                                        scriptedPending.erase(pending);
+                                        ++scriptedNextIteration;
+                                    }
+                                    ++revision;
+                                    stateChanged.notify_one();
+                                };
+                    }
                     workerControl.promotedBaselineInputs =
                             [&]() -> std::optional<
                                     std::vector<SandboxInputEvent>> {
@@ -1062,6 +1135,10 @@ SearchResult RunMultiThreadedCpuSearch(
             std::vector<std::optional<SearchStatisticsUpdate>>
                     statisticsUpdates;
             std::vector<std::optional<SearchLiveUpdate>> liveUpdates;
+            std::optional<SearchLiveUpdate> scriptedCandidate;
+            std::uint64_t observedScriptedImprovements = 0u;
+            std::optional<std::chrono::steady_clock::duration>
+                    observedScriptedLastImprovement;
             {
                 std::unique_lock<std::mutex> lock(stateMutex);
                 stateChanged.wait_until(
@@ -1083,6 +1160,13 @@ SearchResult RunMultiThreadedCpuSearch(
                 for (const CpuWorkerState &state : states) {
                     statisticsUpdates.push_back(state.statistics);
                     liveUpdates.push_back(state.live);
+                }
+                if (scripted) {
+                    scriptedCandidate = scriptedBest;
+                    observedScriptedImprovements =
+                            scriptedImprovementCount;
+                    observedScriptedLastImprovement =
+                            scriptedLastImprovementElapsed;
                 }
                 nextReduction =
                         std::chrono::steady_clock::now() +
@@ -1116,21 +1200,12 @@ SearchResult RunMultiThreadedCpuSearch(
                 iterations += live->iterations;
                 evaluatorCalls += live->evaluatorCalls;
                 totalMutationCount += live->totalMutationCount;
-                if (!candidate ||
-                    preferShared(
-                            live->bestScore,
-                            live->bestEvaluationTimeMs,
-                            live->bestInputs.size(),
-                            live->winnerSource,
-                            live->winningIterationIndex,
-                            candidate->bestScore,
-                            candidate->bestEvaluationTimeMs,
-                            candidate->bestInputs.size(),
-                            candidate->winnerSource,
-                            candidate->winningIterationIndex)) {
+                if (!scripted &&
+                    (!candidate || preferShared(*live, *candidate))) {
                     candidate = live;
                 }
             }
+            if (scripted) candidate = std::move(scriptedCandidate);
             if (!candidate) {
                 continue;
             }
@@ -1144,34 +1219,28 @@ SearchResult RunMultiThreadedCpuSearch(
             }
 
             bool improved = false;
-            const bool improvesResult = aggregateBest &&
-                    betterShared(
-                        candidate->bestScore,
-                        candidate->bestEvaluationTimeMs,
-                        candidate->bestInputs.size(),
-                        aggregateBest->bestScore,
-                        aggregateBest->bestEvaluationTimeMs,
-                        aggregateBest->bestInputs.size());
-            if (!aggregateBest ||
-                preferShared(
-                        candidate->bestScore,
-                        candidate->bestEvaluationTimeMs,
-                        candidate->bestInputs.size(),
-                        candidate->winnerSource,
-                        candidate->winningIterationIndex,
-                        aggregateBest->bestScore,
-                        aggregateBest->bestEvaluationTimeMs,
-                        aggregateBest->bestInputs.size(),
-                        aggregateBest->winnerSource,
-                        aggregateBest->winningIterationIndex)) {
-                improved = candidate->winnerSource ==
-                                SearchWinnerSource::Mutation &&
-                        (!aggregateBest || improvesResult);
+            if (scripted) {
+                improved = observedScriptedImprovements >
+                        aggregateImprovementCount;
                 aggregateBest = candidate;
-                if (improved) {
-                    ++aggregateImprovementCount;
-                    lastImprovementElapsed =
-                            std::chrono::steady_clock::now() - started;
+                aggregateImprovementCount =
+                        observedScriptedImprovements;
+                lastImprovementElapsed =
+                        observedScriptedLastImprovement;
+            } else {
+                const bool improvesResult = aggregateBest &&
+                        betterShared(*candidate, *aggregateBest);
+                if (!aggregateBest ||
+                    preferShared(*candidate, *aggregateBest)) {
+                    improved = candidate->winnerSource ==
+                                    SearchWinnerSource::Mutation &&
+                            (!aggregateBest || improvesResult);
+                    aggregateBest = candidate;
+                    if (improved) {
+                        ++aggregateImprovementCount;
+                        lastImprovementElapsed =
+                                std::chrono::steady_clock::now() - started;
+                    }
                 }
             }
             if (control != nullptr && control->liveChanged &&
@@ -1238,6 +1307,22 @@ SearchResult RunMultiThreadedCpuSearch(
         }
     }
 
+    if (scripted) {
+        // Stop can leave gaps in the strided worker indices. Fold all
+        // completed attempts in logical order before publishing the session.
+        for (const auto &[index, attempt] : scriptedPending) {
+            static_cast<void>(index);
+            if (attempt &&
+                (!scriptedBest ||
+                 betterShared(*attempt, *scriptedBest))) {
+                scriptedBest = *attempt;
+                ++scriptedImprovementCount;
+                scriptedLastImprovementElapsed =
+                        std::chrono::steady_clock::now() - started;
+            }
+        }
+    }
+
     std::optional<std::size_t> bestWorker;
     std::uint64_t iterations = 0u;
     std::uint64_t evaluatorCalls = 0u;
@@ -1252,33 +1337,63 @@ SearchResult RunMultiThreadedCpuSearch(
         evaluatorCalls += result.evaluatorCalls;
         totalMutationCount += result.totalMutationCount;
         if (!bestWorker ||
-            preferShared(
-                    result.bestScore,
-                    result.bestEvaluationTimeMs,
-                    result.bestInputs.size(),
-                    result.winnerSource,
-                    result.winningIterationIndex,
-                    states[*bestWorker].result->bestScore,
-                    states[*bestWorker].result
-                            ->bestEvaluationTimeMs,
-                    states[*bestWorker].result->bestInputs.size(),
-                    states[*bestWorker].result->winnerSource,
-                    states[*bestWorker].result
-                            ->winningIterationIndex)) {
+            preferShared(result, *states[*bestWorker].result)) {
             bestWorker = index;
         }
     }
 
     SearchResult result =
             std::move(*states[*bestWorker].result);
-    if (((!aggregateBest ||
-         betterShared(
-                 result.bestScore,
-                 result.bestEvaluationTimeMs,
-                 result.bestInputs.size(),
-                 aggregateBest->bestScore,
-                 aggregateBest->bestEvaluationTimeMs,
-                 aggregateBest->bestInputs.size())) ||
+    if (scripted) {
+        if (!scriptedBest) {
+            throw std::runtime_error(
+                    "no attempt satisfied the custom target");
+        }
+        const std::int64_t evaluationTimeMs =
+                static_cast<std::int64_t>(
+                        scriptedBest->bestEvaluationTimeMs);
+        if (evaluationTimeMs < 0 ||
+            evaluationTimeMs % kSearchTickDurationMs != 0 ||
+            evaluationTimeMs > request.simulationHorizonMs) {
+            throw std::runtime_error(
+                    "custom target winner time is not a whole tick");
+        }
+        PhysicsSandbox winnerSandbox = Require(
+                ClonePhysicsSandbox(sourceSandbox),
+                "cloning custom target winner sandbox");
+        Require(winnerSandbox.ReplaceInputs(
+                        scriptedBest->bestInputs),
+                "loading custom target winner inputs");
+        result.bestState = Require(winnerSandbox.AdvanceTicks(
+                        static_cast<std::uint32_t>(
+                                evaluationTimeMs /
+                                kSearchTickDurationMs)),
+                "reconstructing custom target winner");
+        result.bestSnapshot = Require(
+                winnerSandbox.CaptureState(),
+                "capturing custom target winner");
+        result.winnerSource = scriptedBest->winnerSource;
+        result.winningIterationIndex =
+                scriptedBest->winningIterationIndex;
+        result.winningMutationCount = result.winnerSource ==
+                        SearchWinnerSource::Mutation
+                ? EffectiveInputChangeCount(
+                          originalBaselineInputs,
+                          scriptedBest->bestInputs)
+                : 0u;
+        result.bestScore = scriptedBest->bestScore;
+        result.bestEvaluationTimeMs =
+                scriptedBest->bestEvaluationTimeMs;
+        result.bestEvaluationDescription =
+                scriptedBest->bestEvaluationDescription;
+        result.bestInputs = scriptedBest->bestInputs;
+        result.objectiveScores = scriptedBest->objectiveScores;
+        result.metricValues = scriptedBest->metricValues;
+        aggregateImprovementCount = scriptedImprovementCount;
+        lastImprovementElapsed =
+                scriptedLastImprovementElapsed;
+    } else if (((!aggregateBest ||
+         betterShared(result, *aggregateBest)) ||
          aggregateImprovementCount == 0u) &&
         result.winnerSource == SearchWinnerSource::Mutation) {
         ++aggregateImprovementCount;
@@ -1385,7 +1500,9 @@ SearchResult RunSearch(const SearchRequest &request,
             request.simulationHorizonMs,
             earliestMutationTimeMs,
             kSearchTickDurationMs);
-    if (evaluationPlan.startTimeMs < earliestMutationTimeMs ||
+    if (evaluationPlan.startTimeMs < kSearchTickDurationMs ||
+        (evaluationRegistration->id != kScriptedTargetEvaluationId &&
+         evaluationPlan.startTimeMs < earliestMutationTimeMs) ||
         evaluationPlan.endTimeMs < evaluationPlan.startTimeMs ||
         evaluationPlan.endTimeMs > request.simulationHorizonMs ||
         evaluationPlan.startTimeMs % kSearchTickDurationMs != 0 ||

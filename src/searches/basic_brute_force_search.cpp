@@ -4,6 +4,9 @@
 #include "physics_backend.h"
 #include "searches/cuda_batch_calibrator.h"
 #include "searches/cuda_calibration_safety.h"
+#if FOREVERVALIDATOR_HAS_HIP
+#include "searches/hip_calibration_limits.h"
+#endif
 #include "searches/option_settings_utils.h"
 
 #include <algorithm>
@@ -20,19 +23,6 @@
 
 #if FOREVERVALIDATOR_HAS_CUDA
 #include <cuda_runtime_api.h>
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
-#if defined(__GNUC__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wmissing-field-initializers"
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#pragma GCC diagnostic ignored "-Wsign-compare"
-#pragma GCC diagnostic ignored "-Wunused-parameter"
-#endif
-#include <hip/hip_runtime_api.h>
-#if defined(__GNUC__)
-#pragma GCC diagnostic pop
-#endif
 #endif
 
 namespace forevertas {
@@ -219,43 +209,7 @@ CudaCalibrationDeviceLimits QueryGpuCalibrationDeviceLimits(
         forevervalidator::SimulationBackend backend) {
 #if FOREVERVALIDATOR_HAS_HIP
     if (backend == forevervalidator::SimulationBackend::Hip) {
-        int device = 0;
-        hipDeviceProp_t properties{};
-        std::size_t freeMemory = 0u;
-        std::size_t totalMemory = 0u;
-        int kernelExecutionTimeoutEnabled = 0;
-        hipError_t error = hipGetDevice(&device);
-        if (error == hipSuccess) {
-            error = hipGetDeviceProperties(&properties, device);
-        }
-        if (error == hipSuccess) {
-            error = hipMemGetInfo(&freeMemory, &totalMemory);
-        }
-        if (error == hipSuccess) {
-            error = hipDeviceGetAttribute(
-                    &kernelExecutionTimeoutEnabled,
-                    hipDeviceAttributeKernelExecTimeout, device);
-        }
-        if (error != hipSuccess) {
-            throw std::runtime_error(
-                    std::string("querying HIP calibration safety limits "
-                                "failed: ") + hipGetErrorString(error));
-        }
-        CudaCalibrationDeviceLimits limits;
-        limits.totalMemoryBytes = totalMemory;
-        limits.freeMemoryBytes = freeMemory;
-        limits.maximumThreadsPerBlock = properties.maxThreadsPerBlock;
-        limits.maximumGridDimensionX = properties.maxGridSize[0];
-        limits.registersPerBlock = properties.regsPerBlock;
-        limits.registersPerMultiprocessor = properties.regsPerMultiprocessor;
-        limits.maximumThreadsPerMultiprocessor =
-                properties.maxThreadsPerMultiProcessor;
-        limits.maximumBlocksPerMultiprocessor =
-                properties.maxBlocksPerMultiProcessor;
-        limits.multiprocessorCount = properties.multiProcessorCount;
-        limits.kernelExecutionTimeoutEnabled =
-                kernelExecutionTimeoutEnabled != 0;
-        return limits;
+        return QueryHipCalibrationDeviceLimits();
     }
 #endif
 #if FOREVERVALIDATOR_HAS_CUDA
@@ -485,7 +439,9 @@ void ReportLive(
             totalMutationCount,
             elapsed,
             lastImprovementElapsed,
-            {}});
+            {},
+            best.evaluation->objectiveScores,
+            best.evaluation->metricValues});
 }
 
 #if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
@@ -547,6 +503,18 @@ std::string CudaEvaluationDescription(
                             " at " +
                             FormatHumanDurationMilliseconds(
                                     batch.bestTimeMs);
+                } else if constexpr (std::is_same_v<
+                                             T,
+                                             PhysicsSandboxCudaScriptedEvaluator>) {
+                    std::ostringstream description;
+                    description.precision(8);
+                    for (std::size_t i = 0u;
+                         i < batch.bestMetricValues.size(); ++i) {
+                        if (i != 0u) description << "; ";
+                        description << "objective " << i + 1u << "="
+                                    << batch.bestMetricValues[i];
+                    }
+                    return description.str();
                 } else {
                     return "Precise finish time: " +
                             FormatHumanDurationNanoseconds(
@@ -589,6 +557,18 @@ SearchResult RunGpuBasicBruteForce(
     configuration.evaluator = *context.cudaEvaluator;
     if (context.condition != nullptr) {
         configuration.condition = context.condition->cuda;
+        configuration.condition->lastImprovementTimeSeconds =
+                context.searchStartedTimeSeconds;
+        configuration.condition->lastRestartTimeSeconds =
+                context.searchStartedTimeSeconds;
+    } else if (std::holds_alternative<
+                       PhysicsSandboxCudaScriptedEvaluator>(
+                               configuration.evaluator)) {
+        configuration.condition.emplace();
+        PhysicsSandboxCudaConditionInstruction always;
+        always.opcode = PhysicsSandboxCudaConditionOpcode::Constant;
+        always.x = 1.0;
+        configuration.condition->instructions.push_back(always);
         configuration.condition->lastImprovementTimeSeconds =
                 context.searchStartedTimeSeconds;
         configuration.condition->lastRestartTimeSeconds =
@@ -658,7 +638,9 @@ SearchResult RunGpuBasicBruteForce(
                         batch.bestScore,
                         batch.bestTimeMs,
                         CudaEvaluationDescription(
-                                *context.cudaEvaluator, batch)};
+                                *context.cudaEvaluator, batch),
+                        batch.bestObjectiveScores,
+                        batch.bestMetricValues};
                 if (batch.bestSnapshot) {
                     best.view = batch.bestState;
                     best.snapshot = std::move(*batch.bestSnapshot);
@@ -676,21 +658,78 @@ SearchResult RunGpuBasicBruteForce(
                     SearchExecutionContext::ResolvedCudaWinner resolved =
                             context.resolveCudaWinner(
                                     batch.bestInputs,
-                                    static_cast<std::uint32_t>(absoluteTick));
+                                    evaluationPlan.startTimeMs,
+                                    static_cast<std::uint32_t>(absoluteTick),
+                                    {batch.bestIsMutation
+                                             ? batch.bestCandidateId.value_or(0u) + 1u
+                                             : 0u,
+                                     configuration.condition
+                                             ? configuration.condition->lastImprovementTimeSeconds
+                                             : 0.0,
+                                     configuration.condition
+                                             ? configuration.condition->lastRestartTimeSeconds
+                                             : 0.0,
+                                     batch.evaluationCurrentTimeSeconds});
                     best.view = resolved.view;
                     best.snapshot = std::move(resolved.snapshot);
-                    if (std::holds_alternative<
+                    const bool preciseFinish = std::holds_alternative<
                                 PhysicsSandboxCudaFinishTimeEvaluator>(
-                                *context.cudaEvaluator)) {
+                                *context.cudaEvaluator);
+                    if (preciseFinish) {
                         if (!best.view.finishTime ||
                             static_cast<double>(
                                     best.view.finishTime->estimatedNs) !=
                                     batch.bestScore) {
                             throw std::runtime_error(
-                                "reference winner finish time does not match "
-                                "GPU");
+                                "GPU/optimized CPU parity error: winner "
+                                "finish time disagrees");
                         }
                     }
+                    if (!resolved.evaluation) {
+                        throw std::runtime_error(
+                                "GPU/optimized CPU parity error: winner "
+                                "has no optimized CPU evaluation");
+                    }
+                    const auto agrees = [](double cpu, double gpu) {
+                        return std::isfinite(cpu) && std::isfinite(gpu) &&
+                                std::abs(cpu - gpu) <=
+                                        std::max(1e-5, std::abs(gpu) * 1e-5);
+                    };
+                    if (!preciseFinish &&
+                        (!agrees(resolved.evaluation->score,
+                                 batch.bestScore) ||
+                         !agrees(resolved.evaluation->timeMs,
+                                 batch.bestTimeMs))) {
+                        throw std::runtime_error(
+                                "GPU/optimized CPU parity error: winner "
+                                "metric disagrees");
+                    }
+                    if (std::holds_alternative<
+                                PhysicsSandboxCudaScriptedEvaluator>(
+                                    *context.cudaEvaluator)) {
+                        if (resolved.evaluation->objectiveScores.size() !=
+                                    batch.bestObjectiveScores.size() ||
+                            resolved.evaluation->metricValues.size() !=
+                                    batch.bestMetricValues.size()) {
+                            throw std::runtime_error(
+                                    "GPU/optimized CPU parity error: scripted "
+                                    "objective count disagrees");
+                        }
+                        for (std::size_t i = 0u;
+                             i < batch.bestObjectiveScores.size(); ++i) {
+                            if (!agrees(
+                                        resolved.evaluation->objectiveScores[i],
+                                        batch.bestObjectiveScores[i]) ||
+                                !agrees(
+                                        resolved.evaluation->metricValues[i],
+                                        batch.bestMetricValues[i])) {
+                                throw std::runtime_error(
+                                        "GPU/optimized CPU parity error: scripted "
+                                        "objective metric disagrees");
+                            }
+                        }
+                    }
+                    best.evaluation = std::move(resolved.evaluation);
                 } else {
                     throw std::runtime_error(
                             "GPU winner state was not captured");
@@ -978,6 +1017,10 @@ SearchResult RunGpuBasicBruteForce(
             incumbent.preciseFinish = std::holds_alternative<
                     PhysicsSandboxCudaFinishTimeEvaluator>(
                     *context.cudaEvaluator);
+            incumbent.objectiveScores =
+                    best.evaluation->objectiveScores;
+            incumbent.metricValues =
+                    best.evaluation->metricValues;
             configuration.incumbent = incumbent;
             session.emplace(Require(
                     CreatePhysicsSandboxCudaSearchSession(
@@ -1030,7 +1073,9 @@ SearchResult RunGpuBasicBruteForce(
             totalMutationCount,
             std::chrono::steady_clock::now() - started,
             lastImprovementElapsed,
-            *best.snapshot};
+            *best.snapshot,
+            best.evaluation->objectiveScores,
+            best.evaluation->metricValues};
 }
 #endif
 
@@ -1101,7 +1146,7 @@ SearchResult BasicBruteForceSearch::Run(
                 evaluationPlan.endTimeMs,
                 *context.control->evaluationEndTimeLimitMs);
     }
-    if (evaluationPlan.startTimeMs < earliestMutationTimeMs ||
+    if (evaluationPlan.startTimeMs < context.tickDurationMs ||
         evaluationPlan.endTimeMs < evaluationPlan.startTimeMs ||
         evaluationPlan.endTimeMs > context.simulationHorizonMs ||
         evaluationPlan.startTimeMs % context.tickDurationMs != 0 ||
@@ -1119,7 +1164,8 @@ SearchResult BasicBruteForceSearch::Run(
     }
 
     const std::uint64_t branchTimeMs =
-            static_cast<std::uint64_t>(earliestMutationTimeMs) -
+            static_cast<std::uint64_t>(std::min(
+                    earliestMutationTimeMs, evaluationPlan.startTimeMs)) -
             context.tickDurationMs;
     current = AdvanceTo(context.sandbox,
                         current.timeMs,
@@ -1194,6 +1240,8 @@ SearchResult BasicBruteForceSearch::Run(
         std::optional<PhysicsSandboxStateView> previous = state;
         std::unique_ptr<IterationEvaluationSession> session =
                 context.evaluator.CreateSession();
+        std::optional<EvaluationSample> cumulativeSample;
+        PhysicsSandboxStateView cumulativeView;
         for (std::uint64_t tick = 0u; tick < evaluationTicks; ++tick) {
             CheckCancellation(context.control);
             state = Require(context.sandbox.AdvanceTicks(1u),
@@ -1206,6 +1254,11 @@ SearchResult BasicBruteForceSearch::Run(
                     source == SearchWinnerSource::Baseline
                     ? 0u
                     : iterationIndex.value_or(0u) + 1u;
+            session->SetExecutionContext(
+                    {conditionIterations,
+                     lastImprovementTimeSeconds,
+                     context.searchStartedTimeSeconds,
+                     currentTimeSeconds});
             const bool eligible = context.condition == nullptr ||
                     context.condition->Evaluate(
                             *previous, state,
@@ -1226,6 +1279,12 @@ SearchResult BasicBruteForceSearch::Run(
                 !std::isfinite(sample->timeMs)) {
                 throw std::runtime_error(
                         "iteration evaluator returned a non-finite result");
+            }
+            if (context.evaluator.CompareAtEndOnly()) {
+                cumulativeSample = sample;
+                cumulativeView = state;
+                if (state.raceCompleted) break;
+                continue;
             }
             if (best.evaluation &&
                 !ImprovesSearchResult(
@@ -1258,6 +1317,58 @@ SearchResult BasicBruteForceSearch::Run(
                 reportLive(false);
             }
             if (state.raceCompleted) break;
+        }
+        if (cumulativeSample &&
+            (!best.evaluation || ImprovesSearchResult(
+                    context.evaluator, *cumulativeSample, inputCount,
+                    *best.evaluation, best.inputs.size()))) {
+            best.evaluation = *cumulativeSample;
+            best.source = source;
+            best.iterationIndex = iterationIndex;
+            best.mutationCount = mutationCount;
+            best.view = state;
+            best.snapshot = Require(context.sandbox.CaptureState(),
+                                    "capturing improved state");
+            best.inputs = Require(context.sandbox.ReadInputs(),
+                                  "reading improved inputs");
+            improved = true;
+            if (source == SearchWinnerSource::Mutation) {
+                ++mutationImprovementCount;
+                lastImprovementElapsed =
+                        std::chrono::steady_clock::now() - started;
+                lastImprovementTimeSeconds =
+                        std::chrono::duration<double>(
+                                std::chrono::system_clock::now()
+                                        .time_since_epoch()).count();
+                reportLive(true);
+            } else {
+                reportLive(false);
+            }
+        }
+        if (context.control != nullptr &&
+            context.control->attemptCompleted) {
+            std::optional<SearchLiveUpdate> attempt;
+            if (cumulativeSample) {
+                attempt.emplace();
+                attempt->winnerSource = source;
+                attempt->winningIterationIndex = iterationIndex;
+                attempt->winningMutationCount = mutationCount;
+                attempt->bestScore = cumulativeSample->score;
+                attempt->bestEvaluationTimeMs =
+                        cumulativeSample->timeMs;
+                attempt->bestEvaluationDescription =
+                        cumulativeSample->description;
+                attempt->bestState = cumulativeView;
+                attempt->bestInputs = Require(
+                        context.sandbox.ReadInputs(),
+                        "reading completed attempt inputs");
+                attempt->objectiveScores =
+                        cumulativeSample->objectiveScores;
+                attempt->metricValues =
+                        cumulativeSample->metricValues;
+            }
+            context.control->attemptCompleted(
+                    iterationIndex, std::move(attempt));
         }
         return improved;
     };
@@ -1403,7 +1514,9 @@ SearchResult BasicBruteForceSearch::Run(
             totalMutationCount,
             std::chrono::steady_clock::now() - started,
             lastImprovementElapsed,
-            *best.snapshot};
+            *best.snapshot,
+            best.evaluation->objectiveScores,
+            best.evaluation->metricValues};
 }
 
 }  // namespace forevertas

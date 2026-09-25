@@ -24,6 +24,11 @@ enum class PhysicsBackend : std::uint8_t {
 #endif
 };
 
+// Single-run reconstruction and viewer simulation are intentionally fixed to
+// optimized CPU. The selected backend is only for bulk search attempts.
+inline constexpr PhysicsBackend kAuxiliarySimulationBackend =
+        PhysicsBackend::OptimizedCpu;
+
 constexpr std::string_view PhysicsBackendId(PhysicsBackend backend) noexcept {
     switch (backend) {
     case PhysicsBackend::Reference:

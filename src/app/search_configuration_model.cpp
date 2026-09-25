@@ -445,13 +445,18 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
             simulationHorizonMs,
             earliestMutationTimeMs,
             tickDurationMs);
-    if (plan.startTimeMs < earliestMutationTimeMs) {
+    if (evaluationRegistration->id != kScriptedTargetEvaluationId &&
+        plan.startTimeMs < earliestMutationTimeMs) {
         return {{},
                 QStringLiteral(
                         "Evaluation start time %1 ms precedes the first "
                         "modifier time at %2 ms.")
                         .arg(plan.startTimeMs)
                         .arg(earliestMutationTimeMs)};
+    }
+    if (plan.endTimeMs < plan.startTimeMs) {
+        return {{}, QStringLiteral(
+                            "Evaluation time window ends before it starts.")};
     }
     if (plan.endTimeMs > simulationHorizonMs) {
         return {{},

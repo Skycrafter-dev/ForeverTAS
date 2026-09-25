@@ -206,6 +206,7 @@ ColumnLayout {
     }
 
     TimeWindowSettings {
+        viewer: root.viewer
         settings: root.settings
         updateSetting: root.controller.setEvaluationTargetSetting
         running: root.controller.running

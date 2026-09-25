@@ -118,6 +118,44 @@ QVariantMap CustomVolumeTargetModel::selectedTarget() const {
             targets_[static_cast<std::size_t>(selectedIndex_)], true);
 }
 
+bool CustomVolumeTargetModel::restoreTargets(const QVariantList &snapshot) {
+    if (!editingEnabled_ || drawing_ || snapshot.isEmpty() ||
+        snapshot.size() > static_cast<qsizetype>(kMaximumTargets))
+        return false;
+    std::vector<Target> restored;
+    restored.reserve(static_cast<std::size_t>(snapshot.size()));
+    int selected = 0;
+    for (const QVariant &entry : snapshot) {
+        const QVariantMap item = entry.toMap();
+        const QString id = item.value(QStringLiteral("id")).toString();
+        const QString name = item.value(QStringLiteral("name")).toString();
+        const QString plane = item.value(QStringLiteral("plane")).toString();
+        const QVector3D origin(
+                item.value(QStringLiteral("originX")).toFloat(),
+                item.value(QStringLiteral("originY")).toFloat(),
+                item.value(QStringLiteral("originZ")).toFloat());
+        const double depth = item.value(QStringLiteral("depth")).toDouble();
+        const std::vector<QPointF> polygon = decodePolygon(
+                item.value(QStringLiteral("polygon")).toString());
+        if (id.isEmpty() || name.isEmpty() || !validPlane(plane) ||
+            !std::isfinite(origin.x()) || !std::isfinite(origin.y()) ||
+            !std::isfinite(origin.z()) || !std::isfinite(depth) ||
+            depth < kMinimumDepth || !validPolygon(polygon)) return false;
+        Target target{id, name, plane, origin, static_cast<float>(depth),
+                      polygon, NewGeometry(), NewGeometry()};
+        rebuildGeometry(&target);
+        if (item.value(QStringLiteral("selected")).toBool())
+            selected = static_cast<int>(restored.size());
+        restored.push_back(std::move(target));
+    }
+    targets_ = std::move(restored);
+    selectedIndex_ = selected;
+    persist();
+    emit targetsChanged();
+    emit selectedTargetChanged();
+    return true;
+}
+
 bool CustomVolumeTargetModel::editingEnabled() const {
     return editingEnabled_;
 }

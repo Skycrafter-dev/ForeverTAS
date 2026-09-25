@@ -52,6 +52,14 @@ public:
         return true;
     }
 
+    bool ParseExpression(std::string *error) {
+        SkipSpaces();
+        if (!ParseScalar(error)) return false;
+        SkipSpaces();
+        return position_ == source_.size() ||
+                Fail(error, "unexpected text after expression");
+    }
+
 private:
     bool ParseScalar(std::string *error) {
         if (!ParseTerm(error)) return false;
@@ -376,13 +384,14 @@ Value Source(PhysicsSandboxCudaConditionValue source,
 
 }  // namespace
 
-bool ConditionProgram::Evaluate(
+std::optional<Value> EvaluateInstructions(
+        const std::vector<PhysicsSandboxCudaConditionInstruction> &instructions,
         const PhysicsSandboxStateView &previous,
         const PhysicsSandboxStateView &current,
-        const ConditionExecutionContext &context) const {
+        const ConditionExecutionContext &context) {
     std::vector<Value> stack;
     stack.reserve(32u);
-    for (const auto &instruction : cuda.instructions) {
+    for (const auto &instruction : instructions) {
         if (instruction.opcode == PhysicsSandboxCudaConditionOpcode::Constant) stack.push_back({instruction.x});
         else if (instruction.opcode == PhysicsSandboxCudaConditionOpcode::ConstantVector) stack.push_back({instruction.x,instruction.y,instruction.z,true});
         else if (instruction.opcode == PhysicsSandboxCudaConditionOpcode::Scalar || instruction.opcode == PhysicsSandboxCudaConditionOpcode::Vector) {
@@ -393,10 +402,10 @@ bool ConditionProgram::Evaluate(
             }
             stack.push_back(value);
         } else if (instruction.opcode == PhysicsSandboxCudaConditionOpcode::KilometersPerHour || instruction.opcode == PhysicsSandboxCudaConditionOpcode::Degrees) {
-            if (stack.empty() || stack.back().vector) return false;
+            if (stack.empty() || stack.back().vector) return std::nullopt;
             stack.back().x *= instruction.opcode == PhysicsSandboxCudaConditionOpcode::KilometersPerHour ? 3.6 : 57.29577951308232;
         } else {
-            if (stack.size() < 2u) return false;
+            if (stack.size() < 2u) return std::nullopt;
             Value right = stack.back(); stack.pop_back(); Value &left = stack.back();
             switch (instruction.opcode) {
             case PhysicsSandboxCudaConditionOpcode::Distance: left = {std::sqrt((left.x-right.x)*(left.x-right.x)+(left.y-right.y)*(left.y-right.y)+(left.z-right.z)*(left.z-right.z))}; break;
@@ -410,12 +419,51 @@ bool ConditionProgram::Evaluate(
             case PhysicsSandboxCudaConditionOpcode::LessOrEqual: left={left.x<=right.x?1.0:0.0}; break;
             case PhysicsSandboxCudaConditionOpcode::Equal: left={left.x==right.x?1.0:0.0}; break;
             case PhysicsSandboxCudaConditionOpcode::LogicalAnd: left={left.x!=0.0&&right.x!=0.0?1.0:0.0}; break;
-            default: return false;
+            default: return std::nullopt;
             }
         }
-        if (stack.size() > 32u) return false;
+        if (stack.size() > 32u) return std::nullopt;
     }
-    return stack.size() == 1u && !stack[0].vector && stack[0].x != 0.0;
+    if (stack.size() != 1u || stack[0].vector ||
+        !std::isfinite(stack[0].x)) {
+        return std::nullopt;
+    }
+    return stack[0];
+}
+
+bool ConditionProgram::Evaluate(
+        const PhysicsSandboxStateView &previous,
+        const PhysicsSandboxStateView &current,
+        const ConditionExecutionContext &context) const {
+    const auto value = EvaluateInstructions(
+            cuda.instructions, previous, current, context);
+    return value && value->x != 0.0;
+}
+
+std::optional<double> ScalarExpressionProgram::Evaluate(
+        const PhysicsSandboxStateView &previous,
+        const PhysicsSandboxStateView &current,
+        const ConditionExecutionContext &context) const {
+    const auto value = EvaluateInstructions(
+            instructions, previous, current, context);
+    return value ? std::optional<double>(value->x) : std::nullopt;
+}
+
+ScalarExpressionCompileResult CompileScalarExpression(
+        const std::string &source,
+        const ConditionVariables &variables) {
+    ScalarExpressionProgram program;
+    std::string error;
+    Parser parser(source, variables, &program.instructions);
+    if (!parser.ParseExpression(&error)) return {{}, error};
+    if (program.instructions.size() > 256u) {
+        return {{}, "expression exceeds the 256-instruction limit"};
+    }
+    const PhysicsSandboxStateView emptyState;
+    if (!program.Evaluate(emptyState, emptyState, {})) {
+        return {{}, "expression must produce a finite scalar"};
+    }
+    return {std::move(program), std::nullopt};
 }
 
 ConditionCompileResult CompileConditionScript(

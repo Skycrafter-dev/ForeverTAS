@@ -12,6 +12,7 @@
 #include <QVariantMap>
 #include <QVector3D>
 
+#include <map>
 #include <vector>
 
 namespace forevertas::viewer {
@@ -107,6 +108,9 @@ public:
     Q_INVOKABLE void finishBoardImageExport(
             bool success,
             bool fullBackground);
+    Q_INVOKABLE quint64 captureHistorySnapshot();
+    Q_INVOKABLE bool restoreHistorySnapshot(quint64 token);
+    Q_INVOKABLE void pruneHistorySnapshots(const QVariantList &tokens);
 
 signals:
     void activeChanged();
@@ -168,6 +172,17 @@ private:
         std::vector<Item> items;
     };
 
+    struct HistorySnapshot {
+        std::vector<Item> items;
+        std::vector<Board> boards;
+        int selectedIndex = -1;
+        int selectedBoardIndex = -1;
+        bool active = false;
+        QString tool;
+        QColor color;
+        double size = 4.0;
+    };
+
     static bool IsFinite(double value);
     static bool IsPointFinite(const QPointF &point);
     static double ClampUnit(double value);
@@ -206,6 +221,12 @@ private:
     QString mapKey_;
     QString mapName_;
     QString operationMessage_;
+    std::map<quint64, HistorySnapshot> historySnapshots_;
+    quint64 nextHistoryToken_ = 1;
+    quint64 historyRevision_ = 0;
+    quint64 capturedRevision_ = static_cast<quint64>(-1);
+    quint64 capturedToken_ = 0;
+    quint64 currentHistoryToken_ = 0;
 };
 
 }  // namespace forevertas::viewer

@@ -4,6 +4,9 @@
 #include <iostream>
 
 int main() {
+    static_assert(forevertas::kAuxiliarySimulationBackend ==
+                  forevertas::PhysicsBackend::OptimizedCpu,
+                  "winner verification and previews must remain optimized CPU");
     using namespace forevertas;
     using forevervalidator::SimulationBackend;
     bool okay = true;

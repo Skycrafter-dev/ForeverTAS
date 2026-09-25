@@ -71,8 +71,20 @@ preserves the entered seeds for reproducible reruns. Search, map loading,
 validation, and physics
 stay in C++; QML presents the controls and Race Viewer.
 
-The search runs indefinitely on a worker thread after Start is pressed. Each
-iteration applies the configured modifier passes in order, preserves the
+With autorestart Off, the search runs indefinitely on a worker thread after
+Start is pressed. Duration (`HH:MM:SS`) and Attempts modes instead save each
+completed cycle and begin a fresh search from the original input script. An
+attempt is one mutation, including an individual member of a GPU batch; the
+duration threshold is checked after a completed attempt or batch. Seeds change
+between cycles only when seed randomization is enabled. Each search creates a
+session under `Documents/ForeverTAS/Scripts/Autorestarts/<map>/<session>/` with
+atomic input-script and metadata files for every saved cycle. Stop saves the
+current cycle, and save failures stop the search with an error. The session
+selector reloads runs for the selected map; its sortable table shows attempts,
+elapsed time, and the target's numeric metrics. Selecting a row previews its
+inputs, and its Copy control copies that script.
+
+Each iteration applies the configured modifier passes in order, preserves the
 script-derived input prefix before the mutation branch exactly, normalizes only
 the mutable suffix, and evaluates it with the selected target. Whenever a new
 global best is found, its copy-ready input script is shown immediately.
@@ -85,9 +97,12 @@ finishes the current
 iteration, restores the global best, then performs one fresh canonical
 simulation and records one viewer sample per physics tick. The completed Best
 run is added to the Race Viewer only after that Stop-triggered sampling pass.
-CUDA searches reconstruct changed winners and every viewer trajectory with the
-Reference backend; unchanged device incumbents do not trigger redundant CPU
-reconstruction. Viewable input-backed runs keep physics snapshots at one-second
+GPU searches verify changed winners on optimized CPU before publishing them;
+backend metric disagreement is an error. Winner reconstruction, live and final
+trajectories, input previews, and stored-run rebuilds always use optimized CPU,
+regardless of the selected backend for bulk search attempts. The separate
+reference-engine Code debugger is diagnostic, not a search preview. Viewable
+input-backed runs keep physics snapshots at one-second
 intervals, so edits and Simulation-horizon changes resume from the latest valid
 snapshot rather than replaying the whole run from zero.
 The optional Conditions script filters which simulated ticks are eligible for
@@ -108,6 +123,17 @@ durations remain user-facing.
 Built-in targets cover precise finish time, stunt points by a chosen deadline,
 cuboid entry time, velocity, point distance, and weighted pose error. The stunt
 target observes only the chosen deadline because the score is monotonic.
+The Custom target accepts one `min EXPRESSION`, `max EXPRESSION`, or
+`target VALUE EXPRESSION` directive per line, with `#` comment lines and a time
+window. Expressions share the Conditions parser's supported car-state variables
+and functions. Each objective keeps its best value over the window; a run wins
+only when at least one objective improves and none worsen. Custom targets
+use attempt-ordered Pareto selection on serial CPU, multi-threaded CPU, CUDA,
+HIP, and Vulkan. GPU scripts support up to 16 objectives and 256 total
+expression instructions; a larger script reports an explicit configuration
+error. GPU nominees are accepted only after an optimized-CPU metric check.
+Local builds need a ForeverValidator source override until the new GPU
+contract is published and the remote Validator pin is updated.
 Volume-entry targets are managed as a persistent named cuboid collection. The
 selected cuboid is the active brute-force target; the evaluation panel can add,
 duplicate, remove, rename, and directly edit every cuboid or focus the viewer

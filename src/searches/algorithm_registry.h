@@ -29,6 +29,7 @@ inline constexpr char kCustomVolumeEntryEvaluationId[] =
         "custom-volume-entry-time";
 inline constexpr char kPointTargetEvaluationId[] = "point-target";
 inline constexpr char kPoseTargetEvaluationId[] = "pose-target";
+inline constexpr char kScriptedTargetEvaluationId[] = "scripted-target";
 
 struct SearchAlgorithmRegistration {
     std::string id;

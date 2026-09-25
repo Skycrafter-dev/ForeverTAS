@@ -21,6 +21,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <map>
 #include <optional>
 #include <vector>
 
@@ -54,6 +55,7 @@ struct RaceViewerFrame {
     std::array<bool, 4> wheelContact{{true, true, true, true}};
     std::array<bool, 4> wheelHasSurface{{true, true, true, true}};
     QVector3D cameraSupportUp{0.0f, 1.0f, 0.0f};
+    std::optional<std::uint32_t> stuntsScore;
 };
 
 struct RaceViewerSplit {
@@ -146,6 +148,8 @@ class RaceViewerController final : public QObject {
                        sceneChanged)
     Q_PROPERTY(QVariantList trajectoryPaths READ trajectoryPaths NOTIFY
                        trajectoriesChanged)
+    Q_PROPERTY(quint64 visualStyleRevision READ visualStyleRevision NOTIFY
+                       visualStylesChanged)
     Q_PROPERTY(qint64 trajectoryCount READ trajectoryCount NOTIFY
                        trajectoriesChanged)
     Q_PROPERTY(QString previewInputScript READ previewInputScript WRITE
@@ -161,6 +165,8 @@ class RaceViewerController final : public QObject {
                        selectedRunChanged)
     Q_PROPERTY(QVector3D carPosition READ carPosition NOTIFY poseChanged)
     Q_PROPERTY(QQuaternion carRotation READ carRotation NOTIFY poseChanged)
+    Q_PROPERTY(QVector3D carVelocity READ carVelocity NOTIFY poseChanged)
+    Q_PROPERTY(QVector3D carHeading READ carHeading NOTIFY poseChanged)
     Q_PROPERTY(int cameraPreset READ cameraPreset WRITE setCameraPreset NOTIFY
                        cameraPresetChanged)
     Q_PROPERTY(bool carCameraAvailable READ carCameraAvailable NOTIFY
@@ -204,6 +210,10 @@ class RaceViewerController final : public QObject {
     Q_PROPERTY(bool canCopyCurrentInputs READ canCopyCurrentInputs NOTIFY
                        timelineChanged)
     Q_PROPERTY(bool loaded READ loaded NOTIFY stateChanged)
+    Q_PROPERTY(QString loadedReplayPath READ loadedReplayPath NOTIFY
+                       stateChanged)
+    Q_PROPERTY(QString loadedPacksDirectory READ loadedPacksDirectory NOTIFY
+                       stateChanged)
     Q_PROPERTY(bool loading READ loading NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
     Q_PROPERTY(qint64 triangleCount READ triangleCount NOTIFY sceneChanged)
@@ -245,6 +255,13 @@ public:
     QVariantList visualBatches() const;
     QVariantList visualMaterials() const;
     QVariantList trajectoryPaths() const;
+    quint64 visualStyleRevision() const;
+    Q_INVOKABLE QVariantMap visualStyle(const QString &id) const;
+    Q_INVOKABLE QVariantMap visualStylesSnapshot() const;
+    Q_INVOKABLE void restoreVisualStyles(const QVariantMap &styles);
+    Q_INVOKABLE void setVisualStyle(const QString &id,
+                                   const QString &property,
+                                   const QVariant &value);
     qint64 trajectoryCount() const;
     QString previewInputScript() const;
     qint64 simulationHorizonMs() const;
@@ -255,6 +272,15 @@ public:
     int selectedRunIndex() const;
     QVector3D carPosition() const;
     QQuaternion carRotation() const;
+    QVector3D carVelocity() const;
+    QVector3D carHeading() const;
+    Q_INVOKABLE QVariantList selectedRunSamples() const;
+    Q_INVOKABLE QQuick3DGeometry *timeRangeGeometry(
+            const QString &id, const QString &runId,
+            qint64 minimumMs, qint64 maximumMs, bool dashed);
+    Q_INVOKABLE QQuick3DGeometry *visualLineGeometry(
+            const QString &id, const QVariantList &points, bool closed);
+    Q_INVOKABLE QVariantMap conditionPreview(const QString &script) const;
     int cameraPreset() const;
     bool carCameraAvailable() const;
     QVector3D carCameraPosition() const;
@@ -283,6 +309,8 @@ public:
     bool manualBrake() const;
     bool canCopyCurrentInputs() const;
     bool loaded() const;
+    QString loadedReplayPath() const { return loadedReplayPath_; }
+    QString loadedPacksDirectory() const { return loadedPacksDirectory_; }
     bool loading() const;
     QString statusText() const;
     qint64 triangleCount() const;
@@ -356,6 +384,7 @@ public slots:
                                                 bool visible);
     Q_INVOKABLE bool hasPreviewTrajectories() const;
     Q_INVOKABLE void clearPreviewTrajectories();
+    Q_INVOKABLE void refreshInputPreview();
     Q_INVOKABLE void loadMap(const QString &packsDirectory,
                             const QString &replayPath);
     Q_INVOKABLE void loadMap(const QString &packsDirectory,
@@ -366,6 +395,11 @@ public slots:
     Q_INVOKABLE QString renderTelemetry(
             const QString &script,
             const QVector3D &cameraPosition) const;
+    Q_INVOKABLE QString renderTelemetryWithContext(
+            const QString &script,
+            const QVector3D &cameraPosition,
+            const QVariantMap &context,
+            bool richText) const;
     Q_INVOKABLE QString telemetryScriptError(const QString &script) const;
 
 signals:
@@ -381,6 +415,7 @@ signals:
     void runsChanged();
     void selectedRunChanged();
     void trajectoriesChanged();
+    void visualStylesChanged();
     void previewInputScriptChanged();
     void simulationHorizonMsChanged();
     void cameraPresetChanged();
@@ -402,6 +437,7 @@ private:
     void updateBestTrajectory(
             const QString &name,
             const std::vector<RaceViewerFrame> &frames);
+    void refreshStyledTrajectory(const QString &runId);
     void scheduleInputPreviewRebuild();
     void scheduleStoredRunRebuilds();
     void startStoredRunRebuilds();
@@ -484,9 +520,20 @@ private:
     QVariantList visualBatches_;
     QVariantList visualMaterials_;
     QVariantList trajectoryPaths_;
+    QVariantMap visualStyles_;
+    quint64 visualStyleRevision_ = 0;
     RaceGeometry inputPreviewGeometry_;
     RaceGeometry bestTrajectoryGeometry_;
     std::vector<std::unique_ptr<RaceGeometry>> trajectoryGeometries_;
+    std::map<QString, std::unique_ptr<RaceGeometry>> timeRangeGeometries_;
+    struct TimeRangeCacheState {
+        qint64 start = 0;
+        qint64 end = 0;
+        bool dashed = false;
+        quint64 runRevision = 0;
+    };
+    std::map<QString, TimeRangeCacheState> timeRangeCacheStates_;
+    quint64 runGeometryRevision_ = 0;
     std::vector<QString> trajectoryKeys_;
     QVector3D carPosition_{};
     QQuaternion carRotation_{};

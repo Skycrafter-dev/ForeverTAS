@@ -7,8 +7,10 @@ ColumnLayout {
     id: root
 
     property var controller
+    property var viewer
     property var options: []
     property var passes: []
+    property int activePassIndex: -1
     readonly property int passCount: passes.length
     readonly property int renderedPassCount: passRepeater.count
     readonly property int passModelCount: passModel.count
@@ -114,6 +116,8 @@ ColumnLayout {
                 && passTypeCombo.width >= passHeaderRow.width - 1
 
             objectName: "modifierPass" + index
+            visible: root.activePassIndex < 0 ||
+                     root.activePassIndex === index
             Layout.fillWidth: true
             implicitHeight: passLayout.implicitHeight + 16
             radius: 8
@@ -193,6 +197,8 @@ ColumnLayout {
                             return
                         item.settings = passSettings
                         item.running = root.controller.running
+                        if ("viewer" in item)
+                            item.viewer = root.viewer
                         item.updateSetting = function(key, value) {
                             root.controller.setModifierPassSetting(
                                 index, key, value)

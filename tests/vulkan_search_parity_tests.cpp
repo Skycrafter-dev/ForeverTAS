@@ -156,6 +156,8 @@ bool SameAuthoritativeResult(const SearchResult &reference,
             reference.bestScore == vulkan.bestScore &&
             reference.bestEvaluationTimeMs ==
                     vulkan.bestEvaluationTimeMs &&
+            reference.objectiveScores == vulkan.objectiveScores &&
+            reference.metricValues == vulkan.metricValues &&
             reference.iterations == vulkan.iterations &&
             (reference.mutationImprovementCount > 0u) ==
                     (vulkan.mutationImprovementCount > 0u) &&
@@ -1226,6 +1228,11 @@ int main(int argc, char **argv) {
             if (registration.id ==
                 forevertas::kStuntPointsEvaluationId) {
                 configured.settings["targetTimeMs"] = "1010";
+            }
+            if (registration.id ==
+                forevertas::kScriptedTargetEvaluationId) {
+                configured.settings["script"] =
+                        "max car.speed\nmin car.y\ntarget 0 car.x";
             }
             if (registration.id ==
                 forevertas::kVolumeEntryEvaluationId) {

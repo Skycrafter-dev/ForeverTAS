@@ -2,11 +2,14 @@
 
 #include "app/compact_number_format.h"
 #include "app/rolling_throughput.h"
+#include "app/search_session_store.h"
 #include "mutations/input_event_formatter.h"
 #include "time_format.h"
 
 #include <chrono>
 #include <exception>
+#include <QRandomGenerator>
+#include <random>
 #include <utility>
 
 namespace forevertas::app {
@@ -76,7 +79,9 @@ SearchLiveUpdate ToLiveUpdate(const SearchResult &result) {
             result.totalMutationCount,
             result.elapsed,
             result.lastImprovementElapsed,
-            {}};
+            {},
+            result.objectiveScores,
+            result.metricValues};
 }
 
 QString FormatResult(const SearchResult &result) {
@@ -216,12 +221,14 @@ SearchWorker::SearchWorker(
         std::uint64_t searchId,
         std::shared_ptr<std::atomic_bool> stopRequested,
         std::shared_ptr<std::atomic_bool> cancellationRequested,
-        std::shared_ptr<std::atomic<SearchIterationPhase>> iterationPhase)
+        std::shared_ptr<std::atomic<SearchIterationPhase>> iterationPhase,
+        AutoRestartPolicy restartPolicy)
     : request_(std::move(request)),
       searchId_(searchId),
       stopRequested_(std::move(stopRequested)),
       cancellationRequested_(std::move(cancellationRequested)),
-      iterationPhase_(std::move(iterationPhase)) {}
+      iterationPhase_(std::move(iterationPhase)),
+      restartPolicy_(restartPolicy) {}
 
 void SearchWorker::run() {
     emit stageChanged(QStringLiteral("Preparing search..."), true);
@@ -234,21 +241,14 @@ void SearchWorker::run() {
     control.cancellationRequested = [flag = cancellationRequested_]() {
         return flag->load(std::memory_order_relaxed);
     };
-    control.beginIteration = [phase = iterationPhase_]() {
-        return TryBeginSearchIteration(phase);
-    };
     control.progressChanged = [this](const SearchProgress &progress) {
         if (progress.stage == SearchProgressStage::FinalSampling) {
             const double value = progress.totalWork == 0u
                     ? 1.0
                     : static_cast<double>(progress.completedWork) /
                               static_cast<double>(progress.totalWork);
-            const bool cuda =
-                    PhysicsBackendId(request_.backend) == "cuda";
-            const QString status = cuda
-                    ? QStringLiteral(
-                              "Sampling best run on CUDA: %1 of %2 ticks")
-                    : QStringLiteral("Sampling best run: %1 of %2 ticks");
+            const QString status = QStringLiteral(
+                    "Sampling best run on optimized CPU: %1 of %2 ticks");
             emit progressChanged(
                     value,
                     status
@@ -320,7 +320,8 @@ void SearchWorker::run() {
             latestSource = live.winnerSource;
             latestIteration = live.winningIterationIndex;
         }
-        publishImprovement(live, PhysicsBackendId(request_.backend));
+        publishImprovement(
+                live, PhysicsBackendId(kAuxiliarySimulationBackend));
         emit bestChanged(
                 FormatLive(live, QStringLiteral("Current best")),
                 latestInputsText);
@@ -331,32 +332,94 @@ void SearchWorker::run() {
                 [publishImprovement](const SearchLiveUpdate &live) {
                     publishImprovement(
                             live,
-                            PhysicsBackendId(
-                                    PhysicsBackend::Reference));
+                            PhysicsBackendId(kAuxiliarySimulationBackend));
                 };
     }
 #endif
 
     try {
-        SearchResult result = RunSearch(request_, &control);
+        if (cancellationRequested_->load(std::memory_order_relaxed)) {
+            throw SearchCancelled();
+        }
+        const SearchSessionLocation session =
+                SearchSessionStore::Create(request_);
+        if (cancellationRequested_->load(std::memory_order_relaxed)) {
+            throw SearchCancelled();
+        }
+        std::optional<SearchResult> result;
+        std::uint64_t restartNumber = 0;
+        // Each RunSearch call restores the original baseline and owns a fresh
+        // best result; only modifier seeds may change between cycles.
+        for (;;) {
+            const auto attemptStartedNs =
+                    std::make_shared<std::atomic<std::int64_t>>(0);
+            control.beginIteration = [phase = iterationPhase_,
+                                      attemptStartedNs]() {
+                if (!TryBeginSearchIteration(phase)) return false;
+                const auto nowNs = std::chrono::duration_cast<
+                        std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now()
+                                .time_since_epoch()).count();
+                std::int64_t expected = 0;
+                attemptStartedNs->compare_exchange_strong(expected, nowNs);
+                return true;
+            };
+            control.stopRequested = [flag = stopRequested_,
+                                     mode = restartPolicy_.mode,
+                                     duration = restartPolicy_.duration,
+                                     attemptStartedNs]() {
+                if (flag->load(std::memory_order_relaxed)) return true;
+                if (mode != AutoRestartPolicy::Mode::Duration) return false;
+                const std::int64_t started = attemptStartedNs->load();
+                if (started == 0) return false;
+                const auto nowNs = std::chrono::duration_cast<
+                        std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now()
+                                .time_since_epoch()).count();
+                return nowNs - started >=
+                        std::chrono::duration_cast<
+                                std::chrono::nanoseconds>(duration).count();
+            };
+            control.iterationLimit = restartPolicy_.mode ==
+                            AutoRestartPolicy::Mode::Attempts
+                    ? std::optional<std::uint64_t>(restartPolicy_.attempts)
+                    : std::nullopt;
+            if (restartNumber > 0 && restartPolicy_.randomizeSeeds) {
+                std::mt19937 random(QRandomGenerator::system()->generate());
+                for (OptionConfiguration &modifier : request_.modifiers) {
+                    auto seed = modifier.settings.find("seed");
+                    if (seed == modifier.settings.end()) continue;
+                    std::uint32_t next = random();
+                    if (seed->second == std::to_string(next)) ++next;
+                    seed->second = std::to_string(next);
+                }
+            }
+            result.emplace(RunSearch(request_, &control));
+            SearchSessionStore::SaveCycle(
+                    session, request_, restartNumber, *result);
+            emit cycleSaved(session.mapKey, session.directory,
+                            restartNumber);
+            if (restartPolicy_.mode == AutoRestartPolicy::Mode::Off ||
+                stopRequested_->load(std::memory_order_relaxed)) break;
+            ++restartNumber;
+            emit stageChanged(
+                    QStringLiteral("Starting restart %1...")
+                            .arg(static_cast<qulonglong>(restartNumber)),
+                    true);
+        }
         auto completion = std::make_shared<SearchCompletion>();
-        completion->summary = FormatResult(result);
+        completion->summary = FormatResult(*result);
         completion->inputsText = QString::fromStdString(
-                FormatInputScript(result.bestInputs));
+                FormatInputScript(result->bestInputs));
         completion->packsDirectory =
                 FilePathFromUtf8(request_.packDirectory);
         completion->replayPath = FilePathFromUtf8(request_.replayPath);
-        PhysicsBackend resultBackend = request_.backend;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
-        if (IsGpuBackend(resultBackend)) {
-            resultBackend = PhysicsBackend::Reference;
-        }
-#endif
-        const std::string_view backendId = PhysicsBackendId(resultBackend);
+        const std::string_view backendId =
+                PhysicsBackendId(kAuxiliarySimulationBackend);
         completion->simulationBackendId = QString::fromLatin1(
                 backendId.data(), static_cast<qsizetype>(backendId.size()));
-        completion->bestInputs = std::move(result.bestInputs);
-        completion->bestTimeline = std::move(result.bestTimeline);
+        completion->bestInputs = std::move(result->bestInputs);
+        completion->bestTimeline = std::move(result->bestTimeline);
         emit succeeded(std::move(completion));
     } catch (const SearchCancelled &) {
         emit cancelled();

@@ -157,6 +157,8 @@ bool SameAuthoritativeResult(const SearchResult &reference,
             reference.bestScore == cuda.bestScore &&
             reference.bestEvaluationTimeMs ==
                     cuda.bestEvaluationTimeMs &&
+            reference.objectiveScores == cuda.objectiveScores &&
+            reference.metricValues == cuda.metricValues &&
             reference.iterations == cuda.iterations &&
             (reference.mutationImprovementCount > 0u) ==
                     (cuda.mutationImprovementCount > 0u) &&
@@ -1308,6 +1310,11 @@ int main(int argc, char **argv) {
             if (registration.id ==
                 forevertas::kStuntPointsEvaluationId) {
                 configured.settings["targetTimeMs"] = "1010";
+            }
+            if (registration.id ==
+                forevertas::kScriptedTargetEvaluationId) {
+                configured.settings["script"] =
+                        "max car.speed\nmin car.y\ntarget 0 car.x";
             }
             if (registration.id ==
                 forevertas::kVolumeEntryEvaluationId) {

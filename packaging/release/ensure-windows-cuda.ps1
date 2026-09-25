@@ -35,6 +35,10 @@ $Components = @(
         Sha256 = "a63302a077f0248a743a1a7caa7dbd80d0fac56c6cfa9c41fa05fac9b7e5eda5"
     },
     @{
+        Path = "cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-12.8.90-archive.zip"
+        Sha256 = "0a9d628d2582bd58c78ba92827cd9613d62790924cde1178719f677fc03b6ee2"
+    },
+    @{
         Path = "libnvjitlink/windows-x86_64/libnvjitlink-windows-x86_64-12.8.93-archive.zip"
         Sha256 = "5680b0a42ddf20f11705ca9c365d002f032ab876d3fe44382eeba633b558ccc0"
     }
@@ -45,6 +49,7 @@ function Test-CudaToolkit([string]$Root) {
         (Join-Path $Root "bin/nvcc.exe"),
         (Join-Path $Root "bin/cuobjdump.exe"),
         (Join-Path $Root "include/nvrtc.h"),
+        (Join-Path $Root "include/cuda_profiler_api.h"),
         (Join-Path $Root "lib/x64/cudart.lib"),
         (Join-Path $Root "lib/x64/nvrtc.lib"),
         (Join-Path $Root "lib/x64/nvJitLink.lib")
