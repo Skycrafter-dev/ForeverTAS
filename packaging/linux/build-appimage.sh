@@ -73,6 +73,9 @@ cmake_args=(
     -DCMAKE_INSTALL_PREFIX=/usr
     -DBUILD_TESTING=OFF
 )
+if command -v sccache >/dev/null 2>&1; then
+    cmake_args+=(-DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
+fi
 if [[ -n "${FOREVERTAS_ENABLE_VULKAN:-}" ]]; then
     cmake_args+=("-DFOREVERTAS_ENABLE_VULKAN=${FOREVERTAS_ENABLE_VULKAN}")
 fi

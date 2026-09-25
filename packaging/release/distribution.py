@@ -176,6 +176,7 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
             "ROCM_PATH": "/opt/rocm" if nvidia or amd else "",
             "APPIMAGE_EXTRACT_AND_RUN": "1",
             "FOREVERTAS_RELEASE_JOBS": os.environ.get("FOREVERTAS_RELEASE_JOBS", "4"),
+            "SCCACHE_DIR": "/cache/sccache",
         }
         command = ["docker", "run", "--rm", "--init",
                    "--user", f"{os.getuid()}:{os.getgid()}",
