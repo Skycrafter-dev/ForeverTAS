@@ -38,3 +38,19 @@ else
 fi
 [[ -f "${failed_installed}" && -f "${failed_download}" ]]
 [[ ! -e "${failed_installed}.previous" ]]
+
+backup_blocked="${temporary}/BackupBlocked.AppImage"
+backup_blocked_download="${backup_blocked}.download"
+printf '#!/bin/sh\nprintf intact\n' > "${backup_blocked}"
+printf '#!/bin/sh\nprintf new\n' > "${backup_blocked_download}"
+chmod +x "${backup_blocked}" "${backup_blocked_download}"
+mkdir "${backup_blocked}.previous"
+if APPIMAGE="${backup_blocked_download}" "${app}" \
+        --apply-update "${backup_blocked}" 999999999 2>/dev/null; then
+    echo "Updater unexpectedly replaced an image with a blocked backup" >&2
+    exit 1
+else
+    [[ "$?" == 5 ]]
+fi
+[[ "$(sed -n '2p' "${backup_blocked}")" == 'printf intact' ]]
+[[ "$(sed -n '2p' "${backup_blocked_download}")" == 'printf new' ]]

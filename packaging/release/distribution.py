@@ -139,13 +139,13 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
                                     ROOT.parent / "ForeverValidator")).resolve()
     if not (validator / "CMakeLists.txt").is_file():
         raise ValueError(f"ForeverValidator source is missing: {validator}")
-    if set(selected) == set(flavors(manifest)):
-        ensure_tag(manifest)
-        if run("git", "-C", str(validator), "rev-parse", "HEAD") != \
-                manifest["sources"]["forevervalidator"]["commit"]:
-            raise ValueError("ForeverValidator does not match the release pin")
-        if run("git", "-C", str(validator), "status", "--porcelain=v1"):
-            raise ValueError("ForeverValidator has uncommitted changes")
+    if run("git", "status", "--porcelain=v1", "--untracked-files=all"):
+        raise ValueError("commit the ForeverTAS source before building packages")
+    if run("git", "-C", str(validator), "rev-parse", "HEAD") != \
+            manifest["sources"]["forevervalidator"]["commit"]:
+        raise ValueError("ForeverValidator does not match the release pin")
+    if run("git", "-C", str(validator), "status", "--porcelain=v1"):
+        raise ValueError("ForeverValidator has uncommitted changes")
     base = os.environ.get("FOREVERTAS_LINUX_TOOLCHAIN_IMAGE") or run(
         str(ROOT / "packaging/release/ensure-linux-toolchain.sh"))
     hip = (os.environ.get("FOREVERTAS_HIP_TOOLCHAIN_IMAGE") or run(
@@ -175,7 +175,7 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
             "HIP_PATH": "/opt/rocm" if nvidia or amd else "",
             "ROCM_PATH": "/opt/rocm" if nvidia or amd else "",
             "APPIMAGE_EXTRACT_AND_RUN": "1",
-            "FOREVERTAS_BUILD_JOBS": os.environ.get("FOREVERTAS_BUILD_JOBS", "4"),
+            "FOREVERTAS_RELEASE_JOBS": os.environ.get("FOREVERTAS_RELEASE_JOBS", "4"),
         }
         command = ["docker", "run", "--rm", "--init",
                    "--user", f"{os.getuid()}:{os.getgid()}",

@@ -31,11 +31,9 @@ if ($Flavor.Count -gt 0) {
     $Flavors = $Flavor
 } else {
     if (Test-Path (Join-Path $RepoRoot ".git")) {
-        $Head = (git -C $RepoRoot rev-parse HEAD).Trim()
-        $TagHead = (git -C $RepoRoot rev-list -n 1 $Release.release.tag).Trim()
         $Dirty = (git -C $RepoRoot status --porcelain=v1) -join ""
-        if ($Head -ne $TagHead -or $Dirty) {
-            throw "Full Windows release builds require a clean tagged source"
+        if ($Dirty) {
+            throw "Full Windows package builds require clean committed source"
         }
     } else {
         $Marker = Join-Path $RepoRoot ".release-source-commit"

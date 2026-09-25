@@ -16,6 +16,10 @@
 #if defined(Q_OS_LINUX)
 #include <cerrno>
 #include <csignal>
+#include <fcntl.h>
+#include <linux/fs.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 #endif
 
 namespace forevertas::app {
@@ -362,20 +366,27 @@ int ApplyAppImageUpdate(const QString &downloadedAppImage,
         }
         QThread::msleep(100);
     }
-    const QString backup = installedAppImage + QStringLiteral(".previous");
-    QFile::remove(backup);
-    if (!QFile::rename(installedAppImage, backup)) {
-        std::fprintf(stderr, "Could not back up the installed AppImage.\n");
+    const QByteArray installedPath = QFile::encodeName(installedAppImage);
+    const QByteArray downloadedPath = QFile::encodeName(downloadedAppImage);
+    const auto exchange = [&]() {
+        return syscall(SYS_renameat2, AT_FDCWD, installedPath.constData(),
+                       AT_FDCWD, downloadedPath.constData(),
+                       RENAME_EXCHANGE) == 0;
+    };
+    if (!exchange()) {
+        std::fprintf(stderr, "Could not atomically replace the AppImage.\n");
         return 4;
     }
-    if (!QFile::rename(downloadedAppImage, installedAppImage)) {
-        QFile::rename(backup, installedAppImage);
-        std::fprintf(stderr, "Could not replace the installed AppImage.\n");
+    const QString backup = installedAppImage + QStringLiteral(".previous");
+    if ((QFileInfo::exists(backup) && !QFile::remove(backup)) ||
+        !QFile::rename(downloadedAppImage, backup)) {
+        exchange();
+        std::fprintf(stderr, "Could not back up the previous AppImage.\n");
         return 5;
     }
     if (!QProcess::startDetached(installedAppImage, {})) {
-        QFile::rename(installedAppImage, downloadedAppImage);
-        QFile::rename(backup, installedAppImage);
+        if (QFile::rename(backup, downloadedAppImage))
+            exchange();
         std::fprintf(stderr, "Could not restart ForeverTAS.\n");
         return 6;
     }
