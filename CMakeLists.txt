@@ -1071,13 +1071,15 @@ if(BUILD_TESTING)
                 forevertas-simulation-debugger-tests PRIVATE
                 ${FOREVERTAS_WARNING_OPTIONS})
         endif()
-        add_test(NAME forevertas-simulation-debugger
-                 COMMAND forevertas-simulation-debugger-tests
-                     "${FOREVERTAS_TEST_PACK_DIRECTORY}"
-                     "${FOREVERTAS_TEST_REPLAY}")
-        set_tests_properties(forevertas-simulation-debugger PROPERTIES
-            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
-            TIMEOUT 180)
+        if(FOREVERTAS_LLDB_EXECUTABLE AND FOREVERTAS_SCRIPT_EXECUTABLE)
+            add_test(NAME forevertas-simulation-debugger
+                     COMMAND forevertas-simulation-debugger-tests
+                         "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                         "${FOREVERTAS_TEST_REPLAY}")
+            set_tests_properties(forevertas-simulation-debugger PROPERTIES
+                ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+                TIMEOUT 180)
+        endif()
 
         if(FOREVERTAS_TEST_SECOND_REPLAY)
             add_executable(forevertas-viewer-reload-qml-smoke

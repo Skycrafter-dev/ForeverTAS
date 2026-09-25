@@ -1305,7 +1305,7 @@ int main(int argc, char **argv) {
             QStringLiteral("Sunrise Sprint"));
     QQuickWindow drawingListWindow;
     drawingListWindow.setWidth(520);
-    drawingListWindow.setHeight(390);
+    drawingListWindow.setHeight(520);
     std::unique_ptr<QObject> drawingListOverlay(
             component.createWithInitialProperties({
                     {QStringLiteral("model"),
@@ -1323,7 +1323,7 @@ int main(int argc, char **argv) {
                     drawingListWindow.contentItem());
         }
         drawingListOverlay->setProperty("width", 520.0);
-        drawingListOverlay->setProperty("height", 390.0);
+        drawingListOverlay->setProperty("height", 520.0);
         drawingListWindow.show();
         QCoreApplication::processEvents();
         const QList<QQuickItem *> mapLabels = FindVisualItems(

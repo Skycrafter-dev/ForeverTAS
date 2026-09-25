@@ -5192,8 +5192,6 @@ int main(int argc, char **argv) {
                     }
 
                     const QVector3D baselinePosition = viewer.carPosition();
-                    const QVector3D bestPosition =
-                            baselinePosition + QVector3D(5.0f, 0.0f, 0.0f);
                     std::vector<forevertas::SearchTimelineFrame> bestFrames;
                     bestFrames.reserve(3u);
                     for (std::int64_t timeMs : {0, 10, 20}) {
@@ -5603,7 +5601,7 @@ int main(int argc, char **argv) {
                              renderModeSelector, gpuRayTracingView,
                              rasterMapView, viewCamera,
                              mapEnvironment, daySkyTexture, mainMapLight,
-                             fillMapLight, bestPosition,
+                             fillMapLight,
                              baseInputScriptTextArea,
                              copyCurrentRaceInputsButton,
                              rayTracingTrajectoryOverlay,
