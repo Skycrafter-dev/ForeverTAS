@@ -776,6 +776,22 @@ bool TestExistingEventWindowPatchParity() {
     for (std::uint64_t iteration = 0u; iteration < 128u; ++iteration) {
         const MutationResult legacy = modifier->Mutate(
                 {baseline, iteration, 0u, 10u, 100, false});
+        if (iteration == 0u) {
+            constexpr const char *expected =
+                    "0.00 steer -30000\n"
+                    "0.08 press up\n"
+                    "0.09 steer -20000\n"
+                    "0.20 steer -19196\n"
+                    "0.43 rel down\n"
+                    "0.68 steer 46428\n"
+                    "0.94 press up\n"
+                    "1.00 steer -43769\n"
+                    "1.09 steer 30000\n"
+                    "1.49 rel down";
+            okay &= Check(
+                    forevertas::FormatInputScript(legacy.inputs) == expected,
+                    "existing-event mutation sequence was not portable");
+        }
         const MutationResult window = modifier->Mutate(
                 {baseline, iteration, 0u, 10u, 100, true});
         if (!window.windowPatch) {

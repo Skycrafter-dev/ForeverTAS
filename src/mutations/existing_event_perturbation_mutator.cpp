@@ -24,6 +24,36 @@ struct Settings {
     bool toggleBrake = true;
 };
 
+// std::shuffle produces different sequences with MSVC and libstdc++.
+void ShuffleIndices(std::vector<std::size_t> &indices,
+                    std::mt19937 &random) {
+    const std::size_t count = indices.size();
+    if (count <= 1u) return;
+    const std::uint64_t generatorRange = UINT32_MAX;
+    if (generatorRange / count >= count) {
+        std::size_t index = 1u;
+        if (count % 2u == 0u) {
+            std::swap(indices[index], indices[RandomInteger(random, 0u, 1u)]);
+            ++index;
+        }
+        while (index != count) {
+            const std::uint64_t swapRange = index + 1u;
+            const std::uint64_t position = RandomUnsigned(
+                    random, 0u, swapRange * (swapRange + 1u) - 1u);
+            const std::size_t first = position / (swapRange + 1u);
+            const std::size_t second = position % (swapRange + 1u);
+            std::swap(indices[index], indices[first]);
+            ++index;
+            std::swap(indices[index], indices[second]);
+            ++index;
+        }
+    } else {
+        for (std::size_t index = 1u; index < count; ++index) {
+            std::swap(indices[index], indices[RandomUnsigned(random, 0u, index)]);
+        }
+    }
+}
+
 std::optional<Settings> ParseSettings(const OptionSettings &settings) {
     const auto window = ParseModifierWindow(settings);
     const auto minimumCount = ParseUnsignedDecimal32(settings.at("minCount"));
@@ -81,7 +111,7 @@ public:
 
         std::mt19937 random = ModifierRandom(
                 settings_.window.seed, request.iterationIndex, request.passIndex);
-        std::shuffle(eligibleIndices.begin(), eligibleIndices.end(), random);
+        ShuffleIndices(eligibleIndices, random);
         const std::uint32_t requested = RandomInteger(
                 random, settings_.minimumCount, settings_.maximumCount);
         const std::size_t count = std::min<std::size_t>(
