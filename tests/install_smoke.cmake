@@ -48,9 +48,15 @@ foreach(required_file IN ITEMS "${executable}" "${debug_worker}" "${license}")
     endif()
 endforeach()
 
+if(WIN32)
+    set(qpa_platform windows)
+else()
+    set(qpa_platform offscreen)
+endif()
+
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env
-        QT_QPA_PLATFORM=offscreen
+        QT_QPA_PLATFORM=${qpa_platform}
         QSG_RHI_BACKEND=software
         "${executable}" --qml-smoke-test
     RESULT_VARIABLE smoke_result

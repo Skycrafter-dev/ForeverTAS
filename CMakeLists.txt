@@ -856,8 +856,13 @@ if(BUILD_TESTING)
              COMMAND forevertas-whiteboard-tests)
     set_tests_properties(forevertas-renderer PROPERTIES
         ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
-    set_tests_properties(forevertas-whiteboard PROPERTIES
-        ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    if(WIN32)
+        set_tests_properties(forevertas-whiteboard PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_FONTDIR=C:/Windows/Fonts;QT_SCALE_FACTOR=1")
+    else()
+        set_tests_properties(forevertas-whiteboard PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+    endif()
     add_test(NAME forevertas-qml-smoke
              COMMAND forevertas --qml-smoke-test)
     set_tests_properties(forevertas-qml-smoke PROPERTIES
