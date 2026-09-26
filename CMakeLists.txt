@@ -768,6 +768,17 @@ if(FOREVERTAS_WARNING_OPTIONS)
 endif()
 
 if(BUILD_TESTING)
+    if(WIN32)
+        find_program(FOREVERTAS_POWERSHELL_EXECUTABLE NAMES pwsh.exe powershell.exe)
+        if(FOREVERTAS_POWERSHELL_EXECUTABLE)
+            add_test(NAME forevertas-windows-distribution-plan
+                COMMAND "${FOREVERTAS_POWERSHELL_EXECUTABLE}" -NoProfile -File
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows_distribution_plan.ps1")
+            add_test(NAME forevertas-windows-template-assembly
+                COMMAND "${FOREVERTAS_POWERSHELL_EXECUTABLE}" -NoProfile -File
+                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows_template_assembly.ps1")
+        endif()
+    endif()
     if(Python3_Interpreter_FOUND)
         add_test(NAME forevertas-distribution-matrix
                  COMMAND "${Python3_EXECUTABLE}"

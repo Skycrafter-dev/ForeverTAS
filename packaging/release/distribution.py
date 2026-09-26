@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -45,6 +46,15 @@ def flavors(manifest: dict) -> list[str]:
             ["amd-rx7000-rx9000"])
 
 
+def linux_build_schedule(selected: list[str]) -> tuple[list[str], list[str]]:
+    template = "nvidia-sm75"
+    ordered = list(dict.fromkeys(([template] if any(
+        flavor.startswith("nvidia-sm") for flavor in selected) else []) + selected))
+    roots = [flavor for flavor in ordered if flavor in
+             ("universal", template, "amd-rx7000-rx9000")]
+    return roots, [flavor for flavor in ordered if flavor not in roots]
+
+
 def asset_name(version: str, platform: str, flavor: str) -> str:
     suffix = "-Setup.exe" if platform == "windows" else ".AppImage"
     return f"ForeverTAS-{version}-{platform}-{flavor}-x86_64{suffix}"
@@ -67,10 +77,30 @@ def bootstrap_aliases(manifest: dict) -> dict[str, str]:
 def published_assets(manifest: dict) -> list[str]:
     packages = expected_assets(manifest)
     return packages + [f"{name}.sha256" for name in packages] + \
-        list(bootstrap_aliases(manifest)) + ["updates.json"]
+        list(bootstrap_aliases(manifest)) + ["updates.json", "build-provenance.json"]
 
 
 def prepare_aliases(manifest: dict, dist: Path) -> None:
+    records = {system: json.loads((dist / f"{system}-source.json").read_text(
+        encoding="utf-8")) for system in ("linux", "windows")}
+    source_commit = records["linux"].get("forevertas", "")
+    if not re.fullmatch(r"[0-9a-f]{40}", source_commit):
+        raise ValueError("invalid ForeverTAS source commit")
+    for system, record in records.items():
+        if record.get("schema") != 1 or \
+                record.get("forevertas") != source_commit or \
+                record.get("forevervalidator") != \
+                manifest["sources"]["forevervalidator"]["commit"] or \
+                set(record.get("packages", {})) != set(flavors(manifest)):
+            raise ValueError(f"incomplete {system} source provenance")
+        for flavor, evidence in record["packages"].items():
+            artifact = dist / asset_name(manifest["release"]["version"],
+                                             system, flavor)
+            if evidence.get("sha256") != digest(artifact) or \
+                    not re.fullmatch(r"[0-9a-f]{64}",
+                                     evidence.get("binary_sha256", "")) or \
+                    not evidence.get("toolchain"):
+                raise ValueError(f"invalid {system} evidence for {flavor}")
     for alias, source in bootstrap_aliases(manifest).items():
         shutil.copy2(dist / source, dist / alias)
     catalog = {
@@ -83,6 +113,18 @@ def prepare_aliases(manifest: dict, dist: Path) -> None:
     }
     (dist / "updates.json").write_text(
         json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
+    provenance = {
+        "schema": 1,
+        "release": manifest["release"]["tag"],
+        "manifest_sha256": manifest_digest(manifest),
+        "sources": {"forevertas": source_commit,
+                    "forevervalidator": manifest["sources"]["forevervalidator"]["commit"]},
+        "platforms": records,
+        "artifacts": {name: digest(dist / name)
+                      for name in expected_assets(manifest)},
+    }
+    (dist / "build-provenance.json").write_text(
+        json.dumps(provenance, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
 
 def digest(path: Path) -> str:
@@ -91,6 +133,12 @@ def digest(path: Path) -> str:
         for block in iter(lambda: stream.read(1024 * 1024), b""):
             checksum.update(block)
     return checksum.hexdigest()
+
+
+def manifest_digest(manifest: dict) -> str:
+    encoded = json.dumps(manifest, sort_keys=True,
+                         separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def verify(manifest: dict, dist: Path, platform: str | None = None) -> None:
@@ -109,6 +157,28 @@ def verify(manifest: dict, dist: Path, platform: str | None = None) -> None:
         if name.endswith(".exe") and signature[:2] != b"MZ":
             raise ValueError(f"not a Windows installer: {name}")
     if platform is None:
+        provenance = json.loads((dist / "build-provenance.json").read_text(
+            encoding="utf-8"))
+        if provenance.get("schema") != 1 or \
+                provenance.get("release") != manifest["release"]["tag"] or \
+                provenance.get("manifest_sha256") != manifest_digest(manifest) or \
+                provenance.get("sources", {}).get("forevervalidator") != \
+                manifest["sources"]["forevervalidator"]["commit"] or \
+                provenance.get("artifacts") != {
+                    name: digest(dist / name) for name in expected_assets(manifest)}:
+            raise ValueError("build provenance differs from artifacts")
+        for system in ("linux", "windows"):
+            record = provenance.get("platforms", {}).get(system, {})
+            if record.get("forevertas") != \
+                    provenance["sources"].get("forevertas") or \
+                    record.get("forevervalidator") != \
+                    provenance["sources"]["forevervalidator"] or \
+                    set(record.get("packages", {})) != set(flavors(manifest)):
+                raise ValueError(f"incomplete {system} build provenance")
+            for flavor, evidence in record["packages"].items():
+                name = asset_name(manifest["release"]["version"], system, flavor)
+                if evidence.get("sha256") != provenance["artifacts"][name]:
+                    raise ValueError(f"provenance differs from {name}")
         for alias, source in bootstrap_aliases(manifest).items():
             if not (dist / alias).is_file() or digest(dist / alias) != digest(dist / source):
                 raise ValueError(f"bootstrap download is missing or stale: {alias}")
@@ -140,6 +210,7 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
     if not (validator / "CMakeLists.txt").is_file():
         raise ValueError(f"ForeverValidator source is missing: {validator}")
     source_commit = run("git", "rev-parse", "HEAD")
+    source_date_epoch = run("git", "show", "-s", "--format=%ct", "HEAD")
     validator_commit = run("git", "-C", str(validator), "rev-parse", "HEAD")
     if run("git", "status", "--porcelain=v1", "--untracked-files=all"):
         raise ValueError("commit the ForeverTAS source before building packages")
@@ -152,9 +223,14 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
     hip = (os.environ.get("FOREVERTAS_HIP_TOOLCHAIN_IMAGE") or run(
         str(ROOT / "packaging/release/ensure-linux-hip-toolchain.sh"))) \
         if any(flavor != "universal" for flavor in selected) else ""
-    cache = (ROOT / manifest["cache"]["linux"]).resolve()
+    cache = Path(os.environ.get(
+        "FOREVERTAS_RELEASE_CACHE",
+        ROOT.parent / ".forevertas-release-cache/linux")).resolve()
     cache.mkdir(parents=True, exist_ok=True)
-    for flavor in selected:
+    nvidia_template = "nvidia-sm75"
+    roots, remaining = linux_build_schedule(selected)
+
+    def build_flavor(flavor: str) -> tuple[str, dict]:
         nvidia = flavor.startswith("nvidia-sm")
         amd = flavor == "amd-rx7000-rx9000"
         cuda_arch = flavor.removeprefix("nvidia-sm")
@@ -178,7 +254,12 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
             "APPIMAGE_EXTRACT_AND_RUN": "1",
             "FOREVERTAS_RELEASE_JOBS": os.environ.get("FOREVERTAS_RELEASE_JOBS", "4"),
             "SCCACHE_DIR": "/cache/sccache",
+            "SCCACHE_CACHE_SIZE": "50G",
+            "SOURCE_DATE_EPOCH": source_date_epoch,
         }
+        if nvidia and flavor != nvidia_template:
+            environment["FOREVERTAS_PACKAGE_TEMPLATE_APPDIR"] = (
+                f"/workspace/build/distribution-{nvidia_template}/AppDir")
         command = ["docker", "run", "--rm", "--init",
                    "--user", f"{os.getuid()}:{os.getgid()}",
                    "--tmpfs", f"/home/builder:rw,uid={os.getuid()},gid={os.getgid()},mode=0755",
@@ -215,6 +296,41 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
                 r"hipv4-amdgcn-amd-amdhsa--(gfx[0-9]+)", run(*inspection)))
             if targets != set(SUPPORTED_GFX):
                 raise ValueError(f"AMD package has unexpected HIP targets: {targets}")
+        artifact = ROOT / "dist" / asset_name(manifest["release"]["version"],
+                                              "linux", flavor)
+        binary = ROOT / "build" / f"distribution-{flavor}" / "bin/ForeverTAS"
+        return flavor, {
+            "sha256": digest(artifact),
+            "binary_sha256": digest(binary),
+            "toolchain": run("docker", "image", "inspect", "--format",
+                             "{{.Id}}", hip if nvidia or amd else base),
+            "runtime_template": nvidia_template if nvidia else flavor,
+        }
+
+    # The NVIDIA runtime and Qt deployment are identical for each SM. Deploy
+    # them once, then assemble warm per-SM executables over that AppDir.
+    workers = int(os.environ.get("FOREVERTAS_RELEASE_VARIANT_JOBS", "4"))
+    if workers < 1:
+        raise ValueError("FOREVERTAS_RELEASE_VARIANT_JOBS must be positive")
+    evidence = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in [pool.submit(build_flavor, flavor) for flavor in roots]:
+            flavor, result = future.result()
+            evidence[flavor] = result
+        for future in [pool.submit(build_flavor, flavor) for flavor in remaining]:
+            flavor, result = future.result()
+            evidence[flavor] = result
+    record_path = ROOT / "dist/linux-source.json"
+    record = {"schema": 1, "forevertas": source_commit,
+              "forevervalidator": validator_commit, "packages": {}}
+    if record_path.is_file():
+        previous = json.loads(record_path.read_text(encoding="utf-8"))
+        if all(previous.get(key) == record[key]
+               for key in ("schema", "forevertas", "forevervalidator")):
+            record = previous
+    record["packages"].update(evidence)
+    record_path.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n",
+                           encoding="utf-8")
     verify(manifest, ROOT / "dist", "linux") if set(selected) == set(flavors(manifest)) else None
 
 
@@ -245,6 +361,9 @@ def draft(manifest: dict, dist: Path) -> None:
     ensure_remote_tag(manifest)
     prepare_aliases(manifest, dist)
     verify(manifest, dist)
+    if json.loads((dist / "build-provenance.json").read_text(
+            encoding="utf-8"))["sources"]["forevertas"] != run("git", "rev-parse", "HEAD"):
+        raise ValueError("release source provenance differs from the tag")
     tag = manifest["release"]["tag"]
     repository = manifest["release"]["repository"]
     exists = subprocess.run(["gh", "release", "view", tag, "--repo", repository],
@@ -267,6 +386,9 @@ def publish(manifest: dict, dist: Path) -> None:
     ensure_tag(manifest)
     ensure_remote_tag(manifest)
     verify(manifest, dist)
+    if json.loads((dist / "build-provenance.json").read_text(
+            encoding="utf-8"))["sources"]["forevertas"] != run("git", "rev-parse", "HEAD"):
+        raise ValueError("release source provenance differs from the tag")
     tag = manifest["release"]["tag"]
     repository = manifest["release"]["repository"]
     release = json.loads(run("gh", "api", f"repos/{repository}/releases/tags/{tag}"))

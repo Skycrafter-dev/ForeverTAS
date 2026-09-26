@@ -139,6 +139,13 @@ else
     fi
 fi
 
+if [[ "${FOREVERTAS_SKIP_PACKAGING:-0}" == "1" ]]; then
+    exit 0
+fi
+if [[ -n "${FOREVERTAS_PACKAGE_TEMPLATE_APPDIR:-}" ]]; then
+    exec bash "${repo_root}/packaging/linux/package-from-template.sh"
+fi
+
 rm -rf "${appdir}"
 DESTDIR="${appdir}" cmake --install "${build_dir}"
 

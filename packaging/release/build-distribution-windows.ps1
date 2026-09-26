@@ -1,7 +1,8 @@
 param(
     [string]$Manifest = "",
     [string]$DistDirectory = "",
-    [string[]]$Flavor = @()
+    [string[]]$Flavor = @(),
+    [switch]$PlanOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,6 +15,22 @@ $Release = Get-Content (Resolve-Path $Manifest) -Raw | ConvertFrom-Json
 $Version = [string]$Release.release.version
 if ($Release.release.tag -ne "v$Version") {
     throw "Release tag and version differ"
+}
+$Flavors = @("universal") + @($Release.distribution.nvidia_sm | ForEach-Object { "nvidia-sm$_" }) + @("amd-rx7000-rx9000")
+if ($Flavor.Count -gt 0) {
+    foreach ($Name in $Flavor) {
+        if ($Flavors -cnotcontains $Name) { throw "Unknown distribution flavor: $Name" }
+    }
+    $Flavors = $Flavor
+}
+$NvidiaTemplate = "nvidia-sm75"
+$BuildOrder = if (@($Flavors | Where-Object { $_ -like "nvidia-sm*" }).Count -gt 0) {
+    @($NvidiaTemplate) + @($Flavors | Where-Object { $_ -ne $NvidiaTemplate })
+} else { $Flavors }
+if ($PlanOnly) {
+    [ordered]@{ version = $Version; flavors = $Flavors; build_order = $BuildOrder } |
+        ConvertTo-Json -Depth 3
+    return
 }
 
 if (Test-Path C:\Tools\Enter-BuildEnv.ps1) {
@@ -28,13 +45,7 @@ if (-not $env:VCPKG_INSTALLATION_ROOT -or -not $env:VCToolsRedistDir) {
     throw "Run in an MSVC environment with VCPKG_INSTALLATION_ROOT"
 }
 $RuntimeDirectory = Join-Path $env:VCPKG_INSTALLATION_ROOT "installed/x64-windows/bin"
-$Flavors = @("universal") + @($Release.distribution.nvidia_sm | ForEach-Object { "nvidia-sm$_" }) + @("amd-rx7000-rx9000")
-if ($Flavor.Count -gt 0) {
-    foreach ($Name in $Flavor) {
-        if ($Flavors -cnotcontains $Name) { throw "Unknown distribution flavor: $Name" }
-    }
-    $Flavors = $Flavor
-} else {
+if ($Flavor.Count -eq 0) {
     if (Test-Path (Join-Path $RepoRoot ".git")) {
         $Dirty = (git -C $RepoRoot status --porcelain=v1) -join ""
         if ($Dirty) {
@@ -62,7 +73,31 @@ if ($Flavor.Count -gt 0) {
 }
 New-Item -ItemType Directory -Force -Path $DistDirectory | Out-Null
 
-foreach ($Name in $Flavors) {
+$SourceCommit = if (Test-Path (Join-Path $RepoRoot ".git")) {
+    (git -C $RepoRoot rev-parse HEAD).Trim()
+} else {
+    (Get-Content (Join-Path $RepoRoot ".release-source-commit") -Raw).Trim()
+}
+$ValidatorSource = Join-Path $RepoRoot ".dependencies/ForeverValidator"
+$ValidatorCommit = if (Test-Path (Join-Path $ValidatorSource ".git")) {
+    (git -C $ValidatorSource rev-parse HEAD).Trim()
+} else {
+    (Get-Content (Join-Path $ValidatorSource ".release-source-commit") -Raw).Trim()
+}
+if ($SourceCommit -notmatch '^[0-9a-f]{40}$' -or
+        $ValidatorCommit -ne $Release.sources.forevervalidator.commit) {
+    throw "Source provenance does not match the release manifest"
+}
+if (Test-Path (Join-Path $RepoRoot ".git")) {
+    $Dirty = (git -C $RepoRoot status --porcelain=v1) -join ""
+    if ($Dirty) { throw "Commit ForeverTAS source before building installers" }
+}
+if (Test-Path (Join-Path $ValidatorSource ".git")) {
+    $DirtyValidator = (git -C $ValidatorSource status --porcelain=v1) -join ""
+    if ($DirtyValidator) { throw "Commit ForeverValidator source before building installers" }
+}
+$PackageEvidence = [ordered]@{}
+foreach ($Name in $BuildOrder) {
     $BuildDirectory = Join-Path $RepoRoot "build/distribution-$Name"
     $TemporaryDist = Join-Path $RepoRoot "build/distribution-$Name-dist"
     New-Item -ItemType Directory -Force -Path $TemporaryDist | Out-Null
@@ -77,6 +112,7 @@ foreach ($Name in $Flavors) {
         $Options.CudaArchitectures = "$Sm-real;$Sm-virtual"
         $Options.HipArchitectures = $Sm
         $Options.HipPlatform = "nvidia"
+        if ($Name -ne $NvidiaTemplate) { $Options.BuildOnly = $true }
     } elseif ($Name -eq "amd-rx7000-rx9000") {
         $Options.HipArchitectures = ($Release.distribution.amd_gfx -join ";")
         $Options.HipPlatform = "amd"
@@ -84,6 +120,16 @@ foreach ($Name in $Flavors) {
     Write-Host "Building Windows $Name"
     & (Join-Path $RepoRoot "packaging/windows/build-portable.ps1") @Options
     if ($LASTEXITCODE -ne 0) { throw "Windows build failed for $Name" }
+    if ($Name -like "nvidia-sm*" -and $Name -ne $NvidiaTemplate) {
+        $TemplateDist = Join-Path $RepoRoot "build/distribution-$NvidiaTemplate-dist"
+        $TemplateArchive = @(Get-ChildItem $TemplateDist -Filter "ForeverTAS-*-windows-*.zip")
+        if ($TemplateArchive.Count -ne 1) { throw "Missing NVIDIA runtime template" }
+        & (Join-Path $RepoRoot "packaging/windows/package-from-template.ps1") `
+            -BuildDirectory $BuildDirectory `
+            -TemplateArchive $TemplateArchive[0].FullName `
+            -Flavor $Name -DistDirectory $TemporaryDist
+        if ($LASTEXITCODE -ne 0) { throw "Windows package failed for $Name" }
+    }
 
     if ($Name -like "nvidia-sm*") {
         $Executable = Join-Path $BuildDirectory "bin/ForeverTAS.exe"
@@ -104,6 +150,41 @@ foreach ($Name in $Flavors) {
         }
         Copy-Item -LiteralPath $Source -Destination (Join-Path $DistDirectory $Filename) -Force
     }
+    $PackageEvidence[$Name] = [ordered]@{
+        sha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $DistDirectory $InstallerName)).Hash.ToLowerInvariant()
+        binary_sha256 = (Get-FileHash -Algorithm SHA256 (Join-Path $BuildDirectory "bin/ForeverTAS.exe")).Hash.ToLowerInvariant()
+        toolchain = ($Release.toolchains.windows | ConvertTo-Json -Compress)
+        runtime_template = $(if ($Name -like "nvidia-sm*") { $NvidiaTemplate } else { $Name })
+    }
 }
+
+if (Test-Path (Join-Path $RepoRoot ".git")) {
+    $CurrentHead = (git -C $RepoRoot rev-parse HEAD).Trim()
+    $Dirty = (git -C $RepoRoot status --porcelain=v1) -join ""
+    if ($CurrentHead -ne $SourceCommit -or $Dirty) {
+        throw "ForeverTAS source changed during Windows packaging"
+    }
+}
+$RecordPath = Join-Path $DistDirectory "windows-source.json"
+if (Test-Path $RecordPath) {
+    $Previous = Get-Content $RecordPath -Raw | ConvertFrom-Json
+    if ($Previous.schema -eq 1 -and
+            $Previous.forevertas -eq $SourceCommit -and
+            $Previous.forevervalidator -eq $ValidatorCommit) {
+        foreach ($Property in $Previous.packages.PSObject.Properties) {
+            if (-not $PackageEvidence.Contains($Property.Name)) {
+                $PackageEvidence[$Property.Name] = $Property.Value
+            }
+        }
+    }
+}
+$Record = [ordered]@{
+    schema = 1
+    forevertas = $SourceCommit
+    forevervalidator = $ValidatorCommit
+    packages = $PackageEvidence
+} | ConvertTo-Json -Depth 6
+[IO.File]::WriteAllText($RecordPath, "$Record`n",
+    (New-Object Text.UTF8Encoding($false)))
 
 Write-Host "Built $($Flavors.Count) Windows installer flavors in $DistDirectory"

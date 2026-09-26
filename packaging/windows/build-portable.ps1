@@ -5,7 +5,8 @@ param(
     [string]$Flavor = "",
     [string]$CudaArchitectures = "",
     [string]$HipArchitectures = "",
-    [string]$HipPlatform = ""
+    [string]$HipPlatform = "",
+    [switch]$BuildOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -118,6 +119,7 @@ cmake --build $BuildDirectory --parallel $BuildJobs
 $BuildExitCode = $LASTEXITCODE
 $ErrorActionPreference = "Stop"
 if ($BuildExitCode -ne 0) { throw "Build failed" }
+if ($BuildOnly) { return }
 
 $ErrorActionPreference = "Continue"
 cpack --config (Join-Path $BuildDirectory "CPackConfig.cmake") `
