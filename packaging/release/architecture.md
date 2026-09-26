@@ -1,11 +1,14 @@
 # Warm release assembly
 
 Linux and Windows releases retain one package per supported hardware flavor and
-the existing updater asset names. A NVIDIA package is assembled from its own
+the existing updater asset names. The QML interface, visual resources, and
+shaders live in a dynamically loaded module instead of each executable. Linux
+builds that module once in the universal flavor and installs the identical
+module into NVIDIA and AMD packages. A NVIDIA package is assembled from its own
 SM-specific application and debug-worker executables plus one SM75 Qt/runtime
-deployment. The universal and AMD packages continue to deploy their own
-runtimes. The release drivers build the NVIDIA template first, then assemble
-the remaining NVIDIA packages from it. Linux runs independent builds in parallel
+deployment. The release drivers build the universal flavor first, then the
+NVIDIA template and AMD flavor, then assemble the remaining NVIDIA packages.
+Linux runs independent builds in parallel
 (`FOREVERTAS_RELEASE_VARIANT_JOBS`, default 4); CMake/Ninja build directories and
 the shared sccache directory remain warm between runs. No fat CUDA/HIP binary or
 new runtime dispatch path is introduced.
@@ -35,7 +38,7 @@ All measurements used existing warm build outputs and no GPU recompilation.
 | --- | ---: | ---: |
 | One NVIDIA AppImage, warm build plus old packaging vs template assembly and smoke | 44.34 s (SM75) | 20.62 s (SM75) |
 | Full NVIDIA matrix, template assembly and smoke, four concurrent jobs | not measured warm | 183.84 s for 17 |
-| QML-only change, warm SM75 rebuild | 32.35 s | GPU objects unchanged |
+| QML-only change, warm SM75 build | 32.35 s executable relink | 4.45 s shared module; SM50 executable had no work (1.06 s check) |
 
 The original release's 19 Linux artifact timestamps span 41 minutes 24 seconds,
 but that included first-time compilation and is **not** a comparable warm
@@ -45,9 +48,13 @@ All 17 pre-existing NVIDIA AppDirs were byte-identical outside their two
 executables. The assembled matrix passed all 17 packaged QML smoke tests and
 Linux asset verification for all 19 flavors. An SM50 package assembled twice
 with the same `SOURCE_DATE_EPOCH` had identical SHA-256 hashes. The QML-only
-SM75 rebuild scheduled three resource/link steps and no CUDA or HIP compile.
+SM75 rebuild changed only the module; executable and CUDA/HIP object hashes
+were identical before and after. Packaged universal, SM50, SM75, and AMD
+AppImages passed QML smoke tests with the dynamic module. The module installed
+in universal and SM75 AppDirs had the same SHA-256 hash.
 
-Windows staging follows the same two-executable overlay, but its full installer
-run still requires verification on the Windows builder before it can be used
-for a release. This branch must not be merged or published on that evidence
-alone.
+Windows staging follows the same two-executable overlay. It builds the QML
+module in its universal, SM75, and AMD roots; other NVIDIA flavors consume
+the SM75 module. Its full installer run still requires verification on the
+Windows builder before it can be used for a release. This branch must not be
+merged or published on that evidence alone.

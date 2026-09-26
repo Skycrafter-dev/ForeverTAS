@@ -6,7 +6,9 @@ param(
     [string]$CudaArchitectures = "",
     [string]$HipArchitectures = "",
     [string]$HipPlatform = "",
-    [switch]$BuildOnly
+    [switch]$BuildOnly,
+    [switch]$ExternalQmlModule,
+    [string]$CommonQmlDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,6 +47,15 @@ if ($Flavor) {
     $FlavorOptions += "-DFOREVERTAS_ENABLE_VULKAN=ON"
     $FlavorOptions += "-DFOREVERTAS_ENABLE_CUDA=$($(if ($Flavor -like 'nvidia-*') { 'ON' } else { 'OFF' }))"
     $FlavorOptions += "-DFOREVERTAS_ENABLE_HIP=$($(if ($Flavor -eq 'universal') { 'OFF' } else { 'ON' }))"
+}
+if ($ExternalQmlModule) {
+    $FlavorOptions += "-DFOREVERTAS_QML_MODULE_EXTERNAL=ON"
+    if (-not (Test-Path $CommonQmlDirectory -PathType Container)) {
+        throw "The shared QML module directory is missing"
+    }
+    $FlavorOptions += "-DFOREVERTAS_COMMON_QML_DIR=$CommonQmlDirectory"
+} else {
+    $FlavorOptions += "-DFOREVERTAS_QML_MODULE_EXTERNAL=OFF"
 }
 if ($CudaArchitectures) {
     $FlavorOptions += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchitectures"

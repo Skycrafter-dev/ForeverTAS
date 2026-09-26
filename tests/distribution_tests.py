@@ -30,12 +30,12 @@ class DistributionTests(unittest.TestCase):
     def test_linux_reuses_one_nvidia_runtime_template(self):
         selected = distribution.flavors(self.manifest)
         roots, remainder = distribution.linux_build_schedule(selected)
-        self.assertEqual(roots, ["nvidia-sm75", "universal",
+        self.assertEqual(roots, ["universal", "nvidia-sm75",
                                  "amd-rx7000-rx9000"])
         self.assertEqual(len(remainder), len(distribution.SUPPORTED_SM) - 1)
         self.assertEqual(set(roots + remainder), set(selected))
         self.assertEqual(distribution.linux_build_schedule(["nvidia-sm50"]),
-                         (["nvidia-sm75"], ["nvidia-sm50"]))
+                         (["universal", "nvidia-sm75"], ["nvidia-sm50"]))
 
     def test_checksums_and_stable_bootstrap_downloads(self):
         with tempfile.TemporaryDirectory() as directory:

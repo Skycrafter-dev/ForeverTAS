@@ -49,8 +49,11 @@ def flavors(manifest: dict) -> list[str]:
 
 def linux_build_schedule(selected: list[str]) -> tuple[list[str], list[str]]:
     template = "nvidia-sm75"
-    ordered = list(dict.fromkeys(([template] if any(
-        flavor.startswith("nvidia-sm") for flavor in selected) else []) + selected))
+    prefix = (["universal"] if any(flavor != "universal" for flavor in selected)
+              else [])
+    if any(flavor.startswith("nvidia-sm") for flavor in selected):
+        prefix.append(template)
+    ordered = list(dict.fromkeys(prefix + selected))
     roots = [flavor for flavor in ordered if flavor in
              ("universal", template, "amd-rx7000-rx9000")]
     return roots, [flavor for flavor in ordered if flavor not in roots]
@@ -275,6 +278,11 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
             "SCCACHE_CACHE_SIZE": "50G",
             "SOURCE_DATE_EPOCH": source_date_epoch,
         }
+        if flavor != "universal":
+            environment["FOREVERTAS_QML_MODULE_EXTERNAL"] = "ON"
+            environment["FOREVERTAS_COMMON_QML_DIR"] = (
+                "/workspace/build/distribution-universal/AppDir/usr/bin/"
+                "qml/ForeverTAS")
         if nvidia and flavor != nvidia_template:
             environment["FOREVERTAS_PACKAGE_TEMPLATE_APPDIR"] = (
                 f"/workspace/build/distribution-{nvidia_template}/AppDir")
@@ -331,8 +339,12 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
     if workers < 1:
         raise ValueError("FOREVERTAS_RELEASE_VARIANT_JOBS must be positive")
     evidence = {}
+    if "universal" in roots:
+        flavor, result = build_flavor("universal")
+        evidence[flavor] = result
+    dependent_roots = [flavor for flavor in roots if flavor != "universal"]
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for future in [pool.submit(build_flavor, flavor) for flavor in roots]:
+        for future in [pool.submit(build_flavor, flavor) for flavor in dependent_roots]:
             flavor, result = future.result()
             evidence[flavor] = result
         for future in [pool.submit(build_flavor, flavor) for flavor in remaining]:

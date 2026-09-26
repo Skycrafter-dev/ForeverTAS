@@ -16,6 +16,10 @@ option(FOREVERTAS_ENABLE_CUDA
     "Build ForeverTAS with the optional ForeverValidator CUDA backend" OFF)
 option(FOREVERTAS_ENABLE_HIP
     "Build ForeverTAS with the optional ForeverValidator HIP backend" OFF)
+option(FOREVERTAS_QML_MODULE_EXTERNAL
+    "Use the release's shared QML module instead of building it here" OFF)
+set(FOREVERTAS_COMMON_QML_DIR "" CACHE PATH
+    "Directory containing the shared ForeverTAS QML module")
 set(FOREVERTAS_DISTRIBUTION_FLAVOR "" CACHE STRING
     "Public package flavor: universal, nvidia-smNN, or amd-rx7000-rx9000")
 set(FOREVERTAS_WINDOWS_RUNTIME_DIR "" CACHE PATH
@@ -407,9 +411,12 @@ set_target_properties(forevertas PROPERTIES
     WIN32_EXECUTABLE TRUE)
 set_source_files_properties(qml/AppTheme.qml PROPERTIES
     QT_QML_SINGLETON_TYPE TRUE)
-qt_add_qml_module(forevertas
+if(NOT FOREVERTAS_QML_MODULE_EXTERNAL)
+qt_add_qml_module(forevertas_qml
+    PLUGIN_TARGET forevertas_qml
     URI ForeverTAS
     VERSION 1.0
+    OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin/qml/ForeverTAS"
     QML_FILES
         qml/AppTheme.qml
         qml/EvaluationOverlay.qml
@@ -456,30 +463,31 @@ qt_add_qml_module(forevertas
         qml/settings/VolumeEntryEvaluationSettings.qml)
 file(GLOB FOREVERTAS_REPLACEMENT_TEXTURES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/*.png")
-qt_add_resources(forevertas "replacement-materials"
+qt_add_resources(forevertas_qml "replacement-materials"
     PREFIX "/materials"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials"
     FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
 file(GLOB FOREVERTAS_LUCIDE_ICONS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/*.svg")
-qt_add_resources(forevertas "lucide-icons"
+qt_add_resources(forevertas_qml "lucide-icons"
     PREFIX "/icons"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons"
     FILES ${FOREVERTAS_LUCIDE_ICONS})
 file(GLOB FOREVERTAS_ENVIRONMENT_TEXTURES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment/*.png")
-qt_add_resources(forevertas "environment-textures"
+qt_add_resources(forevertas_qml "environment-textures"
     PREFIX "/environment"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment"
     FILES ${FOREVERTAS_ENVIRONMENT_TEXTURES})
 if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools)
-    qt_add_shaders(forevertas "ray-tracing-shaders"
+    qt_add_shaders(forevertas_qml "ray-tracing-shaders"
         PREFIX "/raytracing"
         GLSL "310 es,430"
         FILES
             shaders/raytrace.comp
             shaders/raytrace_present.vert
             shaders/raytrace_present.frag)
+endif()
 endif()
 target_link_libraries(forevertas PRIVATE
     forevertas_gui
@@ -502,6 +510,19 @@ install(TARGETS forevertas
     RUNTIME DESTINATION "${forevertas_runtime_destination}")
 install(TARGETS forevertas-simulation-debug-worker
     RUNTIME DESTINATION "${forevertas_runtime_destination}")
+if(NOT FOREVERTAS_QML_MODULE_EXTERNAL)
+    install(TARGETS forevertas_qml
+        LIBRARY DESTINATION "${forevertas_runtime_destination}/qml/ForeverTAS"
+        RUNTIME DESTINATION "${forevertas_runtime_destination}/qml/ForeverTAS")
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/bin/qml/ForeverTAS/qmldir"
+        DESTINATION "${forevertas_runtime_destination}/qml/ForeverTAS")
+else()
+    if(NOT IS_DIRECTORY "${FOREVERTAS_COMMON_QML_DIR}")
+        message(FATAL_ERROR "External QML module directory is missing")
+    endif()
+    install(DIRECTORY "${FOREVERTAS_COMMON_QML_DIR}/"
+        DESTINATION "${forevertas_runtime_destination}/qml/ForeverTAS")
+endif()
 
 if(WIN32)
     set(forevertas_deploy_options NO_TRANSLATIONS)

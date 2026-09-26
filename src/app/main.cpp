@@ -81,6 +81,8 @@ int main(int argc, char **argv) {
             });
     forevertas::viewer::RegisterRaceViewerQmlTypes();
     QQmlApplicationEngine engine;
+    engine.addImportPath(QCoreApplication::applicationDirPath() +
+                         QStringLiteral("/qml"));
     engine.setInitialProperties({
             {QStringLiteral("controller"),
              QVariant::fromValue(static_cast<QObject *>(&controller))},

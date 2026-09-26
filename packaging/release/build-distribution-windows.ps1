@@ -120,7 +120,12 @@ foreach ($Name in $BuildOrder) {
         $Options.CudaArchitectures = "$Sm-real;$Sm-virtual"
         $Options.HipArchitectures = $Sm
         $Options.HipPlatform = "nvidia"
-        if ($Name -ne $NvidiaTemplate) { $Options.BuildOnly = $true }
+        if ($Name -ne $NvidiaTemplate) {
+            $Options.BuildOnly = $true
+            $Options.ExternalQmlModule = $true
+            $Options.CommonQmlDirectory = Join-Path $RepoRoot `
+                "build/distribution-$NvidiaTemplate/bin/qml/ForeverTAS"
+        }
     } elseif ($Name -eq "amd-rx7000-rx9000") {
         $Options.HipArchitectures = ($Release.distribution.amd_gfx -join ";")
         $Options.HipPlatform = "amd"
