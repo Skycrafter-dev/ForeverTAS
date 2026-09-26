@@ -116,7 +116,24 @@ if [[ "${FOREVERTAS_SKIP_BUILD:-0}" == "1" ]]; then
     test -x "${build_dir}/bin/ForeverTAS"
 else
     cmake "${cmake_args[@]}"
+    vulkan_include_dir="$(sed -n 's/^Vulkan_INCLUDE_DIR:PATH=//p' \
+        "${build_dir}/CMakeCache.txt")"
+    vulkan_header="${vulkan_include_dir}/vulkan/vulkan_core.h"
+    if [[ -f "${vulkan_header}" ]]; then
+        header_digest="$(sha256sum "${vulkan_header}" | cut -d' ' -f1)"
+        header_stamp="${build_dir}/.forevertas-vulkan-header-sha256"
+        previous_digest=""
+        if [[ -f "${header_stamp}" ]]; then
+            previous_digest="$(<"${header_stamp}")"
+        fi
+        if [[ "${header_digest}" != "${previous_digest}" ]]; then
+            cmake --build "${build_dir}" --target clean
+        fi
+    fi
     cmake --build "${build_dir}" --parallel "${release_jobs}"
+    if [[ -n "${header_digest:-}" ]]; then
+        printf '%s\n' "${header_digest}" > "${header_stamp}"
+    fi
 fi
 
 rm -rf "${appdir}"
