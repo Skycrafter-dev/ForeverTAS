@@ -127,7 +127,10 @@ else
             previous_digest="$(<"${header_stamp}")"
         fi
         if [[ "${header_digest}" != "${previous_digest}" ]]; then
-            cmake --build "${build_dir}" --target clean
+            while IFS= read -r -d '' object; do
+                rm -f "${object}"
+            done < <(find "${build_dir}" -type f \
+                -name 'vulkan_compute_runtime.cpp.o' -print0)
         fi
     fi
     cmake --build "${build_dir}" --parallel "${release_jobs}"
