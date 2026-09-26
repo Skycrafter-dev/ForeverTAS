@@ -62,7 +62,12 @@ with the same `SOURCE_DATE_EPOCH` had identical SHA-256 hashes. The QML-only
 SM75 rebuild changed only the module; executable and CUDA/HIP object hashes
 were identical before and after. Packaged universal, SM50, SM75, and AMD
 AppImages passed QML smoke tests with the dynamic module. The module installed
-in universal and SM75 AppDirs had the same SHA-256 hash.
+in all 19 AppDirs has the same SHA-256 hash. Across all NVIDIA and AMD warm
+builds, 420 CUDA/HIP object files were byte-identical to the original release.
+On the local RTX 5060, the SM120 CUDA search parity/performance test passed
+before and after. Its test executable and both hot-path core archives were
+byte-identical, so this packaging change adds no compute dispatch or device
+code to the measured search path.
 
 Windows staging follows the same two-executable overlay. It builds the QML
 module once in its universal root; SM75, AMD, and all other NVIDIA flavors
