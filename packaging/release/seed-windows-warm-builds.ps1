@@ -81,9 +81,14 @@ foreach ($Name in $Flavor) {
     }
     $CachePath = Join-Path $Destination "CMakeCache.txt"
     $CacheText = [IO.File]::ReadAllText($CachePath)
-    $CacheText = $CacheText.Replace($DonorRoot.Replace('\', '/'),
-                                   $TargetRoot.Replace('\', '/')).Replace(
-                                   $DonorRoot, $TargetRoot)
+    $CacheText = $CacheText -replace
+        [regex]::Escape($DonorRoot.Replace('\', '/')),
+        $TargetRoot.Replace('\', '/')
+    $CacheText = $CacheText -replace [regex]::Escape($DonorRoot), $TargetRoot
+    if ($CacheText -match [regex]::Escape($DonorRoot.Replace('\', '/')) -or
+            $CacheText -match [regex]::Escape($DonorRoot)) {
+        throw "Could not relocate the warm CMake cache for $Name"
+    }
     [IO.File]::WriteAllText($CachePath, $CacheText,
         [Text.UTF8Encoding]::new($false))
 }
