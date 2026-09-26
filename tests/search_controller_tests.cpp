@@ -1121,9 +1121,14 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                           QStringLiteral("vulkan"), QStringLiteral("Vulkan"),
                           QStringLiteral("Vulkan Compute for Stadium on compatible GPUs")),
                   "Vulkan option was not exposed alongside existing backends");
-    okay &= Check(controller.vulkanAvailable() == vulkanDiagnostics.IsReady() &&
+    okay &= Check(controller.vulkanAvailable() == vulkanDiagnostics.IsSearchReady() &&
                           !controller.vulkanStatusText().isEmpty(),
                   "Vulkan status did not match its own runtime diagnostics");
+    if (vulkanDiagnostics.IsReady() && !vulkanDiagnostics.IsSearchReady()) {
+        okay &= Check(controller.vulkanStatusText().contains(
+                              QStringLiteral("VK_KHR_shader_float_controls2")),
+                      "Vulkan search did not explain the exact FP32 requirement");
+    }
     okay &= Check(controller.vulkanParallelSampleCount() ==
                           QString::number(forevertas::kDefaultCudaParallelSampleCount) &&
                           !controller.vulkanCalibrationEnabled(),

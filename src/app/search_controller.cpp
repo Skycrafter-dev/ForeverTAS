@@ -317,12 +317,19 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     vulkanCalibrationEnabled_ = QSettings()
             .value(QLatin1String(kVulkanCalibrationEnabledKey), false).toBool();
     const auto vulkan = forevervalidator::QueryVulkanBackendDiagnostics();
-    vulkanAvailable_ = vulkan.IsReady();
-    vulkanStatusText_ = vulkanAvailable_
-            ? QStringLiteral("Vulkan ready: %1")
-                      .arg(QString::fromStdString(vulkan.deviceName))
-            : QStringLiteral("Vulkan unavailable: %1")
-                      .arg(QString::fromStdString(vulkan.diagnostic));
+    vulkanAvailable_ = vulkan.IsSearchReady();
+    if (vulkanAvailable_) {
+        vulkanStatusText_ = QStringLiteral("Vulkan ready: %1")
+                                    .arg(QString::fromStdString(vulkan.deviceName));
+    } else if (vulkan.IsReady()) {
+        vulkanStatusText_ = QStringLiteral(
+                "Vulkan search unavailable: %1 lacks exact FP32 controls "
+                "(VK_KHR_shader_float_controls2).")
+                                    .arg(QString::fromStdString(vulkan.deviceName));
+    } else {
+        vulkanStatusText_ = QStringLiteral("Vulkan unavailable: %1")
+                                    .arg(QString::fromStdString(vulkan.diagnostic));
+    }
     QSettings settings;
     randomizeSeedsOnStart_ = settings
             .value(QLatin1String(kRandomizeSeedsOnStartKey), true)

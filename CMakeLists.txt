@@ -100,7 +100,7 @@ endif()
 FetchContent_Declare(
     ForeverValidator
     GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-    GIT_TAG 7714a32fb24d9effd944e4422c56b0a7c98e4f0c
+    GIT_TAG a89a8e80d1835826b401e757e2159c501544e8d4
     GIT_SHALLOW FALSE)
 FetchContent_MakeAvailable(ForeverValidator)
 if(FOREVERTAS_ENABLE_HIP AND UNIX)

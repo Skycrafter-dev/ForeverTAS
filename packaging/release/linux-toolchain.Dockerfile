@@ -66,3 +66,16 @@ RUN cmake --version | grep -F "cmake version ${CMAKE_VERSION}" \
     && qmake -query QT_VERSION | grep -Fx "6.9.3" \
     && sccache --version | grep -F "sccache ${SCCACHE_VERSION}" \
     && test -x "${CUDA_PATH}/bin/cuobjdump"
+
+# Ubuntu 22.04's Vulkan headers predate shader_float_controls2; the search
+# backend must be compiled with that extension to use exact FP32 physics.
+ARG VULKAN_HEADERS_COMMIT=e3b1eec08173d6b825cd3ac88c885a63b621504a
+ARG VULKAN_HEADERS_SHA256=f492279345cbc10708b64fcd432b3ff6c8246a5837c4db2b649abba00cf82208
+RUN curl --fail --location --retry 3 \
+        "https://github.com/KhronosGroup/Vulkan-Headers/archive/${VULKAN_HEADERS_COMMIT}.tar.gz" \
+        -o /tmp/vulkan-headers.tar.gz \
+    && echo "${VULKAN_HEADERS_SHA256}  /tmp/vulkan-headers.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/vulkan-headers.tar.gz -C /tmp \
+    && cp -a "/tmp/Vulkan-Headers-${VULKAN_HEADERS_COMMIT}/include/." /usr/include/ \
+    && grep -q VK_KHR_SHADER_FLOAT_CONTROLS_2_EXTENSION_NAME /usr/include/vulkan/vulkan_core.h \
+    && rm -rf /tmp/vulkan-headers.tar.gz "/tmp/Vulkan-Headers-${VULKAN_HEADERS_COMMIT}"
