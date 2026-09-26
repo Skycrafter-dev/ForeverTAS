@@ -41,15 +41,19 @@ All measurements used existing warm build outputs and no GPU recompilation.
 | One NVIDIA AppImage, warm build plus old packaging vs template assembly and smoke | 44.34 s (SM75) | 20.62 s (SM75) |
 | Full NVIDIA matrix, template assembly and smoke, four concurrent jobs | not measured warm | 183.84 s for 17 |
 | QML-only change, warm SM75 build | 32.35 s executable relink | 4.45 s shared module; SM50 executable had no work (1.06 s check) |
-| Full 19-flavor Linux release driver, warm build, package, smoke, verify | not measured before the redesign | 312.78 s before CPU partitioning; 274.24 s after CPU partitioning |
+| Full 19-flavor Linux release driver, routine warm build, package, smoke, verify | 741.09 s | 274.24 s |
 
 The original release's 19 Linux artifact timestamps span 41 minutes 24 seconds,
 but that included first-time compilation and is **not** a comparable warm
-baseline. The matrix timing excludes building the three template/root packages.
-The full-driver figures include all 19 packages and their startup smoke tests;
-they are two consecutive runs with no GPU compiler invocation. The second
-run's output contains 19 AppImages. The 41-minute timestamp span is not a
-valid before/after warm comparison, so no full-release speedup ratio is claimed.
+baseline. Instead, the original driver was run twice in a fresh isolated
+worktree seeded from its 19 warm build directories: 829.40 s for the first
+rehydrated run, then 741.09 s for the routine warm run. The redesigned driver
+likewise ran twice with warm directories: 312.78 s before CPU partitioning and
+274.24 s with partitioning. Both routine runs used the same host, pinned
+toolchain images, four Ninja jobs, and all 19 package flavors; neither invoked
+a GPU compiler. The redesigned routine run was 2.70x faster. The NVIDIA
+matrix-only timing excludes building the three template/root packages, while
+both full-driver times include all 19 packages and startup smoke tests.
 
 All 17 pre-existing NVIDIA AppDirs were byte-identical outside their two
 executables. The assembled matrix passed all 17 packaged QML smoke tests and
