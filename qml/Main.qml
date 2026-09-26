@@ -308,8 +308,8 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 text: window.updater && window.updater.catalogReady
                       ? qsTr("ForeverTAS %1 · Installed: %2")
-                            .arg(window.updater.latestVersion,
-                                 window.updater.installedPackageId)
+                            .arg(window.updater.latestVersion)
+                            .arg(window.updater.installedPackageId)
                       : window.updater && window.updater.checking
                         ? qsTr("Checking available packages…")
                         : qsTr("No package catalog is available.")
