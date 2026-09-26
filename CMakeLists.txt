@@ -527,9 +527,10 @@ endif()
 if(WIN32)
     set(forevertas_deploy_options NO_TRANSLATIONS)
     list(APPEND forevertas_deploy_options NO_COMPILER_RUNTIME)
-    qt_generate_deploy_qml_app_script(
+    qt_generate_deploy_app_script(
         TARGET forevertas
         OUTPUT_SCRIPT forevertas_deploy_script
+        DEPLOY_TOOL_OPTIONS --qmldir "${CMAKE_CURRENT_SOURCE_DIR}/qml"
         ${forevertas_deploy_options})
     install(CODE
         "set(QT_DEPLOY_BIN_DIR \".\")\ninclude(\"${forevertas_deploy_script}\")")

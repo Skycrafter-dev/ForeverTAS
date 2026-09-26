@@ -61,7 +61,9 @@ try {
         "Qt6Quick.dll",
         "qt.conf",
         "plugins\platforms\qwindows.dll",
-        "qml\QtQuick\qtquick2plugin.dll"
+        "qml\QtQuick\qtquick2plugin.dll",
+        "qml\ForeverTAS\qmldir",
+        "qml\ForeverTAS\forevertas_qml.dll"
     )) {
         $FullPath = Join-Path $ApplicationDirectory $RequiredPath
         if (-not (Test-Path $FullPath -PathType Leaf)) {

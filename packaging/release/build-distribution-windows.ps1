@@ -24,9 +24,13 @@ if ($Flavor.Count -gt 0) {
     $Flavors = $Flavor
 }
 $NvidiaTemplate = "nvidia-sm75"
-$BuildOrder = if (@($Flavors | Where-Object { $_ -like "nvidia-sm*" }).Count -gt 0) {
-    @($NvidiaTemplate) + @($Flavors | Where-Object { $_ -ne $NvidiaTemplate })
-} else { $Flavors }
+$BuildOrder = @("universal")
+if (@($Flavors | Where-Object { $_ -like "nvidia-sm*" }).Count -gt 0) {
+    $BuildOrder += $NvidiaTemplate
+}
+$BuildOrder += @($Flavors | Where-Object {
+    $_ -ne "universal" -and $_ -ne $NvidiaTemplate
+})
 if ($PlanOnly) {
     [ordered]@{ version = $Version; flavors = $Flavors; build_order = $BuildOrder } |
         ConvertTo-Json -Depth 3
@@ -115,6 +119,11 @@ foreach ($Name in $BuildOrder) {
         RuntimeDirectory = $RuntimeDirectory
         Flavor = $Name
     }
+    if ($Name -ne "universal") {
+        $Options.ExternalQmlModule = $true
+        $Options.CommonQmlDirectory = Join-Path $RepoRoot `
+            "build/distribution-universal/bin/qml/ForeverTAS"
+    }
     if ($Name -like "nvidia-sm*") {
         $Sm = $Name.Substring(9)
         $Options.CudaArchitectures = "$Sm-real;$Sm-virtual"
@@ -122,9 +131,6 @@ foreach ($Name in $BuildOrder) {
         $Options.HipPlatform = "nvidia"
         if ($Name -ne $NvidiaTemplate) {
             $Options.BuildOnly = $true
-            $Options.ExternalQmlModule = $true
-            $Options.CommonQmlDirectory = Join-Path $RepoRoot `
-                "build/distribution-$NvidiaTemplate/bin/qml/ForeverTAS"
         }
     } elseif ($Name -eq "amd-rx7000-rx9000") {
         $Options.HipArchitectures = ($Release.distribution.amd_gfx -join ";")

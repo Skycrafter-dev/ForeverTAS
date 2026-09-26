@@ -12,6 +12,8 @@ Linux runs independent builds in parallel
 (`FOREVERTAS_RELEASE_VARIANT_JOBS`, default 4); CMake/Ninja build directories and
 the shared sccache directory remain warm between runs. No fat CUDA/HIP binary or
 new runtime dispatch path is introduced.
+Concurrent AppImage compression jobs receive disjoint CPU sets, preventing each
+`mksquashfs` process from spawning threads across the whole runner.
 `FOREVERTAS_RELEASE_CACHE` defaults to a sibling directory outside worktrees,
 so compiler and packaging-tool caches survive a new isolated checkout.
 For a fresh checkout, set `FOREVERTAS_WARM_BUILD_SOURCE` and
@@ -39,10 +41,15 @@ All measurements used existing warm build outputs and no GPU recompilation.
 | One NVIDIA AppImage, warm build plus old packaging vs template assembly and smoke | 44.34 s (SM75) | 20.62 s (SM75) |
 | Full NVIDIA matrix, template assembly and smoke, four concurrent jobs | not measured warm | 183.84 s for 17 |
 | QML-only change, warm SM75 build | 32.35 s executable relink | 4.45 s shared module; SM50 executable had no work (1.06 s check) |
+| Full 19-flavor Linux release driver, warm build, package, smoke, verify | not measured before the redesign | 312.78 s before CPU partitioning; 274.24 s after CPU partitioning |
 
 The original release's 19 Linux artifact timestamps span 41 minutes 24 seconds,
 but that included first-time compilation and is **not** a comparable warm
 baseline. The matrix timing excludes building the three template/root packages.
+The full-driver figures include all 19 packages and their startup smoke tests;
+they are two consecutive runs with no GPU compiler invocation. The second
+run's output contains 19 AppImages. The 41-minute timestamp span is not a
+valid before/after warm comparison, so no full-release speedup ratio is claimed.
 
 All 17 pre-existing NVIDIA AppDirs were byte-identical outside their two
 executables. The assembled matrix passed all 17 packaged QML smoke tests and
@@ -54,7 +61,9 @@ AppImages passed QML smoke tests with the dynamic module. The module installed
 in universal and SM75 AppDirs had the same SHA-256 hash.
 
 Windows staging follows the same two-executable overlay. It builds the QML
-module in its universal, SM75, and AMD roots; other NVIDIA flavors consume
-the SM75 module. Its full installer run still requires verification on the
+module once in its universal root; SM75, AMD, and all other NVIDIA flavors
+consume that module. `windeployqt` scans QML sources to deploy Qt imports
+because the application executable no longer owns a QML module. Its full
+installer run still requires verification on the
 Windows builder before it can be used for a release. This branch must not be
 merged or published on that evidence alone.
