@@ -37,6 +37,13 @@ class DistributionTests(unittest.TestCase):
         self.assertEqual(distribution.linux_build_schedule(["nvidia-sm50"]),
                          (["universal", "nvidia-sm75"], ["nvidia-sm50"]))
 
+    def test_parallel_release_workers_have_disjoint_cpu_sets(self):
+        partitions = distribution.cpu_partitions(list(range(12)), 4)
+        self.assertEqual([len(part) for part in partitions], [3] * 4)
+        self.assertEqual(sorted(cpu for part in partitions for cpu in part),
+                         list(range(12)))
+        self.assertEqual(distribution.cpu_partitions([2, 4], 4), [[2], [4]])
+
     def test_checksums_and_stable_bootstrap_downloads(self):
         with tempfile.TemporaryDirectory() as directory:
             dist = Path(directory)

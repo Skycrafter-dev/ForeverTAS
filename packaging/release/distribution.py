@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+from queue import SimpleQueue
 import re
 import shutil
 import subprocess
@@ -57,6 +58,13 @@ def linux_build_schedule(selected: list[str]) -> tuple[list[str], list[str]]:
     roots = [flavor for flavor in ordered if flavor in
              ("universal", template, "amd-rx7000-rx9000")]
     return roots, [flavor for flavor in ordered if flavor not in roots]
+
+
+def cpu_partitions(cpus: list[int], workers: int) -> list[list[int]]:
+    if workers < 1 or not cpus:
+        raise ValueError("release workers and available CPUs must be positive")
+    count = min(workers, len(cpus))
+    return [cpus[index::count] for index in range(count)]
 
 
 def asset_name(version: str, platform: str, flavor: str) -> str:
@@ -251,7 +259,7 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
     cache.mkdir(parents=True, exist_ok=True)
     nvidia_template = "nvidia-sm75"
 
-    def build_flavor(flavor: str) -> tuple[str, dict]:
+    def build_flavor(flavor: str, cpu_set: list[int] | None = None) -> tuple[str, dict]:
         nvidia = flavor.startswith("nvidia-sm")
         amd = flavor == "amd-rx7000-rx9000"
         cuda_arch = flavor.removeprefix("nvidia-sm")
@@ -273,7 +281,9 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
             "HIP_PATH": "/opt/rocm" if nvidia or amd else "",
             "ROCM_PATH": "/opt/rocm" if nvidia or amd else "",
             "APPIMAGE_EXTRACT_AND_RUN": "1",
-            "FOREVERTAS_RELEASE_JOBS": os.environ.get("FOREVERTAS_RELEASE_JOBS", "4"),
+            "FOREVERTAS_RELEASE_JOBS": str(min(
+                int(os.environ.get("FOREVERTAS_RELEASE_JOBS", "4")),
+                len(cpu_set) if cpu_set else len(os.sched_getaffinity(0)))),
             "SCCACHE_DIR": "/cache/sccache",
             "SCCACHE_CACHE_SIZE": "50G",
             "SOURCE_DATE_EPOCH": source_date_epoch,
@@ -294,6 +304,8 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
                    "--volume", f"{validator}:/validator:ro",
                    "--volume", f"{cache}:/cache",
                    "--workdir", "/workspace"]
+        if cpu_set:
+            command.extend(("--cpuset-cpus", ",".join(map(str, cpu_set))))
         for key, value in environment.items():
             command.extend(("--env", f"{key}={value}"))
         command.extend((hip if nvidia or amd else base,
@@ -338,18 +350,33 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
     workers = int(os.environ.get("FOREVERTAS_RELEASE_VARIANT_JOBS", "4"))
     if workers < 1:
         raise ValueError("FOREVERTAS_RELEASE_VARIANT_JOBS must be positive")
+    cpus = sorted(os.sched_getaffinity(0))
     evidence = {}
     if "universal" in roots:
         flavor, result = build_flavor("universal")
         evidence[flavor] = result
-    dependent_roots = [flavor for flavor in roots if flavor != "universal"]
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for future in [pool.submit(build_flavor, flavor) for flavor in dependent_roots]:
-            flavor, result = future.result()
-            evidence[flavor] = result
-        for future in [pool.submit(build_flavor, flavor) for flavor in remaining]:
-            flavor, result = future.result()
-            evidence[flavor] = result
+    def build_group(group: list[str]) -> None:
+        if not group:
+            return
+        partitions = cpu_partitions(cpus, min(workers, len(group)))
+        slots: SimpleQueue[list[int]] = SimpleQueue()
+        for partition in partitions:
+            slots.put(partition)
+
+        def assigned(flavor: str) -> tuple[str, dict]:
+            cpu_set = slots.get()
+            try:
+                return build_flavor(flavor, cpu_set)
+            finally:
+                slots.put(cpu_set)
+
+        with ThreadPoolExecutor(max_workers=len(partitions)) as pool:
+            for future in [pool.submit(assigned, flavor) for flavor in group]:
+                flavor, result = future.result()
+                evidence[flavor] = result
+
+    build_group([flavor for flavor in roots if flavor != "universal"])
+    build_group(remaining)
     record_path = ROOT / "dist/linux-source.json"
     record = {"schema": 1, "forevertas": source_commit,
               "forevervalidator": validator_commit, "packages": {}}
