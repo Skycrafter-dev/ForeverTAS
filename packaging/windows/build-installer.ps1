@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Archive,
     [Parameter(Mandatory = $true)][string]$AssetId,
+    [string]$PackageId = "",
     [string]$DistDirectory = ""
 )
 
@@ -50,6 +51,15 @@ try {
     $Executable = Get-Item (Join-Path $Roots[0].FullName "ForeverTAS.exe")
     if ($Executable.VersionInfo.ProductVersion -notin @($Version, "$Version.0")) {
         throw "ForeverTAS.exe product version differs from the archive"
+    }
+    if ($PackageId) {
+        if ($PackageId -notmatch '^nvidia-sm(50|52|53|60|61|62|70|72|75|80|86|87|89|90|100|101|120)$' -or
+                $AssetId -ne "windows-$PackageId-x86_64") {
+            throw "Package ID and installer asset identity differ"
+        }
+        [IO.File]::WriteAllText(
+            (Join-Path $Roots[0].FullName ".forevertas-package-id"),
+            $PackageId, [Text.Encoding]::ASCII)
     }
     $OutputBaseFilename = "ForeverTAS-$Version-$AssetId-Setup"
     & $Compiler "/DAppVersion=$Version" `

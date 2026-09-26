@@ -120,4 +120,23 @@ QString RecommendedPackageId(int nvidiaComputeCapability,
     return {};
 }
 
+QString ResolveNvidiaMatrixPackageId(const QString &preferredPackageId,
+                                    int nvidiaComputeCapability,
+                                    const QString &packageFilename) {
+    if (ValidPackageId(preferredPackageId) &&
+        preferredPackageId.startsWith(QStringLiteral("nvidia-sm"))) {
+        return preferredPackageId;
+    }
+    const QString detected = QStringLiteral("nvidia-sm%1")
+                                     .arg(nvidiaComputeCapability);
+    if (ValidPackageId(detected))
+        return detected;
+    static const QRegularExpression filenamePattern(
+            QStringLiteral("(?:^|-)nvidia-sm(50|52|53|60|61|62|70|72|75|80|86|87|89|90|100|101|120)-x86_64(?:-Setup)?\\.(?:AppImage|exe)$"));
+    const auto match = filenamePattern.match(packageFilename);
+    if (match.hasMatch())
+        return QStringLiteral("nvidia-sm") + match.captured(1);
+    return QStringLiteral("nvidia-matrix");
+}
+
 } // namespace forevertas::app

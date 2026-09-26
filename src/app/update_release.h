@@ -34,5 +34,8 @@ std::optional<UpdateCatalog> ParseUpdateCatalog(
 QString RecommendedPackageId(int nvidiaComputeCapability,
                              bool amdRadeonRx7000Or9000,
                              const QStringList &availablePackageIds);
+QString ResolveNvidiaMatrixPackageId(const QString &preferredPackageId,
+                                    int nvidiaComputeCapability,
+                                    const QString &packageFilename);
 
 } // namespace forevertas::app
