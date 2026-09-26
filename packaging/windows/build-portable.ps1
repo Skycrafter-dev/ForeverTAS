@@ -5,8 +5,7 @@ param(
     [string]$Flavor = "",
     [string]$CudaArchitectures = "",
     [string]$HipArchitectures = "",
-    [string]$HipPlatform = "",
-    [switch]$SkipInstaller
+    [string]$HipPlatform = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -141,8 +140,6 @@ $Cache = Get-Content (Join-Path $BuildDirectory "CMakeCache.txt") -Raw
 if ($Cache -notmatch '(?m)^FOREVERTAS_UPDATE_ASSET_ID:INTERNAL=(windows(?:-[a-z0-9-]+)?-(?:x86_64|arm64))\r?$') {
     throw "Build has no Windows update asset identity"
 }
-if (-not $SkipInstaller) {
-    & (Join-Path $PSScriptRoot "build-installer.ps1") `
-        -Archive $Artifact.FullName -AssetId $Matches[1] -DistDirectory $DistDirectory
-}
+& (Join-Path $PSScriptRoot "build-installer.ps1") `
+    -Archive $Artifact.FullName -AssetId $Matches[1] -DistDirectory $DistDirectory
 Write-Host "Created $($Artifact.FullName)"

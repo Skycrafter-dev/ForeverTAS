@@ -37,12 +37,10 @@ ForeverTAS-<version>-linux-<flavor>-x86_64.AppImage
 ForeverTAS-<version>-windows-<flavor>-x86_64-Setup.exe
 ```
 
-`flavor` is `universal`, `nvidia-smNN`, or `amd-rx7000-rx9000`. NVIDIA
-packages share one NVIDIA component containing native CUDA/HIP code for every
-published SM target and same-target CUDA PTX images. The runtime selects the
-matching native code; the per-SM asset names retain the existing updater and
-manual-selection contract. CUDA 5.0+ and Fast CUDA's 7.5+ runtime requirement
-are distinct from package selection. The AMD package contains HIP code for gfx1100, gfx1101, gfx1102,
+`flavor` is `universal`, `nvidia-smNN`, or `amd-rx7000-rx9000`. Each NVIDIA
+package is built for **one** CUDA SM target, with a same-target PTX image;
+CUDA 5.0+ and Fast CUDA's 7.5+ runtime requirement are distinct from package
+selection. The AMD package contains HIP code for gfx1100, gfx1101, gfx1102,
 gfx1200, and gfx1201 (RX 7000/9000 families). Each package also contains
 CPU and Vulkan backends. An unsupported or undetected GPU falls back to the
 universal build, and users can manually choose another published package.
@@ -63,23 +61,18 @@ before publication.
    and `packaging/release/manifest.json`, then tag that commit `v<version>`
    and push the tag to `origin`.
 2. Build Linux with `packaging/release/distribution.py build-linux`. It reuses
-   pinned Docker toolchains and persistent build directories for universal,
-   NVIDIA matrix, and AMD components. The NVIDIA AppImage is built once and
-   assembled under every supported SM asset name. `--flavor nvidia-sm75`
-   limits a development build to one output asset, while still building the
-   complete reusable NVIDIA component.
+   pinned Docker toolchains and separate build directories per flavor.
+   `--flavor nvidia-sm75` limits a development build to one flavor.
 3. Build Windows on the MSVC build host with
    `packaging/release/build-distribution-windows.ps1`. Inno Setup 6/7,
    CUDA 12.8, the HIP SDK, Qt, vcpkg, and the MSVC runtime must be available.
-   NVIDIA compiles once; each installer is assembled with its package identity
-   from that component. Copy the resulting installers, `.sha256` sidecars, and
-   `windows-source.json` into the Linux `dist/` directory before preparing.
+   Copy the resulting installers and `.sha256` sidecars into the same local
+   `dist/` directory as the Linux AppImages before preparing the release.
 4. Sign each Windows installer if a signing certificate is available, then
    regenerate its `.sha256` sidecar. Run
    `packaging/release/distribution.py prepare` to create stable first-install
-   aliases, `updates.json`, and `build-provenance.json`, followed by
-   `distribution.py verify` to require the full matrix and check source,
-   component, and artifact hashes.
+   aliases and `updates.json`, followed by `distribution.py verify` to require
+   the full matrix.
 5. `distribution.py draft` uploads the versioned packages, sidecars, and two
    stable aliases. `distribution.py publish` compares every GitHub asset digest
    against the local file and only then makes the release visible.

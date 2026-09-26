@@ -17,7 +17,7 @@ option(FOREVERTAS_ENABLE_CUDA
 option(FOREVERTAS_ENABLE_HIP
     "Build ForeverTAS with the optional ForeverValidator HIP backend" OFF)
 set(FOREVERTAS_DISTRIBUTION_FLAVOR "" CACHE STRING
-    "Public package flavor or internal nvidia-matrix component build")
+    "Public package flavor: universal, nvidia-smNN, or amd-rx7000-rx9000")
 set(FOREVERTAS_WINDOWS_RUNTIME_DIR "" CACHE PATH
     "Directory containing non-Qt runtime DLLs for Windows packaging")
 set(FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR "" CACHE PATH
@@ -683,24 +683,6 @@ if(FOREVERTAS_DISTRIBUTION_FLAVOR)
         if(FOREVERTAS_ENABLE_CUDA OR FOREVERTAS_ENABLE_HIP OR
            NOT FOREVERTAS_ENABLE_VULKAN)
             message(FATAL_ERROR "Universal packages require Vulkan without CUDA or HIP")
-        endif()
-    elseif(FOREVERTAS_DISTRIBUTION_FLAVOR STREQUAL "nvidia-matrix")
-        if(NOT FOREVERTAS_ENABLE_CUDA OR NOT FOREVERTAS_ENABLE_HIP OR
-           NOT FOREVERTAS_ENABLE_VULKAN OR
-           NOT CMAKE_HIP_PLATFORM STREQUAL "nvidia")
-            message(FATAL_ERROR "NVIDIA matrix requires CUDA, NVIDIA HIP, and Vulkan")
-        endif()
-        set(forevertas_matrix_sm
-            "50;52;53;60;61;62;70;72;75;80;86;87;89;90;100;101;120")
-        set(forevertas_matrix_cuda_arch "")
-        foreach(forevertas_sm IN LISTS forevertas_matrix_sm)
-            list(APPEND forevertas_matrix_cuda_arch
-                "${forevertas_sm}-real" "${forevertas_sm}-virtual")
-        endforeach()
-        if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL
-               "${forevertas_matrix_cuda_arch}" OR
-           NOT CMAKE_HIP_ARCHITECTURES STREQUAL "${forevertas_matrix_sm}")
-            message(FATAL_ERROR "NVIDIA matrix must contain every published SM target")
         endif()
     elseif(FOREVERTAS_DISTRIBUTION_FLAVOR MATCHES
            "^nvidia-sm(50|52|53|60|61|62|70|72|75|80|86|87|89|90|100|101|120)$")

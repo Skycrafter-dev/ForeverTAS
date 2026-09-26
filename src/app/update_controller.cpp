@@ -63,22 +63,7 @@ bool UpdateController::updateAvailable() const {
 bool UpdateController::checking() const { return m_checking; }
 bool UpdateController::catalogReady() const { return m_catalog.has_value(); }
 QString UpdateController::installedPackageId() const {
-    const QString compiled = QStringLiteral(FOREVERTAS_PACKAGE_ID);
-    if (compiled != QStringLiteral("nvidia-matrix"))
-        return compiled;
-#if defined(Q_OS_WIN)
-    QFile marker(QCoreApplication::applicationDirPath() +
-                 QStringLiteral("/.forevertas-package-id"));
-    if (marker.open(QIODevice::ReadOnly)) {
-        const QString id = QString::fromLatin1(marker.readAll(64)).trimmed();
-        if (ResolveNvidiaMatrixPackageId(id, 0, {}) == id)
-            return id;
-    }
-#endif
-    return ResolveNvidiaMatrixPackageId(
-            QSettings().value(QLatin1String(kPreferredPackageKey)).toString(),
-            m_hardware.nvidiaComputeCapability,
-            QFileInfo(qEnvironmentVariable("APPIMAGE")).fileName());
+    return QStringLiteral(FOREVERTAS_PACKAGE_ID);
 }
 QString UpdateController::selectedPackageId() const {
     return m_selectedPackageId;

@@ -96,22 +96,6 @@ private slots:
         QCOMPARE(forevertas::app::RecommendedPackageId(0, false, ids),
                  QStringLiteral("universal"));
     }
-
-    void resolvesSharedNvidiaPackageIdentity() {
-        using forevertas::app::ResolveNvidiaMatrixPackageId;
-        QCOMPARE(ResolveNvidiaMatrixPackageId(
-                         QStringLiteral("nvidia-sm75"), 86, {}),
-                 QStringLiteral("nvidia-sm75"));
-        QCOMPARE(ResolveNvidiaMatrixPackageId({}, 86, {}),
-                 QStringLiteral("nvidia-sm86"));
-        QCOMPARE(ResolveNvidiaMatrixPackageId(
-                         {}, 0,
-                         QStringLiteral("ForeverTAS-0.2.4-linux-nvidia-sm120-x86_64.AppImage")),
-                 QStringLiteral("nvidia-sm120"));
-        QCOMPARE(ResolveNvidiaMatrixPackageId(
-                         QStringLiteral("nvidia-sm999"), 0, {}),
-                 QStringLiteral("nvidia-matrix"));
-    }
 };
 
 QTEST_GUILESS_MAIN(UpdateReleaseTests)
