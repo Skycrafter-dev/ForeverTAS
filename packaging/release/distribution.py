@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -218,6 +219,24 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
         raise ValueError("ForeverValidator does not match the release pin")
     if run("git", "-C", str(validator), "status", "--porcelain=v1"):
         raise ValueError("ForeverValidator has uncommitted changes")
+    roots, remaining = linux_build_schedule(selected)
+    required_flavors = roots + remaining
+    missing = [flavor for flavor in required_flavors if not (
+        ROOT / "build" / f"distribution-{flavor}" / "CMakeCache.txt").is_file()]
+    donor = os.environ.get("FOREVERTAS_WARM_BUILD_SOURCE")
+    if donor and missing:
+        donor_validator = os.environ.get("FOREVERTAS_WARM_VALIDATOR_SOURCE")
+        if not donor_validator:
+            raise ValueError("FOREVERTAS_WARM_VALIDATOR_SOURCE is required")
+        subprocess.run((sys.executable, str(ROOT / "packaging/release/warm_builds.py"),
+                        "--donor", donor, "--donor-validator", donor_validator,
+                        "--target", str(ROOT), "--target-validator", str(validator),
+                        *(part for flavor in required_flavors
+                          for part in ("--flavor", flavor))), check=True)
+        missing = [flavor for flavor in required_flavors if not (
+            ROOT / "build" / f"distribution-{flavor}" / "CMakeCache.txt").is_file()]
+    if missing and os.environ.get("FOREVERTAS_ALLOW_COLD_BUILD") != "1":
+        raise ValueError("refusing cold Linux builds: " + ", ".join(missing))
     base = os.environ.get("FOREVERTAS_LINUX_TOOLCHAIN_IMAGE") or run(
         str(ROOT / "packaging/release/ensure-linux-toolchain.sh"))
     hip = (os.environ.get("FOREVERTAS_HIP_TOOLCHAIN_IMAGE") or run(
@@ -228,7 +247,6 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
         ROOT.parent / ".forevertas-release-cache/linux")).resolve()
     cache.mkdir(parents=True, exist_ok=True)
     nvidia_template = "nvidia-sm75"
-    roots, remaining = linux_build_schedule(selected)
 
     def build_flavor(flavor: str) -> tuple[str, dict]:
         nvidia = flavor.startswith("nvidia-sm")

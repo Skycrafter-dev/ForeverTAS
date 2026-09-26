@@ -783,6 +783,9 @@ if(BUILD_TESTING)
         add_test(NAME forevertas-distribution-matrix
                  COMMAND "${Python3_EXECUTABLE}"
                          "${CMAKE_CURRENT_SOURCE_DIR}/tests/distribution_tests.py")
+        add_test(NAME forevertas-warm-build-seed
+                 COMMAND "${Python3_EXECUTABLE}"
+                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/warm_builds_tests.py")
     endif()
     add_executable(forevertas-update-release-tests
         src/app/update_release.cpp

@@ -11,6 +11,13 @@ the shared sccache directory remain warm between runs. No fat CUDA/HIP binary or
 new runtime dispatch path is introduced.
 `FOREVERTAS_RELEASE_CACHE` defaults to a sibling directory outside worktrees,
 so compiler and packaging-tool caches survive a new isolated checkout.
+For a fresh checkout, set `FOREVERTAS_WARM_BUILD_SOURCE` and
+`FOREVERTAS_WARM_VALIDATOR_SOURCE` to clean prior worktrees. The driver clones
+the requested warm CMake build directories without writing to either donor,
+checks the pinned toolchain, and restores timestamps only for tracked source
+files whose contents are byte-identical. Changed files retain a fresh mtime,
+so Ninja rebuilds their dependents. It refuses missing warm build directories
+unless `FOREVERTAS_ALLOW_COLD_BUILD=1` is deliberately set.
 
 The release driver builds the template from the same clean ForeverTAS commit and
 pinned ForeverValidator commit as its variant executables. It checks each

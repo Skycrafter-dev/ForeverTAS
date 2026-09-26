@@ -97,6 +97,14 @@ if (Test-Path (Join-Path $ValidatorSource ".git")) {
     if ($DirtyValidator) { throw "Commit ForeverValidator source before building installers" }
 }
 $PackageEvidence = [ordered]@{}
+if ($env:FOREVERTAS_ALLOW_COLD_BUILD -ne "1") {
+    foreach ($Name in $BuildOrder) {
+        $WarmCache = Join-Path $RepoRoot "build/distribution-$Name/CMakeCache.txt"
+        if (-not (Test-Path $WarmCache -PathType Leaf)) {
+            throw "Refusing a cold Windows build for $Name; a warm build directory is required"
+        }
+    }
+}
 foreach ($Name in $BuildOrder) {
     $BuildDirectory = Join-Path $RepoRoot "build/distribution-$Name"
     $TemporaryDist = Join-Path $RepoRoot "build/distribution-$Name-dist"
