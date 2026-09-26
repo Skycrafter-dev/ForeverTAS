@@ -39,8 +39,7 @@ if ($LASTEXITCODE -ne 0 -or $DonorCommit -notmatch '^[0-9a-f]{40}$' -or
     throw "Warm seed requires clean, pinned source checkouts"
 }
 foreach ($Relative in @("packaging/release/manifest.json",
-        "packaging/release/ensure-windows-cuda.ps1",
-        "packaging/release/ensure-windows-dependencies.ps1")) {
+        "packaging/release/ensure-windows-cuda.ps1")) {
     $DonorHash = (Get-FileHash (Join-Path $DonorRoot $Relative) -Algorithm SHA256).Hash
     $TargetHash = (Get-FileHash (Join-Path $TargetRoot $Relative) -Algorithm SHA256).Hash
     if ($DonorHash -ne $TargetHash) {

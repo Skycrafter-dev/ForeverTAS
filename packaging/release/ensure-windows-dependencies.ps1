@@ -21,10 +21,14 @@ if (-not (Test-Path (Join-Path $VcpkgRoot ".git"))) {
     if ($LASTEXITCODE -ne 0) { throw "Failed to clone vcpkg" }
 }
 
-git -C $VcpkgRoot fetch --depth 1 origin $env:VCPKG_COMMIT
-if ($LASTEXITCODE -ne 0) { throw "Failed to fetch pinned vcpkg commit" }
-git -C $VcpkgRoot checkout --detach --force $env:VCPKG_COMMIT
-if ($LASTEXITCODE -ne 0) { throw "Failed to check out pinned vcpkg commit" }
+$CurrentVcpkgCommit = (git -C $VcpkgRoot rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw "Could not inspect the vcpkg checkout" }
+if ($CurrentVcpkgCommit -ne $env:VCPKG_COMMIT) {
+    git -C $VcpkgRoot fetch --depth 1 origin $env:VCPKG_COMMIT
+    if ($LASTEXITCODE -ne 0) { throw "Failed to fetch pinned vcpkg commit" }
+    git -C $VcpkgRoot checkout --detach --force $env:VCPKG_COMMIT
+    if ($LASTEXITCODE -ne 0) { throw "Failed to check out pinned vcpkg commit" }
+}
 
 $Vcpkg = Join-Path $VcpkgRoot "vcpkg.exe"
 $VcpkgMarker = Join-Path $VcpkgRoot ".forevertas-bootstrap-commit"
