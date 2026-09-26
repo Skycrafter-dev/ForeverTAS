@@ -6,10 +6,13 @@ try {
     $BuildDirectory = Join-Path $Temporary "build"
     $DistDirectory = Join-Path $Temporary "dist"
     New-Item -ItemType Directory -Force -Path $TemplateRoot,
-        (Join-Path $BuildDirectory "bin") | Out-Null
+        (Join-Path $BuildDirectory "bin"),
+        (Join-Path $TemplateRoot "qml/ForeverTAS") | Out-Null
     Set-Content (Join-Path $TemplateRoot "ForeverTAS.exe") "template application"
     Set-Content (Join-Path $TemplateRoot "forevertas-simulation-debug-worker.exe") "template worker"
     Set-Content (Join-Path $TemplateRoot "Qt6Core.dll") "shared runtime"
+    Set-Content (Join-Path $TemplateRoot "qml/ForeverTAS/qmldir") "shared QML manifest"
+    Set-Content (Join-Path $TemplateRoot "qml/ForeverTAS/forevertas_qml.dll") "shared QML plugin"
     Set-Content (Join-Path $BuildDirectory "bin/ForeverTAS.exe") "sm50 application"
     Set-Content (Join-Path $BuildDirectory "bin/forevertas-simulation-debug-worker.exe") "sm50 worker"
     Set-Content (Join-Path $BuildDirectory "CMakeCache.txt") `
@@ -28,8 +31,12 @@ try {
             (Get-Content (Join-Path $Root "forevertas-simulation-debug-worker.exe") -Raw).Trim() -ne
             "sm50 worker" -or
             (Get-Content (Join-Path $Root "Qt6Core.dll") -Raw).Trim() -ne
-            "shared runtime") {
-        throw "The Windows portable template did not preserve runtime and replace compute executables"
+            "shared runtime" -or
+            (Get-Content (Join-Path $Root "qml/ForeverTAS/qmldir") -Raw).Trim() -ne
+            "shared QML manifest" -or
+            (Get-Content (Join-Path $Root "qml/ForeverTAS/forevertas_qml.dll") -Raw).Trim() -ne
+            "shared QML plugin") {
+        throw "The Windows portable template did not preserve the common runtime and QML module while replacing compute executables"
     }
     "Windows template assembly OK"
 } finally {
