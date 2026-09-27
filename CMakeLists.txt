@@ -20,6 +20,8 @@ option(FOREVERTAS_QML_MODULE_EXTERNAL
     "Use the release's shared QML module instead of building it here" OFF)
 set(FOREVERTAS_COMMON_QML_DIR "" CACHE PATH
     "Directory containing the shared ForeverTAS QML module")
+set(FOREVERTAS_PREBUILT_VALIDATOR_DIR "" CACHE PATH
+    "Directory containing a verified, matching Windows Validator build")
 set(FOREVERTAS_DISTRIBUTION_FLAVOR "" CACHE STRING
     "Public package flavor: universal, nvidia-smNN, or amd-rx7000-rx9000")
 set(FOREVERTAS_WINDOWS_RUNTIME_DIR "" CACHE PATH
@@ -101,13 +103,57 @@ if(WIN32 AND FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "nvidia")
     set(CMAKE_HIP_ARCHIVE_FINISH "")
 endif()
 
-FetchContent_Declare(
-    ForeverValidator
-    GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-    GIT_TAG a89a8e80d1835826b401e757e2159c501544e8d4
-    GIT_SHALLOW FALSE)
-FetchContent_MakeAvailable(ForeverValidator)
-if(FOREVERTAS_ENABLE_HIP AND UNIX)
+if(FOREVERTAS_PREBUILT_VALIDATOR_DIR)
+    if(NOT WIN32 OR NOT FETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR)
+        message(FATAL_ERROR "Prebuilt Validator requires Windows and pinned local source")
+    endif()
+    set(forevervalidator_SOURCE_DIR
+        "${FETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR}")
+    foreach(component IN ITEMS core native)
+        set(archive
+            "${FOREVERTAS_PREBUILT_VALIDATOR_DIR}/forevervalidator_${component}.lib")
+        if(NOT EXISTS "${archive}")
+            message(FATAL_ERROR "Prebuilt Validator archive is missing: ${archive}")
+        endif()
+        add_library(forevervalidator_${component} STATIC IMPORTED GLOBAL)
+        set_target_properties(forevervalidator_${component} PROPERTIES
+            IMPORTED_LOCATION "${archive}"
+            INTERFACE_INCLUDE_DIRECTORIES "${forevervalidator_SOURCE_DIR}/include")
+        add_library(ForeverValidator::${component} ALIAS
+            forevervalidator_${component})
+    endforeach()
+    set_target_properties(forevervalidator_native PROPERTIES
+        INTERFACE_LINK_LIBRARIES forevervalidator_core)
+    set(validator_libraries OpenSSL::Crypto ZLIB::ZLIB)
+    if(FOREVERTAS_ENABLE_VULKAN)
+        find_package(Vulkan 1.2 REQUIRED)
+        list(APPEND validator_libraries Vulkan::Vulkan)
+    endif()
+    if(FOREVERTAS_ENABLE_CUDA OR
+            (FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "nvidia"))
+        find_package(CUDAToolkit REQUIRED)
+        list(APPEND validator_libraries CUDA::cudart)
+        if(FOREVERTAS_ENABLE_CUDA)
+            list(APPEND validator_libraries CUDA::nvrtc CUDA::nvJitLink)
+        endif()
+    endif()
+    set_target_properties(forevervalidator_core PROPERTIES
+        INTERFACE_LINK_LIBRARIES "${validator_libraries}"
+        INTERFACE_COMPILE_DEFINITIONS
+            "FOREVERVALIDATOR_HAS_CUDA=$<BOOL:${FOREVERTAS_ENABLE_CUDA}>;FOREVERVALIDATOR_HAS_HIP=$<BOOL:${FOREVERTAS_ENABLE_HIP}>;FOREVERVALIDATOR_HAS_VULKAN=$<BOOL:${FOREVERTAS_ENABLE_VULKAN}>")
+    if(FOREVERTAS_ENABLE_HIP)
+        find_path(FOREVERVALIDATOR_HIP_INCLUDE_DIR hip/hip_runtime.h
+            HINTS "$ENV{HIP_PATH}/include" "$ENV{ROCM_PATH}/include" REQUIRED)
+    endif()
+else()
+    FetchContent_Declare(
+        ForeverValidator
+        GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
+        GIT_TAG a89a8e80d1835826b401e757e2159c501544e8d4
+        GIT_SHALLOW FALSE)
+    FetchContent_MakeAvailable(ForeverValidator)
+endif()
+if(NOT FOREVERTAS_PREBUILT_VALIDATOR_DIR AND FOREVERTAS_ENABLE_HIP AND UNIX)
     if(CMAKE_HIP_PLATFORM STREQUAL "nvidia")
         target_compile_options(forevervalidator_core PRIVATE
             $<$<COMPILE_LANGUAGE:HIP>:-Xcompiler=-fPIC>)

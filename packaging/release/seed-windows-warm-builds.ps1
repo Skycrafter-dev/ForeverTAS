@@ -59,8 +59,8 @@ foreach ($Name in $Flavor) {
     $Source = Join-Path $DonorRoot "build/distribution-$Name"
     $Destination = Join-Path $TargetRoot "build/distribution-$Name"
     $Cache = Join-Path $Source "CMakeCache.txt"
-    if (-not (Test-Path $Cache -PathType Leaf) -or (Test-Path $Destination)) {
-        throw "Expected a donor-only warm build for $Name"
+    if (-not (Test-Path $Cache -PathType Leaf)) {
+        throw "Missing donor warm build for $Name"
     }
     $CacheText = [IO.File]::ReadAllText($Cache)
     if ($CacheText -notmatch "(?m)^FOREVERTAS_DISTRIBUTION_FLAVOR:STRING=$Name\r?$" -or
@@ -73,11 +73,13 @@ New-Item -ItemType Directory -Force -Path (Join-Path $TargetRoot "build") | Out-
 foreach ($Name in $Flavor) {
     $Source = Join-Path $DonorRoot "build/distribution-$Name"
     $Destination = Join-Path $TargetRoot "build/distribution-$Name"
-    if ($env:OS -eq "Windows_NT") {
-        & robocopy $Source $Destination /E /COPY:DAT /DCOPY:DAT /R:0 /W:0 /MT:8 /NFL /NDL /NJH /NJS /NP | Out-Null
-        if ($LASTEXITCODE -gt 7) { throw "Could not copy warm $Name build" }
-    } else {
-        Copy-Item -LiteralPath $Source -Destination $Destination -Recurse
+    if (-not (Test-Path $Destination)) {
+        if ($env:OS -eq "Windows_NT") {
+            & robocopy $Source $Destination /E /COPY:DAT /DCOPY:DAT /R:0 /W:0 /MT:8 /NFL /NDL /NJH /NJS /NP | Out-Null
+            if ($LASTEXITCODE -gt 7) { throw "Could not copy warm $Name build" }
+        } else {
+            Copy-Item -LiteralPath $Source -Destination $Destination -Recurse
+        }
     }
     $CachePath = Join-Path $Destination "CMakeCache.txt"
     $CacheText = [IO.File]::ReadAllText($CachePath)
@@ -119,14 +121,50 @@ function Restore-MatchingSourceTimes([string]$Donor, [string]$Target) {
 
 $TasSource = Restore-MatchingSourceTimes $DonorRoot $TargetRoot
 $ValidatorSource = Restore-MatchingSourceTimes $DonorValidator $TargetValidator
+$EvidencePath = Join-Path $TargetRoot "build/windows-warm-seed.json"
+$Prior = if (Test-Path $EvidencePath) {
+    Get-Content $EvidencePath -Raw | ConvertFrom-Json
+} else { $null }
+$Archives = @{}
+if ($Prior -and $Prior.donor.forevertas -eq $DonorCommit -and
+        $Prior.recipient.forevervalidator -eq $TargetValidatorCommit -and
+        $Prior.manifest_sha256 -eq
+        (Get-FileHash (Join-Path $TargetRoot "packaging/release/manifest.json") -Algorithm SHA256).Hash.ToLower() -and
+        $Prior.PSObject.Properties.Name -contains "validator_archives") {
+    foreach ($Entry in $Prior.validator_archives.PSObject.Properties) {
+        $Archives[$Entry.Name] = $Entry.Value
+    }
+}
+foreach ($Name in $Flavor) {
+    $Source = Join-Path $DonorRoot "build/distribution-$Name/_deps/forevervalidator-build"
+    $Destination = Join-Path $TargetRoot "build/distribution-$Name/_deps/forevervalidator-build"
+    $Hashes = [ordered]@{}
+    foreach ($Component in @("core", "native")) {
+        $File = "forevervalidator_$Component.lib"
+        $DonorArchive = Join-Path $Source $File
+        $TargetArchive = Join-Path $Destination $File
+        if (-not (Test-Path $DonorArchive -PathType Leaf) -or
+                -not (Test-Path $TargetArchive -PathType Leaf)) {
+            throw "Missing warm Validator archive for $Name/$Component"
+        }
+        $DonorHash = (Get-FileHash $DonorArchive -Algorithm SHA256).Hash.ToLower()
+        $TargetHash = (Get-FileHash $TargetArchive -Algorithm SHA256).Hash.ToLower()
+        if ($DonorHash -ne $TargetHash) {
+            throw "Changed warm Validator archive for $Name/$Component"
+        }
+        $Hashes[$Component] = $TargetHash
+    }
+    $Archives[$Name] = $Hashes
+}
 $Evidence = [ordered]@{
     schema = 1
     donor = [ordered]@{ forevertas = $DonorCommit; forevervalidator = $DonorValidatorCommit }
     recipient = [ordered]@{ forevertas = $TargetCommit; forevervalidator = $TargetValidatorCommit }
-    flavors = $Flavor
+    manifest_sha256 = (Get-FileHash (Join-Path $TargetRoot "packaging/release/manifest.json") -Algorithm SHA256).Hash.ToLower()
+    flavors = @($Archives.Keys | Sort-Object)
+    validator_archives = $Archives
     source_files = [ordered]@{ forevertas = $TasSource; forevervalidator = $ValidatorSource }
 }
-$EvidencePath = Join-Path $TargetRoot "build/windows-warm-seed.json"
 [IO.File]::WriteAllText($EvidencePath,
     ($Evidence | ConvertTo-Json -Depth 6) + "`n", [Text.UTF8Encoding]::new($false))
 Write-Host "Seeded $($Flavor.Count) Windows warm builds; $($TasSource.matching + $ValidatorSource.matching) source files reused"

@@ -8,7 +8,8 @@ param(
     [string]$HipPlatform = "",
     [switch]$BuildOnly,
     [switch]$ExternalQmlModule,
-    [string]$CommonQmlDirectory = ""
+    [string]$CommonQmlDirectory = "",
+    [string]$PrebuiltValidatorDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -76,6 +77,11 @@ if ($HipPlatform) {
     $FlavorOptions += '-DCMAKE_HIP_ARCHIVE_CREATE=<CMAKE_AR> /OUT:<TARGET> <OBJECTS>'
     $FlavorOptions += '-DCMAKE_HIP_ARCHIVE_APPEND=<CMAKE_AR> /OUT:<TARGET> <OBJECTS>'
     $FlavorOptions += '-DCMAKE_HIP_ARCHIVE_FINISH='
+}
+if ($PrebuiltValidatorDirectory) {
+    $FlavorOptions += "-DFOREVERTAS_PREBUILT_VALIDATOR_DIR=$PrebuiltValidatorDirectory"
+} else {
+    $FlavorOptions += "-DFOREVERTAS_PREBUILT_VALIDATOR_DIR="
 }
 $Toolchain = Join-Path $env:VCPKG_INSTALLATION_ROOT "scripts/buildsystems/vcpkg.cmake"
 $FlavorOptions += "-DCMAKE_TOOLCHAIN_FILE=$Toolchain"

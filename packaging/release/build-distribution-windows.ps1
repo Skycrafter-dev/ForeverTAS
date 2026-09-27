@@ -101,6 +101,10 @@ if (Test-Path (Join-Path $ValidatorSource ".git")) {
     if ($DirtyValidator) { throw "Commit ForeverValidator source before building installers" }
 }
 $PackageEvidence = [ordered]@{}
+$WarmSeedPath = Join-Path $RepoRoot "build/windows-warm-seed.json"
+$WarmSeed = if (Test-Path $WarmSeedPath) {
+    Get-Content $WarmSeedPath -Raw | ConvertFrom-Json
+} else { $null }
 if ($env:FOREVERTAS_ALLOW_COLD_BUILD -ne "1") {
     foreach ($Name in $BuildOrder) {
         $WarmCache = Join-Path $RepoRoot "build/distribution-$Name/CMakeCache.txt"
@@ -123,6 +127,24 @@ foreach ($Name in $BuildOrder) {
         $Options.ExternalQmlModule = $true
         $Options.CommonQmlDirectory = Join-Path $RepoRoot `
             "build/distribution-universal/bin/qml/ForeverTAS"
+        if ($WarmSeed -and $WarmSeed.recipient.forevervalidator -eq $ValidatorCommit -and
+                $WarmSeed.manifest_sha256 -eq
+                (Get-FileHash $Manifest -Algorithm SHA256).Hash.ToLower() -and
+                $WarmSeed.validator_archives -and
+                $WarmSeed.validator_archives.PSObject.Properties.Name -contains $Name) {
+            $ArchiveDirectory = Join-Path $BuildDirectory "_deps/forevervalidator-build"
+            $Recorded = $WarmSeed.validator_archives.$Name
+            foreach ($Component in @("core", "native")) {
+                $Archive = Join-Path $ArchiveDirectory "forevervalidator_$Component.lib"
+                if (-not (Test-Path $Archive -PathType Leaf) -or
+                        (Get-FileHash $Archive -Algorithm SHA256).Hash.ToLower() -ne
+                        $Recorded.$Component) {
+                    throw "Warm Validator archive provenance failed for $Name/$Component"
+                }
+            }
+            $Options.PrebuiltValidatorDirectory = $ArchiveDirectory
+            Write-Host "Reusing verified Validator compute for $Name"
+        }
     }
     if ($Name -like "nvidia-sm*") {
         $Sm = $Name.Substring(9)
