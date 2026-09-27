@@ -49,6 +49,15 @@ try {
     $Zip.Dispose()
 }
 if ($AssemblyOnly) { return }
-& (Join-Path $PSScriptRoot "test-portable.ps1") -Archive $Archive
-& (Join-Path $PSScriptRoot "build-installer.ps1") `
-    -Archive $Archive -AssetId $AssetId -DistDirectory $DistDirectory
+$Staging = Join-Path $BuildDirectory "runtime-template-stage"
+try {
+    Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -LiteralPath $Archive -DestinationPath $Staging
+    & (Join-Path $PSScriptRoot "test-portable.ps1") `
+        -Archive $Archive -ExtractedDirectory $Staging
+    & (Join-Path $PSScriptRoot "build-installer.ps1") `
+        -Archive $Archive -AssetId $AssetId -DistDirectory $DistDirectory `
+        -ExtractedDirectory $Staging
+} finally {
+    Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
+}

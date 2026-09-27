@@ -2,6 +2,7 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$Archive,
     [string]$WorkingDirectory = "",
+    [string]$ExtractedDirectory = "",
     [string]$ExternalRuntimeDirectory = ""
 )
 
@@ -15,10 +16,14 @@ if ($ExternalRuntimeDirectory) {
         throw "AMD HIP driver runtime is missing from $ExternalRuntimeDirectory"
     }
 }
-$RemoveWorkingDirectory = [string]::IsNullOrWhiteSpace($WorkingDirectory)
+$RemoveWorkingDirectory = [string]::IsNullOrWhiteSpace($WorkingDirectory) -and
+    [string]::IsNullOrWhiteSpace($ExtractedDirectory)
 if ($RemoveWorkingDirectory) {
     $WorkingDirectory = Join-Path ([IO.Path]::GetTempPath()) `
         "ForeverTAS-portable-$([guid]::NewGuid().ToString('N'))"
+}
+if ($ExtractedDirectory) {
+    $WorkingDirectory = (Resolve-Path $ExtractedDirectory).Path
 }
 
 $OriginalEnvironment = @{
@@ -41,9 +46,11 @@ function Restore-Environment {
 }
 
 try {
-    Remove-Item $WorkingDirectory -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force -Path $WorkingDirectory | Out-Null
-    Expand-Archive -Path $Archive -DestinationPath $WorkingDirectory
+    if (-not $ExtractedDirectory) {
+        Remove-Item $WorkingDirectory -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Force -Path $WorkingDirectory | Out-Null
+        Expand-Archive -Path $Archive -DestinationPath $WorkingDirectory
+    }
 
     $Executables = @(
         Get-ChildItem $WorkingDirectory -Recurse -File -Filter "ForeverTAS.exe"

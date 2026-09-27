@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Archive,
     [Parameter(Mandatory = $true)][string]$AssetId,
-    [string]$DistDirectory = ""
+    [string]$DistDirectory = "",
+    [string]$ExtractedDirectory = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,10 +39,16 @@ if (-not $Compiler) {
 if (-not $Compiler -or -not (Test-Path $Compiler)) {
     throw "Install Inno Setup 6 or 7, or set ISCC_PATH to ISCC.exe"
 }
-$Temporary = Join-Path ([IO.Path]::GetTempPath()) `
-    "forevertas-installer-$([guid]::NewGuid().ToString('N'))"
+$Temporary = if ($ExtractedDirectory) {
+    (Resolve-Path $ExtractedDirectory).Path
+} else {
+    Join-Path ([IO.Path]::GetTempPath()) `
+        "forevertas-installer-$([guid]::NewGuid().ToString('N'))"
+}
 try {
-    Expand-Archive -LiteralPath $Archive -DestinationPath $Temporary
+    if (-not $ExtractedDirectory) {
+        Expand-Archive -LiteralPath $Archive -DestinationPath $Temporary
+    }
     $Roots = @(Get-ChildItem -LiteralPath $Temporary -Directory)
     if ($Roots.Count -ne 1 -or
             -not (Test-Path (Join-Path $Roots[0].FullName "ForeverTAS.exe"))) {
@@ -65,5 +72,7 @@ try {
         Set-Content -NoNewline -Path "$Installer.sha256"
     Write-Host "Created $Installer"
 } finally {
-    Remove-Item -LiteralPath $Temporary -Recurse -Force -ErrorAction SilentlyContinue
+    if (-not $ExtractedDirectory) {
+        Remove-Item -LiteralPath $Temporary -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }

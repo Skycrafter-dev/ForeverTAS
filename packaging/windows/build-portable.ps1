@@ -154,11 +154,21 @@ $Artifact = $Artifacts[0]
 $Hash = Get-FileHash -Algorithm SHA256 $Artifact.FullName
 "$($Hash.Hash.ToLower())  $($Artifact.Name)" |
     Set-Content -NoNewline "$($Artifact.FullName).sha256"
-& (Join-Path $PSScriptRoot "test-portable.ps1") -Archive $Artifact.FullName
 $Cache = Get-Content (Join-Path $BuildDirectory "CMakeCache.txt") -Raw
 if ($Cache -notmatch '(?m)^FOREVERTAS_UPDATE_ASSET_ID:INTERNAL=(windows(?:-[a-z0-9-]+)?-(?:x86_64|arm64))\r?$') {
     throw "Build has no Windows update asset identity"
 }
-& (Join-Path $PSScriptRoot "build-installer.ps1") `
-    -Archive $Artifact.FullName -AssetId $Matches[1] -DistDirectory $DistDirectory
+$AssetId = $Matches[1]
+$Staging = Join-Path $BuildDirectory "installer-stage"
+try {
+    Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -LiteralPath $Artifact.FullName -DestinationPath $Staging
+    & (Join-Path $PSScriptRoot "test-portable.ps1") `
+        -Archive $Artifact.FullName -ExtractedDirectory $Staging
+    & (Join-Path $PSScriptRoot "build-installer.ps1") `
+        -Archive $Artifact.FullName -AssetId $AssetId `
+        -DistDirectory $DistDirectory -ExtractedDirectory $Staging
+} finally {
+    Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
+}
 Write-Host "Created $($Artifact.FullName)"
