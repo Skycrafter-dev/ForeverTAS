@@ -83,7 +83,11 @@ code. A changed Validator checkout cannot pass the pin check and must build
 its compute component normally. The unchanged QML and Qt runtime are deployed
 once in the SM75 template. Other NVIDIA ZIPs copy that archive's already
 compressed entries and replace only their two executables; they are byte
-reproducible under the same inputs. Independent NVIDIA variants run as bounded
+reproducible under the same inputs. The SM75 installer staging tree is kept
+for the release run; variant installers copy its verified common runtime and
+replace the two executables instead of decompressing the ZIP again. The ZIP
+overlay's executable hashes are checked against those same build outputs.
+Independent NVIDIA variants run as bounded
 PowerShell jobs (`FOREVERTAS_RELEASE_VARIANT_JOBS`, default 6). Each ZIP is
 smoke-tested and each executable's embedded CUDA architecture is inspected
 before its Inno Setup installer is accepted. Installer compression uses the

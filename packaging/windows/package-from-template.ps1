@@ -49,6 +49,29 @@ try {
 } finally {
     $Zip.Dispose()
 }
+$Zip = [IO.Compression.ZipFile]::OpenRead($Archive)
+try {
+    foreach ($Replacement in @(@("ForeverTAS.exe", $Executable),
+                               @("forevertas-simulation-debug-worker.exe", $Worker))) {
+        $Entry = @($Zip.Entries | Where-Object {
+            $_.FullName -match "(^|[/\\])$([regex]::Escape($Replacement[0]))$"
+        })
+        if ($Entry.Count -ne 1) { throw "The overlay has no $($Replacement[0])" }
+        $Stream = $Entry[0].Open()
+        try {
+            $Hasher = [Security.Cryptography.SHA256]::Create()
+            $Hash = [BitConverter]::ToString($Hasher.ComputeHash($Stream)).Replace('-', '')
+        } finally {
+            $Stream.Dispose()
+            $Hasher.Dispose()
+        }
+        if ($Hash -ne (Get-FileHash $Replacement[1] -Algorithm SHA256).Hash) {
+            throw "The ZIP overlay differs from $($Replacement[0])"
+        }
+    }
+} finally {
+    $Zip.Dispose()
+}
 if ($AssemblyOnly) { return }
 $Staging = Join-Path $BuildDirectory "runtime-template-stage"
 try {
