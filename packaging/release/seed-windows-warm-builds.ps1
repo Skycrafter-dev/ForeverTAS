@@ -128,6 +128,7 @@ $Prior = if (Test-Path $EvidencePath) {
 $Archives = @{}
 if ($Prior -and $Prior.donor.forevertas -eq $DonorCommit -and
         $Prior.recipient.forevervalidator -eq $TargetValidatorCommit -and
+        $Prior.PSObject.Properties.Name -contains "manifest_sha256" -and
         $Prior.manifest_sha256 -eq
         (Get-FileHash (Join-Path $TargetRoot "packaging/release/manifest.json") -Algorithm SHA256).Hash.ToLower() -and
         $Prior.PSObject.Properties.Name -contains "validator_archives") {
