@@ -22,9 +22,16 @@ try {
     & (Join-Path $PSScriptRoot "../packaging/windows/package-from-template.ps1") `
         -BuildDirectory $BuildDirectory -TemplateArchive $TemplateArchive `
         -Flavor "nvidia-sm50" -DistDirectory $DistDirectory -AssemblyOnly
+    $OutputArchive = Join-Path $DistDirectory "ForeverTAS-0.2.4-windows-x86_64.zip"
+    $FirstHash = (Get-FileHash $OutputArchive -Algorithm SHA256).Hash
+    & (Join-Path $PSScriptRoot "../packaging/windows/package-from-template.ps1") `
+        -BuildDirectory $BuildDirectory -TemplateArchive $TemplateArchive `
+        -Flavor "nvidia-sm50" -DistDirectory $DistDirectory -AssemblyOnly
+    if ((Get-FileHash $OutputArchive -Algorithm SHA256).Hash -ne $FirstHash) {
+        throw "The Windows compute overlay is not deterministic"
+    }
     $Extracted = Join-Path $Temporary "extracted"
-    Expand-Archive -LiteralPath (Join-Path $DistDirectory `
-        "ForeverTAS-0.2.4-windows-x86_64.zip") -DestinationPath $Extracted
+    Expand-Archive -LiteralPath $OutputArchive -DestinationPath $Extracted
     $Root = Join-Path $Extracted "ForeverTAS-0.2.4-windows-x86_64"
     if ((Get-Content (Join-Path $Root "ForeverTAS.exe") -Raw).Trim() -ne
             "sm50 application" -or

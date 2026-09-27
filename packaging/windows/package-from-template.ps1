@@ -34,7 +34,7 @@ try {
     foreach ($Replacement in @(@("ForeverTAS.exe", $Executable),
                                @("forevertas-simulation-debug-worker.exe", $Worker))) {
         $Entries = @($Zip.Entries | Where-Object {
-            $_.FullName -match "^[^/]+/$([regex]::Escape($Replacement[0]))$"
+            $_.FullName -match "(^|[/\\])$([regex]::Escape($Replacement[0]))$"
         })
         if ($Entries.Count -ne 1) { throw "The template lacks $($Replacement[0])" }
         $EntryName = $Entries[0].FullName
