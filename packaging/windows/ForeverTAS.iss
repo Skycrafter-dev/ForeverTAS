@@ -1,3 +1,7 @@
+#ifndef CompressionMode
+  #define CompressionMode "lzma2/fast"
+#endif
+
 [Setup]
 AppId=dev.skycrafter.forevertas
 AppName=ForeverTAS
@@ -11,7 +15,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64
 OutputDir={#OutputDir}
 OutputBaseFilename={#OutputBaseFilename}
-Compression=lzma2/fast
+Compression={#CompressionMode}
 SolidCompression=yes
 WizardStyle=modern
 CloseApplications=yes

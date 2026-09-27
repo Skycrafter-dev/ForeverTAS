@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Archive,
     [Parameter(Mandatory = $true)][string]$AssetId,
     [string]$DistDirectory = "",
-    [string]$ExtractedDirectory = ""
+    [string]$ExtractedDirectory = "",
+    [ValidateSet("lzma2/fast", "zip")][string]$CompressionMode = "lzma2/fast"
 )
 
 $ErrorActionPreference = "Stop"
@@ -60,6 +61,7 @@ try {
     }
     $OutputBaseFilename = "ForeverTAS-$Version-$AssetId-Setup"
     & $Compiler "/DAppVersion=$Version" `
+        "/DCompressionMode=$CompressionMode" `
         "/DSourceDir=$($Roots[0].FullName)" `
         "/DOutputDir=$DistDirectory" `
         "/DOutputBaseFilename=$OutputBaseFilename" `
