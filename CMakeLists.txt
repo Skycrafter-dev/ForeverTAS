@@ -137,6 +137,13 @@ if(FOREVERTAS_PREBUILT_VALIDATOR_DIR)
             list(APPEND validator_libraries CUDA::nvrtc CUDA::nvJitLink)
         endif()
     endif()
+    if(FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
+        file(TO_CMAKE_PATH "$ENV{HIP_PATH}/lib/amdhip64.lib" hip_runtime_library)
+        if(NOT EXISTS "${hip_runtime_library}")
+            message(FATAL_ERROR "AMD HIP runtime import library is missing")
+        endif()
+        list(APPEND validator_libraries "${hip_runtime_library}")
+    endif()
     set_target_properties(forevervalidator_core PROPERTIES
         INTERFACE_LINK_LIBRARIES "${validator_libraries}"
         INTERFACE_COMPILE_DEFINITIONS
