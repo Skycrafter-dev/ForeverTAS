@@ -107,8 +107,8 @@ if(FOREVERTAS_PREBUILT_VALIDATOR_DIR)
     if(NOT WIN32 OR NOT FETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR)
         message(FATAL_ERROR "Prebuilt Validator requires Windows and pinned local source")
     endif()
-    set(forevervalidator_SOURCE_DIR
-        "${FETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR}")
+    file(TO_CMAKE_PATH "${FETCHCONTENT_SOURCE_DIR_FOREVERVALIDATOR}"
+        forevervalidator_SOURCE_DIR)
     foreach(component IN ITEMS core native)
         set(archive
             "${FOREVERTAS_PREBUILT_VALIDATOR_DIR}/forevervalidator_${component}.lib")
