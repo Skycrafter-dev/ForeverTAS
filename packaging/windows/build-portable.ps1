@@ -169,6 +169,8 @@ try {
         -Archive $Artifact.FullName -AssetId $AssetId `
         -DistDirectory $DistDirectory -ExtractedDirectory $Staging
 } finally {
-    Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
+    if ($Flavor -ne "nvidia-sm75") {
+        Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 Write-Host "Created $($Artifact.FullName)"

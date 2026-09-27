@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory = $true)][string]$TemplateArchive,
     [Parameter(Mandatory = $true)][string]$Flavor,
     [Parameter(Mandatory = $true)][string]$DistDirectory,
+    [string]$TemplateDirectory = "",
     [switch]$AssemblyOnly
 )
 
@@ -52,7 +53,19 @@ if ($AssemblyOnly) { return }
 $Staging = Join-Path $BuildDirectory "runtime-template-stage"
 try {
     Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
-    Expand-Archive -LiteralPath $Archive -DestinationPath $Staging
+    if ($TemplateDirectory -and (Test-Path $TemplateDirectory -PathType Container)) {
+        Copy-Item -LiteralPath $TemplateDirectory -Destination $Staging -Recurse
+        $Roots = @(Get-ChildItem $Staging -Directory)
+        if ($Roots.Count -ne 1) { throw "The runtime template has no single root" }
+        foreach ($Replacement in @(@("ForeverTAS.exe", $Executable),
+                                   @("forevertas-simulation-debug-worker.exe", $Worker))) {
+            $Destination = Join-Path $Roots[0].FullName $Replacement[0]
+            Remove-Item -LiteralPath $Destination -Force
+            Copy-Item -LiteralPath $Replacement[1] -Destination $Destination
+        }
+    } else {
+        Expand-Archive -LiteralPath $Archive -DestinationPath $Staging
+    }
     & (Join-Path $PSScriptRoot "test-portable.ps1") `
         -Archive $Archive -ExtractedDirectory $Staging
     & (Join-Path $PSScriptRoot "build-installer.ps1") `

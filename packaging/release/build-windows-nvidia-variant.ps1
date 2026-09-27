@@ -29,7 +29,8 @@ $Options = @{
 & (Join-Path $RepoRoot "packaging/windows/build-portable.ps1") @Options
 & (Join-Path $RepoRoot "packaging/windows/package-from-template.ps1") `
     -BuildDirectory $BuildDirectory -TemplateArchive $TemplateArchive `
-    -Flavor $Name -DistDirectory $TemporaryDist
+    -Flavor $Name -DistDirectory $TemporaryDist `
+    -TemplateDirectory (Join-Path $RepoRoot "build/distribution-nvidia-sm75/installer-stage")
 
 $Executable = Join-Path $BuildDirectory "bin/ForeverTAS.exe"
 $Cubins = (& "$env:CUDA_PATH\bin\cuobjdump.exe" --list-elf $Executable 2>&1) -join "`n"
