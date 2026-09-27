@@ -28,6 +28,7 @@ $Archive = Join-Path $DistDirectory ([IO.Path]::GetFileName($TemplateArchive))
 New-Item -ItemType Directory -Force -Path $DistDirectory | Out-Null
 Copy-Item -LiteralPath $TemplateArchive -Destination $Archive -Force
 Add-Type -AssemblyName System.IO.Compression.FileSystem
+Add-Type -AssemblyName System.IO.Compression
 $Zip = [IO.Compression.ZipFile]::Open($Archive, [IO.Compression.ZipArchiveMode]::Update)
 try {
     foreach ($Replacement in @(@("ForeverTAS.exe", $Executable),
