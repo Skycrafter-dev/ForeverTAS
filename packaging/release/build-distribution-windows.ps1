@@ -101,6 +101,31 @@ if (Test-Path (Join-Path $ValidatorSource ".git")) {
     if ($DirtyValidator) { throw "Commit ForeverValidator source before building installers" }
 }
 $PackageEvidence = [ordered]@{}
+$VariantJobs = @()
+$VariantJobLimit = if ($env:FOREVERTAS_RELEASE_VARIANT_JOBS) {
+    [int]$env:FOREVERTAS_RELEASE_VARIANT_JOBS
+} else { 3 }
+if ($VariantJobLimit -lt 1 -or $VariantJobLimit -gt 8) {
+    throw "FOREVERTAS_RELEASE_VARIANT_JOBS must be between 1 and 8"
+}
+function Receive-VariantJob($Job) {
+    $Job | Receive-Job -ErrorAction SilentlyContinue | Out-Null
+    if ($Job.State -ne "Completed") {
+        throw "Windows $($Job.Name) variant failed; see build/distribution-$($Job.Name)-dist/variant-build.log"
+    }
+    $EvidencePath = Join-Path $RepoRoot "build/distribution-$($Job.Name)-dist/variant-evidence.json"
+    if (-not (Test-Path $EvidencePath -PathType Leaf)) {
+        throw "Windows $($Job.Name) has no variant evidence"
+    }
+    $Entry = Get-Content $EvidencePath -Raw | ConvertFrom-Json
+    $PackageEvidence[$Job.Name] = [ordered]@{
+        sha256 = $Entry.sha256
+        binary_sha256 = $Entry.binary_sha256
+        toolchain = ($Release.toolchains.windows | ConvertTo-Json -Compress)
+        runtime_template = $Entry.runtime_template
+    }
+    Remove-Job $Job
+}
 $WarmSeedPath = Join-Path $RepoRoot "build/windows-warm-seed.json"
 $WarmSeed = if (Test-Path $WarmSeedPath) {
     Get-Content $WarmSeedPath -Raw | ConvertFrom-Json
@@ -158,6 +183,39 @@ foreach ($Name in $BuildOrder) {
         $Options.HipArchitectures = ($Release.distribution.amd_gfx -join ";")
         $Options.HipPlatform = "amd"
     }
+    if ($Name -eq "amd-rx7000-rx9000") {
+        foreach ($Job in $VariantJobs) {
+            Wait-Job $Job | Out-Null
+            Receive-VariantJob $Job
+        }
+        $VariantJobs = @()
+    }
+    if ($Name -like "nvidia-sm*" -and $Name -ne $NvidiaTemplate) {
+        $TemplateDist = Join-Path $RepoRoot "build/distribution-$NvidiaTemplate-dist"
+        $TemplateArchive = @(Get-ChildItem $TemplateDist -Filter "ForeverTAS-*-windows-*.zip")
+        if ($TemplateArchive.Count -ne 1) { throw "Missing NVIDIA runtime template" }
+        while ($VariantJobs.Count -ge $VariantJobLimit) {
+            $Finished = Wait-Job -Job $VariantJobs -Any
+            Receive-VariantJob $Finished
+            $VariantJobs = @($VariantJobs | Where-Object { $_.Id -ne $Finished.Id })
+        }
+        $Log = Join-Path $TemporaryDist "variant-build.log"
+        New-Item -ItemType Directory -Force -Path $TemporaryDist | Out-Null
+        $Script = Join-Path $RepoRoot "packaging/release/build-windows-nvidia-variant.ps1"
+        $Job = Start-Job -Name $Name -ScriptBlock {
+            param($Script, $Root, $FlavorName, $ReleaseVersion, $Template,
+                $Output, $Prebuilt, $LogPath)
+            & $Script -RepoRoot $Root -Name $FlavorName -Version $ReleaseVersion `
+                -TemplateArchive $Template -DistDirectory $Output `
+                -PrebuiltValidatorDirectory $Prebuilt *> $LogPath
+            if (-not $?) { throw "Variant build failed: $FlavorName" }
+        } -ArgumentList $Script, $RepoRoot, $Name, $Version,
+            $TemplateArchive[0].FullName, $DistDirectory,
+            [string]$Options.PrebuiltValidatorDirectory, $Log
+        $VariantJobs += $Job
+        Write-Host "Started Windows $Name"
+        continue
+    }
     Write-Host "Building Windows $Name"
     & (Join-Path $RepoRoot "packaging/windows/build-portable.ps1") @Options
     if ($LASTEXITCODE -ne 0) { throw "Windows build failed for $Name" }
@@ -197,6 +255,10 @@ foreach ($Name in $BuildOrder) {
         toolchain = ($Release.toolchains.windows | ConvertTo-Json -Compress)
         runtime_template = $(if ($Name -like "nvidia-sm*") { $NvidiaTemplate } else { $Name })
     }
+}
+foreach ($Job in $VariantJobs) {
+    Wait-Job $Job | Out-Null
+    Receive-VariantJob $Job
 }
 
 if (Test-Path (Join-Path $RepoRoot ".git")) {
