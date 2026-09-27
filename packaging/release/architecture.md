@@ -72,7 +72,22 @@ code to the measured search path.
 Windows staging follows the same two-executable overlay. It builds the QML
 module once in its universal root; SM75, AMD, and all other NVIDIA flavors
 consume that module. `windeployqt` scans QML sources to deploy Qt imports
-because the application executable no longer owns a QML module. Its full
-installer run still requires verification on the
-Windows builder before it can be used for a release. This branch must not be
-merged or published on that evidence alone.
+because the application executable no longer owns a QML module. A clean,
+pinned previous Windows build can be seeded into a new isolated checkout with
+`seed-windows-warm-builds.ps1`; the script copies and relocates CMake caches,
+compares source content before restoring timestamps, and records the SHA-256
+of each copied Validator static archive. The release driver rechecks those
+hashes and the pinned Validator and toolchain manifest before importing the
+archives, so moving worktrees or changing UI source does not recompile GPU
+code. A changed Validator checkout cannot pass the pin check and must build
+its compute component normally. The unchanged QML and Qt runtime are deployed
+once in the SM75 template. Other NVIDIA ZIPs copy that archive's already
+compressed entries and replace only their two executables; they are byte
+reproducible under the same inputs. Independent NVIDIA variants run as bounded
+PowerShell jobs (`FOREVERTAS_RELEASE_VARIANT_JOBS`, default 6). Each ZIP is
+smoke-tested and each executable's embedded CUDA architecture is inspected
+before its Inno Setup installer is accepted. Installer compression uses the
+faster LZMA2 preset, trading some artifact size for release latency without
+changing installation or updater asset identities. The portable startup check
+and installer compilation consume one extracted ZIP tree rather than unpacking
+the same runtime twice.

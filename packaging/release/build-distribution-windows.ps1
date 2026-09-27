@@ -104,7 +104,7 @@ $PackageEvidence = [ordered]@{}
 $VariantJobs = @()
 $VariantJobLimit = if ($env:FOREVERTAS_RELEASE_VARIANT_JOBS) {
     [int]$env:FOREVERTAS_RELEASE_VARIANT_JOBS
-} else { 3 }
+} else { 6 }
 if ($VariantJobLimit -lt 1 -or $VariantJobLimit -gt 8) {
     throw "FOREVERTAS_RELEASE_VARIANT_JOBS must be between 1 and 8"
 }
