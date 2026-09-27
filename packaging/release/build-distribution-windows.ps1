@@ -211,7 +211,7 @@ foreach ($Name in $BuildOrder) {
             if (-not $?) { throw "Variant build failed: $FlavorName" }
         } -ArgumentList $Script, $RepoRoot, $Name, $Version,
             $TemplateArchive[0].FullName, $DistDirectory,
-            [string]$Options.PrebuiltValidatorDirectory, $Log
+            ([string]$Options["PrebuiltValidatorDirectory"]), $Log
         $VariantJobs += $Job
         Write-Host "Started Windows $Name"
         continue
