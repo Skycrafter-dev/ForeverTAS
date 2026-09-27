@@ -343,6 +343,7 @@ void SearchWorker::run() {
         }
         const SearchSessionLocation session =
                 SearchSessionStore::Create(request_);
+        emit sessionCreated(session.mapKey, session.directory);
         if (cancellationRequested_->load(std::memory_order_relaxed)) {
             throw SearchCancelled();
         }

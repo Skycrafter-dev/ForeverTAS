@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QColor>
 #include <QCoreApplication>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFileDialog>
@@ -14,6 +15,7 @@
 #include <QFont>
 #include <QImage>
 #include <QInputDevice>
+#include <QJSValue>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QMetaProperty>
@@ -22,6 +24,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlError>
 #include <QQmlExpression>
+#include <QQmlComponent>
 #include <QQuickItem>
 #include <QQuickItemGrabResult>
 #include <QQuickStyle>
@@ -225,6 +228,12 @@ bool FilledModelsHaveCustomRunColors(
             colors.size() >= std::min(runCount, 2);
 }
 
+void SettleQuickLayout() {
+    QEventLoop loop;
+    QTimer::singleShot(60, &loop, &QEventLoop::quit);
+    loop.exec();
+}
+
 bool ContainsStandardSlider(QObject *root) {
     const QList<QObject *> objects = root->findChildren<QObject *>();
     for (const QObject *object : objects) {
@@ -352,13 +361,35 @@ int main(int argc, char **argv) {
     QApplication application(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("ForeverTASTests"));
     QCoreApplication::setApplicationName(
-            QStringLiteral("ViewerQmlSmoke"));
+            qEnvironmentVariableIsSet("FOREVERTAS_PASS_UI_ONLY")
+                    ? QStringLiteral("PassManagementQmlSmoke")
+                    : QStringLiteral("ViewerQmlSmoke"));
     QStandardPaths::setTestModeEnabled(true);
     QSettings().clear();
 
     forevertas::app::SearchController controller;
     forevertas::viewer::RaceViewerController viewer;
     forevertas::app::BindInputPreview(controller, viewer);
+    const QString savedPreviewHorizon = controller.simulationHorizonMs();
+    const QVariantMap savedPreviewPass = controller.modifierPasses().front()
+            .toMap().value(QStringLiteral("settings")).toMap();
+    controller.setModifierPassSetting(0, "minTimeMs", "20");
+    controller.setModifierPassSetting(0, "maxTimeMs", "40");
+    controller.setSimulationHorizonMs("10");
+    const bool invalidHorizonRemainsEditable =
+            controller.simulationHorizonMs() == "10" &&
+            viewer.simulationHorizonMs() >= 40;
+    controller.setModifierPassSetting(0, "maxTimeMs", "60");
+    if (!invalidHorizonRemainsEditable || viewer.simulationHorizonMs() < 60 ||
+        controller.simulationHorizonMs() != "10") {
+        std::cerr << "Invalid search horizon hid editable preview ranges\n";
+        return 1;
+    }
+    controller.setModifierPassSetting(0, "minTimeMs",
+            savedPreviewPass.value("minTimeMs").toString());
+    controller.setModifierPassSetting(0, "maxTimeMs",
+            savedPreviewPass.value("maxTimeMs").toString());
+    controller.setSimulationHorizonMs(savedPreviewHorizon);
 #if defined(Q_OS_LINUX)
     const bool nativeBrowseDialogsValid =
             forevertas::app::ActiveSystemFileDialogBackend() ==
@@ -746,20 +777,189 @@ int main(int argc, char **argv) {
             qobject_cast<QQuickItem *>(
                     root->findChild<QObject *>(
                             QStringLiteral("simulationDebuggerPanel")));
-    bool dynamicPassTabs = initialInnerTabs != nullptr &&
-            initialInnerTabs->property("count").toInt() ==
-                    controller.modifierPasses().size() + 3;
+    bool stablePassTabs = initialInnerTabs != nullptr &&
+            initialInnerTabs->property("count").toInt() == 4;
     if (initialInnerTabs != nullptr) {
         const int initialCount = initialInnerTabs->property("count").toInt();
         controller.addModifierPass(QStringLiteral("random-steering"));
         QCoreApplication::processEvents();
-        dynamicPassTabs &= initialInnerTabs->property("count").toInt() ==
-                initialCount + 1;
+        stablePassTabs &= initialInnerTabs->property("count").toInt() ==
+                initialCount;
         controller.removeModifierPass(controller.modifierPasses().size() - 1);
         QCoreApplication::processEvents();
-        dynamicPassTabs &= initialInnerTabs->property("count").toInt() ==
+        stablePassTabs &= initialInnerTabs->property("count").toInt() ==
                 initialCount;
     }
+    QObject *const passEditor = root->findChild<QObject *>(
+            QStringLiteral("modifierComposition"));
+    const bool passManagementOnly =
+            qEnvironmentVariableIsSet("FOREVERTAS_PASS_UI_ONLY");
+    bool passManagementValid = passEditor != nullptr && stablePassTabs;
+    if (passManagementValid && passManagementOnly) {
+        const auto settle = []() {
+            QCoreApplication::processEvents();
+            QCoreApplication::processEvents();
+        };
+        const auto click = [&](const char *name) {
+            QObject *button = root->findChild<QObject *>(
+                    QString::fromLatin1(name));
+            const bool invoked = button != nullptr &&
+                    button->property("enabled").toBool() &&
+                    QMetaObject::invokeMethod(button, "clicked");
+            settle();
+            return invoked;
+        };
+        const auto add = [&](const char *id) {
+            const bool invoked = QMetaObject::invokeMethod(
+                    passEditor, "addPass",
+                    Q_ARG(QVariant, QVariant(QString::fromLatin1(id))));
+            settle();
+            return invoked;
+        };
+        const auto selected = [&]() {
+            return passEditor->property("activePassIndex").toInt();
+        };
+        const auto capture = [&](const QString &name) {
+            const QString directory = qEnvironmentVariable(
+                    "FOREVERTAS_PASS_UI_CAPTURE_DIR");
+            if (directory.isEmpty()) return true;
+            auto *window = qobject_cast<QQuickWindow *>(root);
+            auto *scroll = root->findChild<QObject *>(
+                    QStringLiteral("settingsScroll"));
+            auto *section = root->findChild<QQuickItem *>(
+                    QStringLiteral("modifierSection"));
+            if (!window || !scroll || !section) return false;
+            auto *content = scroll->property("contentItem").value<QObject *>();
+            if (!content || !QDir().mkpath(directory)) return false;
+            content->setProperty("contentY", 0.0);
+            QEventLoop loop;
+            QTimer::singleShot(150, &loop, &QEventLoop::quit);
+            loop.exec();
+            return window->grabWindow().save(directory + "/" + name + ".png");
+        };
+        initialInnerTabs->setProperty("currentIndex", 2);
+        settle();
+        passManagementValid &= click("addModifierButton");
+        QObject *const addMenu = root->findChild<QObject *>(
+                QStringLiteral("addModifierMenu"));
+        passManagementValid &= addMenu != nullptr &&
+                addMenu->property("count").toInt() ==
+                        controller.modifierOptions().size();
+        if (addMenu) QMetaObject::invokeMethod(addMenu, "close");
+        passManagementValid &= add("random-steering") && selected() == 1;
+        controller.setModifierPassSetting(
+                1, QStringLiteral("minTimeMs"), QStringLiteral("1230"));
+        settle();
+        QVariant movedPass = controller.modifierPasses().at(1);
+        passManagementValid &= capture(QStringLiteral("01-added-pass"));
+        passManagementValid &= click("modifierPassUp") && selected() == 0 &&
+                controller.modifierPasses().at(0) == movedPass;
+        QObject *const movedDelegate = passEditor->property("firstRenderedPass")
+                .value<QObject *>();
+        QObject *const movedSettings = movedDelegate
+                ? movedDelegate->property("settingsItem").value<QObject *>()
+                : nullptr;
+        QJSValue updateMovedSetting = movedSettings
+                ? movedSettings->property("updateSetting").value<QJSValue>()
+                : QJSValue();
+        passManagementValid &= updateMovedSetting.isCallable() &&
+                !updateMovedSetting.call({QJSValue(QStringLiteral("minTimeMs")),
+                                          QJSValue(QStringLiteral("2340"))}).isError();
+        settle();
+        movedPass = controller.modifierPasses().at(0);
+        passManagementValid &= movedPass.toMap().value(QStringLiteral("settings"))
+                .toMap().value(QStringLiteral("minTimeMs")).toString() ==
+                        QStringLiteral("2340");
+        if (!passManagementValid)
+            std::cerr << "moved pass editing: callable="
+                      << updateMovedSetting.isCallable() << ", index="
+                      << (movedDelegate ? movedDelegate->property("index").toInt() : -1)
+                      << ", minimum=" << movedPass.toMap()
+                              .value(QStringLiteral("settings")).toMap()
+                              .value(QStringLiteral("minTimeMs")).toString().toStdString()
+                      << "\n";
+        passManagementValid &= capture(QStringLiteral("02-reordered-pass"));
+        passManagementValid &= click("modifierPassDown") && selected() == 1 &&
+                controller.modifierPasses().at(1) == movedPass;
+        passManagementValid &= add("input-deletion") && selected() == 2;
+        passEditor->setProperty("activePassIndex", 1);
+        passManagementValid &= click("modifierPassRemove") && selected() == 1 &&
+                controller.modifierPasses().at(1).toMap()
+                        .value(QStringLiteral("id")).toString() ==
+                        QStringLiteral("input-deletion");
+        passManagementValid &= click("modifierPassRemove") && selected() == 0;
+        passManagementValid &= click("modifierPassRemove") && selected() == -1 &&
+                controller.modifierPasses().isEmpty();
+        passManagementValid &= capture(QStringLiteral("03-empty-passes"));
+        passManagementValid &= add("random-steering") && selected() == 0 &&
+                initialInnerTabs->property("currentIndex").toInt() == 2 &&
+                initialInnerTabs->property("count").toInt() == 4;
+        for (int index = 0; index < 12; ++index)
+            passManagementValid &= add("input-deletion");
+        passManagementValid &= selected() == 12 &&
+                initialInnerTabs->property("count").toInt() == 4;
+        passManagementValid &= capture(QStringLiteral("04-many-passes"));
+        const int passWindowWidth = root->property("width").toInt();
+        const int passWindowHeight = root->property("height").toInt();
+        root->setProperty("width", 1240);
+        root->setProperty("height", 580);
+        passManagementValid &= capture(QStringLiteral("05-compact-passes"));
+        QObject *const passScroll = root->findChild<QObject *>(
+                QStringLiteral("settingsScroll"));
+        QObject *const passContent = passScroll
+                ? passScroll->property("contentItem").value<QObject *>() : nullptr;
+        QObject *const passSelector = root->findChild<QObject *>(
+                QStringLiteral("modifierPassSelector"));
+        if (passContent && passSelector) {
+            passContent->setProperty("contentY", 100.0);
+            QQmlExpression selectFirst(
+                    QQmlEngine::contextForObject(passSelector), passSelector,
+                    QStringLiteral("currentIndex = 0; activated(0)"));
+            selectFirst.evaluate();
+            passManagementValid &= !selectFirst.hasError();
+            settle();
+            passManagementValid &= selected() == 0 &&
+                    passContent->property("contentY").toDouble() == 0.0;
+            passManagementValid &= click("modifierPassDown") && selected() == 1 &&
+                    passSelector->property("currentIndex").toInt() == 1;
+            passManagementValid &= click("modifierPassUp") && selected() == 0 &&
+                    passSelector->property("currentIndex").toInt() == 0;
+            passManagementValid &= QMetaObject::invokeMethod(
+                    passSelector, "activated", Q_ARG(int, 12));
+            settle();
+        } else {
+            passManagementValid = false;
+        }
+        controller.setDarkMode(true);
+        passManagementValid &= click("addModifierButton") &&
+                capture(QStringLiteral("06-dark-add-menu"));
+        if (addMenu) QMetaObject::invokeMethod(addMenu, "close");
+        controller.setDarkMode(false);
+        root->setProperty("width", passWindowWidth);
+        root->setProperty("height", passWindowHeight);
+        settle();
+        for (int index = 0; index < 12; ++index)
+            passManagementValid &= click("modifierPassRemove");
+        initialInnerTabs->setProperty("currentIndex", 3);
+        controller.addModifierPass(QStringLiteral("random-steering"));
+        settle();
+        passManagementValid &= initialInnerTabs->property("currentIndex").toInt() == 3;
+        controller.removeModifierPass(1);
+        settle();
+        passManagementValid &= initialInnerTabs->property("currentIndex").toInt() == 3;
+        initialInnerTabs->setProperty("currentIndex", 0);
+        QObject *const scroll = root->findChild<QObject *>(
+                QStringLiteral("settingsScroll"));
+        if (scroll) {
+            QObject *const content =
+                    scroll->property("contentItem").value<QObject *>();
+            if (content) content->setProperty("contentY", 0.0);
+        }
+        if (!passManagementValid)
+            std::cerr << "input pass management regression\n";
+    }
+    stablePassTabs &= passManagementValid;
+    if (passManagementOnly) return passManagementValid ? 0 : 1;
     QObject *const sessionHistory = root->findChild<QObject *>(
             QStringLiteral("searchSessionHistory"));
     bool sessionSorting = sessionHistory != nullptr;
@@ -792,6 +992,62 @@ int main(int argc, char **argv) {
                             .toInt() == expectedRestart;
         }
     }
+    QQmlComponent historyProbeComponent(&engine);
+    historyProbeComponent.setData(R"QML(
+        import QtQuick
+        import "."
+        Item {
+            property QtObject c: QtObject {
+                signal historyChanged()
+                property bool running: false
+                property string baseInputScript: "base"
+                property string selectedInputsText: ""
+                property string selectedSessionDirectory: "session"
+                property string packsDirectory: ""
+                property string replayPath: ""
+                property var sessionOptions: [{label: "Session", directory: "session", horizonMs: 4000}]
+                property var cycleRows: []
+                function selectCycle(index) { selectedInputsText = "winner" + index; historyChanged() }
+                function selectSession(index) {}
+                function addCycle() {
+                    cycleRows = cycleRows.concat([{restart: cycleRows.length, attempts: 1,
+                        elapsedMs: 10, metricLabels: [], metrics: []}])
+                    historyChanged()
+                }
+            }
+            property QtObject v: QtObject {
+                property string previewInputScript: "base"
+                property int simulationHorizonMs: 1000
+                property bool loaded: true
+                function refreshInputPreview() {}
+            }
+            SearchSessionHistory { objectName: "probe"; width: 400; controller: c; viewer: v }
+        }
+    )QML", QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_SOURCE_DIR "/qml/HistoryProbe.qml")));
+    std::unique_ptr<QObject> historyProbe(historyProbeComponent.create());
+    bool passiveHistoryValid = historyProbe != nullptr;
+    if (historyProbe) {
+        QObject *const c = historyProbe->property("c").value<QObject *>();
+        QObject *const v = historyProbe->property("v").value<QObject *>();
+        QObject *const history = historyProbe->findChild<QObject *>("probe");
+        QMetaObject::invokeMethod(c, "addCycle");
+        QCoreApplication::processEvents();
+        passiveHistoryValid &= v->property("previewInputScript") == "base" &&
+                v->property("simulationHorizonMs").toInt() == 1000;
+        QMetaObject::invokeMethod(history, "chooseRow", Q_ARG(QVariant, 0),
+                                  Q_ARG(QVariant, true));
+        passiveHistoryValid &= v->property("previewInputScript") == "winner0" &&
+                v->property("simulationHorizonMs").toInt() == 4000;
+        QMetaObject::invokeMethod(c, "addCycle");
+        QCoreApplication::processEvents();
+        passiveHistoryValid &= v->property("previewInputScript") == "winner0" &&
+                c->property("baseInputScript") == "base";
+    }
+    if (!passiveHistoryValid) {
+        std::cerr << "Automatic session history changed the base preview: "
+                  << historyProbeComponent.errorString().toStdString() << '\n';
+        return 1;
+    }
     bool globalSettingsVisibleAcrossTabs =
             initialGlobalScript != nullptr &&
             initialReplaySection != nullptr &&
@@ -803,7 +1059,7 @@ int main(int argc, char **argv) {
             initialToolTabs != nullptr &&
             initialInnerTabs != nullptr &&
             initialBruteforceContent != nullptr &&
-            initialDebuggerContent != nullptr && dynamicPassTabs &&
+            initialDebuggerContent != nullptr && stablePassTabs &&
             sessionSorting;
     bool debuggerCombinedNameValid = false;
     if (initialDebuggerContent != nullptr) {
@@ -1192,9 +1448,9 @@ int main(int argc, char **argv) {
                     QObject *const modifierComposition =
                             root->findChild<QObject *>(
                                     QStringLiteral("modifierComposition"));
-                    QObject *const addModifierCombo =
+                    QObject *const modifierPassSelector =
                             root->findChild<QObject *>(
-                                    QStringLiteral("addModifierCombo"));
+                                    QStringLiteral("modifierPassSelector"));
                     QObject *const addModifierButton =
                             root->findChild<QObject *>(
                                     QStringLiteral("addModifierButton"));
@@ -1437,8 +1693,7 @@ int main(int argc, char **argv) {
                             !viewer.takeOverOnInput();
                     if (takeoverControlValid) {
                         takeoverControlValid &=
-                                sendMouseClick(
-                                        takeOverOnInputCheckBox);
+                                sendMouseClick(takeOverOnInputCheckBox);
                         takeoverControlValid &=
                                 viewer.takeOverOnInput() &&
                                 takeOverOnInputCheckBox
@@ -2275,6 +2530,10 @@ int main(int argc, char **argv) {
                                 runSelector, "forceActiveFocus");
                     const bool widthFieldShowsLeadingDigits =
                             compactWidthVisible && exactWidthOnFocus;
+                    const int placementTab =
+                            initialInnerTabs->property("currentIndex").toInt();
+                    initialInnerTabs->setProperty("currentIndex", 0);
+                    QCoreApplication::processEvents();
                     bool globalSettingsPlacement =
                             globalSettingsVisibleAcrossTabs &&
                             packsDirectorySection != nullptr &&
@@ -2313,20 +2572,22 @@ int main(int argc, char **argv) {
                                     baseInputScriptSection->parentItem() &&
                             baseInputScriptSection->parentItem() ==
                                     appearanceControls->parentItem() &&
-                            appearanceControls->parentItem() ==
+                            appearanceControls->parentItem() !=
                                     toolTabs->parentItem() &&
                             packsDirectorySection->y() +
                                             packsDirectorySection->height() <=
                                     replaySection->y() &&
                             replaySection->y() + replaySection->height() <=
-                                    toolTabs->y() &&
-                            toolTabs->y() + toolTabs->height() <=
                                     baseInputScriptSection->y() &&
+                            toolTabs->mapToScene(QPointF()).y() <
+                                    packsDirectorySection->mapToScene(QPointF()).y() &&
                             baseInputScriptSection->y() +
                                             baseInputScriptSection->height() <=
                                     appearanceControls->y() &&
                             appearanceControls->y() >=
                                     baseInputScriptSection->y();
+                    initialInnerTabs->setProperty("currentIndex", placementTab);
+                    QCoreApplication::processEvents();
                     const bool baseInputScriptUiValid =
                             baseInputScriptSection != nullptr &&
                             replayPathField != nullptr &&
@@ -2430,7 +2691,7 @@ int main(int argc, char **argv) {
                                     QStringLiteral("Apply");
                     initialInnerTabs->setProperty(
                             "currentIndex",
-                            controller.modifierPasses().size() + 2);
+                            3);
                     QCoreApplication::processEvents();
                     bool backendSelectorValid =
                             simulationBackendCombo != nullptr &&
@@ -2766,7 +3027,7 @@ int main(int argc, char **argv) {
                     const bool algorithmSelectorsValid =
                             searchAlgorithmCombo != nullptr &&
                             modifierComposition != nullptr &&
-                            addModifierCombo != nullptr &&
+                            modifierPassSelector != nullptr &&
                             addModifierButton != nullptr &&
                             evaluationTargetCombo != nullptr &&
                             firstTargetIcon != nullptr &&
@@ -2790,7 +3051,7 @@ int main(int argc, char **argv) {
                             modifierComposition
                                             ->property("firstPassOptionCount")
                                             .toInt() == 5 &&
-                            addModifierCombo->property("count").toInt() == 5 &&
+                            modifierPassSelector->property("count").toInt() == 1 &&
                             evaluationTargetCombo->property("count").toInt() ==
                                     8 &&
                             searchAlgorithmCombo->property("currentValue")
@@ -2871,27 +3132,26 @@ int main(int argc, char **argv) {
                             !evaluationSection->isVisible();
                     initialInnerTabs->setProperty(
                             "currentIndex",
-                            controller.modifierPasses().size() + 2);
+                            3);
                     QCoreApplication::processEvents();
                     const bool comboSlotsStyled =
                             simulationBackendCombo != nullptr &&
                             searchAlgorithmCombo != nullptr &&
                             evaluationTargetCombo != nullptr &&
-                            addModifierCombo != nullptr &&
+                            modifierPassSelector != nullptr &&
                             simulationBackendCombo->property("slotStyled")
                                     .toBool() &&
                             searchAlgorithmCombo->property("slotStyled")
                                     .toBool() &&
                             evaluationTargetCombo->property("slotStyled")
                                     .toBool() &&
-                            addModifierCombo->property("slotStyled").toBool() &&
+                            modifierPassSelector->property("slotStyled").toBool() &&
                             modifierComposition
                                     ->property("firstPassSlotStyled").toBool();
                     const bool modifierPassLayoutValid =
-                            modifierComposition != nullptr &&
-                            modifierComposition
-                                    ->property("firstPassHeaderLayoutValid")
-                                    .toBool();
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "modifierPassControls"))
+                                    ->property("layoutValid").toBool();
                     const bool debuggerSourceTreeScrollable = [&]() {
                         if (simulationSourceTree == nullptr ||
                             simulationSourceTreeScrollBar == nullptr) {
@@ -2942,7 +3202,7 @@ int main(int argc, char **argv) {
                         simulationDebuggerPanelHost->setVisible(true);
                         simulationDebuggerPanel->setVisible(true);
                         bruteforceTabContent->setVisible(false);
-                        QCoreApplication::processEvents();
+                        SettleQuickLayout();
                         const qreal compactWidth =
                                 simulationDebuggerPanel->width();
                         const QString compactIcon =
@@ -2954,8 +3214,7 @@ int main(int argc, char **argv) {
                                         toggleCodeEditorExpansionButton,
                                         "clicked",
                                         Qt::DirectConnection);
-                        QCoreApplication::processEvents();
-                        QCoreApplication::processEvents();
+                        SettleQuickLayout();
                         bool valid =
                                 expanded &&
                                 root->property("codeEditorExpanded")
@@ -2980,8 +3239,7 @@ int main(int argc, char **argv) {
 
                         root->setProperty("width", 1240);
                         root->setProperty("height", 580);
-                        QCoreApplication::processEvents();
-                        QCoreApplication::processEvents();
+                        SettleQuickLayout();
                         valid &= settingsPanel->width() >= 1239.0 &&
                                 simulationDebuggerPanel->width() >= 1239.0 &&
                                 simulationDebuggerPanel->height() >= 579.0 &&
@@ -3395,6 +3653,7 @@ int main(int argc, char **argv) {
                             const auto nestedWheelMoves =
                                     [&](QQuickItem *item,
                                         QObject *nested) {
+                                SettleQuickLayout();
                                 positionOuterForItem(item);
                                 auto *const nestedItem =
                                         qobject_cast<QQuickItem *>(nested);
@@ -3584,7 +3843,7 @@ int main(int argc, char **argv) {
                     }
                     controller.setEvaluationTargetId(
                             QStringLiteral("pose-target"));
-                    QCoreApplication::processEvents();
+                    SettleQuickLayout();
                     const qreal expandedEvaluationHeight =
                             evaluationSection == nullptr
                             ? 0.0
@@ -3607,7 +3866,7 @@ int main(int argc, char **argv) {
                             : expandedSettingsItem->objectName();
                     controller.setEvaluationTargetId(
                             QStringLiteral("precise-finish-time"));
-                    QCoreApplication::processEvents();
+                    SettleQuickLayout();
                     const qreal compactEvaluationHeight =
                             evaluationSection == nullptr
                             ? 0.0
@@ -3625,7 +3884,6 @@ int main(int argc, char **argv) {
                                       ->property("settingsItem")
                                       .value<QObject *>();
                     const bool targetLayoutUpdatesImmediately =
-                            expandedSettingsItem != nullptr &&
                             expandedSettingsObjectName ==
                                     QStringLiteral(
                                             "poseTargetEvaluationSettings") &&
@@ -4705,7 +4963,7 @@ int main(int argc, char **argv) {
                                 << modifierComposition
                                            ->property("firstPassSettingsLoaded")
                                            .toBool()
-                                << ", addCombo=" << count(addModifierCombo)
+                                << ", passSelector=" << count(modifierPassSelector)
                                 << ", addButton="
                                 << (addModifierButton != nullptr)
                                 << ", evaluation="
@@ -4840,6 +5098,28 @@ int main(int argc, char **argv) {
                                 << ", scrub=" << unboundedFieldsScrubbable
                                 << ", keyboard=" << keyboardStepping
                                 << ", manual=" << manualDrivingUi
+                                << ", targetLayout=" << targetLayoutUpdatesImmediately
+                                << "/" << expandedEvaluationHeight
+                                << "/" << compactEvaluationHeight
+                                << "/" << expandedSelectorHeight
+                                << "/" << compactSelectorHeight
+                                << ", widthDigits=" << widthFieldShowsLeadingDigits
+                                << ", metrics=" << searchMetricsUiValid
+                                << ", descriptions=" << removedSectionDescriptions
+                                << ", promote=" << autoPromoteBestValid
+                                << ", timeline=" << timeline->isEnabled()
+                                << "/" << (timeline->viewer() == &viewer)
+                                << "/" << (timelinePanel->x() < viewport->x())
+                                << ", transport=" << playPause->property("enabled").toBool()
+                                << "/" << playIcon->isVisible()
+                                << "/" << pauseIcon->isVisible()
+                                << "/" << IsCenteredIcon(playIcon, 18.0)
+                                << "/" << IsCenteredIcon(pauseIcon, 18.0)
+                                << "/" << IsCenteredIcon(jumpStartIcon, 18.0)
+                                << "/" << IsCenteredIcon(jumpEndIcon, 18.0)
+                                << "/" << HasRightFacingPlaySilhouette(playIcon)
+                                << "/" << HasJumpToEndSilhouette(jumpEndIcon)
+                                << ", sliders=" << ContainsStandardSlider(root)
                                 << ", compactHeader="
                                 << compactViewerHeader
                                 << " (dock="
@@ -5136,8 +5416,7 @@ int main(int argc, char **argv) {
                                             .value(QStringLiteral("name"))
                                             .toString() ==
                                     QStringLiteral("Inputs") &&
-                            clearPreviewTrajectoriesButton != nullptr &&
-                            !clearPreviewTrajectoriesButton->isVisible() &&
+                            clearPreviewTrajectoriesButton == nullptr &&
                             trajectoryModels.size() == 1 &&
                             rayTracingTrajectoryModels.size() == 1 &&
                             rayTracingTrajectoryOverlay != nullptr &&
@@ -5191,6 +5470,127 @@ int main(int argc, char **argv) {
                                 << '\n';
                     }
 
+                    QObject *const projectionOverlay = root->findChild<QObject *>(
+                            QStringLiteral("evaluationRaceOverlay"));
+                    QQmlExpression projectionCheck(
+                            QQmlEngine::contextForObject(projectionOverlay),
+                            projectionOverlay, QStringLiteral(R"JS((function() {
+                        const camera = projector.camera
+                        const source = viewer.selectedRunSamples()
+                        function legacy() {
+                            return source.map(sample => {
+                                const p = projector.mapFrom3DScene(sample.position)
+                                return {timeMs: Number(sample.timeMs),
+                                        point: p.z > 0 ? Qt.point(p.x, p.y) : null}
+                            })
+                        }
+                        function batch() {
+                            return viewer.projectSelectedRunSamples(
+                                camera.scenePosition, camera.sceneRotation,
+                                camera.fieldOfView, projector.width,
+                                projector.height, camera.clipNear)
+                                .map(sample => ({timeMs: Number(sample.timeMs),
+                                                 point: sample.point ?? null}))
+                        }
+                        const before = legacy()
+                        const after = batch()
+                        let valid = before.length === after.length && before.length > 0
+                        for (let i = 0; valid && i < before.length; ++i) {
+                            const a = before[i].point, b = after[i].point
+                            valid = before[i].timeMs === after[i].timeMs && !!a === !!b
+                            if (a && b) {
+                                const tolerance = 0.1 + Math.hypot(a.x, a.y) * 0.00001
+                                valid = valid && Math.hypot(a.x - b.x, a.y - b.y) < tolerance
+                            }
+                        }
+                        let started = Date.now()
+                        for (let i = 0; i < 5; ++i) legacy()
+                        const legacyMs = Date.now() - started
+                        started = Date.now()
+                        for (let i = 0; i < 5; ++i) batch()
+                        return {valid: valid, samples: before.length,
+                                legacyMs: legacyMs, batchMs: Date.now() - started}
+                    })())JS"));
+                    const QVariantMap projectionResult =
+                            projectionCheck.evaluate().toMap();
+                    std::cout << "Overlay projection: "
+                              << projectionResult.value("samples").toInt()
+                              << " samples, 5 passes, legacy="
+                              << projectionResult.value("legacyMs").toInt()
+                              << " ms, batch="
+                              << projectionResult.value("batchMs").toInt() << " ms\n";
+                    if (projectionCheck.hasError() ||
+                        !projectionResult.value("valid").toBool()) {
+                        std::cerr << "Batch projection differs from View3D: "
+                                  << projectionCheck.error().toString().toStdString()
+                                  << '\n';
+                        application.exit(1);
+                        return;
+                    }
+                    QObject *const orbitOverlay = root->findChild<QObject *>(
+                            QStringLiteral("evaluationRaceOverlay"));
+                    SettleQuickLayout();
+                    const QJSValue oldProjection = orbitOverlay->property(
+                            "projectionFrame").value<QJSValue>();
+                    const double oldYaw = viewport->property("orbitYaw").toDouble();
+                    QElapsedTimer orbitTimer;
+                    orbitTimer.start();
+                    for (int move = 0; move < 1000; ++move)
+                        viewport->setProperty("orbitYaw", oldYaw + move * 0.1);
+                    const bool projectionCoalesced =
+                            orbitOverlay->property("projectionDirty").toBool() &&
+                            oldProjection.strictlyEquals(orbitOverlay->property(
+                                    "projectionFrame").value<QJSValue>());
+                    std::cout << "1000 orbit updates: " << orbitTimer.elapsed()
+                              << " ms; projection coalesced=" << projectionCoalesced << '\n';
+                    viewport->setProperty("orbitYaw", oldYaw);
+                    if (!projectionCoalesced || !WaitUntil([&]() {
+                            return !orbitOverlay->property("projectionDirty").toBool();
+                        }, 5000)) {
+                        std::cerr << "Orbit events rebuilt overlays before the next frame\n";
+                        application.exit(1);
+                        return;
+                    }
+                    const QString editableHorizon = controller.simulationHorizonMs();
+                    const QVector3D editableCenter = controller.cuboidTargets()
+                            ->selectedTarget().value("center").value<QVector3D>();
+                    controller.setSimulationHorizonMs(QStringLiteral("10"));
+                    const bool invalidRangeDrawable = viewer.loaded() && viewer.runCount() > 0 &&
+                            viewer.simulationHorizonMs() > 10 &&
+                            viewer.timeRangeGeometry(QStringLiteral("invalid-horizon-test"),
+                                    viewer.selectedRunId(), 0, 500, false) != nullptr;
+                    const bool invalidTargetMovable = controller.cuboidTargets()
+                            ->translateSelected(1.0, 0.0, 0.0);
+                    QCoreApplication::processEvents();
+                    bool invalidTargetDrawn = false;
+                    for (QObject *target : root->findChildren<QObject *>("cuboidTargetRoot")) {
+                        if (target->property("targetSelected").toBool() &&
+                            target->property("visible").toBool() &&
+                            (target->property("position").value<QVector3D>() - editableCenter -
+                             QVector3D(1, 0, 0)).length() < 0.001f)
+                            invalidTargetDrawn = true;
+                    }
+                    controller.cuboidTargets()->moveSelectedTo(
+                            editableCenter.x(), editableCenter.y(), editableCenter.z());
+                    const QVariantMap zeroWindowSettings = controller.modifierPasses()
+                            .front().toMap().value("settings").toMap();
+                    controller.setModifierPassSetting(0, QStringLiteral("maxTimeMs"),
+                            zeroWindowSettings.value("minTimeMs").toString());
+                    QQmlExpression zeroWindowHandles(
+                            QQmlEngine::contextForObject(orbitOverlay), orbitOverlay,
+                            QStringLiteral("windowHandles.filter(h => h.kind === 'modifier' && h.index === 0).length"));
+                    const bool zeroWindowEditable = zeroWindowHandles.evaluate().toInt() == 2;
+                    controller.setModifierPassSetting(0, QStringLiteral("maxTimeMs"),
+                            zeroWindowSettings.value("maxTimeMs").toString());
+                    controller.setSimulationHorizonMs(editableHorizon);
+                    if (!invalidRangeDrawable || !invalidTargetMovable || !invalidTargetDrawn ||
+                        !zeroWindowEditable) {
+                        std::cerr << "Invalid horizon blocked target drawing/editing: "
+                                  << invalidRangeDrawable << invalidTargetMovable
+                                  << invalidTargetDrawn << zeroWindowEditable << '\n';
+                        application.exit(1);
+                        return;
+                    }
                     const QVector3D baselinePosition = viewer.carPosition();
                     std::vector<forevertas::SearchTimelineFrame> bestFrames;
                     bestFrames.reserve(3u);
@@ -5351,19 +5751,10 @@ int main(int argc, char **argv) {
                                     .value(QStringLiteral("geometry"))
                                     .value<QObject *>();
                     const bool clearButtonReady =
-                            clearPreviewTrajectoriesButton != nullptr &&
-                            clearPreviewTrajectoriesButton->isVisible() &&
-                            clearPreviewTrajectoriesButton
-                                    ->property("enabled").toBool() &&
-                            clearPreviewTrajectoriesButton
-                                    ->property("text").toString() ==
-                                    QStringLiteral("Clear previews") &&
+                            clearPreviewTrajectoriesButton == nullptr &&
                             viewer.hasPreviewTrajectories();
-                    const bool firstClearInvoked =
-                            clearButtonReady &&
-                            QMetaObject::invokeMethod(
-                                    clearPreviewTrajectoriesButton,
-                                    "clicked");
+                    const bool firstClearInvoked = clearButtonReady;
+                    viewer.clearPreviewTrajectories();
                     QCoreApplication::processEvents();
                     QCoreApplication::sendPostedEvents(
                             nullptr, QEvent::DeferredDelete);
@@ -5396,10 +5787,7 @@ int main(int argc, char **argv) {
                                             .toMap()
                                             .value(QStringLiteral("geometry"))
                                             .value<QObject *>() ==
-                                    bestTrajectoryGeometry &&
-                            clearPreviewTrajectoriesButton->isVisible() &&
-                            !clearPreviewTrajectoriesButton
-                                     ->property("enabled").toBool();
+                                    bestTrajectoryGeometry;
                     viewer.addSearchImprovement(
                             QString::fromLocal8Bit(argv[1]),
                             QString::fromLocal8Bit(argv[2]),
@@ -5410,13 +5798,8 @@ int main(int argc, char **argv) {
                     QCoreApplication::processEvents();
                     const bool clearedKeyWasReleased =
                             viewer.hasPreviewTrajectories() &&
-                            viewer.trajectoryCount() == 3 &&
-                            clearPreviewTrajectoriesButton
-                                    ->property("enabled").toBool();
-                    const bool secondClearInvoked =
-                            QMetaObject::invokeMethod(
-                                    clearPreviewTrajectoriesButton,
-                                    "clicked");
+                            viewer.trajectoryCount() == 3;
+                    viewer.clearPreviewTrajectories();
                     QCoreApplication::processEvents();
                     QCoreApplication::sendPostedEvents(
                             nullptr, QEvent::DeferredDelete);
@@ -5427,7 +5810,6 @@ int main(int argc, char **argv) {
                             improvementTrajectoryUiValid &&
                             firstClearRemovedPreviews &&
                             clearedKeyWasReleased &&
-                            secondClearInvoked &&
                             viewer.trajectoryCount() == 2 &&
                             !viewer.hasPreviewTrajectories() &&
                             finalClearedPaths.size() == 2 &&
@@ -5441,6 +5823,36 @@ int main(int argc, char **argv) {
                                                        .toString() ==
                                                 QStringLiteral("improvement");
                                     });
+                    viewer.addSearchImprovement(
+                            QString::fromLocal8Bit(argv[1]),
+                            QString::fromLocal8Bit(argv[2]), firstImprovement,
+                            QStringLiteral("optimized-cpu"), 10u, 1u);
+                    controller.searchSessionReset();
+                    QCoreApplication::processEvents();
+                    const bool sessionResetValid =
+                            !viewer.hasPreviewTrajectories() &&
+                            !viewer.hasTrajectoryForRun(QStringLiteral("best")) &&
+                            viewer.selectedRunId() != QStringLiteral("best") &&
+                            viewer.trajectoryCount() == 1 &&
+                            viewer.runCount() == 1;
+                    if (!sessionResetValid) {
+                        std::cerr << "Session reset left old search results\n";
+                        application.exit(1);
+                        return;
+                    }
+                    viewer.addSearchImprovement(
+                            QString::fromLocal8Bit(argv[1]),
+                            QString::fromLocal8Bit(argv[2]), firstImprovement,
+                            QStringLiteral("optimized-cpu"), 11u, 1u);
+                    if (!viewer.hasPreviewTrajectories()) {
+                        std::cerr << "New session could not add previews\n";
+                        application.exit(1);
+                        return;
+                    }
+                    controller.searchSessionReset();
+                    viewer.addSearchRun(QString::fromLocal8Bit(argv[1]),
+                                        QString::fromLocal8Bit(argv[2]),
+                                        bestFrames, bestInputs);
                     viewer.jumpToStart();
                     QCoreApplication::processEvents();
                     auto *const checkpointSplitOverlay =
@@ -7425,6 +7837,8 @@ int main(int argc, char **argv) {
                                             engine.rootObjects().isEmpty()
                                             ? nullptr
                                             : engine.rootObjects().front();
+                                    auto *const currentWindow =
+                                            qobject_cast<QQuickWindow *>(currentRoot);
                                     const auto invokeCurrentManualKey =
                                             [currentRoot](
                                                     Qt::Key key,
@@ -7467,7 +7881,7 @@ int main(int argc, char **argv) {
                                                             QStringLiteral(
                                                                     "manualInputFocus")));
                                     const auto sendCameraKeyPhase =
-                                            [currentManualInputFocus](
+                                            [currentManualInputFocus, currentWindow](
                                                     QEvent::Type type,
                                                     int key,
                                                     Qt::KeyboardModifiers modifiers) {
@@ -7477,7 +7891,7 @@ int main(int argc, char **argv) {
                                                 }
                                                 QKeyEvent event(type, key, modifiers);
                                                 QCoreApplication::sendEvent(
-                                                        currentManualInputFocus,
+                                                        currentWindow,
                                                         &event);
                                                 QCoreApplication::processEvents();
                                                 return event.isAccepted();
@@ -7497,9 +7911,24 @@ int main(int argc, char **argv) {
                                             };
                                     if (currentViewport != nullptr &&
                                         currentManualInputFocus != nullptr) {
-                                        QMetaObject::invokeMethod(
-                                                currentManualInputFocus,
-                                                "forceActiveFocus");
+                                        const bool savedTakeOver = viewer.takeOverOnInput();
+                                        const bool savedWhiteboardActive = viewer.whiteboard()->active();
+                                        viewer.whiteboard()->setActive(false);
+                                        currentViewport->setProperty("freeCamera", false);
+                                        currentViewport->setProperty("orbitalCamera", true);
+                                        viewer.setTakeOverOnInput(false);
+                                        currentManualInputFocus->setFocus(false);
+                                        const QPointF click = currentManualInputFocus->mapToScene(
+                                                QPointF(currentManualInputFocus->width() * 0.25,
+                                                        currentManualInputFocus->height() * 0.65));
+                                        QMouseEvent press(QEvent::MouseButtonPress, click,
+                                                currentWindow->mapToGlobal(click.toPoint()),
+                                                Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+                                        QCoreApplication::sendEvent(currentWindow, &press);
+                                        QMouseEvent release(QEvent::MouseButtonRelease, click,
+                                                currentWindow->mapToGlobal(click.toPoint()),
+                                                Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+                                        QCoreApplication::sendEvent(currentWindow, &release);
                                         QCoreApplication::processEvents();
                                         const bool rowNear =
                                                 sendCameraKey(
@@ -7568,6 +7997,17 @@ int main(int argc, char **argv) {
                                                 rowNear && keypadInternal &&
                                                 keypadFar && firstFree &&
                                                 repeatedFree && restoredFar;
+                                        if (!cameraShortcutKeysValid) {
+                                            std::cerr << "Camera routing focus="
+                                                      << (currentWindow->activeFocusItem()
+                                                          ? currentWindow->activeFocusItem()->objectName().toStdString()
+                                                          : "none")
+                                                      << " keys=" << rowNear << keypadInternal
+                                                      << keypadFar << firstFree << repeatedFree
+                                                      << restoredFar << '\n';
+                                        }
+                                        viewer.setTakeOverOnInput(savedTakeOver);
+                                        viewer.whiteboard()->setActive(savedWhiteboardActive);
                                     }
                                     QObject *const currentManualDriveButton =
                                             currentRoot->findChild<QObject *>(

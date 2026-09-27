@@ -498,6 +498,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/InputDeletionSettings.qml
         qml/settings/InputInsertionSettings.qml
         qml/settings/ModifierComposition.qml
+        qml/settings/ModifierPassControls.qml
         qml/settings/PointTargetEvaluationSettings.qml
         qml/settings/PoseTargetEvaluationSettings.qml
         qml/settings/RandomSteeringMutationSettings.qml
@@ -1239,6 +1240,13 @@ if(BUILD_TESTING)
         set_tests_properties(forevertas-viewer-qml PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
             TIMEOUT 180)
+        add_test(NAME forevertas-pass-management-qml
+                 COMMAND forevertas-viewer-qml-smoke
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                     "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-pass-management-qml PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software;FOREVERTAS_PASS_UI_ONLY=1"
+            TIMEOUT 30)
     endif()
 endif()
 

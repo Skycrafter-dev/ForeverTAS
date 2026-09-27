@@ -56,6 +56,7 @@ signals:
             forevertas::app::SearchImprovementPtr improvement);
     void cycleSaved(const QString &mapKey, const QString &directory,
                     std::uint64_t restartNumber);
+    void sessionCreated(const QString &mapKey, const QString &directory);
     void succeeded(forevertas::app::SearchCompletionPtr completion);
     void cancelled();
     void failed(const QString &message);

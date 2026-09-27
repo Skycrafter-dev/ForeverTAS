@@ -14,8 +14,16 @@ Item {
     readonly property var settings: controller.evaluationTargetSettings
     readonly property var samples: {
         const selected = viewer.selectedRunId
-        const paths = viewer.trajectoryPaths
-        return viewer.selectedRunSamples()
+        const runs = viewer.runOptions
+        // Materialize once: repeatedly indexing a QVariantList from JavaScript
+        // wraps its maps and vectors again on every access.
+        return viewer.selectedRunSamples().map(sample => ({
+            timeMs: Number(sample.timeMs), position: sample.position,
+            rotation: sample.rotation, velocity: sample.velocity,
+            checkpointsCollected: sample.checkpointsCollected,
+            raceCompleted: sample.raceCompleted,
+            finishTimeMs: sample.finishTimeMs, stuntsScore: sample.stuntsScore
+        }))
     }
     readonly property var selectedPose: controller.poseTargets.selectedTarget
     readonly property var selectedCustom:
@@ -23,7 +31,10 @@ Item {
     property var dragPreview: null
     property var summary: ({ label: "", event: null })
     // A drag may emit many setting changes before the next rendered frame.
-    onSamplesChanged: Qt.callLater(refreshSummary)
+    onSamplesChanged: {
+        Qt.callLater(refreshSummary)
+        projectionDirty = true
+    }
     onTargetIdChanged: Qt.callLater(refreshSummary)
     onSettingsChanged: Qt.callLater(refreshSummary)
     onSelectedPoseChanged: Qt.callLater(refreshSummary)
@@ -76,21 +87,32 @@ Item {
             context["stunt.deadline"] = deadline
         return context
     }
-    readonly property var projectionFrame: {
+    readonly property var requestedProjectionFrame: {
         const camera = projector.camera
         return [camera.scenePosition, camera.sceneRotation,
-                camera.fieldOfView, projector.width, projector.height]
+                camera.fieldOfView, projector.width, projector.height,
+                camera.clipNear]
+    }
+    property var projectionFrame: null
+    property bool projectionDirty: true
+    onRequestedProjectionFrameChanged: projectionDirty = true
+    FrameAnimation {
+        running: root.visible && root.projectionDirty
+        onTriggered: {
+            root.projectionDirty = false
+            root.projectionFrame = root.requestedProjectionFrame
+        }
     }
     readonly property var screenSamples: {
         const cameraFrame = projectionFrame
+        const runSamples = samples
         if (!cameraFrame)
             return []
-        return samples.map(sample => {
-            const screen = projector.mapFrom3DScene(sample.position)
-            return { timeMs: sample.timeMs,
-                     point: screen && screen.z > 0
-                            ? Qt.point(screen.x, screen.y) : null }
-        })
+        return viewer.projectSelectedRunSamples(
+            cameraFrame[0], cameraFrame[1], cameraFrame[2],
+            cameraFrame[3], cameraFrame[4], cameraFrame[5])
+            .map(sample => ({timeMs: Number(sample.timeMs),
+                             point: sample.point ?? null}))
     }
     readonly property var velocityVisual: calculateVelocityVisual()
     readonly property var passColors: ["#b782df", "#f09d6c", "#69bde7",
@@ -130,8 +152,7 @@ Item {
         const evaluation = windowRange("evaluation", -1)
         const min = evaluation[0]
         const max = evaluation[1]
-        if (Number.isFinite(min) && Number.isFinite(max)
-            && max > min) {
+        if (Number.isFinite(min) && Number.isFinite(max)) {
             result.push({ kind: "evaluation", endpoint: "minTimeMs",
                           time: min, other: max, index: -1 })
             result.push({ kind: "evaluation", endpoint: "maxTimeMs",
@@ -142,8 +163,7 @@ Item {
             const window = windowRange("modifier", index)
             const start = window[0]
             const end = window[1]
-            if (!Number.isFinite(start) || !Number.isFinite(end)
-                || end <= start)
+            if (!Number.isFinite(start) || !Number.isFinite(end))
                 continue
             result.push({ kind: "modifier", endpoint: "minTimeMs",
                           time: start, other: end, index: index })
@@ -196,33 +216,36 @@ Item {
     }
 
     function sampleAt(time) {
-        if (!samples.length || time < samples[0].timeMs
+        if (!Number.isFinite(time) || !samples.length || time < samples[0].timeMs
             || time > samples[samples.length - 1].timeMs)
             return null
-        let before = samples[0]
-        for (let index = 1; index < samples.length; ++index) {
-            const after = samples[index]
-            if (after.timeMs >= time) {
-                const portion = after.timeMs === before.timeMs ? 0
-                    : Math.max(0, Math.min(1,
-                        (time - before.timeMs)
-                        / (after.timeMs - before.timeMs)))
-                return {
-                    timeMs: time,
-                    position: Qt.vector3d(
-                        before.position.x + (after.position.x
-                            - before.position.x) * portion,
-                        before.position.y + (after.position.y
-                            - before.position.y) * portion,
-                        before.position.z + (after.position.z
-                            - before.position.z) * portion),
-                    stuntsScore: portion < 1 ? before.stuntsScore
-                                              : after.stuntsScore
-                }
-            }
-            before = after
+        let low = 0
+        let high = samples.length - 1
+        while (low < high) {
+            const middle = Math.floor((low + high) / 2)
+            if (samples[middle].timeMs < time)
+                low = middle + 1
+            else
+                high = middle
         }
-        return null
+        if (low === 0)
+            return samples[0]
+        const before = samples[low - 1]
+        const after = samples[low]
+        const portion = after.timeMs === before.timeMs ? 0
+            : Math.max(0, Math.min(1,
+                (time - before.timeMs) / (after.timeMs - before.timeMs)))
+        return {
+            timeMs: time,
+            position: Qt.vector3d(
+                before.position.x + (after.position.x
+                    - before.position.x) * portion,
+                before.position.y + (after.position.y
+                    - before.position.y) * portion,
+                before.position.z + (after.position.z
+                    - before.position.z) * portion),
+            stuntsScore: portion < 1 ? before.stuntsScore : after.stuntsScore
+        }
     }
 
     function cuboidEntry(a, b, box) {
@@ -530,9 +553,20 @@ Item {
             return []
         const paths = []
         let current = []
-        for (const frame of screenSamples) {
-            if (frame.timeMs < minimum || frame.timeMs > maximum)
-                continue
+        const frames = screenSamples
+        let low = 0
+        let high = frames.length
+        while (low < high) {
+            const middle = Math.floor((low + high) / 2)
+            if (frames[middle].timeMs < minimum)
+                low = middle + 1
+            else
+                high = middle
+        }
+        for (let index = low; index < frames.length; ++index) {
+            const frame = frames[index]
+            if (frame.timeMs > maximum)
+                break
             const point = frame.point
             if (!point) {
                 if (current.length > 1)

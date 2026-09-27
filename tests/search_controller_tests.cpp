@@ -2122,6 +2122,9 @@ bool TestAutorestartHistory(const QString &packsDirectory,
                                           QStringLiteral("20"));
     controller.setAutoRestartMode(QStringLiteral("attempts"));
     controller.setAutoRestartAttempts(QStringLiteral("3"));
+    int sessionResets = 0;
+    QObject::connect(&controller, &SearchController::searchSessionReset,
+                     &controller, [&sessionResets]() { ++sessionResets; });
     if (!Check(controller.canStart(),
                "autorestart test configuration could not start")) {
         return false;
@@ -2135,6 +2138,11 @@ bool TestAutorestartHistory(const QString &packsDirectory,
                       return !controller.running();
                   }, 30000), "autorestart Stop did not finish and save");
     const QVariantList rows = controller.cycleRows();
+    const QString firstSession = controller.selectedSessionDirectory();
+    okay &= Check(controller.baseInputScript() == QStringLiteral("0.00 press up"),
+                  "stopping autorestart overwrote the base input script");
+    okay &= Check(sessionResets == 1 && !firstSession.isEmpty(),
+                  "search cycles reset previews within the same session");
     const QString selectedInputFile = rows.isEmpty() ? QString{} :
             rows.last().toMap().value(QStringLiteral("inputFile"))
                     .toString();
@@ -2185,6 +2193,35 @@ bool TestAutorestartHistory(const QString &packsDirectory,
                               !restored.selectedInputsText().isEmpty(),
                       "selecting a saved row did not load its inputs");
     }
+    controller.startSearch();
+    okay &= Check(sessionResets == 2 && controller.cycleRows().isEmpty() &&
+                          controller.selectedInputsText().isEmpty() &&
+                          controller.selectedSessionDirectory().isEmpty(),
+                  "new search retained the previous session's history");
+    okay &= Check(WaitUntil([&controller]() {
+                      return !controller.selectedSessionDirectory().isEmpty();
+                  }, 30000), "new session was not announced before completion");
+    const QString newSession = controller.selectedSessionDirectory();
+    int previousIndex = -1;
+    const QVariantList sessions = controller.sessionOptions();
+    for (int i = 0; i < sessions.size(); ++i) {
+        if (sessions[i].toMap().value(QStringLiteral("directory")).toString() ==
+            firstSession) previousIndex = i;
+    }
+    controller.selectSession(previousIndex);
+    okay &= Check(controller.selectedSessionDirectory() == newSession &&
+                          newSession != firstSession && sessionResets == 2,
+                  "history selection replaced a running search session");
+    controller.stopSearch();
+    okay &= Check(WaitUntil([&controller]() { return !controller.running(); },
+                           30000), "second session did not stop");
+    controller.selectSession(previousIndex);
+    okay &= Check(controller.selectedSessionDirectory() == firstSession &&
+                          sessionResets == 3 && !controller.cycleRows().isEmpty(),
+                  "switching sessions did not reset previews and restore history");
+    controller.selectSession(previousIndex);
+    okay &= Check(sessionResets == 3,
+                  "reselecting the same session cleared its previews");
     return okay;
 }
 

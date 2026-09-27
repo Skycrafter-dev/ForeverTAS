@@ -1274,6 +1274,11 @@ void SearchController::startSearch() {
         }
     }
 
+    emit searchSessionReset();
+    selectedSessionDirectory_.clear();
+    cycleRows_.clear();
+    selectedInputsText_.clear();
+    emit historyChanged();
     setResultText({});
     setBestInputsText({});
     setLiveMetrics({}, {}, {}, false);
@@ -1357,6 +1362,12 @@ void SearchController::startSearch() {
             this,
             [this](SearchImprovementPtr improvement) {
                 emit searchImprovement(std::move(improvement));
+            });
+    connect(worker, &SearchWorker::sessionCreated, this,
+            [this](const QString &mapKey, const QString &directory) {
+                sessionOptions_ = SearchSessionStore::SessionsForMap(mapKey);
+                selectedSessionDirectory_ = directory;
+                emit historyChanged();
             });
     connect(worker, &SearchWorker::cycleSaved, this,
             [this](const QString &mapKey, const QString &directory,
@@ -1648,6 +1659,7 @@ SearchController::ValidationResult SearchController::validate() const {
 }
 
 void SearchController::refreshSessions() {
+    emit searchSessionReset();
     if (!QFileInfo(packsDirectory_).isDir() ||
         !QFileInfo(replayPath_).isFile()) {
         sessionOptions_.clear();
@@ -1681,10 +1693,12 @@ void SearchController::refreshSessions() {
 }
 
 void SearchController::selectSession(int index) {
-    if (index < 0 || index >= sessionOptions_.size()) return;
-    selectedSessionDirectory_ = sessionOptions_[index].toMap()
+    if (running_ || index < 0 || index >= sessionOptions_.size()) return;
+    const QString directory = sessionOptions_[index].toMap()
                                         .value(QStringLiteral("directory"))
                                         .toString();
+    if (directory != selectedSessionDirectory_) emit searchSessionReset();
+    selectedSessionDirectory_ = directory;
     cycleRows_ = SearchSessionStore::Cycles(selectedSessionDirectory_);
     selectedInputsText_.clear();
     emit historyChanged();

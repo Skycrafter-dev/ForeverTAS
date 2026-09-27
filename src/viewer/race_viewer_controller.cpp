@@ -15,6 +15,7 @@
 #include <QCryptographicHash>
 #include <QFileInfo>
 #include <QMetaObject>
+#include <QMatrix4x4>
 #include <QJsonDocument>
 #include <QQmlEngine>
 #include <QColor>
@@ -2409,6 +2410,38 @@ QVariantList RaceViewerController::selectedRunSamples() const {
     return samples;
 }
 
+QVariantList RaceViewerController::projectSelectedRunSamples(
+        const QVector3D &cameraPosition, const QQuaternion &cameraRotation,
+        double fieldOfView, double width, double height, double clipNear) const {
+    QVariantList samples;
+    const RaceViewerRun *const run = selectedRun();
+    if (run == nullptr || width <= 0 || height <= 0 ||
+        fieldOfView <= 0 || fieldOfView >= 180) return samples;
+
+    // The viewer uses an unscaled, vertical-FOV perspective camera. Build its
+    // transform once, rather than asking View3D to invert it for every tick.
+    QMatrix4x4 view;
+    view.rotate(cameraRotation.conjugated());
+    view.translate(-cameraPosition);
+    QMatrix4x4 projection;
+    projection.perspective(static_cast<float>(fieldOfView),
+                           static_cast<float>(width / height), 0.01f, 1.0f);
+    const QMatrix4x4 transform = projection * view;
+    samples.reserve(static_cast<qsizetype>(run->frames.size()));
+    for (const RaceViewerFrame &frame : run->frames) {
+        const QVector4D point = transform * QVector4D(frame.position, 1.0f);
+        QVariantMap sample{{QStringLiteral("timeMs"),
+                            static_cast<qlonglong>(frame.timeMs)}};
+        if (point.w() > clipNear) {
+            sample.insert(QStringLiteral("point"),
+                          QPointF((point.x() / point.w() + 1.0) * width * 0.5,
+                                  (1.0 - point.y() / point.w()) * height * 0.5));
+        }
+        samples.push_back(std::move(sample));
+    }
+    return samples;
+}
+
 QQuick3DGeometry *RaceViewerController::timeRangeGeometry(
         const QString &id, const QString &runId,
         qint64 minimumMs, qint64 maximumMs, bool dashed) {
@@ -4325,6 +4358,43 @@ void RaceViewerController::clearPreviewTrajectories() {
         emit trajectoriesChanged();
     }
     setStatusText(QStringLiteral("Preview trajectories cleared"));
+}
+
+void RaceViewerController::clearSearchResults() {
+    const auto isBest = [](const RaceViewerRun &run) {
+        return run.id == QStringLiteral("best");
+    };
+    const bool hadBest = std::any_of(runs_.begin(), runs_.end(), isBest);
+    if (!hadBest && !pendingRun_ && !hasPreviewTrajectories()) return;
+    const bool rebuildPending = storedRunBuildPending_ || storedRunThread_ != nullptr;
+    // In-flight rebuilds must not resurrect a result from the old session.
+    cancelStoredRunRebuilds();
+    pendingRun_.reset();
+    clearPreviewTrajectories();
+    const bool selected = selectedRunId_ == QStringLiteral("best");
+    if (selected) pause();
+    runs_.erase(std::remove_if(runs_.begin(), runs_.end(), isBest), runs_.end());
+    trajectoryPaths_.erase(
+            std::remove_if(trajectoryPaths_.begin(), trajectoryPaths_.end(),
+                           [](const QVariant &path) {
+                               return path.toMap().value(QStringLiteral("runId")) ==
+                                       QStringLiteral("best");
+                           }),
+            trajectoryPaths_.end());
+    bestTrajectoryGeometry_.clearMesh();
+    ++runGeometryRevision_;
+    if (selected) {
+        selectedRunId_ = runs_.empty() ? QString{} : runs_.front().id;
+        emit selectedRunChanged();
+    }
+    if (hadBest) {
+        emit runsChanged();
+        emit trajectoriesChanged();
+        refreshSelectedRun();
+        emit timelineChanged();
+        emit timeChanged();
+    }
+    if (rebuildPending) scheduleStoredRunRebuilds();
 }
 
 void RaceViewerController::scheduleInputPreviewRebuild() {

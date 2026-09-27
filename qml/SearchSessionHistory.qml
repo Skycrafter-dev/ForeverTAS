@@ -40,11 +40,13 @@ ColumnLayout {
         return result
     }
 
-    function chooseRow(index) {
+    function chooseRow(index, preview = true) {
         if (index < 0 || index >= controller.cycleRows.length)
             return
         controller.selectCycle(index)
         selectedRestart = Number(controller.cycleRows[index].restart)
+        if (!preview)
+            return
         let session = null
         for (let i = 0; i < controller.sessionOptions.length; ++i) {
             if (controller.sessionOptions[i].directory ===
@@ -85,7 +87,7 @@ ColumnLayout {
                     Qt.callLater(() => {
                         if (root.controller.selectedSessionDirectory ===
                                 directory)
-                            root.chooseRow(count - 1)
+                            root.chooseRow(count - 1, false)
                     })
                 else
                     root.selectedRestart = -1
@@ -97,7 +99,7 @@ ColumnLayout {
         observedDirectory = controller.selectedSessionDirectory
         observedRowCount = controller.cycleRows.length
         if (observedRowCount > 0)
-            Qt.callLater(() => chooseRow(observedRowCount - 1))
+            Qt.callLater(() => chooseRow(observedRowCount - 1, false))
     }
 
     RowLayout {
@@ -110,6 +112,7 @@ ColumnLayout {
         StyledComboBox {
             id: sessionSelector
             objectName: "sessionSelector"
+            enabled: !root.controller.running
             Layout.fillWidth: true
             model: root.controller.sessionOptions
             textRole: "label"
@@ -125,6 +128,7 @@ ColumnLayout {
             onActivated: index => {
                 root.selectedRestart = -1
                 root.controller.selectSession(index)
+                root.chooseRow(root.controller.cycleRows.length - 1)
             }
             Connections {
                 target: root.controller

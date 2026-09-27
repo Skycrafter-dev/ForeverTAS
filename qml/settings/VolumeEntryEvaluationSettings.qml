@@ -456,13 +456,4 @@ ColumnLayout {
         }
     }
 
-    Label {
-        Layout.fillWidth: true
-        text: root.customActive
-              ? qsTr("Active custom-volume search target")
-              : qsTr("Active cuboid search target")
-        color: ThemeControls.AppTheme.success
-        font.pixelSize: 11
-        font.weight: Font.Medium
-    }
 }

@@ -305,6 +305,7 @@ signals:
     void resultChanged();
     void autoRestartChanged();
     void historyChanged();
+    void searchSessionReset();
     void searchImprovement(
             forevertas::app::SearchImprovementPtr improvement);
     void searchCompleted(forevertas::app::SearchCompletionPtr completion);

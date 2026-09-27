@@ -275,6 +275,10 @@ public:
     QVector3D carVelocity() const;
     QVector3D carHeading() const;
     Q_INVOKABLE QVariantList selectedRunSamples() const;
+    Q_INVOKABLE QVariantList projectSelectedRunSamples(
+            const QVector3D &cameraPosition, const QQuaternion &cameraRotation,
+            double fieldOfView, double width, double height,
+            double clipNear) const;
     Q_INVOKABLE QQuick3DGeometry *timeRangeGeometry(
             const QString &id, const QString &runId,
             qint64 minimumMs, qint64 maximumMs, bool dashed);
@@ -384,6 +388,7 @@ public slots:
                                                 bool visible);
     Q_INVOKABLE bool hasPreviewTrajectories() const;
     Q_INVOKABLE void clearPreviewTrajectories();
+    void clearSearchResults();
     Q_INVOKABLE void refreshInputPreview();
     Q_INVOKABLE void loadMap(const QString &packsDirectory,
                             const QString &replayPath);

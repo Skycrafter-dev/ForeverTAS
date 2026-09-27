@@ -17,8 +17,8 @@ ApplicationWindow {
     property bool codeEditorExpanded: false
     readonly property bool rayTracingEnabled:
         renderMode === "textured-rt"
-    property real measuredFps: 0
-    property int framesSinceSample: 0
+    readonly property real measuredFps: rayTracingEnabled
+        ? rayTracingTrajectoryOverlay.renderStats.fps : rasterMapView.renderStats.fps
     onRenderModeChanged: editHistory.noteChange()
     readonly property var settingsWheelRedirectorObject:
         settingsWheelRedirector
@@ -99,23 +99,6 @@ ApplicationWindow {
         function onColorChanged() { editHistory.noteChange() }
         function onSizeChanged() { editHistory.noteChange() }
         function onMapKeyChanged() { editHistory.reset() }
-    }
-
-    FrameAnimation {
-        id: frameRateMonitor
-        objectName: "frameRateMonitor"
-        running: window.visible
-        onTriggered: ++window.framesSinceSample
-    }
-
-    Timer {
-        interval: 1000
-        repeat: true
-        running: window.visible
-        onTriggered: {
-            window.measuredFps = window.framesSinceSample
-            window.framesSinceSample = 0
-        }
     }
 
     function runColor(index) {
@@ -265,6 +248,10 @@ ApplicationWindow {
     Component.onCompleted: Qt.callLater(function() {
         if (window.viewer.loaded)
             viewport.resetCameraFocus()
+        else if (!window.viewer.loading && window.controller.packsDirectory.length
+                 && window.controller.replayPath.length)
+            window.viewer.loadMap(window.controller.packsDirectory,
+                                  window.controller.replayPath)
     })
 
     Connections {
@@ -954,8 +941,9 @@ ApplicationWindow {
                         const timelineTime = window.viewer.timeMs
                         const selectedCarPosition = window.viewer.carPosition
                         const context = evaluationOverlay.telemetryContext
+                        const frame = evaluationOverlay.projectionFrame
                         return window.viewer.renderTelemetryWithContext(
-                                    script, viewCamera.scenePosition,
+                                    script, frame ? frame[0] : viewCamera.scenePosition,
                                     context, true)
                     }
                     readonly property bool carCameraActive:
@@ -3371,10 +3359,7 @@ ApplicationWindow {
 
                         onPressed: mouse => {
                             editHistory.beginGesture()
-                            if (window.viewer.manualDriving
-                                || window.viewer.takeOverOnInput
-                                || viewport.freeCamera)
-                                manualInputFocus.forceActiveFocus()
+                            manualInputFocus.forceActiveFocus()
                             previousX = mouse.x
                             previousY = mouse.y
                             viewport.beginViewRotation()
@@ -3901,32 +3886,6 @@ ApplicationWindow {
 
 
                             ThemedButton {
-                                id: clearPreviewTrajectoriesButton
-                                objectName: "clearPreviewTrajectoriesButton"
-                                Layout.preferredWidth:
-                                    raceViewerHeader.width < 650 ? 82 : 104
-                                Layout.alignment: Qt.AlignVCenter
-                                visible: window.viewer.selectedRunId === "best"
-                                enabled: {
-                                    const paths = window.viewer.trajectoryPaths
-                                    return visible
-                                        && window.viewer
-                                            .hasPreviewTrajectories()
-                                        && !window.viewer.manualDriving
-                                }
-                                text: raceViewerHeader.width < 470
-                                      ? qsTr("Clear")
-                                      : qsTr("Clear previews")
-                                font.pixelSize: 10
-                                onClicked:
-                                    window.viewer.clearPreviewTrajectories()
-                                ToolTip.visible: hovered
-                                ToolTip.delay: 350
-                                ToolTip.text: qsTr(
-                                    "Remove all search preview trajectories")
-                            }
-
-                            ThemedButton {
                                 objectName: "resetViewButton"
                                 Layout.alignment: Qt.AlignVCenter
                                 Layout.preferredWidth:
@@ -4450,11 +4409,78 @@ ApplicationWindow {
                                     ? window.width : 480
             color: AppTheme.panel
 
+            ColumnLayout {
+                id: settingsNavigation
+                anchors.top: parent.top
+                anchors.left: parent.left
+                anchors.right: parent.right
+                anchors.margins: 20
+                spacing: 8
+
+                TabBar {
+                    id: toolTabs
+                    objectName: "toolTabs"
+                    Layout.fillWidth: true
+                    onCurrentIndexChanged: {
+                        if (currentIndex === 1) {
+                            if (window.viewer.loaded)
+                                window.viewer.startSimulationDebugger()
+                        } else {
+                            window.codeEditorExpanded = false
+                            window.viewer.stopSimulationDebugger()
+                        }
+                        Qt.callLater(function() {
+                            const content = settingsScroll.contentItem
+                            content.contentY = toolTabs.currentIndex === 1
+                                ? Math.min(simulationDebuggerPanelHost.y,
+                                    Math.max(0, content.contentHeight - content.height))
+                                : 0
+                        })
+                    }
+
+                    ThemedTabButton {
+                        id: bruteforceTabButton
+                        objectName: "bruteforceTab"
+                        text: qsTr("Bruteforce")
+                    }
+                    ThemedTabButton {
+                        id: codeTabButton
+                        objectName: "codeDebuggerTab"
+                        text: qsTr("Code")
+                    }
+                }
+
+                TabBar {
+                    id: bruteforceSettingsTabs
+                    objectName: "bruteforceSettingsTabs"
+                    Layout.fillWidth: true
+                    visible: toolTabs.currentIndex === 0
+                    onCurrentIndexChanged: Qt.callLater(function() {
+                        settingsScroll.contentItem.contentY = 0
+                    })
+                    ThemedTabButton { text: qsTr("Base") }
+                    ThemedTabButton { text: qsTr("Target") }
+                    ThemedTabButton { text: qsTr("Passes") }
+                    ThemedTabButton { text: qsTr("Search") }
+                }
+
+                ModifierPassControls {
+                    Layout.fillWidth: true
+                    visible: toolTabs.currentIndex === 0
+                             && bruteforceSettingsTabs.currentIndex === 2
+                    composition: modifierComposition
+                }
+            }
+
             ScrollView {
                 id: settingsScroll
 
                 objectName: "settingsScroll"
-                anchors.fill: parent
+                anchors.top: settingsNavigation.bottom
+                anchors.topMargin: 12
+                anchors.bottom: parent.bottom
+                anchors.left: parent.left
+                anchors.right: parent.right
                 clip: true
                 contentWidth: availableWidth
                 ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
@@ -4473,10 +4499,14 @@ ApplicationWindow {
                     Item {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 12
+                        visible: toolTabs.currentIndex === 1
+                                 || bruteforceSettingsTabs.currentIndex === 0
                     }
 
                     ColumnLayout {
                         objectName: "packsDirectorySection"
+                        visible: toolTabs.currentIndex === 1
+                                 || bruteforceSettingsTabs.currentIndex === 0
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4573,6 +4603,8 @@ ApplicationWindow {
                         id: replaySection
 
                         objectName: "replaySection"
+                        visible: toolTabs.currentIndex === 1
+                                 || bruteforceSettingsTabs.currentIndex === 0
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4662,78 +4694,6 @@ ApplicationWindow {
                         }
                     }
 
-                    TabBar {
-                        id: toolTabs
-                        objectName: "toolTabs"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        onCurrentIndexChanged: {
-                            if (currentIndex === 1) {
-                                if (window.viewer.loaded)
-                                    window.viewer.startSimulationDebugger()
-                            } else {
-                                window.codeEditorExpanded = false
-                                window.viewer.stopSimulationDebugger()
-                            }
-                        }
-
-                        ThemedTabButton {
-                            id: bruteforceTabButton
-                            objectName: "bruteforceTab"
-                            text: qsTr("Bruteforce")
-                        }
-                        ThemedTabButton {
-                            id: codeTabButton
-                            objectName: "codeDebuggerTab"
-                            text: qsTr("Code")
-                        }
-                    }
-
-                    ScrollView {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        Layout.preferredHeight: 46
-                        visible: toolTabs.currentIndex === 0
-                        ScrollBar.horizontal.policy: ScrollBar.AsNeeded
-                        ScrollBar.vertical.policy: ScrollBar.AlwaysOff
-                        contentWidth: bruteforceSettingsTabs.implicitWidth
-
-                        TabBar {
-                            id: bruteforceSettingsTabs
-                            objectName: "bruteforceSettingsTabs"
-                            width: Math.max(parent.width,
-                                            implicitWidth)
-                            ThemedTabButton { text: qsTr("Base") }
-                            ThemedTabButton { text: qsTr("Target") }
-                            Repeater {
-                                model: window.controller.modifierPasses
-                                ThemedTabButton {
-                                    text: qsTr("Pass %1").arg(index + 1)
-                                }
-                            }
-                            ThemedTabButton { text: qsTr("Search") }
-                        }
-                    }
-
-                    ThemedButton {
-                        objectName: "addPassTabButton"
-                        Layout.leftMargin: 20
-                        visible: toolTabs.currentIndex === 0
-                        enabled: !window.controller.running
-                        text: "+"
-                        ToolTip.visible: hovered
-                        ToolTip.text: qsTr("Add input pass")
-                        onClicked: {
-                            const options = window.controller.modifierOptions
-                            if (options.length === 0)
-                                return
-                            window.controller.addModifierPass(options[0].id)
-                            bruteforceSettingsTabs.currentIndex =
-                                window.controller.modifierPasses.length + 1
-                        }
-                    }
 
                     ConfigurationSection {
                         objectName: "baseInputScriptSection"
@@ -4833,6 +4793,8 @@ ApplicationWindow {
                         id: appearanceControls
 
                         objectName: "appearanceControls"
+                        visible: toolTabs.currentIndex === 1
+                                 || bruteforceSettingsTabs.currentIndex === 0
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -4870,7 +4832,7 @@ ApplicationWindow {
 
                     ColumnLayout {
                         visible: bruteforceSettingsTabs.currentIndex ===
-                                 window.controller.modifierPasses.length + 2
+                                 3
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -5112,12 +5074,13 @@ ApplicationWindow {
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
                         color: AppTheme.border
+                        visible: bruteforceSettingsTabs.currentIndex === 3
                     }
 
                     ConfigurationSection {
                         objectName: "conditionsSection"
                         visible: bruteforceSettingsTabs.currentIndex ===
-                                 window.controller.modifierPasses.length + 2
+                                 3
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -5191,18 +5154,17 @@ ApplicationWindow {
 
                     ConfigurationSection {
                         objectName: "modifierSection"
-                        visible: bruteforceSettingsTabs.currentIndex >= 2
-                                 && bruteforceSettingsTabs.currentIndex <
-                                    window.controller.modifierPasses.length + 2
+                        visible: bruteforceSettingsTabs.currentIndex === 2
+                                 && window.controller.modifierPasses.length > 0
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
-                        title: qsTr("Input modifiers")
+                        title: qsTr("Pass settings")
 
                         ModifierComposition {
+                            id: modifierComposition
                             Layout.fillWidth: true
-                            activePassIndex:
-                                bruteforceSettingsTabs.currentIndex - 2
+                            onPassActivated: settingsScroll.contentItem.contentY = 0
                             controller: window.controller
                             viewer: window.viewer
                             options: window.controller.modifierOptions
@@ -5213,7 +5175,7 @@ ApplicationWindow {
                     ConfigurationSection {
                         objectName: "searchSection"
                         visible: bruteforceSettingsTabs.currentIndex ===
-                                 window.controller.modifierPasses.length + 2
+                                 3
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
@@ -5287,7 +5249,7 @@ ApplicationWindow {
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
                         visible: bruteforceSettingsTabs.currentIndex ===
-                                 window.controller.modifierPasses.length + 2
+                                 3
                                  && window.controller.simulationBackendId
                                     === "cuda"
                         title: qsTr("CUDA fast mode")
