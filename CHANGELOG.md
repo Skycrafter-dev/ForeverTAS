@@ -2,27 +2,25 @@
 
 ## 0.2.4
 
-Changes since 0.2.2, including the unreleased 0.2.3 improvements.
+Changes since **0.2.2**.
 
 ### New and improved
 
-- **Install once, update in the app.** Windows installers and Linux AppImages can download updates and recommend the right compute package for your GPU. Packages can be switched without losing settings.
-- **More GPU choices.** Added Vulkan and HIP search, dedicated NVIDIA builds, and AMD RX 7000/9000 packages. Regular CUDA now supports older GPUs starting with compute capability 5.0; Fast CUDA requires 7.5 and falls back automatically on older cards.
-- **Automatic search restarts and saved sessions.** Restart after a chosen duration or number of attempts, then browse, sort, preview, and copy saved results.
-- **Custom search objectives.** Combine expressions to minimize, maximize, or match desired values on CPU and supported GPU backends.
-- **Direct trajectory editing.** Drag input-pass windows, evaluation windows, the simulation horizon, and stunt deadlines in the viewer, with visual feedback for evaluation results.
-- **Viewer appearance controls.** Manage runs, overlays, and targets with per-item visibility, color, opacity, line width, and draw-through settings.
-- **Broader undo and redo.** Undo changes to search settings, targets, drawings, and viewer appearance.
-- **Simpler input-pass management.** Stable Base, Target, Passes, and Search tabs keep navigation predictable; add, reorder, and delete controls stay together. Removed redundant target labels.
+- **More ways to search on your GPU:** Vulkan and HIP join CUDA, with dedicated NVIDIA builds and AMD RX 7000/9000 packages.
+- **Simpler installation and updates:** a Windows installer, in-app updates on Windows and Linux, automatic GPU-package recommendations, and package switching without losing settings.
+- **Saved search sessions:** automatically restart after a duration or attempt count, save each cycle, and browse, sort, preview, or copy previous results. Best-run previews belong to the current session.
+- **Custom objectives:** write expressions to minimize, maximize, or reach a chosen value; combine several goals in one search on CPU or GPU.
+- **Reorganized search controls:** dedicated Base, Target, Passes, and Search tabs, visual target selection, and grouped controls for adding, reordering, and deleting input passes.
+- **Edit time ranges in the 3D view:** drag input-pass and evaluation windows, the simulation horizon, and stunt deadlines directly along the trajectory. Capture the current timeline time into a field, or select the full run or the remaining run in one click.
+- **Easier target placement:** pick a point directly in the scene or copy the car/camera position. Set velocity direction from the car's travel, heading, or an axis, with a visible direction arrow and alignment cone.
+- **See what the search evaluates:** visual markers and live measurements for targets, entry/finish events, stunt scores, and satisfied conditions. Telemetry text now supports calculations and these evaluation fields.
+- **Control the viewer's appearance:** a Runs/Overlays/Targets panel with visibility, colors, opacity, line widths, dashed lines, and draw-through options for individual items.
+- **Undo and redo across the editor:** search settings, input passes, target edits, drawings, telemetry, and appearance changes, not just the base input script.
 
-### Fixes
+### Fixes from 0.2.2
 
-- Fixed multi-second freezes when orbiting the 3D view by avoiding repeated trajectory and telemetry rebuilds for every mouse event.
-- Camera shortcuts **1, 2, 3, and 7** now work after clicking the race preview.
-- Starting a new search session clears the previous session's Best run and improvement previews automatically. The Clear previews button is no longer needed.
-- Stopping a search no longer replaces the Inputs preview automatically. Base inputs stay unchanged unless explicitly edited or replaced.
-- Targets and time-window handles remain visible and editable when the search horizon is too short or a window has zero length.
-- Corrected pose-target yaw, pitch, and roll to match the viewer's coordinate system.
-- Search previews no longer depend on the chosen GPU backend; improved results are checked on CPU before being accepted.
-- GPU calibration is bounded so it cannot consume the whole configured search duration. Fixed CPU input-mutation sampling differences between Windows and Linux.
-- Fixed packaged update connections and leftover GPU libraries when switching Windows compute packages. The viewer can run without an NVIDIA driver.
+- Corrected yaw, pitch, and roll in pose targets and condition scripts so they match the car's orientation in the viewer.
+- Camera shortcuts **1, 2, 3, and 7** work after clicking the race preview, rather than requiring focus on the camera controls.
+- Fixed CUDA compatibility on older NVIDIA GPUs. Regular CUDA supports compute capability 5.0+; unavailable Fast CUDA automatically falls back to regular CUDA.
+- Loading maps and viewing trajectories no longer depend on the selected GPU search backend being available.
+- Made CPU input-mutation sampling consistent between Windows and Linux for reproducible seeded searches.
