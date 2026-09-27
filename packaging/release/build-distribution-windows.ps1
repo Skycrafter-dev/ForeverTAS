@@ -184,11 +184,24 @@ foreach ($Name in $BuildOrder) {
         $Options.HipPlatform = "amd"
     }
     if ($Name -eq "amd-rx7000-rx9000") {
-        foreach ($Job in $VariantJobs) {
-            Wait-Job $Job | Out-Null
-            Receive-VariantJob $Job
+        while ($VariantJobs.Count -ge $VariantJobLimit) {
+            $Finished = Wait-Job -Job $VariantJobs -Any
+            Receive-VariantJob $Finished
+            $VariantJobs = @($VariantJobs | Where-Object { $_.Id -ne $Finished.Id })
         }
-        $VariantJobs = @()
+        $Log = Join-Path $TemporaryDist "variant-build.log"
+        New-Item -ItemType Directory -Force -Path $TemporaryDist | Out-Null
+        $Script = Join-Path $RepoRoot "packaging/release/build-windows-amd-variant.ps1"
+        $Job = Start-Job -Name $Name -ScriptBlock {
+            param($Script, $Root, $ReleaseVersion, $Output, $Prebuilt, $LogPath)
+            & $Script -RepoRoot $Root -Version $ReleaseVersion `
+                -DistDirectory $Output -PrebuiltValidatorDirectory $Prebuilt *> $LogPath
+            if (-not $?) { throw "Variant build failed: amd-rx7000-rx9000" }
+        } -ArgumentList $Script, $RepoRoot, $Version, $DistDirectory,
+            ([string]$Options["PrebuiltValidatorDirectory"]), $Log
+        $VariantJobs += $Job
+        Write-Host "Started Windows $Name"
+        continue
     }
     if ($Name -like "nvidia-sm*" -and $Name -ne $NvidiaTemplate) {
         $TemplateDist = Join-Path $RepoRoot "build/distribution-$NvidiaTemplate-dist"

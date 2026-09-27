@@ -87,8 +87,8 @@ reproducible under the same inputs. The SM75 installer staging tree is kept
 for the release run; variant installers copy its verified common runtime and
 replace the two executables instead of decompressing the ZIP again. The ZIP
 overlay's executable hashes are checked against those same build outputs.
-Independent NVIDIA variants run as bounded
-PowerShell jobs (`FOREVERTAS_RELEASE_VARIANT_JOBS`, default 6). Each ZIP is
+Independent NVIDIA variants and AMD staging run as bounded PowerShell jobs
+(`FOREVERTAS_RELEASE_VARIANT_JOBS`, default 6). Each ZIP is
 smoke-tested and each executable's embedded CUDA architecture is inspected
 before its Inno Setup installer is accepted. Installer compression uses the
 faster LZMA2 preset, trading some artifact size for release latency without
