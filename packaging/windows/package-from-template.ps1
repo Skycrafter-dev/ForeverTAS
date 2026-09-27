@@ -24,24 +24,30 @@ if ($Cache -notmatch "(?m)^FOREVERTAS_UPDATE_ASSET_ID:INTERNAL=(windows-$Flavor-
     throw "Compute build has the wrong update asset identity"
 }
 $AssetId = $Matches[1]
-$Staging = Join-Path $BuildDirectory "runtime-template-stage"
+$Archive = Join-Path $DistDirectory ([IO.Path]::GetFileName($TemplateArchive))
+New-Item -ItemType Directory -Force -Path $DistDirectory | Out-Null
+Copy-Item -LiteralPath $TemplateArchive -Destination $Archive -Force
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+$Zip = [IO.Compression.ZipFile]::Open($Archive, [IO.Compression.ZipArchiveMode]::Update)
 try {
-    Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Force -Path $Staging | Out-Null
-    Expand-Archive -LiteralPath $TemplateArchive -DestinationPath $Staging
-    $Roots = @(Get-ChildItem -LiteralPath $Staging -Directory)
-    if ($Roots.Count -ne 1) { throw "The template archive has no single root" }
-    $Root = $Roots[0].FullName
-    Copy-Item -LiteralPath $Executable -Destination (Join-Path $Root "ForeverTAS.exe") -Force
-    Copy-Item -LiteralPath $Worker -Destination (Join-Path $Root "forevertas-simulation-debug-worker.exe") -Force
-    New-Item -ItemType Directory -Force -Path $DistDirectory | Out-Null
-    $Archive = Join-Path $DistDirectory ([IO.Path]::GetFileName($TemplateArchive))
-    Remove-Item $Archive -Force -ErrorAction SilentlyContinue
-    Compress-Archive -LiteralPath $Root -DestinationPath $Archive -CompressionLevel Optimal
-    if ($AssemblyOnly) { return }
-    & (Join-Path $PSScriptRoot "test-portable.ps1") -Archive $Archive
-    & (Join-Path $PSScriptRoot "build-installer.ps1") `
-        -Archive $Archive -AssetId $AssetId -DistDirectory $DistDirectory
+    foreach ($Replacement in @(@("ForeverTAS.exe", $Executable),
+                               @("forevertas-simulation-debug-worker.exe", $Worker))) {
+        $Entries = @($Zip.Entries | Where-Object {
+            $_.FullName -match "^[^/]+/$([regex]::Escape($Replacement[0]))$"
+        })
+        if ($Entries.Count -ne 1) { throw "The template lacks $($Replacement[0])" }
+        $EntryName = $Entries[0].FullName
+        $Timestamp = $Entries[0].LastWriteTime
+        $Entries[0].Delete()
+        $NewEntry = [IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+            $Zip, $Replacement[1], $EntryName,
+            [IO.Compression.CompressionLevel]::Optimal)
+        $NewEntry.LastWriteTime = $Timestamp
+    }
 } finally {
-    Remove-Item $Staging -Recurse -Force -ErrorAction SilentlyContinue
+    $Zip.Dispose()
 }
+if ($AssemblyOnly) { return }
+& (Join-Path $PSScriptRoot "test-portable.ps1") -Archive $Archive
+& (Join-Path $PSScriptRoot "build-installer.ps1") `
+    -Archive $Archive -AssetId $AssetId -DistDirectory $DistDirectory
