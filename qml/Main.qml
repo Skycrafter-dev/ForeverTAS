@@ -5210,8 +5210,7 @@ ApplicationWindow {
                             textRole: "label"
                             valueRole: "id"
                             enabled: !window.controller.running
-                            currentIndex: Math.max(0, indexOfValue(
-                                window.controller.autoRestartMode))
+                            selectedValue: window.controller.autoRestartMode
                             onActivated: selectedIndex =>
                                 window.controller.autoRestartMode =
                                     valueAt(selectedIndex)

@@ -5,6 +5,17 @@ import ".." as ThemeControls
 ComboBox {
     id: control
 
+    // Keep model-owned selections independent of currentIndex, which user picks write.
+    property var selectedValue: undefined
+    function synchronizeSelection() {
+        if (selectedValue !== undefined)
+            currentIndex = indexOfValue(selectedValue)
+    }
+    onSelectedValueChanged: synchronizeSelection()
+    onModelChanged: Qt.callLater(synchronizeSelection)
+    onCountChanged: Qt.callLater(synchronizeSelection)
+    Component.onCompleted: synchronizeSelection()
+
     readonly property bool slotStyled: true
     readonly property bool themedControl: true
     readonly property color effectiveBackgroundColor:

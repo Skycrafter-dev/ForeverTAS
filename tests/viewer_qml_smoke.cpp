@@ -401,6 +401,8 @@ int main(int argc, char **argv) {
 #else
     const bool nativeBrowseDialogsValid = false;
 #endif
+    if (qEnvironmentVariableIsSet("FOREVERTAS_PASS_UI_ONLY"))
+        controller.setAutoRestartMode(QStringLiteral("duration"));
     forevertas::viewer::RegisterRaceViewerQmlTypes();
     QQmlApplicationEngine engine;
     QObject::connect(
@@ -800,6 +802,33 @@ int main(int argc, char **argv) {
             QCoreApplication::processEvents();
             QCoreApplication::processEvents();
         };
+        QObject *restartCombo = root->findChild<QObject *>(
+                QStringLiteral("autoRestartModeCombo"));
+        if (restartCombo) {
+            settle();
+            passManagementValid &= restartCombo->property("currentIndex").toInt() == 1;
+            QQmlExpression chooseOff(QQmlEngine::contextForObject(restartCombo),
+                    restartCombo, QStringLiteral("currentIndex = 0; activated(0)"));
+            chooseOff.evaluate();
+            passManagementValid &= !chooseOff.hasError() &&
+                    controller.autoRestartMode() == QStringLiteral("off");
+            controller.setAutoRestartMode(QStringLiteral("attempts"));
+            settle();
+            passManagementValid &= restartCombo->property("currentIndex").toInt() == 2;
+            restartCombo->setProperty("model", QVariantList{
+                    QVariantMap{{"id", "attempts"}, {"label", "Attempts"}},
+                    QVariantMap{{"id", "off"}, {"label", "Off"}},
+                    QVariantMap{{"id", "duration"}, {"label", "Duration"}}});
+            settle();
+            passManagementValid &= restartCombo->property("currentIndex").toInt() == 0;
+            controller.setAutoRestartMode(QStringLiteral("off"));
+            settle();
+            passManagementValid &= restartCombo->property("currentIndex").toInt() == 1;
+        } else {
+            passManagementValid = false;
+        }
+        if (!passManagementValid)
+            std::cerr << "autorestart selector/model synchronization regression\n";
         const auto click = [&](const char *name) {
             QObject *button = root->findChild<QObject *>(
                     QString::fromLatin1(name));
