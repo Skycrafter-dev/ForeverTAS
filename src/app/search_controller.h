@@ -50,6 +50,8 @@ class SearchController final : public QObject {
                        setSimulationBackendId NOTIFY simulationBackendIdChanged)
     Q_PROPERTY(QString simulationHorizonMs READ simulationHorizonMs WRITE
                        setSimulationHorizonMs NOTIFY simulationHorizonMsChanged)
+    Q_PROPERTY(qint64 requiredSimulationHorizonMs READ requiredSimulationHorizonMs
+                       NOTIFY requiredSimulationHorizonMsChanged)
     Q_PROPERTY(QString conditionScript READ conditionScript WRITE
                        setConditionScript NOTIFY conditionScriptChanged)
     Q_PROPERTY(QString cpuWorkerCount READ cpuWorkerCount WRITE
@@ -169,6 +171,7 @@ public:
     QVariantList simulationBackendOptions() const;
     QString simulationBackendId() const;
     QString simulationHorizonMs() const;
+    qint64 requiredSimulationHorizonMs() const;
     QString conditionScript() const;
     QString cpuWorkerCount() const;
     QString cudaParallelSampleCount() const;
@@ -254,6 +257,7 @@ public slots:
     Q_INVOKABLE void applyAutoDetectedPacksDirectory();
     Q_INVOKABLE void browseForReplay();
     Q_INVOKABLE QString formatCompactNumber(double value) const;
+    Q_INVOKABLE bool extendSimulationHorizon();
     Q_INVOKABLE QString formatInterpolatedTime(double milliseconds) const;
     Q_INVOKABLE QString formatSpeed(double metersPerSecond) const;
     Q_INVOKABLE void extractReplayInputs();
@@ -289,6 +293,7 @@ signals:
     void simulationBackendIdChanged();
     void simulationHorizonMsChanged();
     void conditionScriptChanged();
+    void requiredSimulationHorizonMsChanged();
     void cpuWorkerCountChanged();
     void cudaParallelSampleCountChanged();
     void hipParallelSampleCountChanged();

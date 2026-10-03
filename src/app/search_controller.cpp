@@ -211,6 +211,10 @@ SearchController::SearchController(const QStringList &packsSearchPatterns,
 }
 
 void SearchController::initialize(const QStringList *packsSearchPatterns) {
+    connect(this, &SearchController::modifierPassesChanged,
+            this, &SearchController::requiredSimulationHorizonMsChanged);
+    connect(this, &SearchController::evaluationTargetSettingsChanged,
+            this, &SearchController::requiredSimulationHorizonMsChanged);
     qRegisterMetaType<SearchCompletionPtr>();
     qRegisterMetaType<SearchImprovementPtr>();
     connect(&cuboidTargets_,
@@ -488,6 +492,41 @@ QString SearchController::simulationBackendId() const {
 
 QString SearchController::simulationHorizonMs() const {
     return simulationHorizonMs_;
+}
+
+qint64 SearchController::requiredSimulationHorizonMs() const {
+    constexpr qint64 tick = 10;
+    qint64 required = tick;
+    bool representable = true;
+    const auto include = [&](const QVariantMap &settings, bool inputTime) {
+        for (const char *key : {"minTimeMs", "maxTimeMs", "targetTimeMs"}) {
+            bool valid = false;
+            qint64 time = settings.value(QString::fromLatin1(key)).toLongLong(&valid);
+            if (!valid || time < 0) continue;
+            const qint64 offset = inputTime ? tick : 0;
+            if (time > kMaximumSimulationHorizonMs - offset) {
+                representable = false;
+                continue;
+            }
+            time += offset;
+            required = std::max(required, ((time + tick - 1) / tick) * tick);
+        }
+    };
+    for (const QVariant &pass : modifierPasses()) {
+        include(pass.toMap().value(QStringLiteral("settings")).toMap(), true);
+    }
+    include(evaluationTargetSettings(), false);
+    return representable && required <= kMaximumSimulationHorizonMs ? required : -1;
+}
+
+bool SearchController::extendSimulationHorizon() {
+    if (running_) return false;
+    bool valid = false;
+    const qint64 current = simulationHorizonMs_.toLongLong(&valid);
+    const qint64 required = requiredSimulationHorizonMs();
+    if (!valid || required <= current || required < 10) return false;
+    setSimulationHorizonMs(QString::number(required));
+    return true;
 }
 
 QString SearchController::conditionScript() const {

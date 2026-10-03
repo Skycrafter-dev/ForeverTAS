@@ -73,11 +73,15 @@ The selected file supplies the map and scenario; only the editable script
 supplies the player-control baseline. **Extract inputs to script** is available
 for replays and imports their controls when that is the desired starting point.
 The application persists paths, the script draft, selections, pass
-order, the user-owned **Simulation horizon**, and every option-owned
-configuration with the platform-native Qt settings store. That horizon alone
-bounds search, preview, validation, and CPU/CUDA simulation; commands after it
-remain editable but unexecuted. Modifier time windows that extend past it are
-silently limited to the last executable input tick. Modifier seeds are
+order, the user-owned **Search end** (simulation horizon), and every option-owned
+configuration with the platform-native Qt settings store. That horizon bounds
+search and CPU/GPU execution; commands after it remain editable but unexecuted.
+The editing preview can expand to show configured target/pass windows, without
+changing the search bound. **Extend search** explicitly raises the bound to
+include the configured endpoints, including the input-to-simulation tick offset.
+It never shortens a manually chosen horizon. Modifier time windows that extend
+past the search bound are otherwise limited to the last executable input tick.
+Modifier seeds are
 randomized and persisted on each Start by default; disabling that option
 preserves the entered seeds for reproducible reruns. Search, map loading,
 validation, and physics

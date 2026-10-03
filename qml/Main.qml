@@ -4988,7 +4988,7 @@ ApplicationWindow {
                         SettingTextField {
                             objectName: "simulationHorizonSettings"
                             fieldObjectName: "simulationHorizonField"
-                            label: qsTr("Simulation horizon (ms)")
+                            label: qsTr("Search end (ms)")
                             value: window.controller.simulationHorizonMs
                             running: window.controller.running
                             minimum: 10
@@ -5004,6 +5004,22 @@ ApplicationWindow {
                             liveScrub: false
                             onEdited: value =>
                                 window.controller.simulationHorizonMs = value
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Preview extent: %1 ms").arg(window.viewer.simulationHorizonMs)
+                            color: AppTheme.textMuted
+                            wrapMode: Text.WordWrap
+                        }
+                        ThemedButton {
+                            objectName: "extendSearchHorizonButton"
+                            Layout.fillWidth: true
+                            visible: window.controller.requiredSimulationHorizonMs >
+                                     Number(window.controller.simulationHorizonMs)
+                            enabled: !window.controller.running
+                            text: qsTr("Extend search to %1 ms").arg(window.controller.requiredSimulationHorizonMs)
+                            onClicked: window.controller.extendSimulationHorizon()
                         }
 
                         ThemedCheckBox {

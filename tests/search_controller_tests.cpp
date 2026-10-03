@@ -225,6 +225,33 @@ bool TestTargetVisibilityPersistence() {
                  "draw-through target rendering was not persisted");
 }
 
+bool TestExplicitHorizonExtension() {
+    QSettings().clear();
+    SearchController controller;
+    controller.setModifierPassSetting(0, "minTimeMs", "0");
+    controller.setModifierPassSetting(0, "maxTimeMs", "2340");
+    controller.setEvaluationTargetSetting("minTimeMs", "0");
+    controller.setEvaluationTargetSetting("maxTimeMs", "1000");
+    controller.setSimulationHorizonMs("1000");
+    bool okay = Check(controller.requiredSimulationHorizonMs() == 2350 &&
+                      controller.simulationHorizonMs() == "1000" &&
+                      controller.extendSimulationHorizon() &&
+                      controller.simulationHorizonMs() == "2350",
+                      "horizon extension lost the input tick or changed the bound implicitly");
+    controller.setEvaluationTargetSetting("maxTimeMs", "3000");
+    okay &= Check(controller.requiredSimulationHorizonMs() == 3000 &&
+                  controller.extendSimulationHorizon() && controller.simulationHorizonMs() == "3000",
+                  "target horizon extension applied an input offset");
+    controller.setEvaluationTargetSetting("maxTimeMs", "1000");
+    controller.setModifierPassSetting(0, "maxTimeMs", "990");
+    okay &= Check(!controller.extendSimulationHorizon() && controller.simulationHorizonMs() == "3000",
+                  "shortening a window shortened the user-owned search bound");
+    controller.setModifierPassSetting(0, "maxTimeMs", QString::number(forevertas::kMaximumSimulationHorizonMs));
+    okay &= Check(controller.requiredSimulationHorizonMs() == -1 && !controller.extendSimulationHorizon(),
+                  "unrepresentable modifier endpoint enabled horizon extension");
+    return okay;
+}
+
 bool TestAbsoluteTargetPlacement() {
     QSettings().clear();
     CuboidTargetModel cuboid;
@@ -2447,6 +2474,7 @@ int main(int argc, char **argv) {
     bool okay = TestCompactNumberFormatting() &&
             TestAutomaticSeedRandomization() &&
             TestTargetVisibilityPersistence() &&
+            TestExplicitHorizonExtension() &&
             TestAbsoluteTargetPlacement() &&
             TestCuboidTargetModel() &&
             TestCuboidControllerSynchronization() &&
