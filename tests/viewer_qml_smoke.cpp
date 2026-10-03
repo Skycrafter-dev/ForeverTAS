@@ -1,6 +1,7 @@
 #include "app/input_preview_binding.h"
 #include "app/search_controller.h"
 #include "app/system_file_dialog.h"
+#include "searches/option_settings_utils.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
 
@@ -1184,6 +1185,29 @@ int main(int argc, char **argv) {
     bool globalSettingsVisibleAcrossTabs =
             true;
     QQmlComponent inputsProbeComponent(&engine);
+    QQmlComponent unitsProbeComponent(&engine);
+    unitsProbeComponent.setData(R"QML(
+        import QtQuick
+        import "settings"
+        SteeringUnits { nativeUnits: true }
+    )QML", QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_SOURCE_DIR "/qml/UnitsProbe.qml")));
+    std::unique_ptr<QObject> unitsProbe(unitsProbeComponent.create());
+    if (!unitsProbe) return 1;
+    for (int native : {-65536, -32768, -1, 0, 1, 32768, 65536}) {
+        QVariant stored;
+        QVariant displayed;
+        QMetaObject::invokeMethod(unitsProbe.get(), "storedValue", Q_RETURN_ARG(QVariant, stored),
+                                 Q_ARG(QVariant, QString::number(native)));
+        QMetaObject::invokeMethod(unitsProbe.get(), "displayValue", Q_RETURN_ARG(QVariant, displayed),
+                                 Q_ARG(QVariant, stored));
+        const auto quantized = forevertas::ParseNormalizedAnalogInput(stored.toString().toStdString());
+        globalSettingsVisibleAcrossTabs &= quantized && *quantized == native &&
+                displayed.toString() == QString::number(native);
+    }
+    QVariant negativeHalf;
+    QMetaObject::invokeMethod(unitsProbe.get(), "displayValue", Q_RETURN_ARG(QVariant, negativeHalf),
+                             Q_ARG(QVariant, QStringLiteral("-0.00000762939453125")));
+    globalSettingsVisibleAcrossTabs &= negativeHalf.toString() == QStringLiteral("-1");
     inputsProbeComponent.setData(R"QML(
         import QtQuick
         import "."

@@ -507,6 +507,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/ScriptedTargetEvaluationSettings.qml
         qml/settings/SettingCombo.qml
         qml/settings/SettingSlider.qml
+        qml/settings/SteeringUnits.qml
         qml/settings/SettingSwitch.qml
         qml/settings/SettingTextField.qml
         qml/settings/SmoothSteeringSettings.qml

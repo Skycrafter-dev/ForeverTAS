@@ -14,6 +14,11 @@ ColumnLayout {
     Layout.fillWidth: true
     spacing: 6
 
+    SteeringUnits {
+        id: steeringUnits
+        running: root.running
+    }
+
     TimeWindowSettings {
         viewer: root.viewer
         settings: root.settings
@@ -72,42 +77,46 @@ ColumnLayout {
     SettingSlider {
         sliderObjectName: "insertionAbsoluteMinimumSlider"
         label: qsTr("Absolute steering minimum")
-        value: root.settings["steerAbsoluteMin"] ?? ""
+        value: steeringUnits.displayValue(root.settings["steerAbsoluteMin"] ?? "")
         running: root.running
-        from: -1
-        to: 1
-        stepSize: 0.01
-        decimals: 2
-        onEdited: value => root.updateSetting("steerAbsoluteMin", value)
+        from: steeringUnits.nativeUnits ? -65536 : -1
+        to: steeringUnits.nativeUnits ? 65536 : 1
+        stepSize: steeringUnits.nativeUnits ? 1 : 0.01
+        decimals: steeringUnits.nativeUnits ? 0 : 2
+        onEdited: value => root.updateSetting("steerAbsoluteMin", steeringUnits.storedValue(value))
     }
     SettingSlider {
         sliderObjectName: "insertionAbsoluteMaximumSlider"
         label: qsTr("Absolute steering maximum")
-        value: root.settings["steerAbsoluteMax"] ?? ""
+        value: steeringUnits.displayValue(root.settings["steerAbsoluteMax"] ?? "")
         running: root.running
-        from: -1
-        to: 1
-        stepSize: 0.01
-        decimals: 2
-        onEdited: value => root.updateSetting("steerAbsoluteMax", value)
+        from: steeringUnits.nativeUnits ? -65536 : -1
+        to: steeringUnits.nativeUnits ? 65536 : 1
+        stepSize: steeringUnits.nativeUnits ? 1 : 0.01
+        decimals: steeringUnits.nativeUnits ? 0 : 2
+        onEdited: value => root.updateSetting("steerAbsoluteMax", steeringUnits.storedValue(value))
     }
     SettingTextField {
         label: qsTr("Steering offset minimum")
-        value: root.settings["steerOffsetMin"] ?? ""
+        value: steeringUnits.displayValue(root.settings["steerOffsetMin"] ?? "")
         running: root.running
-        integer: false
-        decimals: 3
-        dragStep: 0.01
-        onEdited: value => root.updateSetting("steerOffsetMin", value)
+        integer: steeringUnits.nativeUnits
+        decimals: steeringUnits.nativeUnits ? 0 : 3
+        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
+        minimum: steeringUnits.nativeUnits ? -65536 : -1
+        maximum: steeringUnits.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("steerOffsetMin", steeringUnits.storedValue(value))
     }
     SettingTextField {
         label: qsTr("Steering offset maximum")
-        value: root.settings["steerOffsetMax"] ?? ""
+        value: steeringUnits.displayValue(root.settings["steerOffsetMax"] ?? "")
         running: root.running
-        integer: false
-        decimals: 3
-        dragStep: 0.01
-        onEdited: value => root.updateSetting("steerOffsetMax", value)
+        integer: steeringUnits.nativeUnits
+        decimals: steeringUnits.nativeUnits ? 0 : 3
+        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
+        minimum: steeringUnits.nativeUnits ? -65536 : -1
+        maximum: steeringUnits.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("steerOffsetMax", steeringUnits.storedValue(value))
     }
 
     Label { text: qsTr("Accelerate"); font.weight: Font.Medium }

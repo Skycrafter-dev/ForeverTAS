@@ -13,6 +13,11 @@ ColumnLayout {
     Layout.fillWidth: true
     spacing: 6
 
+    SteeringUnits {
+        id: steeringUnits
+        running: root.running
+    }
+
     TimeWindowSettings {
         viewer: root.viewer
         settings: root.settings
@@ -43,20 +48,24 @@ ColumnLayout {
     }
     SettingTextField {
         label: qsTr("Amplitude minimum")
-        value: root.settings["amplitudeMin"] ?? ""
+        value: steeringUnits.displayValue(root.settings["amplitudeMin"] ?? "")
         running: root.running
-        integer: false
-        decimals: 3
-        dragStep: 0.01
-        onEdited: value => root.updateSetting("amplitudeMin", value)
+        integer: steeringUnits.nativeUnits
+        decimals: steeringUnits.nativeUnits ? 0 : 3
+        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
+        minimum: steeringUnits.nativeUnits ? -65536 : -1
+        maximum: steeringUnits.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("amplitudeMin", steeringUnits.storedValue(value))
     }
     SettingTextField {
         label: qsTr("Amplitude maximum")
-        value: root.settings["amplitudeMax"] ?? ""
+        value: steeringUnits.displayValue(root.settings["amplitudeMax"] ?? "")
         running: root.running
-        integer: false
-        decimals: 3
-        dragStep: 0.01
-        onEdited: value => root.updateSetting("amplitudeMax", value)
+        integer: steeringUnits.nativeUnits
+        decimals: steeringUnits.nativeUnits ? 0 : 3
+        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
+        minimum: steeringUnits.nativeUnits ? -65536 : -1
+        maximum: steeringUnits.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("amplitudeMax", steeringUnits.storedValue(value))
     }
 }

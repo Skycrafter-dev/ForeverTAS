@@ -13,6 +13,11 @@ ColumnLayout {
     Layout.fillWidth: true
     spacing: 6
 
+    SteeringUnits {
+        id: steeringUnits
+        running: root.running
+    }
+
     TimeWindowSettings {
         viewer: root.viewer
         settings: root.settings
@@ -62,43 +67,47 @@ ColumnLayout {
     }
     SettingTextField {
         label: qsTr("Steering delta minimum")
-        value: root.settings["steerDeltaMin"] ?? ""
+        value: steeringUnits.displayValue(root.settings["steerDeltaMin"] ?? "")
         running: root.running
-        integer: false
-        decimals: 3
-        dragStep: 0.01
-        onEdited: value => root.updateSetting("steerDeltaMin", value)
+        integer: steeringUnits.nativeUnits
+        decimals: steeringUnits.nativeUnits ? 0 : 3
+        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
+        minimum: steeringUnits.nativeUnits ? -65536 : -1
+        maximum: steeringUnits.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("steerDeltaMin", steeringUnits.storedValue(value))
     }
     SettingTextField {
         label: qsTr("Steering delta maximum")
-        value: root.settings["steerDeltaMax"] ?? ""
+        value: steeringUnits.displayValue(root.settings["steerDeltaMax"] ?? "")
         running: root.running
-        integer: false
-        decimals: 3
-        dragStep: 0.01
-        onEdited: value => root.updateSetting("steerDeltaMax", value)
+        integer: steeringUnits.nativeUnits
+        decimals: steeringUnits.nativeUnits ? 0 : 3
+        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
+        minimum: steeringUnits.nativeUnits ? -65536 : -1
+        maximum: steeringUnits.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("steerDeltaMax", steeringUnits.storedValue(value))
     }
     SettingSlider {
         sliderObjectName: "perturbationAbsoluteMinimumSlider"
         label: qsTr("Steering absolute minimum")
-        value: root.settings["steerAbsoluteMin"] ?? ""
+        value: steeringUnits.displayValue(root.settings["steerAbsoluteMin"] ?? "")
         running: root.running
-        from: -1
-        to: 1
-        stepSize: 0.01
-        decimals: 2
-        onEdited: value => root.updateSetting("steerAbsoluteMin", value)
+        from: steeringUnits.nativeUnits ? -65536 : -1
+        to: steeringUnits.nativeUnits ? 65536 : 1
+        stepSize: steeringUnits.nativeUnits ? 1 : 0.01
+        decimals: steeringUnits.nativeUnits ? 0 : 2
+        onEdited: value => root.updateSetting("steerAbsoluteMin", steeringUnits.storedValue(value))
     }
     SettingSlider {
         sliderObjectName: "perturbationAbsoluteMaximumSlider"
         label: qsTr("Steering absolute maximum")
-        value: root.settings["steerAbsoluteMax"] ?? ""
+        value: steeringUnits.displayValue(root.settings["steerAbsoluteMax"] ?? "")
         running: root.running
-        from: -1
-        to: 1
-        stepSize: 0.01
-        decimals: 2
-        onEdited: value => root.updateSetting("steerAbsoluteMax", value)
+        from: steeringUnits.nativeUnits ? -65536 : -1
+        to: steeringUnits.nativeUnits ? 65536 : 1
+        stepSize: steeringUnits.nativeUnits ? 1 : 0.01
+        decimals: steeringUnits.nativeUnits ? 0 : 2
+        onEdited: value => root.updateSetting("steerAbsoluteMax", steeringUnits.storedValue(value))
     }
     SettingSwitch {
         label: qsTr("Toggle accelerate events")

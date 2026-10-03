@@ -28,6 +28,11 @@ descriptions and preview overlays. These are interpolated crossing estimates,
 not six-digit physical accuracy. Numeric scores retain their original double
 precision; formatting does not affect comparison or ranking.
 
+Steering settings can display normalized values or native integer units
+`[-65536, 65536]`, matching exported scripts. Switching units does not rewrite
+settings. Native edits are stored as exact normalized fractions; native display
+uses the same half-away-from-zero quantization as the simulator.
+
 Each selectable implementation owns:
 
 - A stable ID and display name.
