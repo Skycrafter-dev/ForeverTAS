@@ -72,14 +72,18 @@ void NormalizeInputEvents(std::vector<SandboxInputEvent> &events,
 
     std::vector<SandboxInputEvent> normalized;
     normalized.reserve(events.size());
+    std::size_t groupStart = 0u;
     for (const SandboxInputEvent &event : events) {
+        if (normalized.empty() || normalized.back().timeMs != event.timeMs) {
+            groupStart = normalized.size();
+        }
         auto duplicate = std::find_if(
-                normalized.rbegin(), normalized.rend(),
+                normalized.begin() + groupStart, normalized.end(),
                 [&event](const SandboxInputEvent &existing) {
                     return existing.timeMs == event.timeMs &&
                            existing.action == event.action;
                 });
-        if (duplicate != normalized.rend()) {
+        if (duplicate != normalized.end()) {
             *duplicate = event;
         } else {
             normalized.push_back(event);

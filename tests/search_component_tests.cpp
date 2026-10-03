@@ -330,6 +330,34 @@ bool TestHumanDurationFormatting() {
     return okay;
 }
 
+bool TestDenseNormalization() {
+    std::vector<SandboxInputEvent> events;
+    std::vector<SandboxInputEvent> expected;
+    std::vector<forevertas::ParsedInputCommand> commands;
+    for (int index = 100000; index > 0; --index) {
+        const auto first = Steering(index * 10, 1000);
+        const auto other = Switch(index * 10, SandboxInputAction::Accelerate, true);
+        const auto last = Steering(index * 10, -2000);
+        for (const auto &event : {first, other, last}) {
+            events.push_back(event);
+            commands.push_back({event.timeMs - 10, event.action, event.value, 1u});
+        }
+    }
+    for (int index = 1; index <= 100000; ++index) {
+        expected.push_back(Steering(index * 10, -2000));
+        expected.push_back(Switch(index * 10, SandboxInputAction::Accelerate, true));
+    }
+    forevertas::NormalizeInputEvents(events, 10u);
+    const auto baseline = forevertas::BuildInputScriptBaseline({}, commands, 10u);
+    const auto matches = [&](const auto &actual) {
+        return actual.size() == expected.size() &&
+                std::equal(actual.begin(), actual.end(), expected.begin(),
+                           forevertas::SameInputEvent);
+    };
+    return Check(matches(events) && baseline && matches(baseline.events),
+                 "dense normalization lost last-write values or same-tick action order");
+}
+
 bool TestMutableSuffixNormalization() {
     const std::vector<SandboxInputEvent> baseline{
             Steering(90, 1234),
@@ -2269,6 +2297,7 @@ bool TestScriptedTarget() {
 int main() {
     const bool okay = TestInputOnlyTimelineTimeOrigin() &&
             TestHumanDurationFormatting() &&
+            TestDenseNormalization() &&
             TestMutableSuffixNormalization() &&
             TestEvaluationTargets() &&
             TestModifierComposition() &&

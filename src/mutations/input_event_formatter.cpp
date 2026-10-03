@@ -338,15 +338,19 @@ InputScriptBaselineResult BuildInputScriptBaseline(
 
     std::vector<SandboxInputEvent> controls;
     controls.reserve(materialized.size());
+    std::size_t groupStart = 0u;
     for (const MaterializedCommand &command : materialized) {
+        if (controls.empty() || controls.back().timeMs != command.event.timeMs) {
+            groupStart = controls.size();
+        }
         auto duplicate = std::find_if(
-                controls.rbegin(),
-                controls.rend(),
+                controls.begin() + groupStart,
+                controls.end(),
                 [&command](const SandboxInputEvent &existing) {
                     return existing.timeMs == command.event.timeMs &&
                             existing.action == command.event.action;
                 });
-        if (duplicate != controls.rend()) {
+        if (duplicate != controls.end()) {
             *duplicate = command.event;
         } else {
             controls.push_back(command.event);
