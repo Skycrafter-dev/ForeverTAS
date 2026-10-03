@@ -95,13 +95,13 @@ inline std::string MetricDescription(const char *name,
     stream.precision(9);
     stream << name << ": " << value;
     if (unit != nullptr && *unit != '\0') stream << ' ' << unit;
-    stream << " at " << FormatHumanDurationMilliseconds(timeMs);
+    stream << " at " << FormatRaceTimeMilliseconds(timeMs);
     return stream.str();
 }
 
 inline std::string TimeMetricDescription(const char *name, double timeMs) {
     return std::string(name) + ": " +
-            FormatHumanDurationMilliseconds(timeMs);
+            FormatRaceTimeMilliseconds(timeMs);
 }
 
 }  // namespace forevertas

@@ -24,7 +24,7 @@ public:
                 score,
                 static_cast<double>(current.timeMs),
                 "Stunt points: " + std::to_string(points) + " at " +
-                        FormatHumanDurationMilliseconds(
+                        FormatRaceTimeMilliseconds(
                                 static_cast<double>(current.timeMs))};
     }
 };

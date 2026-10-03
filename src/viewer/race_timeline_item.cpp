@@ -98,7 +98,7 @@ TimelineScale SelectTimelineScale(qreal pixelsPerTick) {
 }
 
 QString FormatTimelineTime(qint64 tick) {
-    return QString::fromStdString(FormatHumanDurationMilliseconds(
+    return QString::fromStdString(FormatRaceTimeMilliseconds(
             static_cast<double>(std::max<qint64>(0, tick)) * 10.0));
 }
 

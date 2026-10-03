@@ -274,6 +274,15 @@ bool TestInputOnlyTimelineTimeOrigin() {
 }
 
 bool TestHumanDurationFormatting() {
+    for (const auto &[milliseconds, expected] :
+         {std::pair{0.0, "00:00:00.00"}, {500.0, "00:00:00.50"},
+          {50.0, "00:00:00.05"}, {13.0, "00:00:00.013"},
+          {1000.0, "00:00:01.00"}, {59999.8, "00:01:00.00"}}) {
+        if (!Check(forevertas::FormatRaceTimeMilliseconds(milliseconds) == expected,
+                   "race timestamps must retain at least two fractional digits")) {
+            return false;
+        }
+    }
     bool okay = Check(
             forevertas::FormatHumanDurationMilliseconds(0.0) ==
                     "00:00:00",

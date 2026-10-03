@@ -64,6 +64,17 @@ inline std::string FormatHumanDurationMilliseconds(double milliseconds) {
     return stream.str();
 }
 
+inline std::string FormatRaceTimeMilliseconds(double milliseconds) {
+    std::string result = FormatHumanDurationMilliseconds(milliseconds);
+    const auto decimal = result.find('.');
+    if (decimal == std::string::npos) {
+        result += ".00";
+    } else if (result.size() - decimal - 1u < 2u) {
+        result += '0';
+    }
+    return result;
+}
+
 inline std::string FormatFixedDurationMilliseconds(
         std::uint64_t milliseconds) {
     const std::uint64_t totalHours = milliseconds / 3600000u;

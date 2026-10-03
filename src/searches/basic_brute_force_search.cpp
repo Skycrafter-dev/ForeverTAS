@@ -485,7 +485,7 @@ std::string CudaEvaluationDescription(
                             << " m, rotation "
                             << batch.bestDetail1 * radiansToDegrees
                             << " deg) at "
-                            << FormatHumanDurationMilliseconds(
+                            << FormatRaceTimeMilliseconds(
                                        batch.bestTimeMs);
                     return description.str();
                 } else if constexpr (std::is_same_v<
@@ -501,7 +501,7 @@ std::string CudaEvaluationDescription(
                                     static_cast<std::uint32_t>(
                                             batch.bestScore)) +
                             " at " +
-                            FormatHumanDurationMilliseconds(
+                            FormatRaceTimeMilliseconds(
                                     batch.bestTimeMs);
                 } else if constexpr (std::is_same_v<
                                              T,

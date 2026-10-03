@@ -72,7 +72,7 @@ public:
                     << " (position " << positionError << " m, rotation "
                     << rotationError * 180.0 / 3.14159265358979323846
                     << " deg) at "
-                    << FormatHumanDurationMilliseconds(
+                    << FormatRaceTimeMilliseconds(
                                static_cast<double>(current.timeMs));
         return EvaluationSample{score,
                                 static_cast<double>(current.timeMs),
