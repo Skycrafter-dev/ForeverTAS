@@ -5397,6 +5397,31 @@ ApplicationWindow {
                                 border.color: AppTheme.border
                                 clip: true
 
+                                ToolTip.visible: iterationCountMouse.containsMouse
+                                ToolTip.text: window.controller.iterationCountExactText
+                                MouseArea {
+                                    id: iterationCountMouse
+                                    anchors.fill: parent
+                                    acceptedButtons: Qt.RightButton
+                                    hoverEnabled: true
+                                    onClicked: iterationCountMenu.popup()
+                                }
+                                Menu {
+                                    id: iterationCountMenu
+                                    ThemedMenuItem {
+                                        text: qsTr("Copy exact count")
+                                        onTriggered: {
+                                            iterationCountClipboard.selectAll()
+                                            iterationCountClipboard.copy()
+                                        }
+                                    }
+                                }
+                                TextEdit {
+                                    id: iterationCountClipboard
+                                    visible: false
+                                    text: window.controller.iterationCountRawText
+                                }
+
                                 ColumnLayout {
                                     anchors.fill: parent
                                     anchors.margins: 8

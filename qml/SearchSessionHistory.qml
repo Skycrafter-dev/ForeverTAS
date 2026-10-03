@@ -26,6 +26,13 @@ ColumnLayout {
         for (let i = 0; i < rows.length; ++i)
             result.push({ data: rows[i], sourceIndex: i })
         result.sort((a, b) => {
+            if (column === 1) {
+                const av = String(a.data.attemptsExact ?? a.data.attempts)
+                const bv = String(b.data.attemptsExact ?? b.data.attempts)
+                const comparison = av.length !== bv.length ? av.length - bv.length
+                    : av < bv ? -1 : av > bv ? 1 : 0
+                return ascending ? comparison : -comparison
+            }
             const av = column === 0 ? Number(a.data.restart)
                 : column === 1 ? Number(a.data.attempts)
                 : column === 2 ? Number(a.data.elapsedMs)
@@ -206,7 +213,7 @@ ColumnLayout {
                             font.family: "monospace"
                             elide: Text.ElideRight
                             text: index === 0 ? modelData.data.restart
-                                : index === 1 ? modelData.data.attempts
+                                : index === 1 ? (modelData.data.attemptsText ?? modelData.data.attempts)
                                 : index === 2
                                   ? (Number(modelData.data.elapsedMs) / 1000)
                                       .toFixed(1) + " s"
@@ -219,8 +226,29 @@ ColumnLayout {
                                        : AppTheme.surface
                             }
                             MouseArea {
+                                id: countHover
                                 anchors.fill: parent
-                                onClicked: root.chooseRow(modelData.sourceIndex)
+                                hoverEnabled: true
+                                acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                onClicked: mouse => {
+                                    if (mouse.button === Qt.RightButton && index === 1)
+                                        countMenu.popup()
+                                    else
+                                        root.chooseRow(modelData.sourceIndex)
+                                }
+                            }
+                            ToolTip.visible: index === 1 && countHover.containsMouse
+                            ToolTip.text: String(modelData.data.attemptsText ?? modelData.data.attempts)
+                            Menu {
+                                id: countMenu
+                                ThemedMenuItem {
+                                    text: qsTr("Copy exact count")
+                                    onTriggered: {
+                                        countClipboard.text = String(modelData.data.attemptsExact ?? modelData.data.attempts)
+                                        countClipboard.selectAll()
+                                        countClipboard.copy()
+                                    }
+                                }
                             }
                         }
                     }
@@ -244,6 +272,7 @@ ColumnLayout {
         visible: false
         text: root.controller.selectedInputsText
     }
+    TextEdit { id: countClipboard; visible: false }
 
     Label {
         Layout.fillWidth: true

@@ -50,6 +50,7 @@ signals:
     void metricsChanged(const QString &iterationCountText,
                         const QString &throughputText,
                         const QString &elapsedText);
+    void iterationCountChanged(qulonglong count);
     void cudaBatchSizeChanged(std::uint32_t batchSize);
     void bestChanged(const QString &summary, const QString &inputsText);
     void improvementFound(

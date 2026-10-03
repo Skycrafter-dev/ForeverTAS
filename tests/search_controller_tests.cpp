@@ -122,6 +122,12 @@ bool HasBackendOption(const QVariantList &options,
 
 bool TestCompactNumberFormatting() {
     bool okay = true;
+    okay &= Check(forevertas::app::FormatExactCount(9007199254740993ULL) ==
+                          QStringLiteral("9,007,199,254,740,993") &&
+                          forevertas::app::FormatExactCount(UINT64_MAX) ==
+                          QStringLiteral("18,446,744,073,709,551,615") &&
+                          forevertas::app::FormatExactCount(0) == QStringLiteral("0"),
+                  "exact count formatting rounded or lost digits");
     const auto expect = [&okay](double value, const char *expected) {
         const QString actual = FormatCompactNumber(value);
         const QString expectedText = QString::fromLatin1(expected);
@@ -2285,6 +2291,14 @@ bool TestDurationAutorestartAndSaveFailure(
             forevertas::RunSearch(request, &control);
     QTemporaryDir root;
     QFile blocked(root.filePath(QStringLiteral("blocked")));
+    auto largeResult = result;
+    largeResult.iterations = UINT64_MAX;
+    forevertas::app::SearchSessionStore::SaveCycle({{}, {}, root.path()}, request, 0u, largeResult);
+    const auto exactRows = forevertas::app::SearchSessionStore::Cycles(root.path());
+    okay &= Check(exactRows.size() == 1 && exactRows.front().toMap()
+                          .value(QStringLiteral("attemptsExact")).toString() ==
+                          QStringLiteral("18446744073709551615"),
+                  "saved count lost uint64 precision");
     okay &= Check(blocked.open(QIODevice::WriteOnly),
                   "could not prepare save failure fixture");
     blocked.close();

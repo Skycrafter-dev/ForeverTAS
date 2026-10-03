@@ -271,6 +271,7 @@ void SearchWorker::run() {
     control.statisticsChanged =
             [this, throughput = RollingThroughput()](
                     const SearchStatisticsUpdate &statistics) mutable {
+                emit iterationCountChanged(statistics.iterations);
                 emit metricsChanged(
                         FormatCompactNumber(
                                 static_cast<double>(statistics.iterations)),

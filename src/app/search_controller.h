@@ -129,6 +129,8 @@ class SearchController final : public QObject {
                        metricsChanged)
     Q_PROPERTY(QString iterationCountText READ iterationCountText NOTIFY
                        metricsChanged)
+    Q_PROPERTY(QString iterationCountExactText READ iterationCountExactText NOTIFY metricsChanged)
+    Q_PROPERTY(QString iterationCountRawText READ iterationCountRawText NOTIFY metricsChanged)
     Q_PROPERTY(QString throughputText READ throughputText NOTIFY metricsChanged)
     Q_PROPERTY(QString elapsedText READ elapsedText NOTIFY metricsChanged)
     Q_PROPERTY(QString resultText READ resultText NOTIFY resultChanged)
@@ -206,6 +208,8 @@ public:
     QString statusText() const;
     bool liveMetricsVisible() const;
     QString iterationCountText() const;
+    QString iterationCountExactText() const;
+    QString iterationCountRawText() const;
     QString throughputText() const;
     QString elapsedText() const;
     QString resultText() const;
@@ -397,6 +401,7 @@ private:
     QString validationMessage_;
     QString statusText_ = QStringLiteral("Ready");
     QString iterationCountText_;
+    std::uint64_t iterationCount_ = 0u;
     QString throughputText_;
     QString elapsedText_;
     QString resultText_;

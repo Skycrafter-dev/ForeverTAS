@@ -4,6 +4,14 @@
 #include <cmath>
 
 namespace forevertas::app {
+QString FormatExactCount(std::uint64_t value) {
+    QString text = QString::number(static_cast<qulonglong>(value));
+    for (qsizetype index = text.size() - 3; index > 0; index -= 3) {
+        text.insert(index, QLatin1Char(','));
+    }
+    return text;
+}
+
 QString FormatCompactNumber(double value) {
     if (!std::isfinite(value)) {
         return QString::number(value);

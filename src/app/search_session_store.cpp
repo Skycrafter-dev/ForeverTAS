@@ -1,4 +1,5 @@
 #include "app/search_session_store.h"
+#include "app/compact_number_format.h"
 
 #include "mutations/input_event_formatter.h"
 #include "physics_backend.h"
@@ -238,6 +239,7 @@ void SearchSessionStore::SaveCycle(
             {"format", 1},
             {"restart", static_cast<qint64>(restartNumber)},
             {"attempts", static_cast<qint64>(result.iterations)},
+            {"attemptsExact", QString::number(static_cast<qulonglong>(result.iterations))},
             {"elapsedMs", static_cast<qint64>(
                     std::chrono::duration_cast<std::chrono::milliseconds>(
                             result.elapsed).count())},
@@ -291,7 +293,14 @@ QVariantList SearchSessionStore::Cycles(const QString &directory) {
                  {QStringLiteral("restart-*.json")}, QDir::Files,
                  QDir::Name)) {
         const QJsonObject metadata = ReadObject(entry.absoluteFilePath());
-        if (!metadata.isEmpty()) cycles.append(metadata.toVariantMap());
+        if (!metadata.isEmpty()) {
+            QVariantMap row = metadata.toVariantMap();
+            const auto count = row.value(QStringLiteral("attemptsExact"),
+                                         row.value(QStringLiteral("attempts"))).toULongLong();
+            row.insert(QStringLiteral("attemptsExact"), QString::number(count));
+            row.insert(QStringLiteral("attemptsText"), FormatExactCount(count));
+            cycles.append(row);
+        }
     }
     return cycles;
 }

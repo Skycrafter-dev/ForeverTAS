@@ -647,6 +647,14 @@ QString SearchController::iterationCountText() const {
     return iterationCountText_;
 }
 
+QString SearchController::iterationCountExactText() const {
+    return FormatExactCount(iterationCount_);
+}
+
+QString SearchController::iterationCountRawText() const {
+    return QString::number(static_cast<qulonglong>(iterationCount_));
+}
+
 QString SearchController::throughputText() const {
     return throughputText_;
 }
@@ -1286,6 +1294,7 @@ void SearchController::startSearch() {
     emit historyChanged();
     setResultText({});
     setBestInputsText({});
+    iterationCount_ = 0u;
     setLiveMetrics({}, {}, {}, false);
     lastCompletion_.reset();
     setProgress(true, 0.0);
@@ -1342,6 +1351,12 @@ void SearchController::startSearch() {
                                throughputText,
                                elapsedText,
                                true);
+            });
+    connect(worker, &SearchWorker::iterationCountChanged, this,
+            [this](qulonglong count) {
+                if (iterationCount_ == count) return;
+                iterationCount_ = count;
+                emit metricsChanged();
             });
     connect(worker,
             &SearchWorker::cudaBatchSizeChanged,
