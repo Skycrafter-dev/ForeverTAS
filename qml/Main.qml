@@ -3936,8 +3936,11 @@ ApplicationWindow {
                                          && !window.viewer.manualDriving
                                 palette.buttonText: AppTheme.viewerOverlayText
                                 ToolTip.visible: hovered
-                                ToolTip.text: qsTr("Go to start")
-                                onClicked: window.viewer.jumpToStart()
+                                ToolTip.text: qsTr("Go to start and focus car")
+                                onClicked: {
+                                    window.viewer.jumpToStart()
+                                    viewport.resetCameraFocus()
+                                }
 
                                 contentItem: Item {
                                     Item {

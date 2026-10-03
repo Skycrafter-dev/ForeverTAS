@@ -2106,6 +2106,28 @@ int main(int argc, char **argv) {
                                 << '\n';
                     }
                     if (freeCameraUiValid) {
+                        const qint64 rewindTick = viewer.currentTick();
+                        const bool rewindPlaying = viewer.playing();
+                        for (const char *mode : {"enableFreeCamera",
+                                                 "enableOrbitalCamera",
+                                                 "focusCurrentCar"}) {
+                            viewer.setCurrentTick(100);
+                            QMetaObject::invokeMethod(viewport, mode);
+                            viewport->setProperty("hasObjectFocus", true);
+                            viewer.jumpToStart();
+                            freeCameraUiValid &= viewport->property("hasObjectFocus").toBool();
+                            viewer.setCurrentTick(100);
+                            freeCameraUiValid &= jumpStart &&
+                                    QMetaObject::invokeMethod(jumpStart, "clicked") &&
+                                    viewer.currentTick() == 0 && !viewer.playing() &&
+                                    !viewport->property("freeCamera").toBool() &&
+                                    !viewport->property("orbitalCamera").toBool() &&
+                                    !viewport->property("hasObjectFocus").toBool() &&
+                                    viewport->property("cameraTarget").value<QVector3D>() ==
+                                            viewer.carCameraTarget();
+                        }
+                        viewer.setCurrentTick(rewindTick);
+                        if (rewindPlaying) viewer.play();
                         const double orbitalYawBefore =
                                 viewport->property("orbitYaw").toDouble();
                         const double orbitalPitchBefore =
