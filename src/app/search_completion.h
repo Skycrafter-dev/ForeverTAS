@@ -7,6 +7,7 @@
 #include <QString>
 
 #include <memory>
+#include <chrono>
 #include <vector>
 
 namespace forevertas::app {
@@ -24,6 +25,7 @@ struct SearchCompletion {
 using SearchCompletionPtr = std::shared_ptr<const SearchCompletion>;
 
 struct SearchImprovement {
+    std::chrono::steady_clock::time_point generatedAt = std::chrono::steady_clock::now();
     std::uint64_t searchId = 0u;
     std::uint64_t improvementNumber = 0u;
     QString packsDirectory;

@@ -66,7 +66,8 @@ int main(int argc, char **argv) {
                         improvement->timeline,
                         improvement->simulationBackendId,
                         improvement->searchId,
-                        improvement->improvementNumber);
+                        improvement->improvementNumber,
+                        improvement->generatedAt);
             });
     QObject::connect(
             &controller,

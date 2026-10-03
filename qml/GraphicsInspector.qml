@@ -277,15 +277,29 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        Label {
+        RowLayout {
             Layout.fillWidth: true
             Layout.leftMargin: 14
+            Layout.rightMargin: 12
             Layout.topMargin: 12
             Layout.bottomMargin: 9
-            text: qsTr("Graphics")
-            color: AppTheme.text
-            font.pixelSize: 17
-            font.weight: Font.DemiBold
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Graphics")
+                color: AppTheme.text
+                font.pixelSize: 17
+                font.weight: Font.DemiBold
+            }
+            ThemedIconButton {
+                objectName: "clearPreviewTrajectoriesButton"
+                icon.source: "qrc:/icons/trash-2.svg"
+                enabled: root.viewer && root.viewer.trajectoryPaths.some(
+                    path => path.kind === "improvement")
+                Accessible.name: qsTr("Clear preview trajectories")
+                ToolTip.visible: hovered
+                ToolTip.text: Accessible.name
+                onClicked: root.viewer.clearPreviewTrajectories()
+            }
         }
 
         RowLayout {

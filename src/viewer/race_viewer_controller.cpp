@@ -3106,7 +3106,9 @@ void RaceViewerController::addSearchImprovement(
         const std::vector<SearchTimelineFrame> &frames,
         const QString &backendId,
         std::uint64_t searchId,
-        std::uint64_t improvementNumber) {
+        std::uint64_t improvementNumber,
+        std::chrono::steady_clock::time_point generatedAt) {
+    if (generatedAt <= previewClearedAt_) return;
     if (searchId == 0u || improvementNumber == 0u ||
         frames.empty()) {
         setStatusText(QStringLiteral(
@@ -4330,6 +4332,7 @@ bool RaceViewerController::hasPreviewTrajectories() const {
 }
 
 void RaceViewerController::clearPreviewTrajectories() {
+    previewClearedAt_ = std::chrono::steady_clock::now();
     if (!hasPreviewTrajectories()) {
         return;
     }

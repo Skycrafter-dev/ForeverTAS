@@ -19,6 +19,7 @@
 #include <QVector3D>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <map>
@@ -357,7 +358,8 @@ public:
             const std::vector<SearchTimelineFrame> &frames,
             const QString &backendId,
             std::uint64_t searchId,
-            std::uint64_t improvementNumber);
+            std::uint64_t improvementNumber,
+            std::chrono::steady_clock::time_point generatedAt = std::chrono::steady_clock::now());
 
 public slots:
     void setTimeMs(qint64 value);
@@ -521,6 +523,7 @@ private:
     std::optional<MapLoadRequest> queuedMapLoad_;
     std::optional<PendingRun> pendingRun_;
     std::vector<PendingImprovement> pendingImprovements_;
+    std::chrono::steady_clock::time_point previewClearedAt_{};
     QVariantList carEllipsoids_;
     QVariantList visualBatches_;
     QVariantList visualMaterials_;
