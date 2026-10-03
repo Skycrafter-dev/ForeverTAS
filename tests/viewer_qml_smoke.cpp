@@ -838,6 +838,42 @@ int main(int argc, char **argv) {
             settle();
             return invoked;
         };
+        QObject *cameraViewport = root->findChild<QObject *>(QStringLiteral("raceViewport"));
+        QObject *rasterCamera = root->findChild<QObject *>(QStringLiteral("viewCamera"));
+        QObject *rtCamera = root->findChild<QObject *>(QStringLiteral("rayTracingOverlayCamera"));
+        if (cameraViewport && rasterCamera && rtCamera) {
+            const double distance = cameraViewport->property("orbitDistance").toDouble();
+            QMetaObject::invokeMethod(cameraViewport, "enableOrbitalCamera");
+            QVariant zoomed;
+            QMetaObject::invokeMethod(cameraViewport, "zoomOrbit",
+                    Q_RETURN_ARG(QVariant, zoomed), Q_ARG(QVariant, QVariant(120.0)));
+            passManagementValid &= zoomed.toBool() &&
+                    cameraViewport->property("orbitDistance").toDouble() < distance;
+            QMetaObject::invokeMethod(cameraViewport, "enableFreeCamera");
+            settle();
+            const double freeDistance = cameraViewport->property("orbitDistance").toDouble();
+            const QVariant freePosition = cameraViewport->property("freeCameraPosition");
+            const double rasterNear = rasterCamera->property("clipNear").toDouble();
+            const double rtNear = rtCamera->property("clipNear").toDouble();
+            const double rasterFar = rasterCamera->property("clipFar").toDouble();
+            const double rtFar = rtCamera->property("clipFar").toDouble();
+            QMetaObject::invokeMethod(cameraViewport, "zoomOrbit",
+                    Q_RETURN_ARG(QVariant, zoomed), Q_ARG(QVariant, QVariant(-240.0)));
+            passManagementValid &= !zoomed.toBool() &&
+                    cameraViewport->property("orbitDistance").toDouble() == freeDistance &&
+                    cameraViewport->property("freeCameraPosition") == freePosition;
+            cameraViewport->setProperty("orbitDistance", 999.0);
+            settle();
+            passManagementValid &= rasterCamera->property("clipDistance").toDouble() == 0.0 &&
+                    rasterCamera->property("clipNear").toDouble() == rasterNear &&
+                    rtCamera->property("clipNear").toDouble() == rtNear &&
+                    rasterCamera->property("clipFar").toDouble() == rasterFar &&
+                    rtCamera->property("clipFar").toDouble() == rtFar;
+            cameraViewport->setProperty("orbitDistance", distance);
+            QMetaObject::invokeMethod(cameraViewport, "resetCameraFocus");
+        } else {
+            passManagementValid = false;
+        }
         QObject *conditionEditor = root->findChild<QObject *>(
                 QStringLiteral("conditionScriptTextArea"));
         QObject *emptyConditions = root->findChild<QObject *>(

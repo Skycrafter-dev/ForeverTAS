@@ -1207,7 +1207,7 @@ ApplicationWindow {
                     }
 
                     function zoomOrbit(wheelDeltaY) {
-                        if (carCameraActive)
+                        if (carCameraActive || freeCamera)
                             return false
                         leaveExactWhiteboardView()
                         const factor = Math.exp(-wheelDeltaY / 1200)
@@ -2544,7 +2544,7 @@ ApplicationWindow {
                                                 .minus(window.viewer
                                                        .carCameraTarget)
                                                 .length()
-                                        : viewport.orbitDistance
+                                        : viewport.freeCamera ? 0 : viewport.orbitDistance
                                     readonly property var dynamicClipPlanes:
                                         window.viewer.cameraClipPlanes(
                                             scenePosition, clipDistance)
@@ -3152,6 +3152,7 @@ ApplicationWindow {
 
                                 PerspectiveCamera {
                                     id: rayTracingOverlayCamera
+                                    objectName: "rayTracingOverlayCamera"
                                     readonly property var dynamicClipPlanes:
                                         window.viewer.cameraClipPlanes(
                                             scenePosition,
