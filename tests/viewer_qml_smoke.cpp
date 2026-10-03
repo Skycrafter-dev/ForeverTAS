@@ -1007,6 +1007,20 @@ int main(int argc, char **argv) {
                 QStringLiteral("modifierPassSelector"));
         if (passContent && passSelector) {
             passContent->setProperty("contentY", 100.0);
+            initialInnerTabs->setProperty("currentIndex", 3);
+            settle();
+            passContent->setProperty("contentY", 50.0);
+            initialInnerTabs->setProperty("currentIndex", 1);
+            settle();
+            initialInnerTabs->setProperty("currentIndex", 2);
+            settle();
+            passManagementValid &= selected() == 12 &&
+                    passContent->property("contentY").toDouble() == 100.0;
+            initialInnerTabs->setProperty("currentIndex", 3);
+            settle();
+            passManagementValid &= passContent->property("contentY").toDouble() == 50.0;
+            initialInnerTabs->setProperty("currentIndex", 2);
+            settle();
             QQmlExpression selectFirst(
                     QQmlEngine::contextForObject(passSelector), passSelector,
                     QStringLiteral("currentIndex = 0; activated(0)"));

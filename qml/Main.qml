@@ -4433,13 +4433,6 @@ ApplicationWindow {
                             window.codeEditorExpanded = false
                             window.viewer.stopSimulationDebugger()
                         }
-                        Qt.callLater(function() {
-                            const content = settingsScroll.contentItem
-                            content.contentY = toolTabs.currentIndex === 1
-                                ? Math.min(simulationDebuggerPanelHost.y,
-                                    Math.max(0, content.contentHeight - content.height))
-                                : 0
-                        })
                     }
 
                     ThemedTabButton {
@@ -4459,9 +4452,6 @@ ApplicationWindow {
                     objectName: "bruteforceSettingsTabs"
                     Layout.fillWidth: true
                     visible: toolTabs.currentIndex === 0
-                    onCurrentIndexChanged: Qt.callLater(function() {
-                        settingsScroll.contentItem.contentY = 0
-                    })
                     ThemedTabButton { text: qsTr("Base") }
                     ThemedTabButton { text: qsTr("Target") }
                     ThemedTabButton { text: qsTr("Passes") }
@@ -4480,6 +4470,36 @@ ApplicationWindow {
                 id: settingsScroll
 
                 objectName: "settingsScroll"
+                property var tabOffsets: ({})
+                property string activeScrollKey: ""
+                property bool restoringScroll: false
+                readonly property string scrollKey: toolTabs.currentIndex === 1
+                    ? "code" : "search-" + bruteforceSettingsTabs.currentIndex
+                function restoreTabScroll() {
+                    restoringScroll = true
+                    Qt.callLater(function() {
+                        const content = settingsScroll.contentItem
+                        const saved = settingsScroll.tabOffsets[settingsScroll.scrollKey]
+                        const offset = saved !== undefined ? saved
+                            : settingsScroll.scrollKey === "code"
+                              ? simulationDebuggerPanelHost.y : 0
+                        content.contentY = Math.max(0, Math.min(offset,
+                            content.contentHeight - content.height))
+                        settingsScroll.activeScrollKey = settingsScroll.scrollKey
+                        settingsScroll.restoringScroll = false
+                    })
+                }
+                onScrollKeyChanged: restoreTabScroll()
+                Connections {
+                    target: settingsScroll.contentItem
+                    function onContentYChanged() {
+                        if (!settingsScroll.restoringScroll
+                            && settingsScroll.activeScrollKey === settingsScroll.scrollKey) {
+                            settingsScroll.tabOffsets[settingsScroll.scrollKey] =
+                                settingsScroll.contentItem.contentY
+                        }
+                    }
+                }
                 anchors.top: settingsNavigation.bottom
                 anchors.topMargin: 12
                 anchors.bottom: parent.bottom
