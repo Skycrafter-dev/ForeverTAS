@@ -33,6 +33,10 @@ Steering settings can display normalized values or native integer units
 settings. Native edits are stored as exact normalized fractions; native display
 uses the same half-away-from-zero quantization as the simulator.
 
+Velocity results and target overlays show km/h with the underlying m/s value
+alongside it. Scores, `car.speed`, velocity vectors and saved settings remain
+in m/s; `car.speedKph` remains the explicit custom-telemetry conversion.
+
 Each selectable implementation owns:
 
 - A stable ID and display name.

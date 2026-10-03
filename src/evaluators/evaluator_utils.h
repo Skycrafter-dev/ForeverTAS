@@ -1,5 +1,6 @@
 #ifndef FOREVERTAS_EVALUATORS_EVALUATOR_UTILS_H
 #define FOREVERTAS_EVALUATORS_EVALUATOR_UTILS_H
+#include "speed_format.h"
 
 #include "searches/option_configuration.h"
 #include "searches/option_settings_utils.h"
@@ -93,8 +94,13 @@ inline std::string MetricDescription(const char *name,
                                      double timeMs) {
     std::ostringstream stream;
     stream.precision(9);
-    stream << name << ": " << value;
-    if (unit != nullptr && *unit != '\0') stream << ' ' << unit;
+    stream << name << ": ";
+    if (unit != nullptr && std::string(unit) == "m/s") {
+        stream << FormatDisplaySpeed(value);
+    } else {
+        stream << value;
+        if (unit != nullptr && *unit != '\0') stream << ' ' << unit;
+    }
     stream << " at " << FormatRaceTimeMilliseconds(timeMs);
     return stream.str();
 }

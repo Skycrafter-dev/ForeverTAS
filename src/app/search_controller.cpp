@@ -9,6 +9,7 @@
 #include "mutations/replay_input_script.h"
 #include "searches/algorithm_registry.h"
 #include "time_format.h"
+#include "speed_format.h"
 
 #include <forevervalidator/validation.h>
 
@@ -1223,6 +1224,10 @@ QString SearchController::formatCompactNumber(double value) const {
 
 QString SearchController::formatInterpolatedTime(double milliseconds) const {
     return QString::fromStdString(FormatInterpolatedTimeMilliseconds(milliseconds));
+}
+
+QString SearchController::formatSpeed(double metersPerSecond) const {
+    return QString::fromStdString(FormatDisplaySpeed(metersPerSecond));
 }
 
 void SearchController::extractReplayInputs() {

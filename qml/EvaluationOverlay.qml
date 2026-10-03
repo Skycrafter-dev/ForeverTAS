@@ -417,11 +417,11 @@ Item {
             }
             if (!best)
                 return { label: qsTr("No eligible sample"), event: null }
-            const unit = id === "velocity" ? " m/s"
-                       : id === "point-target" ? " m" : ""
+            const valueText = id === "velocity" ? controller.formatSpeed(score)
+                : score.toFixed(2) + (id === "point-target" ? " m" : "")
             return {
-                label: qsTr("Best: %1%2 at %3 ms")
-                    .arg(score.toFixed(2)).arg(unit).arg(best.timeMs),
+                label: qsTr("Best: %1 at %2 ms")
+                    .arg(valueText).arg(best.timeMs),
                 event: best,
                 score: score
             }
@@ -492,8 +492,10 @@ Item {
             const active = (settings.mode === "projected"
                             || settings.alignmentEnabled === "true")
                            && alignment < Number(settings.minAlignmentPercent)
-            return qsTr("Now: %1 m/s projected · %2% aligned%3")
-                .arg(projected.toFixed(1)).arg(alignment.toFixed(0))
+            const projectedMode = settings.mode === "projected"
+            return qsTr("Now: %1%2 · %3% aligned%4")
+                .arg(controller.formatSpeed(projectedMode ? projected : speed))
+                .arg(projectedMode ? qsTr(" projected") : "").arg(alignment.toFixed(0))
                 .arg(active ? qsTr(" · below threshold") : "")
         }
         if (targetId === "pose-target" && selectedPose.position) {

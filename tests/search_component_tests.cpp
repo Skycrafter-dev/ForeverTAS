@@ -14,6 +14,7 @@
 #include "searches/option_settings_utils.h"
 #include "searches/search_runner.h"
 #include "time_format.h"
+#include "speed_format.h"
 
 #include <algorithm>
 #include <array>
@@ -446,7 +447,10 @@ bool TestEvaluationTargets() {
         state.timeMs = 1000u;
         state.car.linearSpeed = {3.0f, 4.0f, 12.0f};
         const auto sample = session->Observe(std::nullopt, state);
-        okay &= Check(sample && std::abs(sample->score - 13.0) < 1e-9,
+        okay &= Check(sample && std::abs(sample->score - 13.0) < 1e-9 &&
+                              sample->description.find("46.8 km/h (13 m/s)") != std::string::npos &&
+                              forevertas::FormatDisplaySpeed(-10.0) == "-36 km/h (-10 m/s)" &&
+                              forevertas::FormatDisplaySpeed(0.0) == "0 km/h (0 m/s)",
                       "velocity target returned the wrong total speed");
     }
 
