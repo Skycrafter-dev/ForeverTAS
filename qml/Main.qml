@@ -5110,7 +5110,7 @@ ApplicationWindow {
                                 font.pixelSize: 12
                                 color: enabled ? AppTheme.text
                                                : AppTheme.disabledText
-                                placeholderText: qsTr("kmh(car.speed) >= 200")
+                                placeholderText: enabled ? qsTr("No conditions") : ""
                                 onTextChanged: {
                                     if (window.controller.conditionScript !== text)
                                         window.controller.conditionScript = text
@@ -5125,6 +5125,13 @@ ApplicationWindow {
                                     radius: 6
                                 }
                             }
+                        }
+                        Label {
+                            objectName: "emptyConditionsStatus"
+                            visible: !conditionScriptArea.enabled
+                                     && conditionScriptArea.text.trim().length === 0
+                            text: qsTr("No conditions")
+                            color: AppTheme.textMuted
                         }
                     }
 

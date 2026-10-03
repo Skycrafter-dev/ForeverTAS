@@ -838,6 +838,36 @@ int main(int argc, char **argv) {
             settle();
             return invoked;
         };
+        QObject *conditionEditor = root->findChild<QObject *>(
+                QStringLiteral("conditionScriptTextArea"));
+        QObject *emptyConditions = root->findChild<QObject *>(
+                QStringLiteral("emptyConditionsStatus"));
+        initialInnerTabs->setProperty("currentIndex", 3);
+        if (conditionEditor && emptyConditions) {
+            for (bool dark : {false, true}) {
+                controller.setDarkMode(dark);
+                conditionEditor->setProperty("enabled", false);
+                settle();
+                passManagementValid &= conditionEditor->property("placeholderText")
+                        .toString().isEmpty() &&
+                        conditionEditor->property("text").toString().isEmpty() &&
+                        controller.conditionScript().isEmpty() &&
+                        emptyConditions->property("visible").toBool();
+                conditionEditor->setProperty("text", QStringLiteral("car.speed > 0"));
+                settle();
+                passManagementValid &= !emptyConditions->property("visible").toBool() &&
+                        controller.conditionScript() == QStringLiteral("car.speed > 0");
+                conditionEditor->setProperty("text", QString{});
+                conditionEditor->setProperty("enabled", true);
+                settle();
+                passManagementValid &= !emptyConditions->property("visible").toBool() &&
+                        conditionEditor->property("placeholderText").toString() ==
+                                QStringLiteral("No conditions");
+            }
+            controller.setDarkMode(false);
+        } else {
+            passManagementValid = false;
+        }
         const auto add = [&](const char *id) {
             const bool invoked = QMetaObject::invokeMethod(
                     passEditor, "addPass",
