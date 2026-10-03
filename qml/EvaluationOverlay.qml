@@ -455,7 +455,7 @@ Item {
                 ? customContains(position, shape)
                 : cuboidEntry(position, position, shape) >= 0
             if (contains(frames[0].position))
-                return { label: qsTr("Entry: %1 ms").arg(frames[0].timeMs),
+                return { label: qsTr("Entry: %1").arg(controller.formatInterpolatedTime(frames[0].timeMs)),
                          event: frames[0] }
             for (let index = 1; index < frames.length; ++index) {
                 const before = frames[index - 1]
@@ -468,8 +468,8 @@ Item {
                 if (fraction >= 0) {
                     const time = before.timeMs
                         + fraction * (after.timeMs - before.timeMs)
-                    return { label: qsTr("Entry: %1 ms")
-                                        .arg(time.toFixed(1)),
+                    return { label: qsTr("Entry: %1")
+                                        .arg(controller.formatInterpolatedTime(time)),
                              event: sampleAt(time) }
                 }
             }

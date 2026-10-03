@@ -101,7 +101,7 @@ inline std::string MetricDescription(const char *name,
 
 inline std::string TimeMetricDescription(const char *name, double timeMs) {
     return std::string(name) + ": " +
-            FormatRaceTimeMilliseconds(timeMs);
+            FormatInterpolatedTimeMilliseconds(timeMs);
 }
 
 }  // namespace forevertas

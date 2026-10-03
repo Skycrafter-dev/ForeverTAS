@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -86,6 +87,18 @@ inline std::string FormatFixedDurationMilliseconds(
     stream << std::setfill('0') << std::setw(2) << totalHours << ':'
            << std::setw(2) << minutes << ':' << std::setw(2) << seconds
            << '.' << std::setw(3) << millis;
+    return stream.str();
+}
+
+inline std::string FormatInterpolatedTimeMilliseconds(double milliseconds) {
+    if (!std::isfinite(milliseconds) || milliseconds < 0.0 ||
+        milliseconds >= static_cast<double>(std::numeric_limits<std::int64_t>::max()) / 1000.0) {
+        return "n/a";
+    }
+    const auto microseconds = static_cast<std::uint64_t>(std::llround(milliseconds * 1000.0));
+    std::ostringstream stream;
+    stream << FormatFixedDurationMilliseconds(microseconds / 1000u)
+           << std::setfill('0') << std::setw(3) << microseconds % 1000u;
     return stream.str();
 }
 

@@ -275,6 +275,14 @@ bool TestInputOnlyTimelineTimeOrigin() {
 
 bool TestHumanDurationFormatting() {
     for (const auto &[milliseconds, expected] :
+         {std::pair{0.0, "00:00:00.000000"}, {103.751, "00:00:00.103751"},
+          {103.752, "00:00:00.103752"}, {59999.9996, "00:01:00.000000"}}) {
+        if (!Check(forevertas::FormatInterpolatedTimeMilliseconds(milliseconds) == expected,
+                   "interpolated time lost fractional milliseconds or rounded incorrectly")) {
+            return false;
+        }
+    }
+    for (const auto &[milliseconds, expected] :
          {std::pair{0.0, "00:00:00.00"}, {500.0, "00:00:00.50"},
           {50.0, "00:00:00.05"}, {13.0, "00:00:00.013"},
           {1000.0, "00:00:01.00"}, {59999.8, "00:01:00.00"}}) {
@@ -558,7 +566,8 @@ bool TestEvaluationTargets() {
         current.car.position = {10.0f, 1.0f, 0.0f};
         const auto sample = session->Observe(previous, current);
         okay &= Check(
-                sample && std::abs(sample->timeMs - 103.75) < 1e-9,
+                sample && std::abs(sample->timeMs - 103.75) < 1e-9 &&
+                        sample->description == "Custom volume entry time: 00:00:00.103750",
                 "custom volume outside-to-outside interpolation was "
                 "incorrect");
         settings["plane"] = "xy";

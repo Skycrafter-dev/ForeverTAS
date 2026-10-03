@@ -23,6 +23,11 @@ Base-input timestamps accept decimal seconds, `mm:ss.mmm`, and `hh:mm:ss.mmm`
 must align to the 10 ms input tick. Non-leading clock components are in
 `0..59`. Export remains decimal seconds for compatibility.
 
+Volume entry times use six fractional second digits in results, stored result
+descriptions and preview overlays. These are interpolated crossing estimates,
+not six-digit physical accuracy. Numeric scores retain their original double
+precision; formatting does not affect comparison or ranking.
+
 Each selectable implementation owns:
 
 - A stable ID and display name.

@@ -8,6 +8,7 @@
 #include "mutations/input_event_formatter.h"
 #include "mutations/replay_input_script.h"
 #include "searches/algorithm_registry.h"
+#include "time_format.h"
 
 #include <forevervalidator/validation.h>
 
@@ -1197,6 +1198,10 @@ void SearchController::browseForReplay() {
 
 QString SearchController::formatCompactNumber(double value) const {
     return FormatCompactNumber(value);
+}
+
+QString SearchController::formatInterpolatedTime(double milliseconds) const {
+    return QString::fromStdString(FormatInterpolatedTimeMilliseconds(milliseconds));
 }
 
 void SearchController::extractReplayInputs() {
