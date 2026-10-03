@@ -5556,70 +5556,13 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             controller: window.controller
                             viewer: window.viewer
+                            onInputsSelected: searchInputs.selectedSource = 1
                         }
 
-                        ColumnLayout {
+                        SearchInputs {
+                            id: searchInputs
                             Layout.fillWidth: true
-                            visible: window.controller.selectedInputsText.length > 0
-                            spacing: 6
-
-                            RowLayout {
-                                Layout.fillWidth: true
-
-                                Label {
-                                    Layout.fillWidth: true
-                                    text: qsTr("Selected input script")
-                                    font.weight: Font.Medium
-                                }
-
-                                ThemedButton {
-                                    objectName: "copyBestInputsButton"
-                                    text: qsTr("Copy all")
-                                    onClicked: {
-                                        bestInputsArea.selectAll()
-                                        bestInputsArea.copy()
-                                        bestInputsArea.select(0, 0)
-                                    }
-                                }
-                            }
-
-                            ScrollView {
-                                id: bestInputsScroll
-
-                                objectName: "bestInputsScrollView"
-                                Layout.fillWidth: true
-                                Layout.preferredHeight: 260
-                                clip: true
-                                ScrollBar.horizontal.policy:
-                                    ScrollBar.AsNeeded
-                                ScrollBar.vertical.policy:
-                                    ScrollBar.AsNeeded
-
-                                TextArea {
-                                    id: bestInputsArea
-
-                                    objectName: "bestInputsTextArea"
-                                    width: Math.max(
-                                        bestInputsScroll.availableWidth,
-                                        contentWidth + leftPadding + rightPadding)
-                                    text: window.controller.selectedInputsText
-                                    readOnly: true
-                                    selectByMouse: true
-                                    wrapMode: TextEdit.NoWrap
-                                    textFormat: TextEdit.PlainText
-                                    font.family: "monospace"
-                                    font.pixelSize: 12
-                                    color: AppTheme.text
-                                    background: Rectangle {
-                                        color: AppTheme.surface
-                                        border.width: 1
-                                        border.color: bestInputsArea.activeFocus
-                                                      ? AppTheme.focus
-                                                      : AppTheme.border
-                                        radius: 6
-                                    }
-                                }
-                            }
+                            controller: window.controller
                         }
                     }
 

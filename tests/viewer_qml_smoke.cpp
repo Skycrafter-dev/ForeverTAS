@@ -6,6 +6,7 @@
 
 #include <QApplication>
 #include <QColor>
+#include <QClipboard>
 #include <QCoreApplication>
 #include <QDir>
 #include <QElapsedTimer>
@@ -1158,6 +1159,38 @@ int main(int argc, char **argv) {
         return 1;
     }
     bool globalSettingsVisibleAcrossTabs =
+            true;
+    QQmlComponent inputsProbeComponent(&engine);
+    inputsProbeComponent.setData(R"QML(
+        import QtQuick
+        import "."
+        SearchInputs {
+            width: 400
+            controller: QtObject {
+                property bool running: false
+                property string bestInputsText: "current"
+                property string selectedInputsText: "history"
+            }
+        }
+    )QML", QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_SOURCE_DIR "/qml/InputsProbe.qml")));
+    std::unique_ptr<QObject> inputsProbe(inputsProbeComponent.create());
+    if (!inputsProbe) return 1;
+    QObject *const inputsController = inputsProbe->property("controller").value<QObject *>();
+    QObject *const copyInputs = inputsProbe->findChild<QObject *>("copyBestInputsButton");
+    inputsController->setProperty("running", true);
+    inputsController->setProperty("selectedInputsText", "history-new");
+    globalSettingsVisibleAcrossTabs &= inputsProbe->property("script") == "current";
+    inputsProbe->setProperty("selectedSource", 1);
+    inputsController->setProperty("bestInputsText", "current-new");
+    QMetaObject::invokeMethod(copyInputs, "clicked");
+    globalSettingsVisibleAcrossTabs &= inputsProbe->property("script") == "history-new" &&
+            QApplication::clipboard()->text() == "history-new";
+    inputsProbe->setProperty("selectedSource", 0);
+    QMetaObject::invokeMethod(copyInputs, "clicked");
+    globalSettingsVisibleAcrossTabs &= inputsProbe->property("script") == "current-new" &&
+            QApplication::clipboard()->text() == "current-new" &&
+            inputsController->property("selectedInputsText") == "history-new";
+    globalSettingsVisibleAcrossTabs &=
             initialGlobalScript != nullptr &&
             initialReplaySection != nullptr &&
             initialAppearanceControls != nullptr &&

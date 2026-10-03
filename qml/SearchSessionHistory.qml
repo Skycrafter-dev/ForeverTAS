@@ -7,6 +7,7 @@ ColumnLayout {
     id: root
     required property var controller
     required property var viewer
+    signal inputsSelected()
     property int sortColumn: 0
     property bool sortAscending: true
     property int selectedRestart: -1
@@ -54,6 +55,7 @@ ColumnLayout {
         selectedRestart = Number(controller.cycleRows[index].restart)
         if (!preview)
             return
+        inputsSelected()
         let session = null
         for (let i = 0; i < controller.sessionOptions.length; ++i) {
             if (controller.sessionOptions[i].directory ===

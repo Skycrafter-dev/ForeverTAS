@@ -477,6 +477,7 @@ qt_add_qml_module(forevertas_qml
         qml/GraphicsInspector.qml
         qml/Main.qml
         qml/SearchSessionHistory.qml
+        qml/SearchInputs.qml
         qml/SimulationDebuggerPanel.qml
         qml/SliderValueField.qml
         qml/ThemedButton.qml
