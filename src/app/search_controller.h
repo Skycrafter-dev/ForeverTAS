@@ -91,6 +91,8 @@ class SearchController final : public QObject {
                        drawTargetsThroughBlocksChanged)
     Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY
                        darkModeChanged)
+    Q_PROPERTY(bool targetMouseEditingLocked READ targetMouseEditingLocked WRITE
+                       setTargetMouseEditingLocked NOTIFY targetMouseEditingLockedChanged)
     Q_PROPERTY(QVariantList searchAlgorithmOptions READ searchAlgorithmOptions
                        CONSTANT)
     Q_PROPERTY(QVariantList modifierOptions READ modifierOptions CONSTANT)
@@ -186,6 +188,7 @@ public:
     bool randomizeSeedsOnStart() const;
     bool drawTargetsThroughBlocks() const;
     bool darkMode() const;
+    bool targetMouseEditingLocked() const;
     QVariantList searchAlgorithmOptions() const;
     QVariantList modifierOptions() const;
     QVariantList evaluationTargetOptions() const;
@@ -243,6 +246,7 @@ public slots:
     void setAutoRestartAttempts(const QString &value);
     void setDrawTargetsThroughBlocks(bool value);
     void setDarkMode(bool value);
+    void setTargetMouseEditingLocked(bool value);
     void setSearchAlgorithmId(const QString &value);
     void setEvaluationTargetId(const QString &value);
 
@@ -295,6 +299,7 @@ signals:
     void randomizeSeedsOnStartChanged();
     void drawTargetsThroughBlocksChanged();
     void darkModeChanged();
+    void targetMouseEditingLockedChanged();
     void searchAlgorithmIdChanged();
     void evaluationTargetIdChanged();
     void searchAlgorithmSettingsChanged();
@@ -394,6 +399,7 @@ private:
     bool randomizeSeedsOnStart_ = true;
     bool drawTargetsThroughBlocks_ = false;
     bool darkMode_ = false;
+    bool targetMouseEditingLocked_ = false;
     SearchConfigurationModel configuration_;
     CuboidTargetModel cuboidTargets_;
     CustomVolumeTargetModel customVolumeTargets_;

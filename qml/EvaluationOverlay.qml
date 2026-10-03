@@ -771,6 +771,11 @@ Item {
                >= distance(camera, sample.position)
     }
 
+    function targetDragLocked(hit) {
+        return controller.targetMouseEditingLocked
+            && (hit.kind === "evaluation" || hit.kind === "stunt")
+    }
+
     function dragCandidates(position) {
         if (controller.running || !samples.length)
             return []
@@ -778,6 +783,7 @@ Item {
             return []
         const handles = []
         for (const handle of windowHandles) {
+            if (targetDragLocked(handle)) continue
             const layer = handleStyle(handle)
             if (!layer.visible)
                 continue
@@ -807,6 +813,7 @@ Item {
         }
         const paths = []
         for (const range of ranges) {
+            if (targetDragLocked(range)) continue
             if (!range.style.visible || !Number.isFinite(range.minimum)
                 || !Number.isFinite(range.maximum)
                 || range.maximum <= range.minimum)
@@ -834,7 +841,7 @@ Item {
     }
 
     function applyDrag(hit, time) {
-        if (!hit || time < 0)
+        if (!hit || time < 0 || controller.running || targetDragLocked(hit))
             return
         time = Math.round(time / 10) * 10
         const start = Math.ceil(samples[0].timeMs / 10) * 10
@@ -869,6 +876,10 @@ Item {
 
     function commitDrag(hit) {
         const preview = dragPreview
+        if (hit && (controller.running || targetDragLocked(hit))) {
+            dragPreview = null
+            return
+        }
         if (!hit || !preview)
             return
         if (preview.kind === "horizon") {

@@ -843,6 +843,29 @@ int main(int argc, char **argv) {
         QObject *rasterCamera = root->findChild<QObject *>(QStringLiteral("viewCamera"));
         QObject *rtCamera = root->findChild<QObject *>(QStringLiteral("rayTracingOverlayCamera"));
         if (cameraViewport && rasterCamera && rtCamera) {
+            for (const auto &[method, kind, axis] : {
+                 std::tuple{"beginCuboidInteraction", "move", "x"},
+                 {"beginCuboidInteraction", "resize", "y"},
+                 {"beginPoseInteraction", "pose-move", "z"},
+                 {"beginPoseInteraction", "pose-rotate", "yaw"},
+                 {"beginCustomInteraction", "custom-depth", "0"},
+                 {"beginCustomInteraction", "custom-vertex", "0"}}) {
+                for (bool locked : {false, true}) {
+                    controller.setTargetMouseEditingLocked(locked);
+                    QVariant began;
+                    QMetaObject::invokeMethod(cameraViewport, method,
+                            Q_RETURN_ARG(QVariant, began), Q_ARG(QVariant, kind),
+                            Q_ARG(QVariant, axis), Q_ARG(QVariant, 0), Q_ARG(QVariant, 0));
+                    passManagementValid &= began.toBool() == !locked;
+                    for (const char *scene : {"rasterCuboidEditorScene", "rasterCustomVolumeEditorScene",
+                                             "rasterPoseTargetEditorScene", "rayTracingCuboidEditorScene",
+                                             "rayTracingCustomVolumeEditorScene", "rayTracingPoseTargetEditorScene"}) {
+                        QObject *editor = root->findChild<QObject *>(QString::fromLatin1(scene));
+                        passManagementValid &= editor && editor->property("interactive").toBool() == !locked;
+                    }
+                }
+            }
+            controller.setTargetMouseEditingLocked(false);
             const double distance = cameraViewport->property("orbitDistance").toDouble();
             QMetaObject::invokeMethod(cameraViewport, "enableOrbitalCamera");
             QVariant zoomed;

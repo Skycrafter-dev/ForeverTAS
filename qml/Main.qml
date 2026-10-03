@@ -917,6 +917,18 @@ ApplicationWindow {
                     property bool freeCamera: false
                     property bool orbitalCamera: false
                     property bool pointPlacementActive: false
+                    readonly property bool targetMouseEditingAllowed:
+                        !window.controller.running && !window.controller.targetMouseEditingLocked
+                    onTargetMouseEditingAllowedChanged: {
+                        if (!targetMouseEditingAllowed) {
+                            endCuboidInteraction()
+                            endCustomInteraction()
+                            endPoseInteraction()
+                            pointPlacementActive = false
+                            cuboidPointerCaptured = false
+                            editHistory.endGesture()
+                        }
+                    }
                     Connections {
                         target: window.controller
                         function onEvaluationTargetIdChanged() {
@@ -1616,7 +1628,7 @@ ApplicationWindow {
                     }
 
                     function beginCuboidInteraction(kind, axis, x, y) {
-                        if (window.controller.running)
+                        if (!targetMouseEditingAllowed)
                             return false
                         cuboidDragKind = kind
                         cuboidDragAxis = axis
@@ -1628,7 +1640,7 @@ ApplicationWindow {
                     }
 
                     function updateCuboidInteraction(x, y) {
-                        if (!cuboidDragActive)
+                        if (!cuboidDragActive || !targetMouseEditingAllowed)
                             return
                         const dx = x - cuboidDragX
                         const dy = y - cuboidDragY
@@ -1701,7 +1713,7 @@ ApplicationWindow {
                     }
 
                     function beginCustomInteraction(kind, index, x, y) {
-                        if (window.controller.running
+                        if (!targetMouseEditingAllowed
                             || window.controller.customVolumeDrawing)
                             return false
                         cuboidDragX = x
@@ -1714,6 +1726,7 @@ ApplicationWindow {
                     }
 
                     function updateCustomInteraction(x, y) {
+                        if (!targetMouseEditingAllowed) return
                         if (customVertexDragActive) {
                             const point = customPlanePoint(x, y)
                             window.controller.customVolumeTargets.setVertexWorld(
@@ -1757,7 +1770,7 @@ ApplicationWindow {
                     }
 
                     function beginPoseInteraction(kind, axis, x, y) {
-                        if (window.controller.running)
+                        if (!targetMouseEditingAllowed)
                             return false
                         poseDragKind = kind
                         poseDragAxis = axis
@@ -1769,7 +1782,7 @@ ApplicationWindow {
                     }
 
                     function updatePoseInteraction(x, y) {
-                        if (!poseDragActive)
+                        if (!poseDragActive || !targetMouseEditingAllowed)
                             return
                         const dx = x - cuboidDragX
                         const dy = y - cuboidDragY
@@ -2670,17 +2683,17 @@ ApplicationWindow {
 
                         CuboidEditorScene {
                             objectName: "rasterCuboidEditorScene"
-                            interactive: true
+                            interactive: viewport.targetMouseEditingAllowed
                         }
 
                         CustomVolumeEditorScene {
                             objectName: "rasterCustomVolumeEditorScene"
-                            interactive: true
+                            interactive: viewport.targetMouseEditingAllowed
                         }
 
                         PoseTargetEditorScene {
                             objectName: "rasterPoseTargetEditorScene"
-                            interactive: true
+                            interactive: viewport.targetMouseEditingAllowed
                         }
 
                         Model {
@@ -3264,19 +3277,19 @@ ApplicationWindow {
                         CuboidEditorScene {
                             objectName: "rayTracingCuboidEditorScene"
                             throughPass: true
-                            interactive: true
+                            interactive: viewport.targetMouseEditingAllowed
                         }
 
                         CustomVolumeEditorScene {
                             objectName: "rayTracingCustomVolumeEditorScene"
                             throughPass: true
-                            interactive: true
+                            interactive: viewport.targetMouseEditingAllowed
                         }
 
                         PoseTargetEditorScene {
                             objectName: "rayTracingPoseTargetEditorScene"
                             throughPass: true
-                            interactive: true
+                            interactive: viewport.targetMouseEditingAllowed
                         }
                     }
 
@@ -3364,7 +3377,8 @@ ApplicationWindow {
                             previousX = mouse.x
                             previousY = mouse.y
                             viewport.beginViewRotation()
-                            if (window.controller.customVolumeDrawing) {
+                            if (window.controller.customVolumeDrawing
+                                && viewport.targetMouseEditingAllowed) {
                                 const point = viewport.customPlanePoint(
                                     mouse.x, mouse.y)
                                 window.controller.customVolumeTargets
@@ -3393,7 +3407,7 @@ ApplicationWindow {
                                          ? rayTracingTrajectoryOverlay
                                          : rasterMapView
                             if (viewport.pointPlacementActive
-                                && !window.controller.running) {
+                                && viewport.targetMouseEditingAllowed) {
                                 const picked = rasterMapView.pick(
                                     mouse.x, mouse.y)
                                 const point = picked.objectHit
@@ -3412,7 +3426,7 @@ ApplicationWindow {
                             }
                             const hit = view.pick(mouse.x, mouse.y).objectHit
                             if (hit && hit.targetIndex !== undefined
-                                && !window.controller.running) {
+                                && viewport.targetMouseEditingAllowed) {
                                 viewport.cuboidPointerCaptured = true
                                 if (hit.editorKind
                                     && hit.editorKind.indexOf("pose-")

@@ -60,6 +60,7 @@ constexpr char kAutoRestartDurationKey[] = "search/autoRestartDuration";
 constexpr char kAutoRestartAttemptsKey[] = "search/autoRestartAttempts";
 constexpr char kDrawTargetsThroughBlocksKey[] =
         "viewer/drawTargetsThroughBlocks";
+constexpr char kTargetMouseEditingLockedKey[] = "viewer/targetMouseEditingLocked";
 constexpr char kDarkModeKey[] = "appearance/darkMode";
 std::atomic_bool gAutomaticPacksSearchScheduled{false};
 
@@ -351,6 +352,7 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     drawTargetsThroughBlocks_ = settings
             .value(QLatin1String(kDrawTargetsThroughBlocksKey), false)
             .toBool();
+    targetMouseEditingLocked_ = settings.value(QLatin1String(kTargetMouseEditingLockedKey), false).toBool();
     darkMode_ =
             QSettings().value(QLatin1String(kDarkModeKey), false).toBool();
     ApplyApplicationPalette(darkMode_);
@@ -561,6 +563,10 @@ bool SearchController::drawTargetsThroughBlocks() const {
 
 bool SearchController::darkMode() const {
     return darkMode_;
+}
+
+bool SearchController::targetMouseEditingLocked() const {
+    return targetMouseEditingLocked_;
 }
 
 QVariantList SearchController::searchAlgorithmOptions() const {
@@ -915,6 +921,13 @@ void SearchController::setDrawTargetsThroughBlocks(bool value) {
     QSettings().setValue(
             QLatin1String(kDrawTargetsThroughBlocksKey), value);
     emit drawTargetsThroughBlocksChanged();
+}
+
+void SearchController::setTargetMouseEditingLocked(bool value) {
+    if (targetMouseEditingLocked_ == value) return;
+    targetMouseEditingLocked_ = value;
+    QSettings().setValue(QLatin1String(kTargetMouseEditingLockedKey), value);
+    emit targetMouseEditingLockedChanged();
 }
 
 void SearchController::setDarkMode(bool value) {

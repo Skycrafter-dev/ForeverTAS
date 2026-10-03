@@ -342,6 +342,16 @@ Rectangle {
             }
         }
 
+        ThemedCheckBox {
+            objectName: "targetMouseEditingLock"
+            Layout.fillWidth: true
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            text: qsTr("Lock target dragging")
+            checked: root.controller && root.controller.targetMouseEditingLocked
+            onToggled: root.controller.targetMouseEditingLocked = checked
+        }
+
         TabBar {
             Layout.fillWidth: true
             Layout.leftMargin: 10

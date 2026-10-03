@@ -218,9 +218,10 @@ bool TestTargetVisibilityPersistence() {
             return false;
         }
         controller.setDrawTargetsThroughBlocks(true);
+        controller.setTargetMouseEditingLocked(true);
     }
     SearchController restored;
-    return Check(restored.drawTargetsThroughBlocks(),
+    return Check(restored.drawTargetsThroughBlocks() && restored.targetMouseEditingLocked(),
                  "draw-through target rendering was not persisted");
 }
 
