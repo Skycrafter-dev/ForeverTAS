@@ -1293,6 +1293,21 @@ bool TestInputScriptParsingAndBaseline() {
     expectError("0.00 press up trailing", "expected");
     expectError("\n0.00 rel enter", "Line 2");
     expectError("9223372036854776.00 press up", "10 ms-aligned");
+    expectError("9223372036854775.810 press up", "10 ms-aligned");
+    for (const char *time : {"1:60", "1:60:00", "1:2:3:4", ":01", "1:",
+                             "1::02", "1:-02", "1:00.001", "1:00.0000",
+                             "999999999999999:00:00"}) {
+        expectError(std::string(time) + " press up", "10 ms-aligned");
+    }
+    for (const auto &[time, milliseconds] :
+         {std::pair{"1:23.450", 83450LL}, {"01:02:03.010", 3723010LL},
+          {"100:00", 6000000LL}, {"0:00.00", 0LL},
+          {"9223372036854775.800", 9223372036854775800LL}}) {
+        const auto clock = forevertas::ParseInputScript(std::string(time) + " press up");
+        okay &= Check(clock && clock.commands.size() == 1u &&
+                              clock.commands.front().userTimeMs == milliseconds,
+                      "clock input timestamp was not parsed exactly");
+    }
 
     const forevertas::InputScriptParseResult tooLate =
             forevertas::ParseInputScript("2.00 press up");

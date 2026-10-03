@@ -82,17 +82,30 @@ std::optional<std::int64_t> ParseScriptTime(std::string_view token) {
             return std::isdigit(static_cast<unsigned char>(character)) != 0;
         });
     };
-    if (!allDigits(wholeToken) || !allDigits(fractionToken)) {
+    if (!allDigits(fractionToken)) {
         return std::nullopt;
     }
 
     std::int64_t seconds = 0;
-    const auto parsed = std::from_chars(
-            wholeToken.data(), wholeToken.data() + wholeToken.size(), seconds);
-    if (parsed.ec != std::errc{} ||
-        parsed.ptr != wholeToken.data() + wholeToken.size() ||
-        seconds > std::numeric_limits<std::int64_t>::max() / 1000) {
-        return std::nullopt;
+    std::string_view remaining = wholeToken;
+    for (std::size_t componentIndex = 0u; ; ++componentIndex) {
+        const std::size_t colon = remaining.find(':');
+        const std::string_view part = remaining.substr(0u, colon);
+        if (componentIndex >= 3u || part.empty() || !allDigits(part)) {
+            return std::nullopt;
+        }
+        std::int64_t component = 0;
+        const auto parsed = std::from_chars(
+                part.data(), part.data() + part.size(), component);
+        constexpr auto limit = std::numeric_limits<std::int64_t>::max() / 1000;
+        if (parsed.ec != std::errc{} || parsed.ptr != part.data() + part.size() ||
+            component > limit || (componentIndex > 0u && component >= 60) ||
+            seconds > (limit - component) / 60) {
+            return std::nullopt;
+        }
+        seconds = seconds * 60 + component;
+        if (colon == std::string_view::npos) break;
+        remaining.remove_prefix(colon + 1u);
     }
     std::int64_t milliseconds = 0;
     if (!fractionToken.empty()) {
@@ -108,6 +121,9 @@ std::optional<std::int64_t> ParseScriptTime(std::string_view token) {
         for (std::size_t index = fractionToken.size(); index < 3u; ++index) {
             milliseconds *= 10;
         }
+    }
+    if (seconds > (std::numeric_limits<std::int64_t>::max() - milliseconds) / 1000) {
+        return std::nullopt;
     }
     const std::int64_t result = seconds * 1000 + milliseconds;
     if (result % kInputScriptTickMs != 0) return std::nullopt;
@@ -229,7 +245,8 @@ InputScriptParseResult ParseInputScript(std::string_view script) {
             if (!time) {
                 result.error = LineError(
                         lineNumber,
-                        "time must be a non-negative 10 ms-aligned decimal.");
+                        "time must be non-negative and 10 ms-aligned: "
+                        "seconds, mm:ss.mmm or hh:mm:ss.mmm.");
                 return result;
             }
 

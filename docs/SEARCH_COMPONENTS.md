@@ -18,6 +18,11 @@ A search request contains five parts:
 The application currently requires at least one modifier pass before a search
 can start.
 
+Base-input timestamps accept decimal seconds, `mm:ss.mmm`, and `hh:mm:ss.mmm`
+(for example `1:23.450 press up`). Fractions have at most three digits and
+must align to the 10 ms input tick. Non-leading clock components are in
+`0..59`. Export remains decimal seconds for compatibility.
+
 Each selectable implementation owns:
 
 - A stable ID and display name.
