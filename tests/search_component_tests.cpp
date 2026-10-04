@@ -5,6 +5,7 @@
 #include "mutations/composite_input_mutator.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/input_event_utils.h"
+#include "mutations/modifier_utils.h"
 #include "replay_file_io.h"
 #include "searches/algorithm_registry.h"
 #include "searches/basic_brute_force_search.h"
@@ -860,6 +861,104 @@ bool TestExistingEventWindowPatchParity() {
         if (!okay) return false;
     }
     return okay;
+}
+
+MutationResult ReferenceSmoothMutation(const MutationRequest &request,
+                                       const OptionSettings &settings) {
+    auto inputs = request.baselineInputs;
+    const auto simulationSettings = *forevertas::SimulationInputSettingsFromUserTimeline(
+            settings, request.tickDurationMs);
+    const auto window = *forevertas::ParseModifierWindow(simulationSettings);
+    auto random = forevertas::ModifierRandom(
+            window.seed, request.iterationIndex, request.passIndex);
+    const auto tick = request.tickDurationMs;
+    const auto radius = std::stoll(settings.at("radiusMs"));
+    const auto minimum = *forevertas::ParseNormalizedAnalogInput(settings.at("amplitudeMin"));
+    const auto maximum = *forevertas::ParseNormalizedAnalogInput(settings.at("amplitudeMax"));
+    for (unsigned deformation = 0; deformation < std::stoul(settings.at("deformationCount"));
+         ++deformation) {
+        const auto center = forevertas::RandomInteger<std::int64_t>(
+                random, window.minimumTimeMs / tick, window.maximumTimeMs / tick) * tick;
+        const auto amplitude = forevertas::RandomInteger<AnalogInputState>(random, minimum, maximum);
+        const auto start = std::max<std::int64_t>(window.minimumTimeMs, center - radius);
+        const auto end = std::min<std::int64_t>(window.maximumTimeMs, center + radius);
+        for (auto time = forevertas::AlignInputTime(start, tick); time <= end; time += tick) {
+            const double distance = std::abs(static_cast<double>(time - center));
+            const double weight = radius == 0 ? 1.0 :
+                    0.5 * (1.0 + std::cos(3.14159265358979323846 * distance / radius));
+            const auto value = forevertas::SaturateAnalogInputState(
+                    static_cast<std::int64_t>(forevertas::SteeringStateAt(inputs, time)) +
+                    std::llround(amplitude * weight));
+            inputs.push_back(Steering(time, value));
+        }
+        forevertas::NormalizeMutableInputEvents(
+                inputs, request.baselineInputs, tick, request.mutableFromTimeMs);
+    }
+    return {inputs, forevertas::EffectiveInputChangeCount(request.baselineInputs, inputs)};
+}
+
+bool TestSmoothIndexedParity() {
+    const auto *registration = forevertas::FindModifier(forevertas::kSmoothSteeringModifierId);
+    OptionSettings settings = registration->defaultSettings;
+    settings["minTimeMs"] = "100";
+    settings["maxTimeMs"] = "800";
+    settings["deformationCount"] = "20";
+    settings["amplitudeMin"] = "-1";
+    settings["amplitudeMax"] = "1";
+    const std::vector<SandboxInputEvent> baseline{
+        Steering(0, 15000), Switch(80, SandboxInputAction::SteerLeft, true),
+        Steering(100, -40000), Switch(100, SandboxInputAction::Brake, true),
+        Switch(200, SandboxInputAction::SteerLeft, false), Steering(210, 60000),
+        Steering(800, 4000), Switch(900, SandboxInputAction::Accelerate, false)};
+    for (const int radius : {0, 100, 500}) {
+        settings["radiusMs"] = std::to_string(radius);
+        auto mutator = registration->create(settings, 10);
+        for (const bool canonical : {true, false}) {
+            std::vector<SandboxInputEvent> inputs;
+            inputs.reserve(baseline.size() + 1);
+            inputs.insert(inputs.end(), baseline.begin(), baseline.end());
+            if (!canonical) inputs.push_back(Steering(119, 80000));
+            for (const int mutableFrom : {100, 300}) {
+                for (unsigned seed = 0; seed < 32; ++seed) {
+                    const MutationRequest request{inputs, seed, 3, 10, mutableFrom, false};
+                    const auto expected = ReferenceSmoothMutation(request, settings);
+                    const auto actual = mutator->Mutate(request);
+                    if (!Check(SameEvents(expected.inputs, actual.inputs) &&
+                               expected.mutationCount == actual.mutationCount,
+                               "indexed smooth steering changed sequential deformation semantics")) {
+                        std::cerr << "radius=" << radius << " canonical=" << canonical
+                                  << " mutableFrom=" << mutableFrom << " seed=" << seed << '\n';
+                        for (std::size_t i = 0; i < std::min(expected.inputs.size(), actual.inputs.size()); ++i) {
+                            if (!forevertas::SameInputEvent(expected.inputs[i], actual.inputs[i])) {
+                                std::cerr << "first difference at " << i << ": " << expected.inputs[i].timeMs
+                                          << '/' << expected.inputs[i].value.analog << " vs " << actual.inputs[i].timeMs
+                                          << '/' << actual.inputs[i].value.analog << '\n';
+                                break;
+                            }
+                        }
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    settings["maxTimeMs"] = "19990";
+    settings["radiusMs"] = "1000";
+    const auto mutator = registration->create(settings, 10);
+    std::vector<SandboxInputEvent> dense;
+    for (int time = 0; time < 20000; time += 10)
+        dense.push_back(Steering(time, (time % 1000) * 64));
+    const MutationRequest request{dense, 5, 0, 10, 0, false};
+    const auto begin = std::chrono::steady_clock::now();
+    const auto expected = ReferenceSmoothMutation(request, settings);
+    const auto referenceEnd = std::chrono::steady_clock::now();
+    const auto actual = mutator->Mutate(request);
+    const auto end = std::chrono::steady_clock::now();
+    std::cout << "Smooth steering, 2000 baseline events / 20 deformations: reference "
+              << std::chrono::duration<double, std::milli>(referenceEnd - begin).count()
+              << " ms; indexed "
+              << std::chrono::duration<double, std::milli>(end - referenceEnd).count() << " ms\n";
+    return Check(SameEvents(expected.inputs, actual.inputs), "dense smooth parity failed");
 }
 
 struct ModifierParitySpec {
@@ -2340,6 +2439,7 @@ int main() {
             TestModifierComposition() &&
             TestModifierDeterminism() &&
             TestExistingEventWindowPatchParity() &&
+            TestSmoothIndexedParity() &&
             TestAllModifierWindowPatchParity() &&
             TestEveryOrderedModifierPairWindowPatchParity() &&
             TestMultiPassModifierWindowPatchParity() &&

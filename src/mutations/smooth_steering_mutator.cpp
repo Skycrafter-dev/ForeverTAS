@@ -4,6 +4,7 @@
 #include "mutations/modifier_utils.h"
 
 #include <cmath>
+#include <map>
 #include <stdexcept>
 
 namespace forevertas {
@@ -45,6 +46,23 @@ public:
         const std::int64_t tick = request.tickDurationMs;
         const std::int64_t minimumTick = settings_.window.minimumTimeMs / tick;
         const std::int64_t maximumTick = settings_.window.maximumTimeMs / tick;
+        const bool indexed = settings_.window.minimumTimeMs >= request.mutableFromTimeMs &&
+                InputEventsAreCanonical(inputs, request.tickDurationMs);
+        struct SteeringValue {
+            AnalogInputState value = 0;
+            bool changed = false;
+        };
+        std::map<std::int64_t, SteeringValue> steering;
+        if (indexed) {
+            for (const SandboxInputEvent &event : inputs) {
+                if (event.action == SandboxInputAction::Steer &&
+                    event.value.kind == forevervalidator::experimental::
+                            PhysicsSandboxInputValueKind::Analog) {
+                    steering.emplace_hint(steering.end(), event.timeMs,
+                                          SteeringValue{event.value.analog, false});
+                }
+            }
+        }
         constexpr double pi = 3.14159265358979323846;
         for (std::uint32_t deformation = 0u;
              deformation < settings_.deformationCount;
@@ -62,6 +80,9 @@ public:
             const std::int64_t end = std::min(
                     settings_.window.maximumTimeMs,
                     center + settings_.radiusMs);
+            auto next = steering.lower_bound(start);
+            AnalogInputState held = next == steering.begin()
+                    ? 0 : std::prev(next)->second.value;
             for (std::int64_t time = AlignInputTime(start, tick);
                  time <= end;
                  time += tick) {
@@ -74,18 +95,36 @@ public:
                                   static_cast<double>(settings_.radiusMs)));
                 const std::int64_t weightedDelta = std::llround(
                         static_cast<double>(amplitude) * weight);
+                if (indexed) {
+                    while (next != steering.end() && next->first <= time) {
+                        held = next->second.value;
+                        ++next;
+                    }
+                }
                 const AnalogInputState value = SaturateAnalogInputState(
                         static_cast<std::int64_t>(
-                                SteeringStateAt(inputs, time)) +
+                                indexed ? held : SteeringStateAt(inputs, time)) +
                         weightedDelta);
-                inputs.push_back(AnalogEvent(time,
-                                             SandboxInputAction::Steer,
-                                             value));
+                if (indexed) {
+                    // Preserve sequential saturation and held-state propagation.
+                    steering.insert_or_assign(next, time, SteeringValue{value, true});
+                    held = value;
+                } else {
+                    inputs.push_back(AnalogEvent(time, SandboxInputAction::Steer, value));
+                }
             }
-            NormalizeMutableInputEvents(inputs,
+            if (!indexed) NormalizeMutableInputEvents(inputs,
                                     request.baselineInputs,
                                     request.tickDurationMs,
                                     request.mutableFromTimeMs);
+        }
+        if (indexed) {
+            for (const auto &[time, state] : steering) {
+                if (state.changed)
+                    inputs.push_back(AnalogEvent(time, SandboxInputAction::Steer, state.value));
+            }
+            NormalizeMutableInputEvents(inputs, request.baselineInputs,
+                                        request.tickDurationMs, request.mutableFromTimeMs);
         }
         return {inputs,
                 EffectiveInputChangeCount(request.baselineInputs, inputs)};
