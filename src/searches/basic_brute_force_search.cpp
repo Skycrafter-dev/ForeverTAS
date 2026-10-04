@@ -1,4 +1,5 @@
 #include "searches/basic_brute_force_search.h"
+#include "searches/gpu_submission_budget.h"
 
 #include "evaluators/evaluator_utils.h"
 #include "physics_backend.h"
@@ -276,9 +277,12 @@ CudaCalibrationDeviceLimits QueryGpuCalibrationDeviceLimits(
                     "querying Vulkan calibration limits failed: " +
                     diagnostics.diagnostic);
         }
+        if (!diagnostics.memoryBudgetAvailable) {
+            throw std::runtime_error("Vulkan search requires VK_EXT_memory_budget for resource safety; use Optimized CPU on this device");
+        }
         CudaCalibrationDeviceLimits limits;
         limits.totalMemoryBytes = diagnostics.deviceLocalMemoryBytes;
-        limits.freeMemoryBytes = diagnostics.deviceLocalMemoryBytes;
+        limits.freeMemoryBytes = diagnostics.availableDeviceLocalMemoryBytes;
         // Vulkan validates dispatch limits and bounds submissions in its runtime;
         // CUDA register/occupancy counters are not available through Vulkan.
         limits.requireCudaExecutionLimits = false;
@@ -297,6 +301,7 @@ CudaCalibrationBatchProfile CudaCalibrationProfile(
     profile.batchCapacity = batchCapacity;
     profile.residentDeviceBytes =
             batch.metrics.residentDeviceBytes;
+    profile.reservationBytesPerCandidate = batch.metrics.reservationBytesPerCandidate;
     profile.kernelMilliseconds = std::max(
             {batch.metrics.scoreInitializationKernelMilliseconds,
              batch.metrics.mutationKernelMilliseconds,
@@ -544,10 +549,19 @@ SearchResult RunGpuBasicBruteForce(
     }
 
     constexpr std::uint32_t calibrationInitialBatchSize = 1u;
-    const std::uint32_t initialBatchSize =
-            context.calibrateCudaBatchSize
-            ? calibrationInitialBatchSize
-            : context.cudaBatchSize;
+    const std::uint32_t initialBatchSize = calibrationInitialBatchSize;
+    const auto submissionLimit = std::chrono::milliseconds(
+            context.calibrateCudaBatchSize ? 250 : 1000);
+    const auto queryLimits = [&]() {
+        auto limits = QueryGpuCalibrationDeviceLimits(context.sandbox.Backend());
+        limits.kernelBudgetMilliseconds = static_cast<double>(submissionLimit.count());
+        return limits;
+    };
+    const auto initialLimits = queryLimits();
+    const auto headroom = std::max<std::uint64_t>(512ull * 1024 * 1024,
+            initialLimits.totalMemoryBytes / 100 * 15);
+    if (initialLimits.freeMemoryBytes <= headroom)
+        throw std::runtime_error("GPU search rejected before probe: insufficient memory headroom; reduce GPU memory use or choose Optimized CPU");
     PhysicsSandboxCudaSearchConfiguration configuration;
     configuration.maximumBatchSize = initialBatchSize;
     configuration.earliestMutationTimeMs = earliestMutationTimeMs;
@@ -751,26 +765,82 @@ SearchResult RunGpuBasicBruteForce(
     CheckCancellation(context.control);
     ReportProgress(context.control, SearchProgressStage::Baseline, 0u);
     const auto baselineStarted = std::chrono::steady_clock::now();
+    GpuSubmissionBudget submissionBudget(initialLimits.kernelExecutionTimeoutEnabled, submissionLimit);
+    const auto deadlineError = [&]() {
+        return std::runtime_error("GPU submission exceeded the " +
+                std::to_string(submissionLimit.count()) +
+                " ms display-device budget; reduce parallel samples, shorten the horizon, or use Optimized CPU");
+    };
+    const auto cancelSubmission = [&]() {
+        return submissionBudget.Expired() || (context.control != nullptr &&
+                context.control->cancellationRequested && context.control->cancellationRequested());
+    };
     PhysicsSandboxCudaSearchBatch baseline = Require(
             session->EvaluateBaseline(
-                    [control = context.control]() {
-                        return control != nullptr &&
-                                control->cancellationRequested &&
-                                control->cancellationRequested();
-                    }),
+                    cancelSubmission),
             "evaluating GPU baseline");
+    if (submissionBudget.WasExceeded())
+        throw deadlineError();
     ReportCudaBatchProfile(
             "baseline",
             baseline,
             timelineTickCount,
             std::chrono::steady_clock::now() - baselineStarted);
-    if (calibrator) {
-        calibrationSafety.Observe(
-                CudaCalibrationProfile(
-                        baseline, sessionCapacity));
-    }
+    calibrationSafety.Observe(CudaCalibrationProfile(baseline, sessionCapacity));
     if (baseline.cancelled) {
         throw SearchCancelled();
+    }
+    if (!calibrator && baseline.metrics.reservationBytesPerCandidate == 0 && context.cudaBatchSize > 1u &&
+        (context.control == nullptr || !context.control->iterationLimit ||
+         *context.control->iterationLimit > 1u)) {
+        // A second bounded measurement separates fixed scene storage from
+        // per-candidate storage. The disposable session cannot promote a probe
+        // winner or consume the real search's candidate sequence.
+        const auto decision = calibrationSafety.Evaluate(2u, 0u,
+                queryLimits());
+        if (!decision.safe)
+            throw std::runtime_error("Manual GPU safety probe rejected: " + decision.reason +
+                    "; choose one parallel sample or Optimized CPU");
+        auto probeConfiguration = configuration;
+        probeConfiguration.maximumBatchSize = 2u;
+        auto probe = Require(CreatePhysicsSandboxCudaSearchSession(context.sandbox, probeConfiguration),
+                             "creating bounded manual GPU safety probe");
+        submissionBudget.Reset();
+        const auto probeBaseline = Require(probe.EvaluateBaseline(cancelSubmission),
+                                           "evaluating manual GPU safety probe baseline");
+        if (submissionBudget.WasExceeded())
+            throw deadlineError();
+        if (probeBaseline.cancelled) throw SearchCancelled();
+        submissionBudget.Reset();
+        const auto measurement = Require(probe.RunBatch(0u, 2u, cancelSubmission),
+                                         "measuring bounded manual GPU safety probe");
+        if (submissionBudget.WasExceeded())
+            throw deadlineError();
+        if (measurement.cancelled) throw SearchCancelled();
+        calibrationSafety.Observe(CudaCalibrationProfile(measurement, 2u));
+        const auto requestedCapacity = static_cast<std::uint32_t>(
+                std::min<std::uint64_t>(context.cudaBatchSize,
+                        context.control != nullptr && context.control->iterationLimit
+                                ? *context.control->iterationLimit : UINT64_MAX));
+        std::uint32_t probeCapacity = 2u;
+        // A two-lane timing slope cannot predict a whole GPU grid. Measure
+        // intermediate safe capacities instead of rejecting a distant estimate.
+        while (probeCapacity < requestedCapacity) {
+            const auto requestedDecision = calibrationSafety.Evaluate(
+                    requestedCapacity, sessionCapacity, queryLimits());
+            if (requestedDecision.safe || !requestedDecision.watchdogLimited) break;
+            const auto nextCapacity = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    requestedCapacity, static_cast<std::uint64_t>(probeCapacity) * 2u));
+            if (!calibrationSafety.Evaluate(nextCapacity, probeCapacity, queryLimits()).safe) break;
+            Require(probe.ReserveBatchCapacity(nextCapacity), "reserving bounded manual GPU safety probe");
+            probeCapacity = nextCapacity;
+            submissionBudget.Reset();
+            const auto nextMeasurement = Require(probe.RunBatch(0u, probeCapacity, cancelSubmission),
+                    "measuring bounded manual GPU safety probe");
+            if (submissionBudget.WasExceeded()) throw deadlineError();
+            if (nextMeasurement.cancelled) throw SearchCancelled();
+            calibrationSafety.Observe(CudaCalibrationProfile(nextMeasurement, probeCapacity));
+        }
     }
     evaluatorCalls += baseline.evaluatorCalls;
     adoptBest(baseline);
@@ -801,15 +871,20 @@ SearchResult RunGpuBasicBruteForce(
         std::uint32_t batchSize = calibrator
                 ? calibrator->CurrentBatchSize()
                 : context.cudaBatchSize;
-        if (calibrator &&
-            (!calibrator->Complete() ||
-             batchSize > sessionCapacity)) {
+        if (context.control != nullptr && context.control->iterationLimit)
+            batchSize = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                    batchSize, *context.control->iterationLimit - iterations));
+        {
             const CudaCalibrationSafetyDecision decision =
                     calibrationSafety.Evaluate(
                             batchSize,
                             sessionCapacity,
-                            QueryGpuCalibrationDeviceLimits(context.sandbox.Backend()));
+                            queryLimits());
             if (!decision.safe) {
+                if (!calibrator)
+                    throw std::runtime_error("Manual GPU batch rejected before allocation/dispatch (" +
+                            std::to_string(batchSize) + " samples): " + decision.reason +
+                            "; reduce parallel samples, shorten the horizon, or use Optimized CPU");
                 ReportRejectedCudaCalibrationBatch(
                         batchSize, decision);
                 if (calibrator->Complete()) {
@@ -890,32 +965,31 @@ SearchResult RunGpuBasicBruteForce(
         }
         const auto batchStarted = std::chrono::steady_clock::now();
         BeginIteration(context.control);
+        submissionBudget.Reset();
         PhysicsSandboxCudaSearchBatch batch = Require(
                 session->RunBatch(
                         iterationIndex,
                         batchSize,
-                        [control = context.control]() {
-                            return control != nullptr &&
-                                    control->cancellationRequested &&
-                                    control->cancellationRequested();
-                        }),
+                        cancelSubmission),
                 "executing GPU search batch");
+        if (submissionBudget.WasExceeded())
+            throw deadlineError();
         const auto batchElapsed =
                 std::chrono::steady_clock::now() - batchStarted;
         ReportCudaBatchProfile(
                 "mutations", batch, timelineTickCount, batchElapsed);
         std::optional<CudaCalibrationSafetyDecision>
                 executedCalibrationSafety;
-        if (calibrator) {
+        {
             calibrationSafety.Observe(
                     CudaCalibrationProfile(
                             batch, sessionCapacity));
-            if (!calibrator->Complete()) {
+            if (calibrator && !calibrator->Complete()) {
                 executedCalibrationSafety =
                         calibrationSafety.Evaluate(
                                 batch.candidateCount,
                                 sessionCapacity,
-                                QueryGpuCalibrationDeviceLimits(context.sandbox.Backend()));
+                                queryLimits());
             }
         }
         if (batch.cancelled) {
@@ -1006,12 +1080,12 @@ SearchResult RunGpuBasicBruteForce(
                                ? calibrator->BestBatchSize()
                                : calibrationInitialBatchSize)
                     : sessionCapacity;
-            if (calibrator) {
+            {
                 const CudaCalibrationSafetyDecision decision =
                         calibrationSafety.Evaluate(
                                 recreatedCapacity,
                                 0u,
-                                QueryGpuCalibrationDeviceLimits(context.sandbox.Backend()));
+                                queryLimits());
                 if (!decision.safe) {
                     throw std::runtime_error(
                             "recreating the promoted GPU baseline would "

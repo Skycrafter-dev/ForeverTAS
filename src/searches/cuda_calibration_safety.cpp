@@ -13,7 +13,6 @@ constexpr std::uint64_t kMinimumMemoryHeadroomBytes =
 constexpr double kMemoryHeadroomFraction = 0.15;
 constexpr double kAllocationEstimateMargin = 1.15;
 constexpr double kGridLimitFraction = 0.90;
-constexpr double kWatchdogKernelBudgetMilliseconds = 250.0;
 constexpr double kKernelPredictionMargin = 1.25;
 
 std::uint64_t SaturatingCeil(double value) {
@@ -63,6 +62,8 @@ void CudaCalibrationSafetyPlanner::Observe(
     existing->residentDeviceBytes = std::max(
             existing->residentDeviceBytes,
             profile.residentDeviceBytes);
+    existing->reservationBytesPerCandidate = std::max(
+            existing->reservationBytesPerCandidate, profile.reservationBytesPerCandidate);
     existing->kernelMilliseconds = std::max(
             existing->kernelMilliseconds,
             profile.kernelMilliseconds);
@@ -191,11 +192,14 @@ CudaCalibrationSafetyDecision CudaCalibrationSafetyPlanner::Evaluate(
     result.predictedKernelMilliseconds =
             PredictKernelMilliseconds(candidateBatchSize);
     if (limits.kernelExecutionTimeoutEnabled &&
-        (result.predictedKernelMilliseconds <= 0.0 ||
+        (!std::isfinite(limits.kernelBudgetMilliseconds) ||
+         limits.kernelBudgetMilliseconds <= 0.0 ||
+         result.predictedKernelMilliseconds <= 0.0 ||
          result.predictedKernelMilliseconds >
-                 kWatchdogKernelBudgetMilliseconds)) {
+                 limits.kernelBudgetMilliseconds)) {
         CudaCalibrationSafetyDecision unsafe = Unsafe(
                 "CUDA batch is too close to the kernel watchdog limit");
+        unsafe.watchdogLimited = true;
         unsafe.requiredTransientBytes = result.requiredTransientBytes;
         unsafe.reservedMemoryHeadroomBytes =
                 result.reservedMemoryHeadroomBytes;
@@ -241,6 +245,16 @@ std::uint64_t
 CudaCalibrationSafetyPlanner::EstimateTransientReservationBytes(
         std::uint32_t candidateBatchSize) const {
     double maximumBytesPerCandidate = 0.0;
+    std::uint64_t fixedAllowance = 0;
+    for (const auto &profile : profiles_)
+    {
+        maximumBytesPerCandidate = std::max(maximumBytesPerCandidate,
+                static_cast<double>(profile.reservationBytesPerCandidate));
+        fixedAllowance = std::max(fixedAllowance, profile.residentDeviceBytes);
+    }
+    if (maximumBytesPerCandidate > 0.0)
+        return SaturatingAdd(SaturatingAdd(fixedAllowance, fixedAllowance),
+                SaturatingCeil(maximumBytesPerCandidate * candidateBatchSize * kAllocationEstimateMargin));
     if (profiles_.size() == 1u) {
         maximumBytesPerCandidate =
                 static_cast<double>(
@@ -272,6 +286,15 @@ std::uint64_t CudaCalibrationSafetyPlanner::EstimateResidentBytes(
     if (profiles_.empty()) {
         return 0u;
     }
+    std::uint64_t reservationBound = 0;
+    std::uint64_t retainedBytes = 0;
+    for (const auto &profile : profiles_) {
+        reservationBound = std::max(reservationBound, profile.reservationBytesPerCandidate);
+        retainedBytes = std::max(retainedBytes, profile.residentDeviceBytes);
+    }
+    if (reservationBound != 0)
+        return SaturatingAdd(retainedBytes, SaturatingCeil(
+                static_cast<double>(reservationBound) * candidateBatchSize * kAllocationEstimateMargin));
     if (profiles_.size() == 1u) {
         const CudaCalibrationBatchProfile &profile = profiles_.front();
         return SaturatingCeil(

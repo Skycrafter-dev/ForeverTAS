@@ -20,6 +20,7 @@ struct CudaCalibrationDeviceLimits {
     bool kernelExecutionTimeoutEnabled = false;
     // Preserve strict CUDA validation; Vulkan supplies memory limits only.
     bool requireCudaExecutionLimits = true;
+    double kernelBudgetMilliseconds = 250.0;
 };
 
 struct CudaCalibrationBatchProfile {
@@ -32,6 +33,7 @@ struct CudaCalibrationBatchProfile {
     std::uint64_t simulationLocalBytesPerThread = 0u;
     std::uint32_t simulationActiveBlocksPerMultiprocessor = 0u;
     double simulationTheoreticalOccupancy = 0.0;
+    std::uint64_t reservationBytesPerCandidate = 0u;
 };
 
 struct CudaCalibrationSafetyDecision {
@@ -40,6 +42,7 @@ struct CudaCalibrationSafetyDecision {
     std::uint64_t requiredTransientBytes = 0u;
     std::uint64_t reservedMemoryHeadroomBytes = 0u;
     double predictedKernelMilliseconds = 0.0;
+    bool watchdogLimited = false;
 };
 
 class CudaCalibrationSafetyPlanner final {

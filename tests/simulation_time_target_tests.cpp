@@ -90,6 +90,33 @@ int main(int argc, char **argv) {
                 }
             }
             std::cout << PhysicsBackendId(backend) << ": " << cases.size() << " simulation-time/lap target cases passed\n";
+            if (IsGpuBackend(backend)) {
+                SearchRequest safety(argv[1], argv[2]);
+                safety.backend = backend;
+                safety.parallelSampleCount = UINT32_MAX;
+                safety.simulationHorizonMs = 100;
+                safety.baseInputCommands = ParseInputScript("0.00 steer 0\n0.00 press up").commands;
+                auto modifier = DefaultRandomSteeringOptionSettings();
+                modifier["minTimeMs"] = "0";
+                modifier["maxTimeMs"] = "90";
+                safety.modifiers = {{kRandomSteeringModifierId, modifier}};
+                auto objective = DefaultScriptedTargetOptionSettings();
+                objective["script"] = "max time.ms";
+                objective["maxTimeMs"] = "100";
+                safety.evaluationTarget = {kScriptedTargetEvaluationId, objective};
+                SearchRunControl bounded;
+                bounded.sampleBestTimeline = false;
+                bounded.iterationLimit = 1;
+                if (RunSearch(safety, &bounded).iterations != 1)
+                    throw std::runtime_error("manual capacity was not clamped to remaining attempts before allocation");
+                bounded.iterationLimit = UINT32_MAX;
+                bool rejected = false;
+                try { RunSearch(safety, &bounded); }
+                catch (const std::runtime_error &error) {
+                    rejected = std::string(error.what()).find("Manual GPU batch rejected before allocation/dispatch") != std::string::npos;
+                }
+                if (!rejected) throw std::runtime_error("huge manual GPU batch was not rejected actionably");
+            }
             SearchRequest finish(argv[1], argv[2]);
             finish.backend = backend;
             finish.parallelSampleCount = 1u;

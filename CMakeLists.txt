@@ -171,7 +171,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG d628fdd18c09aa251e7cdb5635d73ae28152cabb
+        GIT_TAG 23d0a116e40027718f1e64047283fcf334d48987
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
