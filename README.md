@@ -71,8 +71,8 @@ The Browse buttons always open the operating system's file picker rather than
 a Qt-provided dialog.
 The [condition and custom-target reference](docs/CONDITIONS.md) includes setup,
 preflight diagnostics, every supported property and alias, units, and context.
-Both editors provide a searchable Properties and functions list, with
-Ctrl+Space completion at the caret. The reference is generated from the same
+Both editors show an always-visible Properties and functions tree whose search
+follows the word at the caret. The reference is generated from the same
 catalog used by the parser and checked by the test suite.
 The selected file supplies the map and scenario; only the editable script
 supplies the player-control baseline. **Extract inputs to script** is available

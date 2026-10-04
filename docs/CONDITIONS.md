@@ -20,7 +20,7 @@ Custom targets use `min EXPRESSION`, `max EXPRESSION`, or `target VALUE EXPRESSI
 
 For multilap constraints use `car.completed_laps >= 1` (alias `car.laps`) to require the first finish passage, or `min time.ms` with that condition to optimize its tick. `car.cps` counts accepted ordinary checkpoints cumulatively across laps and deliberately excludes finish passages.
 
-The Properties and functions control is available in both editors. Ctrl+Space filters it to the token at the caret; selecting an entry inserts the canonical spelling. Aliases remain valid.
+The Properties and functions panel is always shown below both editors. It browses names as a tree: `car` opens to `car.prev`, `car.wheels` and the other car properties, so each level stays short. While you type in the editor, its search follows the word at the caret: the text before the last dot opens that branch and the rest filters it. Ctrl+Space moves focus to the results for keyboard selection. Selecting an entry replaces the word at the caret with the canonical spelling. Aliases remain valid.
 
 ## Symbols
 

@@ -961,32 +961,82 @@ int main(int argc, char **argv) {
             }
             controller.setDarkMode(false);
             QObject *reference = root->findChild<QObject *>(QStringLiteral("conditionReference"));
-            if (reference) {
+            auto *filter = reference ? reference->findChild<QObject *>(QStringLiteral("conditionReferenceFilter")) : nullptr;
+            if (reference && filter) {
+                const auto check = [&](const QString &expression, const char *detail) {
+                    QQmlExpression evaluated(QQmlEngine::contextForObject(reference), reference, expression);
+                    const bool valid = evaluated.evaluate().toBool() && !evaluated.hasError();
+                    if (!valid) std::cerr << "condition reference: " << detail << '\n';
+                    passManagementValid &= valid;
+                };
+                settle();
+                passManagementValid &= filter->property("visible").toBool();
+                check(QStringLiteral("rows.some(r => r.label === 'car' && r.branch && !r.entry) && "
+                                     "!rows.some(r => r.label.indexOf('.') >= 0) && rows.length <= 12"),
+                      "top level is not a compact list of branches");
                 conditionEditor->setProperty("text", QStringLiteral("car.spe > 0"));
                 conditionEditor->setProperty("cursorPosition", 7);
                 QMetaObject::invokeMethod(reference, "complete");
-                QQmlExpression insert(QQmlEngine::contextForObject(reference), reference,
-                    QStringLiteral("entries.length === 1 && (insertEntry(entries[0]), true)"));
-                passManagementValid &= insert.evaluate().toBool() && !insert.hasError() &&
-                        controller.conditionScript() == QStringLiteral("car.speed > 0");
+                check(QStringLiteral("currentPath === 'car' && rows[0].label === 'speed' && (activate(rows[0]), true)"),
+                      "Ctrl+Space completion did not pick car.speed first");
+                passManagementValid &= controller.conditionScript() == QStringLiteral("car.speed > 0");
                 conditionEditor->setProperty("cursorPosition", 7);
                 QMetaObject::invokeMethod(reference, "complete");
-                passManagementValid &= insert.evaluate().toBool() && !insert.hasError() &&
-                        controller.conditionScript() == QStringLiteral("car.speed > 0");
+                check(QStringLiteral("rows[0].label === 'speed' && (activate(rows[0]), true)"),
+                      "completion inside a word did not replace the whole word");
+                passManagementValid &= controller.conditionScript() == QStringLiteral("car.speed > 0");
+                QMetaObject::invokeMethod(conditionEditor, "forceActiveFocus");
+                conditionEditor->setProperty("text", QStringLiteral("car.wheels.fr"));
+                conditionEditor->setProperty("cursorPosition", 13);
+                settle();
+                passManagementValid &= conditionEditor->property("activeFocus").toBool() &&
+                        filter->property("text").toString() == QStringLiteral("car.wheels.fr");
+                check(QStringLiteral("currentPath === 'car.wheels' && rows.length === 2 && "
+                                     "rows.every(r => r.branch && r.label.startsWith('front'))"),
+                      "search did not follow the word typed in the editor");
+                check(QStringLiteral("(openPath('car.wheels.frontleft'), currentPath === 'car.wheels.frontleft') && "
+                                     "crumbs().length === 3 && rows.some(r => r.label === 'groundcontact') && "
+                                     "(activate(rows.find(r => r.label === 'groundcontact')), true)"),
+                      "drilling into a branch did not list only its children");
+                passManagementValid &= controller.conditionScript() ==
+                        QStringLiteral("car.wheels.frontleft.groundcontact");
+                const auto captureReference = [&](const char *name) {
+                    const QString directory = qEnvironmentVariable("FOREVERTAS_CONDITION_UI_CAPTURE_DIR");
+                    auto *const item = qobject_cast<QQuickItem *>(reference);
+                    if (directory.isEmpty() || item == nullptr) return;
+                    SettleQuickLayout();
+                    const auto grab = item->grabToImage();
+                    passManagementValid &= grab && WaitUntil([&]() { return !grab->image().isNull(); }, 5000) &&
+                            grab->image().save(directory + QLatin1Char('/') + QLatin1String(name));
+                };
+                captureReference("condition-reference-branch.png");
+                filter->setProperty("text", QString{});
+                captureReference("condition-reference-top.png");
+                filter->setProperty("text", QStringLiteral("car.x"));
+                check(QStringLiteral("rows.length === 1 && rows[0].aliasOf === 'car.position.x'"),
+                      "an alias was not offered in its branch");
+                filter->setProperty("text", QStringLiteral("car.vel."));
+                check(QStringLiteral("currentPath === 'car.velocity' && rows.some(r => r.label === 'x')"),
+                      "an alias did not open its branch");
+                filter->setProperty("text", QStringLiteral("localspeed"));
+                check(QStringLiteral("rows.length === 2 && rows.every(r => r.label.endsWith('.localspeed'))"),
+                      "a search without a direct match did not offer deeper matches");
+                filter->setProperty("text", QStringLiteral("car.nothing.x"));
+                check(QStringLiteral("rows.length === 0 && location.node === null"),
+                      "an unknown branch was not reported");
                 const QString originalTarget = controller.evaluationTargetId();
                 controller.setEvaluationTargetId(QStringLiteral("point-target"));
-                auto *filter = reference->findChild<QObject *>(QStringLiteral("conditionReferenceFilter"));
-                if (filter) filter->setProperty("text", QString{});
-                QQmlExpression contexts(QQmlEngine::contextForObject(reference), reference,
-                    QStringLiteral("entries.some(e => e.name === 'iterations') && entries.some(e => e.name === 'variable')"));
-                passManagementValid &= filter && contexts.evaluate().toBool() && !contexts.hasError();
+                filter->setProperty("text", QString{});
+                check(QStringLiteral("entries.some(e => e.name === 'iterations') && entries.some(e => e.name === 'variable') && "
+                                     "rows.some(r => r.label === 'iterations') && rows.some(r => r.label === 'variable')"),
+                      "condition-only entries are missing");
                 reference->setProperty("customTarget", true);
-                QQmlExpression customContext(QQmlEngine::contextForObject(reference), reference,
-                    QStringLiteral("!entries.some(e => e.conditionsOnly) && entries.some(e => e.name === 'car.speed')"));
-                passManagementValid &= customContext.evaluate().toBool() && !customContext.hasError();
+                check(QStringLiteral("!entries.some(e => e.conditionsOnly) && entries.some(e => e.name === 'car.speed') && "
+                                     "!rows.some(r => r.label === 'iterations')"),
+                      "custom targets offer condition-only entries");
                 reference->setProperty("customTarget", false);
-                reference->setProperty("expanded", false);
                 conditionEditor->setProperty("text", QString{});
+                filter->setProperty("text", QString{});
                 controller.setEvaluationTargetId(originalTarget);
             } else {
                 passManagementValid = false;
