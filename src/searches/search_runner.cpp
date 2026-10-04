@@ -1441,7 +1441,7 @@ SearchResult RunSearch(const SearchRequest &request,
         throw std::invalid_argument("unknown search algorithm: " +
                                     request.searchAlgorithm.id);
     }
-    if (request.modifiers.empty()) {
+    if (request.modifiers.empty() && !(control != nullptr && control->iterationLimit == 0u)) {
         throw std::invalid_argument(
                 "modifier pipeline must contain at least one pass");
     }
@@ -1466,7 +1466,7 @@ SearchResult RunSearch(const SearchRequest &request,
         throw std::invalid_argument(*error);
     }
     std::int64_t earliestMutationTimeMs =
-            std::numeric_limits<std::int64_t>::max();
+            request.modifiers.empty() ? kSearchTickDurationMs : std::numeric_limits<std::int64_t>::max();
     std::vector<OptionConfiguration> executionModifiers;
     executionModifiers.reserve(request.modifiers.size());
     for (const OptionConfiguration &modifier : request.modifiers) {
@@ -1653,6 +1653,28 @@ SearchResult RunSearch(const SearchRequest &request,
             *searchRegistration,
             *evaluationRegistration,
             control);
+}
+
+std::optional<SearchResult> EvaluateBaseline(const SearchRequest &request, const SearchRunControl *control) {
+    auto baseline = request;
+    baseline.backend = kAuxiliarySimulationBackend;
+    baseline.parallelSampleCount = 1;
+    baseline.calibrateCudaParallelSampleCount = false;
+    baseline.searchAlgorithm = DefaultSearchAlgorithmConfiguration();
+    baseline.modifiers.clear();
+    SearchRunControl evaluation;
+    evaluation.iterationLimit = 0;
+    evaluation.sampleBestTimeline = false;
+    evaluation.sampleImprovementTimelines = false;
+    if (control != nullptr) {
+        evaluation.cancellationRequested = control->cancellationRequested;
+        evaluation.progressChanged = control->progressChanged;
+    }
+    try {
+        return RunSearch(baseline, &evaluation);
+    } catch (const NoEligibleEvaluation &) {
+        return std::nullopt;
+    }
 }
 
 }  // namespace forevertas

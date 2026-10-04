@@ -58,6 +58,11 @@ SearchResult RunSearch(
         const SearchRequest &request,
         const SearchRunControl *control = nullptr);
 
+// Uses the search evaluator and condition, without mutation, promotion, or sampling.
+// Auxiliary evaluation is always Optimized CPU, independently of the search device.
+std::optional<SearchResult> EvaluateBaseline(
+        const SearchRequest &request, const SearchRunControl *control = nullptr);
+
 }  // namespace forevertas
 
 #endif

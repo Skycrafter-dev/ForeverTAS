@@ -7,6 +7,8 @@
 #include "app/search_controller.h"
 #include "app/search_worker.h"
 #include "app/search_session_store.h"
+#include "evaluators/scripted_target_evaluator.h"
+#include "mutations/random_steering_mutator.h"
 
 #include <forevervalidator/validation.h>
 
@@ -2228,6 +2230,78 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
     return okay;
 }
 
+bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath) {
+    using namespace forevertas;
+    QSettings().clear();
+    SearchRequest request{packsDirectory.toStdString(), replayPath.toStdString()};
+    request.backend = PhysicsBackend::OptimizedCpu;
+    request.simulationHorizonMs = 100;
+    request.modifiers[0].settings["minTimeMs"] = "0";
+    request.modifiers[0].settings["maxTimeMs"] = "50";
+    auto target = DefaultScriptedTargetOptionSettings();
+    target["script"] = "min time.ms\nmax car.cps";
+    target["minTimeMs"] = "10";
+    target["maxTimeMs"] = "100";
+    request.evaluationTarget = {kScriptedTargetEvaluationId, target};
+    request.condition = CompileConditionScript("time.ms >= 30").program;
+    SearchRunControl control;
+    control.iterationLimit = 0;
+    control.sampleBestTimeline = false;
+    const auto ordinary = RunSearch(request, &control);
+    request.modifiers = {{"invalid-disabled-pass", {}}};
+    request.searchAlgorithm.id = "not-a-search";
+    request.backend = PhysicsBackend::Vulkan;
+    const auto base = EvaluateBaseline(request);
+    bool okay = Check(base && base->iterations == 0 && base->mutationImprovementCount == 0 &&
+                      base->winnerSource == SearchWinnerSource::Baseline && base->bestTimeline.empty() &&
+                      base->bestScore == ordinary.bestScore && base->bestEvaluationTimeMs == ordinary.bestEvaluationTimeMs &&
+                      base->metricValues == ordinary.metricValues && base->objectiveScores == ordinary.objectiveScores,
+                      "base evaluation differs from authoritative search baseline");
+    request.condition = CompileConditionScript("iterations > 0").program;
+    okay &= Check(!EvaluateBaseline(request), "base evaluation ignored its condition");
+    control.cancellationRequested = [] { return true; };
+    bool cancelled = false;
+    try { static_cast<void>(EvaluateBaseline(request, &control)); }
+    catch (const SearchCancelled &) { cancelled = true; }
+    okay &= Check(cancelled, "base evaluation did not honor cancellation");
+
+    SearchController controller;
+    SetValidPaths(controller, packsDirectory, replayPath);
+    controller.setSimulationHorizonMs("100");
+    controller.setEvaluationTargetId(QString::fromLatin1(kScriptedTargetEvaluationId));
+    controller.setEvaluationTargetSetting("script", "min time.ms\nmax car.cps");
+    controller.setEvaluationTargetSetting("minTimeMs", "10");
+    controller.setEvaluationTargetSetting("maxTimeMs", "100");
+    controller.setConditionScript("time.ms >= 30");
+    for (int i = 0; i < controller.modifierPasses().size(); ++i) controller.setModifierPassEnabled(i, false);
+    controller.setAutoRestartMode("attempts");
+    controller.setAutoRestartAttempts("invalid");
+    const auto script = controller.baseInputScript();
+    const auto passes = controller.modifierPasses();
+    const auto cycles = controller.cycleRows();
+    const auto sessions = controller.sessionOptions();
+    QSignalSpy completed(&controller, &SearchController::searchCompleted);
+    okay &= Check(!controller.canStart() && controller.canEvaluateBase(), "base requires a mutation or restart configuration");
+    controller.evaluateBase();
+    okay &= Check(controller.evaluatingBase() && !controller.canStart() && !controller.canEvaluateBase(),
+                  "base worker did not gate concurrent operations");
+    okay &= Check(WaitUntil([&] { return !controller.evaluatingBase(); }, 30000), "base evaluation timed out");
+    const auto result = controller.baseEvaluationResult();
+    okay &= Check(result.value("eligible").toBool() && result.value("metricValues").toList() == QVariantList{30.0, 0.0} &&
+                          result.value("backend") == "optimized-cpu" && completed.isEmpty() &&
+                          controller.baseInputScript() == script && controller.modifierPasses() == passes &&
+                          controller.cycleRows() == cycles && controller.sessionOptions() == sessions &&
+                          controller.bestInputsText().isEmpty(), "base evaluation mutated the search or history");
+    controller.setConditionScript("time.ms < 0");
+    okay &= Check(controller.baseEvaluationResult().isEmpty(), "changed settings retained a current-looking base result");
+    controller.evaluateBase();
+    okay &= Check(WaitUntil([&] { return !controller.evaluatingBase(); }, 30000) &&
+                          controller.baseEvaluationResult().contains("eligible") &&
+                          !controller.baseEvaluationResult().value("eligible").toBool(),
+                  "ineligible base was misreported as a score or a failure");
+    return okay;
+}
+
 bool TestAbortRetainsBest(const QString &packsDirectory, const QString &replayPath) {
     QSettings().clear();
     SearchController controller;
@@ -2647,7 +2721,8 @@ int main(int argc, char **argv) {
         QString::fromLocal8Bit(argv[1]) == QStringLiteral("--lifecycle")) {
         const QString packs = QString::fromLocal8Bit(argv[2]);
         const QString replay = QString::fromLocal8Bit(argv[3]);
-        okay = TestAbortRetainsBest(packs, replay) &&
+        okay = TestBaseEvaluation(packs, replay) &&
+                TestAbortRetainsBest(packs, replay) &&
                 TestAutorestartHistory(packs, replay) &&
                 TestDurationAutorestartAndSaveFailure(packs, replay) &&
                 TestMetricsWhenConditionExcludesBaseline(packs, replay) &&

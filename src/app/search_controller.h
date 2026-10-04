@@ -153,6 +153,10 @@ class SearchController final : public QObject {
     Q_PROPERTY(QString selectedSessionDirectory READ
                        selectedSessionDirectory NOTIFY historyChanged)
     Q_PROPERTY(QVariantList cycleRows READ cycleRows NOTIFY historyChanged)
+    Q_PROPERTY(bool evaluatingBase READ evaluatingBase NOTIFY baseEvaluationChanged)
+    Q_PROPERTY(bool canEvaluateBase READ canEvaluateBase NOTIFY baseEvaluationChanged)
+    Q_PROPERTY(QString baseEvaluationText READ baseEvaluationText NOTIFY baseEvaluationChanged)
+    Q_PROPERTY(QVariantMap baseEvaluationResult READ baseEvaluationResult NOTIFY baseEvaluationChanged)
     Q_PROPERTY(bool historyHasOlder READ historyHasOlder NOTIFY historyChanged)
     Q_PROPERTY(bool historyHasNewer READ historyHasNewer NOTIFY historyChanged)
     Q_PROPERTY(qint64 selectedCycleRestart READ selectedCycleRestart NOTIFY historyChanged)
@@ -213,6 +217,10 @@ public:
     PoseTargetModel *poseTargets();
 
     bool canStart() const;
+    bool evaluatingBase() const { return baselineEvaluationThread_ != nullptr; }
+    bool canEvaluateBase() const;
+    QString baseEvaluationText() const { return baseEvaluationText_; }
+    QVariantMap baseEvaluationResult() const { return baseEvaluationResult_; }
     bool running() const;
     bool stopping() const;
     bool aborting() const;
@@ -295,6 +303,8 @@ public slots:
     Q_INVOKABLE void cancelCustomVolumeDrawing();
     Q_INVOKABLE void focusSelectedPoseTarget();
     Q_INVOKABLE void startSearch();
+    Q_INVOKABLE void evaluateBase();
+    Q_INVOKABLE void cancelBaseEvaluation();
     Q_INVOKABLE void stopSearch();
     Q_INVOKABLE void abortSearch();
     Q_INVOKABLE void selectSession(int index);
@@ -302,6 +312,7 @@ public slots:
     Q_INVOKABLE void changeCyclePage(bool older);
 
 signals:
+    void baseEvaluationChanged();
     void packsDirectoryChanged();
     void autoDetectedPacksDirectoryChanged();
     void replayPathChanged();
@@ -359,7 +370,7 @@ private:
         QString error;
     };
 
-    ValidationResult validate() const;
+    ValidationResult validate(bool baselineOnly = false) const;
     void refreshValidation();
     void setRunning(bool value);
     void setStopping(bool value);
@@ -458,6 +469,11 @@ private:
     bool autoDetectionScheduled_ = false;
     double progressValue_ = 0.0;
     QThread *autoDetectionThread_ = nullptr;
+    QThread *baselineEvaluationThread_ = nullptr;
+    std::shared_ptr<std::atomic_bool> baselineEvaluationCancelled_;
+    quint64 baselineEvaluationGeneration_ = 0;
+    QString baseEvaluationText_;
+    QVariantMap baseEvaluationResult_;
     QThread *inputExtractionThread_ = nullptr;
     QThread *workerThread_ = nullptr;
     QTimer *inputScriptPersistTimer_ = nullptr;

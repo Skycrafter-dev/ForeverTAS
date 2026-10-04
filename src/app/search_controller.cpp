@@ -423,7 +423,7 @@ bool SearchController::extractingReplayInputs() const {
 bool SearchController::canExtractReplayInputs() const {
     const QFileInfo packsInfo(packsDirectory_);
     const QFileInfo replayInfo(replayPath_);
-    return !running_ && !extractingReplayInputs_ &&
+    return !running_ && !extractingReplayInputs_ && !evaluatingBase() &&
             packsInfo.isDir() && packsInfo.isReadable() &&
             replayInfo.isFile() && replayInfo.isReadable() &&
             replayInfo.fileName().endsWith(
@@ -677,7 +677,85 @@ PoseTargetModel *SearchController::poseTargets() {
 }
 
 bool SearchController::canStart() const {
-    return valid_ && !running_ && !extractingReplayInputs_;
+    return valid_ && !running_ && !extractingReplayInputs_ && !evaluatingBase();
+}
+
+bool SearchController::canEvaluateBase() const {
+    return !running_ && !extractingReplayInputs_ && !evaluatingBase() && validate(true).request.has_value();
+}
+
+void SearchController::cancelBaseEvaluation() {
+    if (baselineEvaluationCancelled_) baselineEvaluationCancelled_->store(true, std::memory_order_relaxed);
+}
+
+void SearchController::evaluateBase() {
+    if (!canEvaluateBase()) return;
+    auto validation = validate(true);
+    if (!validation.request) return;
+    baselineEvaluationCancelled_ = std::make_shared<std::atomic_bool>(false);
+    const auto cancelled = baselineEvaluationCancelled_;
+    const auto generation = baselineEvaluationGeneration_;
+    baseEvaluationResult_.clear();
+    baseEvaluationText_ = QStringLiteral("Evaluating base inputs (Optimized CPU)...");
+    auto thread = QThread::create([this, request = *validation.request, cancelled, generation] {
+        QVariantMap data{{QStringLiteral("backend"), QStringLiteral("optimized-cpu")},
+                         {QStringLiteral("targetId"), QString::fromStdString(request.evaluationTarget.id)},
+                         {QStringLiteral("horizonMs"), request.simulationHorizonMs}};
+        QString text;
+        try {
+            SearchRunControl control;
+            control.cancellationRequested = [cancelled] { return cancelled->load(std::memory_order_relaxed); };
+            const auto result = EvaluateBaseline(request, &control);
+            data.insert(QStringLiteral("eligible"), result.has_value());
+            if (result) {
+                data.insert(QStringLiteral("score"), result->bestScore);
+                data.insert(QStringLiteral("evaluationTimeMs"), result->bestEvaluationTimeMs);
+                data.insert(QStringLiteral("description"), QString::fromStdString(result->bestEvaluationDescription));
+                QVariantList objectives, metrics;
+                for (const auto value : result->objectiveScores) objectives.append(value);
+                for (const auto value : result->metricValues) metrics.append(value);
+                data.insert(QStringLiteral("objectiveScores"), objectives);
+                data.insert(QStringLiteral("metricValues"), metrics);
+                text = QStringLiteral("Base evaluation (Optimized CPU)\n%1\nScore: %2 at %3 ms")
+                        .arg(QString::fromStdString(result->bestEvaluationDescription),
+                             QString::number(result->bestScore, 'g', 17),
+                             QString::number(result->bestEvaluationTimeMs, 'g', 17));
+            } else {
+                text = QStringLiteral("Base evaluation (Optimized CPU)\nNo eligible observation: the target or conditions were not satisfied.");
+            }
+        } catch (const SearchCancelled &) {
+            text = QStringLiteral("Base evaluation cancelled.");
+            data.insert(QStringLiteral("cancelled"), true);
+        } catch (const std::exception &error) {
+            text = QStringLiteral("Base evaluation failed: %1").arg(QString::fromUtf8(error.what()));
+            data.insert(QStringLiteral("error"), QString::fromUtf8(error.what()));
+        }
+        QMetaObject::invokeMethod(this, [this, generation, data = std::move(data), text = std::move(text)] {
+            if (generation != baselineEvaluationGeneration_) {
+                baseEvaluationResult_.clear();
+                baseEvaluationText_ = QStringLiteral("Settings changed; evaluate base inputs again.");
+            } else {
+                baseEvaluationResult_ = data;
+                baseEvaluationText_ = text;
+            }
+            emit baseEvaluationChanged();
+        }, Qt::QueuedConnection);
+    });
+    baselineEvaluationThread_ = thread;
+    connect(thread, &QThread::finished, this, [this, thread] {
+        if (baselineEvaluationThread_ == thread) {
+            baselineEvaluationThread_ = nullptr;
+            baselineEvaluationCancelled_.reset();
+        }
+        thread->deleteLater();
+        emit baseEvaluationChanged();
+        emit canStartChanged();
+        emit replayInputStateChanged();
+    });
+    emit baseEvaluationChanged();
+    emit canStartChanged();
+    emit replayInputStateChanged();
+    thread->start();
 }
 
 bool SearchController::running() const {
@@ -1373,7 +1451,7 @@ void SearchController::extractReplayInputs() {
 }
 
 void SearchController::startSearch() {
-    if (running_ || extractingReplayInputs_) {
+    if (running_ || extractingReplayInputs_ || evaluatingBase()) {
         return;
     }
 
@@ -1586,18 +1664,18 @@ void SearchController::abortSearch() {
     setStatusText(QStringLiteral("Aborting at the next simulation checkpoint..."));
 }
 
-SearchController::ValidationResult SearchController::validate() const {
-    if (autoRestartMode_ != QLatin1String("off") &&
+SearchController::ValidationResult SearchController::validate(bool baselineOnly) const {
+    if (!baselineOnly && autoRestartMode_ != QLatin1String("off") &&
         autoRestartMode_ != QLatin1String("duration") &&
         autoRestartMode_ != QLatin1String("attempts")) {
         return {{}, QStringLiteral("Choose an autorestart mode.")};
     }
-    if (autoRestartMode_ == QLatin1String("duration") &&
+    if (!baselineOnly && autoRestartMode_ == QLatin1String("duration") &&
         !ParseRestartDuration(autoRestartDuration_)) {
         return {{}, QStringLiteral(
                 "Autorestart duration must be HH:MM:SS and greater than zero.")};
     }
-    if (autoRestartMode_ == QLatin1String("attempts")) {
+    if (!baselineOnly && autoRestartMode_ == QLatin1String("attempts")) {
         bool valid = false;
         const qulonglong attempts =
                 autoRestartAttempts_.toULongLong(&valid);
@@ -1649,7 +1727,7 @@ SearchController::ValidationResult SearchController::validate() const {
     const SearchConfigurationValidation configurationValidation =
             configuration_.validate(
                     kSearchTickDurationMs,
-                    simulationHorizonMs);
+                    simulationHorizonMs, baselineOnly);
     if (!configurationValidation.configuration) {
         return {{}, configurationValidation.error};
     }
@@ -1683,7 +1761,7 @@ SearchController::ValidationResult SearchController::validate() const {
 
     std::uint32_t parallelSampleCount = 1u;
     bool calibrateCudaParallelSampleCount = false;
-    if (simulationBackend_ == PhysicsBackend::MultiThreadedCpu) {
+    if (!baselineOnly && simulationBackend_ == PhysicsBackend::MultiThreadedCpu) {
         bool parsed = false;
         const QString trimmed = cpuWorkerCount_.trimmed();
         const uint value = trimmed.toUInt(&parsed);
@@ -1699,7 +1777,7 @@ SearchController::ValidationResult SearchController::validate() const {
         parallelSampleCount = value;
     }
 #if FOREVERVALIDATOR_HAS_CUDA
-    if (simulationBackend_ == PhysicsBackend::Cuda) {
+    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Cuda) {
         if (!cudaAvailable_) {
             return {{}, cudaStatusText_};
         }
@@ -1732,7 +1810,7 @@ SearchController::ValidationResult SearchController::validate() const {
     }
 #endif
 #if FOREVERVALIDATOR_HAS_HIP
-    if (simulationBackend_ == PhysicsBackend::Hip) {
+    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Hip) {
         if (!hipAvailable_) {
             return {{}, hipStatusText_};
         }
@@ -1758,7 +1836,7 @@ SearchController::ValidationResult SearchController::validate() const {
     }
 #endif
 #if FOREVERVALIDATOR_HAS_VULKAN
-    if (simulationBackend_ == PhysicsBackend::Vulkan) {
+    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Vulkan) {
         if (!vulkanAvailable_) {
             return {{}, vulkanStatusText_};
         }
@@ -1794,7 +1872,7 @@ SearchController::ValidationResult SearchController::validate() const {
     SearchRequest request{
             packsInfo.absoluteFilePath().toUtf8().toStdString(),
             replayInfo.absoluteFilePath().toUtf8().toStdString()};
-    request.backend = simulationBackend_;
+    request.backend = baselineOnly ? kAuxiliarySimulationBackend : simulationBackend_;
     request.parallelSampleCount = parallelSampleCount;
     request.calibrateCudaParallelSampleCount =
             calibrateCudaParallelSampleCount;
@@ -1893,6 +1971,13 @@ void SearchController::changeCyclePage(bool older) {
 }
 
 void SearchController::refreshValidation() {
+    ++baselineEvaluationGeneration_;
+    cancelBaseEvaluation();
+    if (!evaluatingBase() && !baseEvaluationResult_.isEmpty()) {
+        baseEvaluationResult_.clear();
+        baseEvaluationText_ = QStringLiteral("Settings changed; evaluate base inputs again.");
+    }
+    emit baseEvaluationChanged();
     const QString newMessage = validate().error;
     const bool newValid = newMessage.isEmpty();
     const bool oldCanStart = canStart();
@@ -1917,6 +2002,7 @@ void SearchController::setRunning(bool value) {
     customVolumeTargets_.setEditingEnabled(!value);
     poseTargets_.setEditingEnabled(!value);
     emit runningChanged();
+    emit baseEvaluationChanged();
     emit replayInputStateChanged();
     if (oldCanStart != canStart()) {
         emit canStartChanged();
@@ -1929,6 +2015,7 @@ void SearchController::setExtractingReplayInputs(bool value) {
     }
     const bool oldCanStart = canStart();
     extractingReplayInputs_ = value;
+    emit baseEvaluationChanged();
     emit replayInputStateChanged();
     if (oldCanStart != canStart()) {
         emit canStartChanged();
@@ -2073,6 +2160,13 @@ void SearchController::persist(const char *key, const QString &value) {
 }
 
 void SearchController::waitForWorker() {
+    cancelBaseEvaluation();
+    if (baselineEvaluationThread_ != nullptr) {
+        disconnect(baselineEvaluationThread_, nullptr, this, nullptr);
+        baselineEvaluationThread_->wait();
+        delete baselineEvaluationThread_;
+        baselineEvaluationThread_ = nullptr;
+    }
     if (autoDetectionThread_ != nullptr) {
         disconnect(autoDetectionThread_, nullptr, this, nullptr);
         autoDetectionThread_->wait();

@@ -1064,8 +1064,7 @@ SearchResult RunGpuBasicBruteForce(
     CheckCancellation(context.control);
     reportLive(true);
     if (!best.evaluation || !best.snapshot) {
-        throw std::runtime_error(
-                "no iteration satisfied the selected evaluation target");
+        throw NoEligibleEvaluation();
     }
     if (!SameState(best.snapshot->View(), best.view)) {
         throw std::runtime_error(
@@ -1143,9 +1142,11 @@ SearchResult BasicBruteForceSearch::Run(
                 "tick duration must be greater than zero");
     }
 
-    const std::int64_t earliestMutationTimeMs = std::min(
+    const std::int64_t earliestMutationTimeMs = std::max<std::int64_t>(
+            context.control != nullptr && context.control->iterationLimit == 0u ? context.tickDurationMs : 0u,
+            std::min(
             context.mutator.EarliestMutationTimeMs(),
-            static_cast<std::int64_t>(context.simulationHorizonMs));
+            static_cast<std::int64_t>(context.simulationHorizonMs)));
     if (earliestMutationTimeMs <
                 static_cast<std::int64_t>(context.tickDurationMs) ||
         earliestMutationTimeMs % context.tickDurationMs != 0) {
@@ -1505,8 +1506,7 @@ SearchResult BasicBruteForceSearch::Run(
     CheckCancellation(context.control);
     reportLive(true);
     if (!best.evaluation || !best.snapshot) {
-        throw std::runtime_error(
-                "no iteration satisfied the selected evaluation target");
+        throw NoEligibleEvaluation();
     }
     const PhysicsSandboxStateView restored = Require(
             context.sandbox.RestoreState(*best.snapshot),

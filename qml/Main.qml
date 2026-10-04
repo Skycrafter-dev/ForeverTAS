@@ -5417,6 +5417,38 @@ ApplicationWindow {
                         }
                     }
 
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 20
+                        Layout.rightMargin: 20
+                        ThemedButton {
+                            objectName: "evaluateBaseButton"
+                            text: qsTr("Evaluate base")
+                            icon.source: "qrc:/icons/gauge.svg"
+                            enabled: window.controller.canEvaluateBase
+                            onClicked: window.controller.evaluateBase()
+                        }
+                        ThemedButton {
+                            visible: window.controller.evaluatingBase
+                            text: qsTr("Cancel")
+                            onClicked: window.controller.cancelBaseEvaluation()
+                        }
+                    }
+                    TextArea {
+                        objectName: "baseEvaluationResult"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 20
+                        Layout.rightMargin: 20
+                        visible: text.length > 0
+                        readOnly: true
+                        selectByMouse: true
+                        wrapMode: TextEdit.Wrap
+                        textFormat: TextEdit.PlainText
+                        text: window.controller.baseEvaluationText
+                        color: AppTheme.text
+                        font.pixelSize: 12
+                    }
+
                     Rectangle {
                         Layout.fillWidth: true
                         Layout.preferredHeight: 1

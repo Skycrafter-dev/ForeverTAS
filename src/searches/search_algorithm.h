@@ -13,6 +13,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <stdexcept>
 #include <vector>
 
 #include <forevervalidator/experimental/physics_sandbox.h>
@@ -141,6 +142,11 @@ public:
     const char *what() const noexcept override {
         return "search cancelled";
     }
+};
+
+class NoEligibleEvaluation final : public std::runtime_error {
+public:
+    NoEligibleEvaluation() : std::runtime_error("no iteration satisfied the selected evaluation target") {}
 };
 
 struct SearchExecutionContext {

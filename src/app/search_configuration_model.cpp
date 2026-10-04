@@ -403,9 +403,9 @@ bool SearchConfigurationModel::randomizeModifierSeeds(
 
 SearchConfigurationValidation SearchConfigurationModel::validate(
         std::uint32_t tickDurationMs,
-        std::uint32_t simulationHorizonMs) const {
+        std::uint32_t simulationHorizonMs, bool baselineOnly) const {
     const SearchAlgorithmRegistration *const searchRegistration =
-            FindSearchAlgorithm(searchAlgorithmId_.toStdString());
+            FindSearchAlgorithm(baselineOnly ? DefaultSearchAlgorithmConfiguration().id : searchAlgorithmId_.toStdString());
     if (searchRegistration == nullptr) {
         return {{}, QStringLiteral("Select a valid search algorithm.")};
     }
@@ -416,7 +416,7 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
     }
 
     const OptionSettings searchSettings =
-            ToOptionSettings(searchAlgorithmSettings_);
+            baselineOnly ? DefaultSearchAlgorithmConfiguration().settings : ToOptionSettings(searchAlgorithmSettings_);
     const auto resolvedEvaluation = ResolveHorizonWindowSettings(
             ToOptionSettings(evaluationTargetSettings_), tickDurationMs, simulationHorizonMs, false);
     if (!resolvedEvaluation) return {{}, QStringLiteral("Select a valid evaluation end mode.")};
@@ -429,15 +429,16 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
                 evaluationSettings, tickDurationMs)) {
         return {{}, QString::fromStdString(*error)};
     }
-    if (modifierPasses_.isEmpty()) {
+    if (!baselineOnly && modifierPasses_.isEmpty()) {
         return {{}, QStringLiteral("Add at least one input modifier pass.")};
     }
 
     std::vector<OptionConfiguration> modifiers;
     std::int64_t earliestMutationTimeMs =
-            std::numeric_limits<std::int64_t>::max();
+            baselineOnly ? tickDurationMs : std::numeric_limits<std::int64_t>::max();
     modifiers.reserve(static_cast<std::size_t>(modifierPasses_.size()));
     for (qsizetype index = 0; index < modifierPasses_.size(); ++index) {
+        if (baselineOnly) break;
         const QVariantMap pass = modifierPasses_.at(index).toMap();
         if (!pass.value(QStringLiteral("enabled"), true).toBool()) continue;
         const QString id = pass.value(QStringLiteral("id")).toString();
@@ -468,7 +469,7 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
                 mutator->EarliestMutationTimeMs());
         modifiers.push_back({registration->id, settings});
     }
-    if (modifiers.empty()) {
+    if (!baselineOnly && modifiers.empty()) {
         return {{}, QStringLiteral("Enable at least one input modifier pass.")};
     }
     const std::unique_ptr<IterationEvaluator> evaluator =

@@ -58,7 +58,7 @@ public:
 
     SearchConfigurationValidation validate(
             std::uint32_t tickDurationMs,
-            std::uint32_t simulationHorizonMs) const;
+            std::uint32_t simulationHorizonMs, bool baselineOnly = false) const;
 
 private:
     void loadSearchAlgorithmSettings();
