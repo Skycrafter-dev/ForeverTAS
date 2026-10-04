@@ -106,6 +106,19 @@ int main(int argc, char **argv) {
                "vertex byte budget exceeded")) return 1;
     std::cout << "Retained vertex bytes after 2420 improvements: " << viewer.retainedImprovementBytes() << '\n';
     viewer.clearPreviewTrajectories();
-    return check(viewer.retainedImprovementBytes() == 0 && viewer.pendingImprovementBytes() == 0 &&
-                 viewer.hasTrajectoryForRun("best"), "clear leaked improvement geometry") ? 0 : 1;
+    if (!check(viewer.retainedImprovementBytes() == 0 && viewer.pendingImprovementBytes() == 0 &&
+               viewer.hasTrajectoryForRun("best"), "clear leaked improvement geometry")) return 1;
+    viewer.refreshInputPreview();
+    viewer.requestRayTracingScene();
+    viewer.loadMap(packs, replay);
+    viewer.requestShutdown();
+    timer.restart();
+    while (!viewer.shutdownReady() && timer.elapsed() < 60000) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+        QThread::msleep(1);
+    }
+    viewer.loadMap(packs, replay);
+    viewer.startManualDrive();
+    viewer.refreshInputPreview();
+    return check(viewer.shutdownReady() && !viewer.manualDriving(), "viewer restarted work during shutdown") ? 0 : 1;
 }

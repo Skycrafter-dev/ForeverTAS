@@ -344,6 +344,8 @@ public:
     void requestRayTracingScene();
     RaceViewerInputSample inputSample(qint64 tick) const noexcept;
     bool liveBestUpdates() const { return liveBestUpdates_; }
+    void requestShutdown();
+    bool shutdownReady() const;
     static constexpr std::size_t kMaximumLiveTrajectories = 64;
     static constexpr std::size_t kMaximumLiveTrajectoryBytes = 64u * 1024u * 1024u;
     Q_INVOKABLE quint64 retainedImprovementBytes() const;
@@ -560,6 +562,7 @@ private:
     std::optional<MapLoadRequest> queuedMapLoad_;
     std::optional<PendingRun> pendingRun_;
     bool liveBestUpdates_ = false;
+    bool shuttingDown_ = false;
     bool autoSelectLiveBest_ = false;
     std::uint64_t liveSearchId_ = 0;
     std::uint64_t liveImprovementNumber_ = 0;

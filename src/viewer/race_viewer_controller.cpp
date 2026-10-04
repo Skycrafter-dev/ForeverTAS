@@ -2176,6 +2176,30 @@ RaceViewerController::~RaceViewerController() {
     waitForWorker();
 }
 
+void RaceViewerController::requestShutdown() {
+    if (shuttingDown_) return;
+    shuttingDown_ = true;
+    endSearchPreview();
+    pause();
+    stopManualDrive();
+    manualDriveTimer_.stop();
+    simulationDebugger_.stopSession();
+    queuedMapLoad_.reset();
+    pendingRun_.reset();
+    pendingImprovements_.clear();
+    ++loadSerial_;
+    cancelRayTracingBuild();
+    cancelInputPreviewBuild();
+    cancelStoredRunRebuilds();
+    if (workerThread_ != nullptr) workerThread_->requestInterruption();
+}
+
+bool RaceViewerController::shutdownReady() const {
+    for (const auto thread : {workerThread_, inputPreviewThread_, storedRunThread_})
+        if (thread != nullptr && thread->isRunning()) return false;
+    return simulationDebugger_.shutdownReady();
+}
+
 QQuick3DGeometry *RaceViewerController::trackFilledGeometry() {
     return &trackFilledGeometry_;
 }
@@ -3036,6 +3060,7 @@ void RaceViewerController::cancelRayTracingBuild() {
 }
 
 void RaceViewerController::requestRayTracingScene() {
+    if (shuttingDown_) return;
     if (!loaded_ || loading_ || rayTracingScene_ || rayTracingCancelled_ ||
         rayTracingSourceBatches_.empty()) return;
     using Result = std::pair<std::shared_ptr<const RayTracingSceneData>, QString>;
@@ -3101,6 +3126,7 @@ void RaceViewerController::setLiveBestUpdates(bool value) {
 }
 
 void RaceViewerController::beginSearchPreview(std::uint64_t searchId) {
+    if (shuttingDown_) return;
     endSearchPreview();
     liveSearchId_ = searchId;
     liveImprovementNumber_ = 0;
@@ -3199,6 +3225,7 @@ void RaceViewerController::applySearchRun(
         const std::vector<SearchTimelineFrame> &frames,
         const std::vector<SandboxInputEvent> &inputs, const QString &backendId,
         bool select, bool loadIfNeeded) {
+    if (shuttingDown_) return;
     if (select) stopManualDrive();
     if (frames.empty()) {
         setStatusText(QStringLiteral("Best run produced no viewable frames."));
@@ -3242,7 +3269,7 @@ void RaceViewerController::addSearchImprovement(
         std::uint64_t searchId,
         std::uint64_t improvementNumber,
         std::chrono::steady_clock::time_point generatedAt) {
-    if (generatedAt <= previewClearedAt_) return;
+    if (shuttingDown_ || generatedAt <= previewClearedAt_) return;
     if (frames.size() > kMaximumLiveTrajectoryBytes / sizeof(RaceViewerFrame)) {
         setStatusText(QStringLiteral("Live trajectory exceeds the 64 MiB preview budget; saved results are unchanged."));
         return;
@@ -3650,6 +3677,7 @@ void RaceViewerController::setCameraPreset(int value) {
 }
 
 void RaceViewerController::play() {
+    if (shuttingDown_) return;
     if (simulationDebugger_.active()) {
         RaceViewerRun *const debugRun = selectedRun();
         if (!loaded_ || manualDriving_ || playing_ || debugRun == nullptr ||
@@ -3705,6 +3733,7 @@ void RaceViewerController::jumpToEnd() {
 }
 
 void RaceViewerController::startManualDrive() {
+    if (shuttingDown_) return;
     if (manualDriving_) {
         return;
     }
@@ -3856,6 +3885,7 @@ bool RaceViewerController::respawnManualDrive() {
 }
 
 bool RaceViewerController::startSimulationDebugger() {
+    if (shuttingDown_) return false;
     if (!loaded_ || loading_ || manualRuntime_ == nullptr ||
         !simulationDebugger_.available()) {
         setStatusText(QStringLiteral(
@@ -4586,6 +4616,7 @@ void RaceViewerController::clearSearchResults() {
 }
 
 void RaceViewerController::scheduleInputPreviewRebuild() {
+    if (shuttingDown_) return;
     if (!loaded_ || manualRuntime_ == nullptr || manualDriving_) {
         return;
     }
@@ -4599,6 +4630,7 @@ void RaceViewerController::scheduleInputPreviewRebuild() {
 }
 
 void RaceViewerController::startInputPreviewBuild() {
+    if (shuttingDown_) return;
     if (!inputPreviewBuildPending_ || inputPreviewThread_ != nullptr ||
         !loaded_ || manualRuntime_ == nullptr || manualDriving_) {
         return;
@@ -4761,6 +4793,7 @@ void RaceViewerController::waitForInputPreviewWorker() {
 }
 
 void RaceViewerController::scheduleStoredRunRebuilds() {
+    if (shuttingDown_) return;
     if (!loaded_ || manualDriving_) return;
     ++storedRunSerial_;
     storedRunBuildPending_ = true;
@@ -4772,6 +4805,7 @@ void RaceViewerController::scheduleStoredRunRebuilds() {
 }
 
 void RaceViewerController::startStoredRunRebuilds() {
+    if (shuttingDown_) return;
     if (!storedRunBuildPending_ || storedRunThread_ != nullptr ||
         !loaded_ || manualDriving_) {
         return;
@@ -4944,6 +4978,7 @@ void RaceViewerController::loadMap(const QString &packsDirectory,
 void RaceViewerController::loadMap(const QString &packsDirectory,
                                    const QString &replayPath,
                                    const QString &backendId) {
+    if (shuttingDown_) return;
     stopSimulationDebugger();
     stopManualDrive();
     const std::optional<PhysicsBackend> backend =
@@ -4969,6 +5004,7 @@ void RaceViewerController::loadMap(const QString &packsDirectory,
 void RaceViewerController::beginMapLoad(const QString &packsDirectory,
                                         const QString &replayPath,
                                         PhysicsBackend backend) {
+    if (shuttingDown_) return;
     if (workerThread_ != nullptr) {
         queuedMapLoad_ =
                 MapLoadRequest{packsDirectory, replayPath, backend};

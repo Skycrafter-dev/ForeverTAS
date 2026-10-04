@@ -217,6 +217,9 @@ public:
     PoseTargetModel *poseTargets();
 
     bool canStart() const;
+    void requestShutdown();
+    bool shutdownReady() const;
+    void flushSettings();
     bool evaluatingBase() const { return baselineEvaluationThread_ != nullptr; }
     bool canEvaluateBase() const;
     QString baseEvaluationText() const { return baseEvaluationText_; }
@@ -464,6 +467,7 @@ private:
     bool valid_ = false;
     bool liveMetricsVisible_ = false;
     bool running_ = false;
+    bool shuttingDown_ = false;
     bool stopping_ = false;
     bool progressIndeterminate_ = false;
     bool autoDetectionScheduled_ = false;

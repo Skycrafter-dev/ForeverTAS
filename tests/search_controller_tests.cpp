@@ -2344,6 +2344,16 @@ bool TestAbortRetainsBest(const QString &packsDirectory, const QString &replayPa
         okay &= Check(inputs == controller.bestInputsText(),
                       "aborted best inputs changed between UI and durable history");
     }
+    controller.startSearch();
+    controller.flushSettings();
+    controller.requestShutdown();
+    controller.requestShutdown();
+    okay &= Check(!controller.canStart() && !controller.canEvaluateBase() &&
+                          WaitUntil([&] { return controller.shutdownReady(); }, 30000),
+                  "shutdown did not cooperatively cancel active search work");
+    controller.startSearch();
+    okay &= Check(!controller.canStart() && controller.shutdownReady(),
+                  "search restarted after shutdown began");
     return okay;
 }
 

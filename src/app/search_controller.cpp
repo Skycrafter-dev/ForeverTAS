@@ -423,7 +423,7 @@ bool SearchController::extractingReplayInputs() const {
 bool SearchController::canExtractReplayInputs() const {
     const QFileInfo packsInfo(packsDirectory_);
     const QFileInfo replayInfo(replayPath_);
-    return !running_ && !extractingReplayInputs_ && !evaluatingBase() &&
+    return !shuttingDown_ && !running_ && !extractingReplayInputs_ && !evaluatingBase() &&
             packsInfo.isDir() && packsInfo.isReadable() &&
             replayInfo.isFile() && replayInfo.isReadable() &&
             replayInfo.fileName().endsWith(
@@ -677,11 +677,11 @@ PoseTargetModel *SearchController::poseTargets() {
 }
 
 bool SearchController::canStart() const {
-    return valid_ && !running_ && !extractingReplayInputs_ && !evaluatingBase();
+    return !shuttingDown_ && valid_ && !running_ && !extractingReplayInputs_ && !evaluatingBase();
 }
 
 bool SearchController::canEvaluateBase() const {
-    return !running_ && !extractingReplayInputs_ && !evaluatingBase() && validate(true).request.has_value();
+    return !shuttingDown_ && !running_ && !extractingReplayInputs_ && !evaluatingBase() && validate(true).request.has_value();
 }
 
 void SearchController::cancelBaseEvaluation() {
@@ -1451,7 +1451,7 @@ void SearchController::extractReplayInputs() {
 }
 
 void SearchController::startSearch() {
-    if (running_ || extractingReplayInputs_ || evaluatingBase()) {
+    if (shuttingDown_ || running_ || extractingReplayInputs_ || evaluatingBase()) {
         return;
     }
 
@@ -2106,7 +2106,7 @@ void SearchController::scheduleAutoDetectPacksDirectory(
             : std::optional<QStringList>(*packsSearchPatterns);
 
     QTimer::singleShot(0, this, [this, patterns]() {
-        if (!packsDirectory_.trimmed().isEmpty() ||
+        if (shuttingDown_ || !packsDirectory_.trimmed().isEmpty() ||
             autoDetectionThread_ != nullptr) {
             return;
         }
@@ -2157,6 +2157,31 @@ void SearchController::clearAutoDetectedPacksDirectory() {
 
 void SearchController::persist(const char *key, const QString &value) {
     QSettings().setValue(QLatin1String(key), value);
+}
+
+void SearchController::flushSettings() {
+    if (inputScriptPersistTimer_ != nullptr) inputScriptPersistTimer_->stop();
+    persist(kBaseInputScriptKey, baseInputScript_);
+    QSettings().sync();
+}
+
+void SearchController::requestShutdown() {
+    if (shuttingDown_) return;
+    shuttingDown_ = true;
+    cancelBaseEvaluation();
+    if (stopRequested_) stopRequested_->store(true, std::memory_order_relaxed);
+    if (cancellationRequested_) cancellationRequested_->store(true, std::memory_order_relaxed);
+    for (auto thread : {workerThread_, autoDetectionThread_, inputExtractionThread_, baselineEvaluationThread_})
+        if (thread != nullptr) thread->requestInterruption();
+    emit canStartChanged();
+    emit baseEvaluationChanged();
+    emit replayInputStateChanged();
+}
+
+bool SearchController::shutdownReady() const {
+    for (const auto thread : {workerThread_, autoDetectionThread_, inputExtractionThread_, baselineEvaluationThread_})
+        if (thread != nullptr && thread->isRunning()) return false;
+    return true;
 }
 
 void SearchController::waitForWorker() {

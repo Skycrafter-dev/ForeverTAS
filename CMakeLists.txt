@@ -276,6 +276,8 @@ add_library(forevertas_gui STATIC
     src/viewer/map_identity.h
     src/app/search_session_store.cpp
     src/app/search_session_store.h
+    src/app/shutdown_controller.cpp
+    src/app/shutdown_controller.h
     src/viewer/simulation_debugger_model.cpp
     src/viewer/simulation_debugger_model.h
     src/viewer/visual_scene_pipeline.cpp
@@ -906,6 +908,13 @@ if(BUILD_TESTING)
 
     add_executable(forevertas-controller-tests
         tests/search_controller_tests.cpp)
+    add_executable(forevertas-shutdown-tests tests/shutdown_tests.cpp src/app/shutdown_controller.cpp)
+    target_include_directories(forevertas-shutdown-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(forevertas-shutdown-tests PRIVATE Qt6::Core)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-shutdown-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-shutdown COMMAND forevertas-shutdown-tests)
     target_link_libraries(forevertas-controller-tests PRIVATE
         forevertas_gui
         Qt6::Test)

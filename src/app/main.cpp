@@ -1,6 +1,7 @@
 #include "app/search_controller.h"
 #include "app/input_preview_binding.h"
 #include "app/update_controller.h"
+#include "app/shutdown_controller.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
 
@@ -12,9 +13,11 @@
 #include <QQuickStyle>
 #include <QSslSocket>
 #include <QTimer>
+#include <QThreadPool>
 #include <QVariant>
 #include <QJSValue>
 #include <iostream>
+#include <cstdlib>
 
 int main(int argc, char **argv) {
 #if defined(Q_OS_LINUX)
@@ -54,6 +57,12 @@ int main(int argc, char **argv) {
     forevertas::app::SearchController controller;
     forevertas::app::UpdateController updates;
     forevertas::viewer::RaceViewerController viewer;
+    forevertas::app::ShutdownController shutdown(
+            [&] { controller.requestShutdown(); viewer.requestShutdown(); updates.cancelDownload(); },
+            [&] { return controller.shutdownReady() && viewer.shutdownReady() &&
+                         QThreadPool::globalInstance()->activeThreadCount() == 0; },
+            [&] { controller.flushSettings(); },
+            [] { std::_Exit(EXIT_SUCCESS); });
     forevertas::app::BindInputPreview(controller, viewer);
     QObject::connect(&controller, &forevertas::app::SearchController::searchStarted,
                      &viewer, &forevertas::viewer::RaceViewerController::beginSearchPreview);
@@ -88,6 +97,7 @@ int main(int argc, char **argv) {
     engine.addImportPath(QCoreApplication::applicationDirPath() +
                          QStringLiteral("/qml"));
     engine.setInitialProperties({
+            {QStringLiteral("shutdown"), QVariant::fromValue(static_cast<QObject *>(&shutdown))},
             {QStringLiteral("controller"),
              QVariant::fromValue(static_cast<QObject *>(&controller))},
             {QStringLiteral("viewer"),

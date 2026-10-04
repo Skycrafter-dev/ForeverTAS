@@ -12,6 +12,47 @@ ApplicationWindow {
     required property var controller
     required property var viewer
     property var updater: null
+    property var shutdown: null
+    onClosing: close => {
+        if (shutdown && !shutdown.requestClose()) {
+            close.accepted = false
+            shutdownDialog.open()
+        }
+    }
+    Connections {
+        target: window.shutdown
+        function onReadyToClose() {
+            shutdownDialog.close()
+            window.close()
+        }
+    }
+    Dialog {
+        id: shutdownDialog
+        objectName: "shutdownDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, window.width - 32)
+        title: qsTr("Closing ForeverTAS")
+        modal: true
+        closePolicy: Popup.NoAutoClose
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: window.shutdown && window.shutdown.delayed
+                    ? qsTr("Background work has not stopped yet. You can keep waiting or force exit. Force exit discards any unfinished result; already saved history is retained.")
+                    : qsTr("Stopping background work and saving settings...")
+            }
+            ThemedButton {
+                objectName: "forceExitButton"
+                Layout.alignment: Qt.AlignRight
+                visible: window.shutdown && window.shutdown.delayed
+                text: qsTr("Force exit")
+                onClicked: window.shutdown.forceExit()
+            }
+        }
+    }
 
     property string renderMode: "textured"
     property bool codeEditorExpanded: false
@@ -3126,7 +3167,8 @@ ApplicationWindow {
                         anchors.fill: parent
                         z: 1
                         visible: window.rayTracingEnabled
-                        active: window.rayTracingEnabled && workspaceContent.visible
+                        active: window.rayTracingEnabled && workspaceContent.visible &&
+                                (!window.shutdown || !window.shutdown.closing)
                                 && window.viewer.loaded
                         viewer: window.viewer
                         cameraPosition: viewCamera.scenePosition

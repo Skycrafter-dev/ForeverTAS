@@ -48,6 +48,7 @@ class SimulationDebuggerModel final : public QObject {
     ~SimulationDebuggerModel() override;
 
     bool available() const;
+    bool shutdownReady() const { return debugger_.state() == QProcess::NotRunning; }
     bool preparing() const;
     bool active() const;
     bool running() const;
