@@ -8,6 +8,7 @@
 #include "viewer/whiteboard_model.h"
 #include "viewer/ray_tracing_scene.h"
 #include "viewer/visual_scene_pipeline.h"
+#include "viewer/gamepad_input.h"
 
 #include <QElapsedTimer>
 #include <QObject>
@@ -208,6 +209,7 @@ class RaceViewerController final : public QObject {
                        setTakeOverOnInput NOTIFY takeOverOnInputChanged)
     Q_PROPERTY(bool manualDriving READ manualDriving NOTIFY
                        manualDrivingChanged)
+    Q_PROPERTY(forevertas::viewer::GamepadInput* gamepad READ gamepad CONSTANT)
     Q_PROPERTY(bool manualSteeringTakenOver READ manualSteeringTakenOver NOTIFY
                        manualInputChanged)
     Q_PROPERTY(bool manualLongitudinalTakenOver READ
@@ -406,6 +408,8 @@ public slots:
     Q_INVOKABLE bool startSimulationDebugger();
     Q_INVOKABLE void stopSimulationDebugger();
     Q_INVOKABLE void setManualInput(const QString &input, bool active);
+    Q_INVOKABLE void setGamepadInput(int steering, bool accelerate, bool brake);
+    GamepadInput *gamepad() { return &gamepad_; }
     Q_INVOKABLE void releaseManualInputs();
     Q_INVOKABLE QString currentInputScript() const;
     Q_INVOKABLE bool hasTrajectoryForRun(const QString &runId) const;
@@ -636,6 +640,13 @@ private:
     bool manualRight_ = false;
     bool manualAccelerate_ = false;
     bool manualBrake_ = false;
+    bool keyboardAccelerate_ = false;
+    bool keyboardBrake_ = false;
+    bool gamepadAccelerate_ = false;
+    bool gamepadBrake_ = false;
+    int gamepadSteering_ = 0;
+    int appliedAnalogSteering_ = 0;
+    GamepadInput gamepad_;
     QTimer playbackTimer_;
     QElapsedTimer playbackClock_;
     QTimer manualDriveTimer_;

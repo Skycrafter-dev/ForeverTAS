@@ -55,6 +55,50 @@ ApplicationWindow {
     }
 
     property string renderMode: "textured"
+    Dialog {
+        id: gamepadDialog
+        objectName: "gamepadDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(420, window.width - 32)
+        title: qsTr("Gamepad")
+        modal: true
+        contentItem: ColumnLayout {
+            Label { text: qsTr("Device") }
+            StyledComboBox {
+                objectName: "gamepadDeviceSelector"
+                Layout.fillWidth: true
+                model: [{id: 0, name: qsTr("None")}].concat(window.viewer.gamepad.devices)
+                textRole: "name"
+                valueRole: "id"
+                currentIndex: indexOfValue(window.viewer.gamepad.selectedId)
+                onActivated: window.viewer.gamepad.selectedId = currentValue
+            }
+            Label {
+                Layout.fillWidth: true
+                text: window.viewer.gamepad.status
+                wrapMode: Text.Wrap
+            }
+            RowLayout {
+                Label { text: qsTr("Steering deadzone") }
+                ThemedSlider {
+                    objectName: "gamepadDeadzone"
+                    Layout.fillWidth: true
+                    from: 0
+                    to: 0.5
+                    stepSize: 0.01
+                    value: window.viewer.gamepad.deadzone
+                    onMoved: window.viewer.gamepad.deadzone = value
+                }
+                Label { text: Math.round(window.viewer.gamepad.deadzone * 100) + "%" }
+            }
+            ThemedButton {
+                Layout.alignment: Qt.AlignRight
+                text: qsTr("Close")
+                onClicked: gamepadDialog.close()
+            }
+        }
+    }
     property bool codeEditorExpanded: false
     readonly property bool rayTracingEnabled:
         renderMode === "textured-rt"
@@ -284,6 +328,16 @@ ApplicationWindow {
             window.viewer.releaseManualInputs()
             viewport.releaseFreeMovement()
         }
+    }
+
+    Binding {
+        target: window.viewer.gamepad
+        property: "active"
+        value: window.active && window.controller.viewerVisible &&
+               (!window.shutdown || !window.shutdown.closing) &&
+               !gamepadDialog.visible &&
+               (window.viewer.manualDriving ||
+                (window.viewer.takeOverOnInput && window.viewer.playing))
     }
 
     Component.onCompleted: Qt.callLater(function() {
@@ -4892,11 +4946,21 @@ ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
-                            text: qsTr("Appearance")
+                            text: qsTr("Preferences")
                             color: AppTheme.textMuted
                             font.pixelSize: 11
                         }
 
+                        ThemedButton {
+                            objectName: "gamepadSettingsButton"
+                            Layout.preferredWidth: 32
+                            Layout.preferredHeight: 32
+                            icon.source: "qrc:/icons/gamepad-2.svg"
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Gamepad settings")
+                            Accessible.name: qsTr("Gamepad settings")
+                            onClicked: gamepadDialog.open()
+                        }
                         ThemedSwitch {
                             id: darkModeToggle
                             objectName: "darkModeToggle"

@@ -48,6 +48,20 @@ include(CTest)
 include(GNUInstallDirs)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(ZLIB REQUIRED)
+find_package(SDL3 3.2 QUIET CONFIG)
+if(NOT SDL3_FOUND)
+    set(SDL_SHARED OFF CACHE BOOL "Build bundled SDL statically")
+    set(SDL_STATIC ON CACHE BOOL "Build bundled SDL statically")
+    set(SDL_TESTS OFF CACHE BOOL "Disable SDL tests")
+    set(SDL_EXAMPLES OFF CACHE BOOL "Disable SDL examples")
+    set(SDL_INSTALL OFF CACHE BOOL "Install only the app's SDL notice")
+    FetchContent_Declare(SDL3
+        GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
+        GIT_TAG f5e5f6588921eed3d7d048ce43d9eb1ff0da0ffc)
+    FetchContent_MakeAvailable(SDL3)
+    install(FILES "${sdl3_SOURCE_DIR}/LICENSE.txt"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/licenses/forevertas/SDL3")
+endif()
 find_program(FOREVERTAS_LLDB_EXECUTABLE NAMES lldb)
 find_program(FOREVERTAS_SCRIPT_EXECUTABLE NAMES script)
 find_program(FOREVERTAS_WINPTY_EXECUTABLE NAMES winpty)
@@ -309,6 +323,8 @@ add_library(forevertas_gui STATIC
     src/app/rolling_throughput.h
     src/app/search_worker.cpp
     src/app/search_worker.h)
+target_sources(forevertas_gui PRIVATE src/viewer/gamepad_input.cpp src/viewer/gamepad_input.h)
+target_link_libraries(forevertas_gui PUBLIC SDL3::SDL3)
 
 file(GLOB_RECURSE FOREVERTAS_SIMULATION_DEBUG_SOURCE_FILES
     CONFIGURE_DEPENDS
@@ -569,6 +585,9 @@ endif()
 
 install(TARGETS forevertas
     RUNTIME DESTINATION "${forevertas_runtime_destination}")
+if(WIN32 AND TARGET SDL3::SDL3-shared)
+    install(FILES "$<TARGET_FILE:SDL3::SDL3-shared>" DESTINATION ".")
+endif()
 install(TARGETS forevertas-simulation-debug-worker
     RUNTIME DESTINATION "${forevertas_runtime_destination}")
 if(NOT FOREVERTAS_QML_MODULE_EXTERNAL)
@@ -1137,6 +1156,12 @@ if(BUILD_TESTING)
             tests/viewer_reload_smoke.cpp)
         add_executable(forevertas-lazy-ray-tracing-smoke tests/lazy_ray_tracing_smoke.cpp)
         add_executable(forevertas-live-best-tests tests/live_best_tests.cpp)
+        add_executable(forevertas-gamepad-tests tests/gamepad_tests.cpp)
+        target_link_libraries(forevertas-gamepad-tests PRIVATE forevertas_gui Qt6::Gui)
+        add_test(NAME forevertas-gamepad COMMAND forevertas-gamepad-tests
+                 "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-gamepad PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
         add_executable(forevertas-live-retention-tests tests/live_retention_tests.cpp)
         target_link_libraries(forevertas-live-retention-tests PRIVATE forevertas_gui Qt6::Gui)
         if(FOREVERTAS_WARNING_OPTIONS)

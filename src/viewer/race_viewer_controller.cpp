@@ -2085,6 +2085,7 @@ void UpdateRunPose(RaceViewerRun &run, qint64 timeMs) {
 
 RaceViewerController::RaceViewerController(QObject *parent)
     : QObject(parent), simulationDebugger_(this) {
+    connect(&gamepad_, &GamepadInput::sample, this, &RaceViewerController::setGamepadInput);
     liveBestUpdates_ = QSettings().value(QStringLiteral("viewer/liveBestUpdates"), false).toBool();
     liveBestTimer_.setSingleShot(true);
     liveBestTimer_.setInterval(100);
@@ -3935,14 +3936,70 @@ void RaceViewerController::setManualInput(const QString &input,
     }
     if (!manualDriving_) {
         if (takeOverOnInput_ && playing_) {
-            beginManualTakeover(input, active);
+            if (beginManualTakeover(input, active)) {
+                if (input == QStringLiteral("accelerate")) keyboardAccelerate_ = active;
+                if (input == QStringLiteral("brake")) keyboardBrake_ = active;
+            }
         }
         return;
+    }
+    if (input == QStringLiteral("accelerate")) {
+        keyboardAccelerate_ = active;
+        active = active || gamepadAccelerate_;
+    } else if (input == QStringLiteral("brake")) {
+        keyboardBrake_ = active;
+        active = active || gamepadBrake_;
     }
     if (!applyManualInput(input, active)) {
         finishManualDrive(statusText_, false);
         return;
     }
+    if (input == QStringLiteral("left") || input == QStringLiteral("right")) {
+        appliedAnalogSteering_ = 0;
+        if (!manualLeft_ && !manualRight_)
+            setGamepadInput(gamepadSteering_, gamepadAccelerate_, gamepadBrake_);
+    }
+    emit manualInputChanged();
+}
+
+void RaceViewerController::setGamepadInput(int steering, bool accelerate, bool brake) {
+    if (!manualRuntime_) return;
+    steering = std::clamp(steering, -65536, 65536);
+    if (!manualDriving_) {
+        if (!takeOverOnInput_ || !playing_ || (!steering && !accelerate && !brake)) return;
+        if (!beginManualTakeover(steering ? QStringLiteral("left") :
+                accelerate ? QStringLiteral("accelerate") : QStringLiteral("brake"), false)) return;
+    }
+    const bool oldAccelerate = gamepadAccelerate_;
+    const bool oldBrake = gamepadBrake_;
+    gamepadAccelerate_ = accelerate;
+    gamepadBrake_ = brake;
+    gamepadSteering_ = steering;
+    bool okay = true;
+    if (accelerate != oldAccelerate)
+        okay = applyManualInput(QStringLiteral("accelerate"), accelerate || keyboardAccelerate_);
+    if (okay && brake != oldBrake)
+        okay = applyManualInput(QStringLiteral("brake"), brake || keyboardBrake_);
+    if (okay && !manualLeft_ && !manualRight_ && steering != appliedAnalogSteering_) {
+        // Establish the steering takeover boundary through the same path as
+        // keyboard input, then record the analog value for the next 10 ms tick.
+        okay = applyManualInput(QStringLiteral("left"), false);
+        if (okay) {
+            const auto time = manualRuntime_->state.timeMs + kViewerTickDurationMs;
+            if (time > static_cast<std::uint64_t>(std::numeric_limits<std::int32_t>::max())) {
+                setStatusText(QStringLiteral("Manual drive failed: input time is outside the supported race range."));
+                okay = false;
+            } else {
+                const auto size = manualRuntime_->driverInputs.size();
+                manualRuntime_->driverInputs.push_back(ManualAnalogInputEvent(
+                        static_cast<std::int32_t>(time), PhysicsSandboxInputAction::Steer, steering));
+                okay = replaceManualInputs();
+                if (!okay) manualRuntime_->driverInputs.resize(size);
+                else appliedAnalogSteering_ = steering;
+            }
+        }
+    }
+    if (!okay) finishManualDrive(statusText_, false);
     emit manualInputChanged();
 }
 
@@ -4284,6 +4341,7 @@ bool RaceViewerController::applyManualInput(const QString &input,
 }
 
 void RaceViewerController::releaseManualInputs() {
+    setGamepadInput(0, false, false);
     if (!manualDriving_) {
         resetManualInputState();
         return;
@@ -5671,6 +5729,10 @@ void RaceViewerController::appendHeldManualInputs(std::int32_t timeMs) {
     if (manualRuntime_ == nullptr) {
         return;
     }
+    if (gamepadSteering_ != 0 && !manualLeft_ && !manualRight_) {
+        manualRuntime_->driverInputs.push_back(ManualAnalogInputEvent(
+                timeMs, PhysicsSandboxInputAction::Steer, gamepadSteering_));
+    }
     const std::array<std::pair<bool, PhysicsSandboxInputAction>, 4> held{{
             {manualLeft_, PhysicsSandboxInputAction::SteerLeft},
             {manualRight_, PhysicsSandboxInputAction::SteerRight},
@@ -5721,6 +5783,9 @@ void RaceViewerController::resetManualInputState() {
     manualRight_ = false;
     manualAccelerate_ = false;
     manualBrake_ = false;
+    keyboardAccelerate_ = keyboardBrake_ = false;
+    gamepadAccelerate_ = gamepadBrake_ = false;
+    gamepadSteering_ = appliedAnalogSteering_ = 0;
     if (changed) {
         emit manualInputChanged();
     }
