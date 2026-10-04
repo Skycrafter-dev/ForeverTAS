@@ -513,6 +513,7 @@ qint64 SearchController::requiredSimulationHorizonMs() const {
         }
     };
     for (const QVariant &pass : modifierPasses()) {
+        if (!pass.toMap().value(QStringLiteral("enabled"), true).toBool()) continue;
         include(pass.toMap().value(QStringLiteral("settings")).toMap(), true);
     }
     include(evaluationTargetSettings(), false);
@@ -1021,6 +1022,12 @@ void SearchController::moveModifierPass(int fromIndex, int toIndex) {
 
 void SearchController::setModifierPassId(int index, const QString &id) {
     if (!configuration_.setModifierPassId(index, id)) return;
+    emit modifierPassesChanged();
+    refreshValidation();
+}
+
+void SearchController::setModifierPassEnabled(int index, bool enabled) {
+    if (running_ || !configuration_.setModifierPassEnabled(index, enabled)) return;
     emit modifierPassesChanged();
     refreshValidation();
 }

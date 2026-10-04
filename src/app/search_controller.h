@@ -269,6 +269,7 @@ public slots:
     Q_INVOKABLE void removeModifierPass(int index);
     Q_INVOKABLE void moveModifierPass(int fromIndex, int toIndex);
     Q_INVOKABLE void setModifierPassId(int index, const QString &id);
+    Q_INVOKABLE void setModifierPassEnabled(int index, bool enabled);
     Q_INVOKABLE void setModifierPassSetting(int index,
                                             const QString &key,
                                             const QString &value);

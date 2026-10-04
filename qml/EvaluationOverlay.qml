@@ -160,6 +160,7 @@ Item {
         }
         const modifiers = controller.modifierPasses
         for (let index = 0; index < modifiers.length; ++index) {
+            if (modifiers[index].enabled === false) continue
             const window = windowRange("modifier", index)
             const start = window[0]
             const end = window[1]
@@ -807,6 +808,7 @@ Item {
                           minimum: evaluation[0], maximum: evaluation[1],
                           style: windowStyle }]
         for (let index = 0; index < controller.modifierPasses.length; ++index) {
+            if (controller.modifierPasses[index].enabled === false) continue
             const pass = windowRange("modifier", index)
             ranges.push({ kind: "modifier", index: index,
                           minimum: pass[0], maximum: pass[1],
@@ -1078,6 +1080,7 @@ Item {
 
             anchors.fill: parent
             visible: root.viewer.runCount > 0
+                     && modelData.enabled !== false
                      && layerStyle.visible && layerStyle.throughBlocks
             asynchronous: false
 

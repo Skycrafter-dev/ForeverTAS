@@ -39,11 +39,13 @@ ColumnLayout {
         for (let index = passModel.count; index < passes.length; ++index) {
             passModel.append({
                 passId: passes[index].id,
+                passEnabled: passes[index].enabled !== false,
                 passSettings: passes[index].settings
             })
         }
         for (let index = 0; index < passes.length; ++index) {
             passModel.setProperty(index, "passId", passes[index].id)
+            passModel.setProperty(index, "passEnabled", passes[index].enabled !== false)
             passModel.setProperty(index, "passSettings", passes[index].settings)
         }
     }
@@ -128,6 +130,7 @@ ColumnLayout {
 
             required property int index
             required property string passId
+            required property bool passEnabled
             required property var passSettings
 
             readonly property int optionCount: passTypeCombo.count
@@ -149,6 +152,15 @@ ColumnLayout {
                 if (passSettingsLoader.item)
                     passSettingsLoader.item.settings = passSettings
 
+            }
+
+            ThemeControls.ThemedCheckBox {
+                objectName: "modifierPassEnabled" + index
+                text: qsTr("Enabled")
+                checked: passEnabled
+                enabled: !root.controller.running
+                onToggled: root.controller.setModifierPassEnabled(
+                               passDelegate.index, checked)
             }
 
             StyledComboBox {

@@ -185,6 +185,7 @@ Rectangle {
                             "#60c6b2", "#c793e6", "#d7ad70", "#9cc96a"]
             for (let index = 0; index < passes.length; ++index) {
                 const pass = passes[index]
+                if (pass.enabled === false) continue
                 result.push(makeLayer("modifier:" + index,
                                   qsTr("Pass %1").arg(index + 1), "window",
                                   colors[index % colors.length], 2, true,

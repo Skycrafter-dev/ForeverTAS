@@ -34,8 +34,10 @@ QMetaObject::Connection BindInputPreview(
                     horizon = std::max(horizon, time);
             }
         };
-        for (const QVariant &pass : controller.modifierPasses())
+        for (const QVariant &pass : controller.modifierPasses()) {
+            if (!pass.toMap().value(QStringLiteral("enabled"), true).toBool()) continue;
             includeWindow(pass.toMap().value(QStringLiteral("settings")).toMap());
+        }
         includeWindow(controller.evaluationTargetSettings());
         // Keep edit handles available beyond an invalid search horizon without
         // changing the user's search configuration or making it valid to run.

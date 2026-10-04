@@ -56,7 +56,8 @@ QtObject {
             evaluation: { id: controller.evaluationTargetId,
                           settings: Object.assign({}, controller.evaluationTargetSettings) },
             passes: controller.modifierPasses.map(pass => ({
-                id: pass.id, settings: Object.assign({}, pass.settings) })),
+                id: pass.id, enabled: pass.enabled !== false,
+                settings: Object.assign({}, pass.settings) })),
             cuboids: plainTargets(controller.cuboidTargets.targets, cuboidKeys),
             volumes: plainTargets(controller.customVolumeTargets.targets,
                                   volumeKeys),
@@ -157,7 +158,8 @@ QtObject {
                 controller.setSearchAlgorithmSetting(
                     key, String(snapshot.algorithm.settings[key]))
             const currentPasses = controller.modifierPasses.map(pass => ({
-                id: pass.id, settings: Object.assign({}, pass.settings) }))
+                id: pass.id, enabled: pass.enabled !== false,
+                settings: Object.assign({}, pass.settings) }))
             if (different(currentPasses, snapshot.passes)) {
                 for (let index = controller.modifierPasses.length - 1;
                      index >= 0; --index)
@@ -165,6 +167,7 @@ QtObject {
                 for (const pass of snapshot.passes) {
                     const index = controller.modifierPasses.length
                     controller.addModifierPass(pass.id)
+                    controller.setModifierPassEnabled(index, pass.enabled !== false)
                     for (const key in pass.settings)
                         controller.setModifierPassSetting(
                             index, key, String(pass.settings[key]))

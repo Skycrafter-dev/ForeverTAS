@@ -225,6 +225,46 @@ bool TestTargetVisibilityPersistence() {
                  "draw-through target rendering was not persisted");
 }
 
+bool TestDisabledModifierPasses() {
+    QSettings().clear();
+    forevertas::app::SearchConfigurationModel configuration;
+    configuration.setModifierPassSetting(0, "minTimeMs", "0");
+    configuration.setModifierPassSetting(0, "maxTimeMs", "20");
+    configuration.setEvaluationTargetSetting("minTimeMs", "0");
+    configuration.setEvaluationTargetSetting("maxTimeMs", "20");
+    configuration.addModifierPass("smooth-steering");
+    configuration.setModifierPassSetting(1, "minTimeMs", "not a time");
+    bool okay = Check(!configuration.validate(10, 1000).configuration,
+                      "invalid enabled pass was accepted");
+    configuration.setModifierPassEnabled(1, false);
+    const QVariant disabled = configuration.modifierPasses().at(1);
+    const auto active = configuration.validate(10, 1000);
+    okay &= Check(active.configuration && active.configuration->modifiers.size() == 1,
+                  "disabled pass was validated or included in execution");
+    configuration.randomizeModifierSeeds(42);
+    okay &= Check(configuration.modifierPasses().at(1) == disabled,
+                  "disabled pass seed was changed");
+    configuration.moveModifierPass(1, 0);
+    configuration.setModifierPassId(0, "input-deletion");
+    okay &= Check(!configuration.modifierPasses().at(0).toMap()
+                          .value("enabled").toBool(),
+                  "reorder or type change enabled a disabled pass");
+    configuration.setModifierPassEnabled(1, false);
+    okay &= Check(configuration.validate(10, 1000).error.contains("Enable at least one"),
+                  "all-disabled composition lacked an actionable error");
+    forevertas::app::SearchConfigurationModel restored;
+    okay &= Check(restored.modifierPasses() == configuration.modifierPasses(),
+                  "disabled pass state or settings did not persist");
+    restored.setModifierPassEnabled(1, true);
+    okay &= Check(restored.validate(10, 1000).configuration.has_value(),
+                  "re-enabling a pass failed");
+    SearchController controller;
+    controller.setModifierPassSetting(0, "maxTimeMs", "900000");
+    okay &= Check(controller.requiredSimulationHorizonMs() < 900000,
+                  "disabled pass extended the required horizon");
+    return okay;
+}
+
 bool TestExplicitHorizonExtension() {
     QSettings().clear();
     SearchController controller;
@@ -2474,6 +2514,7 @@ int main(int argc, char **argv) {
     bool okay = TestCompactNumberFormatting() &&
             TestAutomaticSeedRandomization() &&
             TestTargetVisibilityPersistence() &&
+            TestDisabledModifierPasses() &&
             TestExplicitHorizonExtension() &&
             TestAbsoluteTargetPlacement() &&
             TestCuboidTargetModel() &&

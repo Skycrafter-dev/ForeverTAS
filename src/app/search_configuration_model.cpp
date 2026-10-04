@@ -71,9 +71,11 @@ QVariantMap ToVariantMap(const OptionSettings &settings) {
 }
 
 QVariantMap ModifierPassValue(const ModifierRegistration &registration,
-                              const QVariantMap &settings) {
+                              const QVariantMap &settings,
+                              bool enabled = true) {
     return QVariantMap{
             {QStringLiteral("id"), QString::fromStdString(registration.id)},
+            {QStringLiteral("enabled"), enabled},
             {QStringLiteral("settings"), settings}};
 }
 
@@ -323,7 +325,19 @@ bool SearchConfigurationModel::setModifierPassId(int index,
         return false;
     }
     modifierPasses_[index] = ModifierPassValue(
-            *registration, ToVariantMap(registration->defaultSettings));
+            *registration, ToVariantMap(registration->defaultSettings),
+            existing.value(QStringLiteral("enabled"), true).toBool());
+    persistModifierPasses();
+    return true;
+}
+
+bool SearchConfigurationModel::setModifierPassEnabled(int index, bool enabled) {
+    if (index < 0 || index >= modifierPasses_.size()) return false;
+    QVariantMap pass = modifierPasses_.at(index).toMap();
+    if (pass.value(QStringLiteral("enabled"), true).toBool() == enabled)
+        return false;
+    pass.insert(QStringLiteral("enabled"), enabled);
+    modifierPasses_[index] = pass;
     persistModifierPasses();
     return true;
 }
@@ -357,6 +371,7 @@ bool SearchConfigurationModel::randomizeModifierSeeds(
     bool changed = false;
     for (QVariant &passValue : modifierPasses_) {
         QVariantMap pass = passValue.toMap();
+        if (!pass.value(QStringLiteral("enabled"), true).toBool()) continue;
         QVariantMap settings =
                 pass.value(QStringLiteral("settings")).toMap();
         const auto seed = settings.find(QStringLiteral("seed"));
@@ -413,6 +428,7 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
     modifiers.reserve(static_cast<std::size_t>(modifierPasses_.size()));
     for (qsizetype index = 0; index < modifierPasses_.size(); ++index) {
         const QVariantMap pass = modifierPasses_.at(index).toMap();
+        if (!pass.value(QStringLiteral("enabled"), true).toBool()) continue;
         const QString id = pass.value(QStringLiteral("id")).toString();
         const ModifierRegistration *const registration =
                 FindModifier(id.toStdString());
@@ -437,6 +453,9 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
                 earliestMutationTimeMs,
                 mutator->EarliestMutationTimeMs());
         modifiers.push_back({registration->id, settings});
+    }
+    if (modifiers.empty()) {
+        return {{}, QStringLiteral("Enable at least one input modifier pass.")};
     }
     const std::unique_ptr<IterationEvaluator> evaluator =
             evaluationRegistration->create(
@@ -510,7 +529,8 @@ void SearchConfigurationModel::loadModifierPasses() {
                 settings.insert(iterator.key(), iterator.value().toString());
             }
             modifierPasses_.push_back(
-                    ModifierPassValue(*registration, settings));
+                    ModifierPassValue(*registration, settings,
+                            object.value(QStringLiteral("enabled")).toBool(true)));
         }
     }
     if (!modifierPasses_.isEmpty()) return;
@@ -540,6 +560,8 @@ void SearchConfigurationModel::persistModifierPasses() const {
             settings.insert(iterator.key(), iterator.value().toString());
         }
         array.push_back(QJsonObject{
+                {QStringLiteral("enabled"),
+                 pass.value(QStringLiteral("enabled"), true).toBool()},
                 {QStringLiteral("id"),
                  pass.value(QStringLiteral("id")).toString()},
                 {QStringLiteral("settings"), settings}});

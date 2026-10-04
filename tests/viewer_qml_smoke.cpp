@@ -967,6 +967,38 @@ int main(int argc, char **argv) {
                         controller.modifierOptions().size();
         if (addMenu) QMetaObject::invokeMethod(addMenu, "close");
         passManagementValid &= add("random-steering") && selected() == 1;
+        QObject *const editHistoryForPass = root->findChild<QObject *>(
+                QStringLiteral("editHistory"));
+        passManagementValid &= editHistoryForPass &&
+                QMetaObject::invokeMethod(editHistoryForPass, "reset");
+        QObject *const enabledToggle = FindVisualChild(
+                qobject_cast<QQuickItem *>(FindVisualChild(
+                        qobject_cast<QQuickItem *>(passEditor), QStringLiteral("modifierPass1"))),
+                QStringLiteral("modifierPassEnabled1"));
+        if (enabledToggle) {
+            QQmlExpression toggle(QQmlEngine::contextForObject(enabledToggle),
+                                  enabledToggle, QStringLiteral("checked = false; toggled()"));
+            toggle.evaluate();
+            passManagementValid &= !toggle.hasError();
+        } else {
+            passManagementValid = false;
+        }
+        settle();
+        passManagementValid &= !controller.modifierPasses().at(1).toMap()
+                .value("enabled").toBool();
+        passManagementValid &= editHistoryForPass &&
+                QMetaObject::invokeMethod(editHistoryForPass, "undo");
+        settle();
+        passManagementValid &= controller.modifierPasses().at(1).toMap()
+                .value("enabled").toBool();
+        passManagementValid &= editHistoryForPass &&
+                QMetaObject::invokeMethod(editHistoryForPass, "redo");
+        settle();
+        passManagementValid &= !controller.modifierPasses().at(1).toMap()
+                .value("enabled").toBool();
+        if (!passManagementValid)
+            std::cerr << "modifier enable/undo/redo regression\n";
+        passEditor->setProperty("activePassIndex", 1);
         controller.setModifierPassSetting(
                 1, QStringLiteral("minTimeMs"), QStringLiteral("1230"));
         settle();

@@ -50,6 +50,7 @@ public:
     bool removeModifierPass(int index);
     bool moveModifierPass(int fromIndex, int toIndex);
     bool setModifierPassId(int index, const QString &id);
+    bool setModifierPassEnabled(int index, bool enabled);
     bool setModifierPassSetting(int index,
                                 const QString &key,
                                 const QString &value);
