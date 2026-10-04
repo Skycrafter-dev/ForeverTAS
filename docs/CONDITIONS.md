@@ -14,6 +14,8 @@ Conditions use one comparison per line; all lines must hold. Comparisons are `> 
 
 Custom targets use `min EXPRESSION`, `max EXPRESSION`, or `target VALUE EXPRESSION`, one per line. Search-clock values are not car-state objectives and are rejected there. Previous values refer to the previous simulation observation, not another candidate. Conditions filter eligible observations; they do not stop the simulation.
 
+`min time.ms` finds the earliest eligible observation in the evaluation window. `time.ms` is the public simulation timestamp in milliseconds, matching the viewer and evaluation windows, with 10 ms tick precision. It is not the input-command timestamp (which has a one-tick offset), wall-clock search time, or a sub-tick crossing time. No eligible observation means no objective value, not a zero-time success.
+
 The Properties and functions control is available in both editors. Ctrl+Space filters it to the token at the caret; selecting an entry inserts the canonical spelling. Aliases remain valid.
 
 ## Symbols
@@ -69,6 +71,7 @@ The Properties and functions control is available in both editors. Ctrl+Space fi
 | `car.turbo_type` | `car.tt` | integer | engine enum | conditions and custom targets | Turbo type |
 | `car.turbo_boost_factor` | `car.tbf` | scalar | factor | conditions and custom targets | Turbo boost multiplier |
 | `car.cps` |  | integer | checkpoints | conditions and custom targets | Current-lap checkpoint count (not total across laps) |
+| `time.ms` |  | scalar | simulation ms | conditions and custom targets | Observed simulation timestamp, matching the viewer and evaluation windows; 10 ms tick precision, not wall-clock or input-command time |
 | `iterations` |  | integer | attempts | conditions only | Search iteration counter |
 | `last_improvement.time` |  | scalar | wall-clock s | conditions only | Search clock at last improvement; use time_since for elapsed time |
 | `last_restart.time` |  | scalar | wall-clock s | conditions only | Search clock at last restart; not simulation time |

@@ -2476,6 +2476,36 @@ bool TestScriptedTarget() {
     okay &= Check(dynamicMetric &&
                           dynamicMetric->find("line 2") != std::string::npos,
                   "search-time custom metric was not rejected at its line");
+    settings["script"] = "min time.ms";
+    settings["minTimeMs"] = "20";
+    settings["maxTimeMs"] = "100";
+    const auto earliest = forevertas::CreateScriptedTargetEvaluator(settings, 10u);
+    const auto timeGpu = forevertas::BuildCudaScriptedTargetEvaluator(settings, 10u);
+    okay &= Check(timeGpu.objectives[0].instructions[0].value ==
+                          forevervalidator::experimental::PhysicsSandboxCudaConditionValue::SimulationTimeMilliseconds &&
+                          earliest->Plan(100, 0, 10).startTimeMs == 20 &&
+                          earliest->Plan(100, 0, 10).endTimeMs == 100,
+                  "simulation time lost its GPU value or evaluation window");
+    auto earliestSession = earliest->CreateSession();
+    const auto eligible = forevertas::CompileConditionScript("car.x >= 10");
+    std::optional<EvaluationSample> earliestSample;
+    for (int tick = 20; tick <= 100; tick += 10) {
+        previous = current;
+        current.timeMs = tick;
+        current.car.position.x = static_cast<float>(tick - 20);
+        if (eligible.program->Evaluate(previous, current, {100u, 9000, 8000, 9999}))
+            earliestSample = earliestSession->Observe(previous, current);
+    }
+    okay &= Check(earliestSample && earliestSample->metricValues == std::vector<double>{30} &&
+                          earliestSample->objectiveScores == std::vector<double>{-30},
+                  "min time.ms did not retain the first qualifying simulation tick");
+    auto laterSession = earliest->CreateSession();
+    current.timeMs = 50;
+    current.car.linearSpeed.x = 1000;
+    const auto later = laterSession->Observe(previous, current);
+    okay &= Check(later && earliestSample && earliest->IsBetter(*earliestSample, *later) &&
+                          !earliest->IsBetter(*later, *earliestSample),
+                  "a faster but later candidate outranked the earliest qualifying tick");
     return okay;
 }
 

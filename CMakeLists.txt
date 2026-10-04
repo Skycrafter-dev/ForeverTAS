@@ -156,7 +156,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 2513a4b651fd1a8446cd42c4c773c2f17ccaac89
+        GIT_TAG 9a135d6146553851b515f56511540b1fb9e84ad2
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -1125,6 +1125,15 @@ if(BUILD_TESTING)
         add_executable(forevertas-viewer-reload-smoke
             tests/viewer_reload_smoke.cpp)
         add_executable(forevertas-lazy-ray-tracing-smoke tests/lazy_ray_tracing_smoke.cpp)
+        add_executable(forevertas-simulation-time-target-tests tests/simulation_time_target_tests.cpp)
+        target_link_libraries(forevertas-simulation-time-target-tests PRIVATE forevertas_core)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-simulation-time-target-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-simulation-time-target
+                 COMMAND forevertas-simulation-time-target-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-simulation-time-target PROPERTIES TIMEOUT 180)
         target_link_libraries(forevertas-lazy-ray-tracing-smoke PRIVATE forevertas_gui Qt6::Gui)
         if(FOREVERTAS_WARNING_OPTIONS)
             target_compile_options(forevertas-lazy-ray-tracing-smoke PRIVATE ${FOREVERTAS_WARNING_OPTIONS})

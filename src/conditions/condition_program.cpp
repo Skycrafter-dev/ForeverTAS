@@ -311,6 +311,7 @@ Value Source(PhysicsSandboxCudaConditionValue source,
     case PhysicsSandboxCudaConditionValue::LastImprovementTime: return {context.lastImprovementTimeSeconds};
     case PhysicsSandboxCudaConditionValue::LastRestartTime: return {context.lastRestartTimeSeconds};
     case PhysicsSandboxCudaConditionValue::CurrentTime: return {context.currentTimeSeconds};
+    case PhysicsSandboxCudaConditionValue::SimulationTimeMilliseconds: return {static_cast<double>(current.timeMs)};
     case PhysicsSandboxCudaConditionValue::CheckpointCount: return {static_cast<double>(current.checkpointsCollected)};
     default: break;
     }
