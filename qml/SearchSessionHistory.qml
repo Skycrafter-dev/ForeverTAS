@@ -92,6 +92,7 @@ ColumnLayout {
 
     RowLayout {
         Layout.fillWidth: true
+        visible: root.controller.sessionOptions.length > 0
         Label {
             Layout.fillWidth: true
             text: qsTr("Session")

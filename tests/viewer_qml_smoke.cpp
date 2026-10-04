@@ -1051,6 +1051,28 @@ int main(int argc, char **argv) {
                 if (inspector) inspector->setProperty("currentTab", originalTab);
                 if (!lockOnlyOnTargets) std::cerr << "target drag lock is not limited to the Targets tab\n";
                 passManagementValid &= lockOnlyOnTargets;
+                auto *const resultsPanel = qobject_cast<QQuickItem *>(
+                        root->findChild<QObject *>(QStringLiteral("searchInputs")));
+                auto *const resultTabs = qobject_cast<QQuickItem *>(
+                        root->findChild<QObject *>(QStringLiteral("bestInputsSourceTabs")));
+                auto *const sessionCombo = qobject_cast<QQuickItem *>(
+                        root->findChild<QObject *>(QStringLiteral("historyContent")));
+                bool historyInsideTab = resultsPanel != nullptr && resultTabs != nullptr &&
+                        sessionCombo != nullptr && resultsPanel->isVisible();
+                if (historyInsideTab) {
+                    const QVariant originalSource = resultsPanel->property("selectedSource");
+                    resultsPanel->setProperty("selectedSource", 1);
+                    settle();
+                    historyInsideTab &= sessionCombo->isVisible() &&
+                            resultTabs->mapToScene({0, 0}).y() < sessionCombo->mapToScene({0, 0}).y();
+                    resultsPanel->setProperty("selectedSource", 0);
+                    settle();
+                    historyInsideTab &= !sessionCombo->isVisible();
+                    resultsPanel->setProperty("selectedSource", originalSource);
+                    settle();
+                }
+                if (!historyInsideTab) std::cerr << "sessions are not shown only inside the History tab\n";
+                passManagementValid &= historyInsideTab;
             } else {
                 passManagementValid = false;
             }

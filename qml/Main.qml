@@ -5766,17 +5766,17 @@ ApplicationWindow {
                             }
                         }
 
-                        SearchSessionHistory {
-                            Layout.fillWidth: true
-                            controller: window.controller
-                            viewer: window.viewer
-                            onInputsSelected: searchInputs.selectedSource = 1
-                        }
-
                         SearchInputs {
                             id: searchInputs
                             Layout.fillWidth: true
                             controller: window.controller
+
+                            SearchSessionHistory {
+                                Layout.fillWidth: true
+                                controller: window.controller
+                                viewer: window.viewer
+                                onInputsSelected: searchInputs.selectedSource = 1
+                            }
                         }
                     }
 
