@@ -16,6 +16,8 @@ Custom targets use `min EXPRESSION`, `max EXPRESSION`, or `target VALUE EXPRESSI
 
 `min time.ms` finds the earliest eligible observation in the evaluation window. `time.ms` is the public simulation timestamp in milliseconds, matching the viewer and evaluation windows, with 10 ms tick precision. It is not the input-command timestamp (which has a one-tick offset), wall-clock search time, or a sub-tick crossing time. No eligible observation means no objective value, not a zero-time success.
 
+For multilap constraints use `car.completed_laps >= 1` (alias `car.laps`) to require the first finish passage, or `min time.ms` with that condition to optimize its tick. `car.cps` counts accepted ordinary checkpoints cumulatively across laps and deliberately excludes finish passages.
+
 The Properties and functions control is available in both editors. Ctrl+Space filters it to the token at the caret; selecting an entry inserts the canonical spelling. Aliases remain valid.
 
 ## Symbols
@@ -70,7 +72,8 @@ The Properties and functions control is available in both editors. Ctrl+Space fi
 | `car.turning_rate` | `car.tr` | scalar | native engine value | conditions and custom targets | Turning-rate telemetry |
 | `car.turbo_type` | `car.tt` | integer | engine enum | conditions and custom targets | Turbo type |
 | `car.turbo_boost_factor` | `car.tbf` | scalar | factor | conditions and custom targets | Turbo boost multiplier |
-| `car.cps` |  | integer | checkpoints | conditions and custom targets | Current-lap checkpoint count (not total across laps) |
+| `car.cps` |  | integer | checkpoints | conditions and custom targets | Cumulative accepted ordinary checkpoints across laps; excludes finish passages |
+| `car.completed_laps` | `car.laps` | integer | laps | conditions and custom targets | Completed laps, including the final finish passage; separate from car.cps |
 | `time.ms` |  | scalar | simulation ms | conditions and custom targets | Observed simulation timestamp, matching the viewer and evaluation windows; 10 ms tick precision, not wall-clock or input-command time |
 | `iterations` |  | integer | attempts | conditions only | Search iteration counter |
 | `last_improvement.time` |  | scalar | wall-clock s | conditions only | Search clock at last improvement; use time_since for elapsed time |

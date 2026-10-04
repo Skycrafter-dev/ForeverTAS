@@ -38,7 +38,9 @@ int main(int argc, char **argv) {
         {"max time.ms", "time.ms <= 80", "20", "100", {80}, false},
         {"min time.ms", "time.ms < 0", "10", "100", {}, false},
         {"min time.ms", "time.ms >= 30\niterations > 0", "10", "100", {30}, true},
-        {"min time.ms", "time.ms >= 30\ntime_since(last_restart.time) >= 0", "10", "100", {30}, false}
+        {"min time.ms", "time.ms >= 30\ntime_since(last_restart.time) >= 0", "10", "100", {30}, false},
+        {"max car.completed_laps", "car.laps = 0", "10", "100", {0}, false},
+        {"min time.ms", "car.completed_laps >= 1", "10", "100", {}, false}
     };
     try {
         for (const auto backend : backends) {
@@ -83,7 +85,25 @@ int main(int argc, char **argv) {
                     return 1;
                 }
             }
-            std::cout << PhysicsBackendId(backend) << ": six simulation-time target cases passed\n";
+            std::cout << PhysicsBackendId(backend) << ": " << cases.size() << " simulation-time/lap target cases passed\n";
+            SearchRequest finish(argv[1], argv[2]);
+            finish.backend = backend;
+            finish.parallelSampleCount = 1u;
+            finish.simulationHorizonMs = 60000;
+            finish.baseInputCommands = ParseInputScript(ExtractReplayInputScript(argv[1], argv[2])).commands;
+            auto target = DefaultScriptedTargetOptionSettings();
+            target["script"] = "max car.completed_laps";
+            target["maxTimeMs"] = "60000";
+            finish.evaluationTarget = {kScriptedTargetEvaluationId, target};
+            finish.condition = CompileConditionScript("car.laps >= 1").program;
+            SearchRunControl finishControl;
+            finishControl.iterationLimit = 0;
+            finishControl.sampleBestTimeline = false;
+            const auto completed = RunSearch(finish, &finishControl);
+            if (completed.metricValues != std::vector<double>{1}) {
+                std::cerr << PhysicsBackendId(backend) << ": final finish not counted as a completed lap\n";
+                return 1;
+            }
         }
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

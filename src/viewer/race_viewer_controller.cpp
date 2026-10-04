@@ -2575,6 +2575,7 @@ QVariantMap RaceViewerController::conditionPreview(
         case Value::Speed:
         case Value::PreviousSpeed:
         case Value::CheckpointCount:
+        case Value::CompletedLaps:
         case Value::WheelGroundContact0:
         case Value::WheelGroundContact1:
         case Value::WheelGroundContact2:
@@ -2610,6 +2611,7 @@ QVariantMap RaceViewerController::conditionPreview(
         state.car.rotationW = frame.rotation.scalar();
         state.car.wheelContact = frame.wheelContact;
         state.checkpointsCollected = frame.checkpointsCollected;
+        state.completedLaps = frame.completedLaps;
         return state;
     };
     const bool passed = compiled.program->Evaluate(
@@ -2656,6 +2658,9 @@ QVariantMap RaceViewerController::conditionPreview(
         } else if (instruction.value == Value::CheckpointCount) {
             readouts.push_back(QStringLiteral("%1 checkpoints")
                                        .arg(current.checkpointsCollected));
+        } else if (instruction.value == Value::CompletedLaps) {
+            readouts.push_back(QStringLiteral("%1 completed laps")
+                                       .arg(current.completedLaps));
         } else if (instruction.value == Value::Velocity ||
                    instruction.value == Value::PreviousVelocity) {
             const bool prior = instruction.value == Value::PreviousVelocity;
