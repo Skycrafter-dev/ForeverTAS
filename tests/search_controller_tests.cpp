@@ -2548,6 +2548,13 @@ bool TestAutorestartHistory(const QString &packsDirectory,
                                       firstFile) &&
                               !restored.selectedInputsText().isEmpty(),
                       "selecting a saved row did not load its inputs");
+        QSignalSpy basePreview(&restored, &SearchController::basePreviewRequested);
+        const QVariantList restoredRows = restored.cycleRows();
+        restored.previewBaseInputs();
+        okay &= Check(basePreview.size() == 1 && restored.selectedCycleRestart() == -1 &&
+                              restored.selectedInputsText().isEmpty() &&
+                              restored.cycleRows() == restoredRows,
+                      "previewing the base inputs left a history row selected");
     }
     controller.startSearch();
     okay &= Check(sessionResets == 2 && controller.cycleRows().isEmpty() &&

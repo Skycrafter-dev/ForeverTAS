@@ -538,6 +538,12 @@ bool SearchController::extendSimulationHorizon() {
 }
 
 void SearchController::previewBaseInputs() {
+    // Leaving the history: no restart stays highlighted, and new restarts
+    // saved by a running search are not selected behind the base preview.
+    selectedCycleRestart_ = -1;
+    selectedInputsText_.clear();
+    historySelectionExplicit_ = true;
+    emit historyChanged();
     emit basePreviewRequested();
 }
 

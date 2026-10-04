@@ -81,15 +81,6 @@ ColumnLayout {
             viewer.refreshInputPreview()
     }
 
-    ThemedButton {
-        objectName: "previewBaseInputsButton"
-        Layout.alignment: Qt.AlignRight
-        visible: root.viewer.previewingHistory
-        icon.source: "qrc:/icons/flag.svg"
-        text: qsTr("Preview base inputs")
-        onClicked: root.controller.previewBaseInputs()
-    }
-
     RowLayout {
         Layout.fillWidth: true
         visible: root.controller.sessionOptions.length > 0
@@ -273,6 +264,15 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    ThemedButton {
+        objectName: "previewBaseInputsButton"
+        Layout.alignment: Qt.AlignRight
+        visible: root.viewer.previewingHistory
+        icon.source: "qrc:/icons/flag.svg"
+        text: qsTr("Preview base inputs")
+        onClicked: root.controller.previewBaseInputs()
     }
 
     TextArea {

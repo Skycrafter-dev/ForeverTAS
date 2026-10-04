@@ -143,14 +143,14 @@ bool TestBasePreviewReturn(const QString &packs, const QString &replay) {
                 viewer.inputSample(5).brake > 0.99f; })) return false;
         viewer.jumpToEnd();
         const auto rows = controller.cycleRows();
-        const auto selected = controller.selectedInputsText();
         controller.previewBaseInputs();
         if (!WaitUntil([&]() { return viewer.loaded() && !viewer.loading() &&
                 viewer.loadedReplayPath() == replay && viewer.selectedRunId() == "preview" &&
                 viewer.inputSample(5).accelerate > 0.99f && viewer.inputSample(20).accelerate < 0.01f; })) return false;
         if (viewer.previewingHistory() || viewer.previewInputScript() != base ||
             viewer.simulationHorizonMs() != 1000 || viewer.currentTick() != 0 || viewer.playing() ||
-            controller.baseInputScript() != base || controller.selectedInputsText() != selected ||
+            controller.baseInputScript() != base || !controller.selectedInputsText().isEmpty() ||
+            controller.selectedCycleRestart() != -1 ||
             controller.cycleRows() != rows || controller.running()) return false;
     }
     viewer.setPreviewingHistory(true);

@@ -1360,6 +1360,15 @@ int main(int argc, char **argv) {
         QCoreApplication::processEvents();
         passiveHistoryValid &= v->property("previewInputScript") == "winner0" &&
                 c->property("baseInputScript") == "base";
+        auto *const historyItem = qobject_cast<QQuickItem *>(history);
+        auto *const baseButton = history->findChild<QQuickItem *>("previewBaseInputsButton");
+        auto *const table = history->findChild<QQuickItem *>("sessionTableScroll");
+        const auto children = historyItem ? historyItem->childItems() : QList<QQuickItem *>{};
+        if (!(baseButton && table && baseButton->isVisible() &&
+              children.indexOf(baseButton) > children.indexOf(table) && children.indexOf(table) >= 0)) {
+            std::cerr << "Preview base inputs is not below the restart table\n";
+            passiveHistoryValid = false;
+        }
     }
     if (!passiveHistoryValid) {
         std::cerr << "Automatic session history changed the base preview: "
