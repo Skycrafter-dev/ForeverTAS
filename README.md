@@ -134,6 +134,11 @@ Time windows offer an explicit Until horizon
 end mode that follows the configured search end. At time preserves literal
 zero and retains the last fixed end when switching modes. Modifier windows use
 the last input tick that can affect that horizon.
+Time-window editors accept integer milliseconds, explicit `ms`, decimal seconds
+such as `3.82 s` or `3.82`, and clock values such as `1:00.01`. A comma decimal
+separator is also accepted. Values must align exactly to 10 ms; no rounding is
+applied to typed input. The shared time-display preference does not change the
+meaning of bare integers (always milliseconds) or the stored millisecond keys.
 
 The optional Conditions script filters which simulated ticks are eligible for
 the selected evaluation target. Each non-empty line is an ANDed comparison;

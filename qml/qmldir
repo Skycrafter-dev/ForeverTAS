@@ -1,1 +1,2 @@
 singleton AppTheme 1.0 AppTheme.qml
+singleton DurationDisplay 1.0 DurationDisplay.qml

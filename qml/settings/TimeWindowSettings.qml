@@ -12,8 +12,8 @@ ColumnLayout {
     property var viewer
     property string minimumKey: "minTimeMs"
     property string maximumKey: "maxTimeMs"
-    property string minimumLabel: qsTr("Minimum time (ms)")
-    property string maximumLabel: qsTr("Maximum time (ms)")
+    property string minimumLabel: qsTr("Minimum time")
+    property string maximumLabel: qsTr("Maximum time")
 
     Layout.fillWidth: true
     spacing: 6
@@ -28,7 +28,17 @@ ColumnLayout {
         onSelected: value => root.updateSetting("maxTimeMode", value)
     }
 
-    SettingTextField {
+    SettingCombo {
+        comboObjectName: "timeDisplayUnit"
+        label: qsTr("Time units")
+        options: [ { label: qsTr("Milliseconds"), value: "ms" },
+                   { label: qsTr("Seconds"), value: "seconds" },
+                   { label: qsTr("Clock"), value: "clock" } ]
+        value: ThemeControls.DurationDisplay.unit
+        onSelected: value => ThemeControls.DurationDisplay.unit = value
+    }
+
+    DurationField {
         fieldObjectName: "minimumTimeField"
         label: root.minimumLabel
         value: root.settings[root.minimumKey] ?? ""
@@ -36,7 +46,7 @@ ColumnLayout {
         dragStep: 10
         minimum: 0
         captureVisible: root.viewer !== null && root.viewer !== undefined
-        captureEnabled: root.viewer && root.viewer.loaded
+        captureEnabled: !!root.viewer && root.viewer.loaded
         captureValue: root.viewer
                       ? String(root.viewer.currentTick
                                * root.viewer.tickDurationMs) : ""
@@ -44,7 +54,7 @@ ColumnLayout {
         onEdited: value => root.updateSetting(root.minimumKey, value)
     }
 
-    SettingTextField {
+    DurationField {
         fieldObjectName: "maximumTimeField"
         visible: (root.settings.maxTimeMode ?? "fixed") === "fixed"
         label: root.maximumLabel
@@ -53,7 +63,7 @@ ColumnLayout {
         dragStep: 10
         minimum: 0
         captureVisible: root.viewer !== null && root.viewer !== undefined
-        captureEnabled: root.viewer && root.viewer.loaded
+        captureEnabled: !!root.viewer && root.viewer.loaded
         captureValue: root.viewer
                       ? String(root.viewer.currentTick
                                * root.viewer.tickDurationMs) : ""
@@ -68,7 +78,7 @@ ColumnLayout {
         ThemeControls.ThemedButton {
             objectName: "timeWindowFullRunButton"
             text: qsTr("Full run")
-            enabled: !root.running && root.viewer && root.viewer.loaded
+            enabled: !root.running && !!root.viewer && root.viewer.loaded
             onClicked: {
                 root.updateSetting("maxTimeMode", "fixed")
                 root.updateSetting(root.minimumKey, "0")
@@ -82,7 +92,7 @@ ColumnLayout {
         ThemeControls.ThemedButton {
             objectName: "timeWindowPlayheadToEndButton"
             text: qsTr("Now to end")
-            enabled: !root.running && root.viewer && root.viewer.loaded
+            enabled: !root.running && !!root.viewer && root.viewer.loaded
             onClicked: {
                 root.updateSetting("maxTimeMode", "fixed")
                 root.updateSetting(root.minimumKey,

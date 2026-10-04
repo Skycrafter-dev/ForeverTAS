@@ -1257,6 +1257,7 @@ int main(int argc, char **argv) {
     timeWindowProbeComponent.setData(R"QML(
         import QtQuick
         import "settings"
+        import "."
         TimeWindowSettings {
             width: 400
             settings: ({ minTimeMs: "0", maxTimeMs: "1230", maxTimeMode: "fixed" })
@@ -1267,6 +1268,14 @@ int main(int argc, char **argv) {
             }
             readonly property string selectedMode: settings.maxTimeMode
             readonly property string retainedMaximum: settings.maxTimeMs
+            function canonical(text) {
+                const result = DurationDisplay.parse(text)
+                return result.valid ? result.milliseconds : "invalid"
+            }
+            function displayed(value, unit) {
+                DurationDisplay.unit = unit
+                return DurationDisplay.format(value)
+            }
         }
     )QML", QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_SOURCE_DIR "/qml/TimeWindowProbe.qml")));
     std::unique_ptr<QObject> timeWindowProbe(timeWindowProbeComponent.create());
@@ -1274,6 +1283,45 @@ int main(int argc, char **argv) {
     auto *endMode = timeWindowProbe->findChild<QObject *>("timeWindowEndMode");
     auto *maximumTime = timeWindowProbe->findChild<QObject *>("maximumTimeField");
     if (!endMode || !maximumTime) return 1;
+    for (const auto &fixture : std::vector<std::pair<QString, QString>>{
+            {"0", "0"}, {"3820 ms", "3820"}, {"3.82 s", "3820"},
+            {"3.82", "3820"}, {"3,82 s", "3820"}, {"1:00.01", "60010"},
+            {"01:00:00.01", "3600010"}, {"2147481040 ms", "2147481040"},
+            {"0.001 s", "invalid"}, {"3.821 s", "invalid"}, {"1:60", "invalid"},
+            {"-10", "invalid"}, {"10.0001 s", "invalid"},
+            {"90071992547409920 ms", "invalid"}, {"1e3", "invalid"}}) {
+        QVariant parsed;
+        QMetaObject::invokeMethod(timeWindowProbe.get(), "canonical", Q_RETURN_ARG(QVariant, parsed),
+                                 Q_ARG(QVariant, fixture.first));
+        globalSettingsVisibleAcrossTabs &= parsed.toString() == fixture.second;
+        if (parsed.toString() != fixture.second)
+            std::cerr << "duration parse failed: " << fixture.first.toStdString() << " => " << parsed.toString().toStdString() << '\n';
+    }
+    QVariant durationText;
+    QMetaObject::invokeMethod(timeWindowProbe.get(), "displayed", Q_RETURN_ARG(QVariant, durationText),
+                             Q_ARG(QVariant, QStringLiteral("60010")), Q_ARG(QVariant, QStringLiteral("clock")));
+    QEventLoop durationSettingsLoop;
+    QTimer::singleShot(1000, &durationSettingsLoop, &QEventLoop::quit);
+    durationSettingsLoop.exec();
+    globalSettingsVisibleAcrossTabs &= durationText == "01:00.01" &&
+            QSettings().value("timeDisplay/unit").toString() == "clock";
+    QQmlExpression enterDuration(QQmlEngine::contextForObject(maximumTime), maximumTime,
+                                QStringLiteral("text = '3.82 s'; editingFinished()"));
+    enterDuration.evaluate();
+    globalSettingsVisibleAcrossTabs &= !enterDuration.hasError() &&
+            timeWindowProbe->property("retainedMaximum") == "3820";
+    QObject *durationEditor = timeWindowProbe->findChild<QObject *>("maximumTimeFieldEditor");
+    QQmlExpression invalidDuration(QQmlEngine::contextForObject(maximumTime), maximumTime,
+                                  QStringLiteral("text = '3.821 s'; editingFinished()"));
+    invalidDuration.evaluate();
+    globalSettingsVisibleAcrossTabs &= !invalidDuration.hasError() && durationEditor &&
+            durationEditor->property("errorText").toString().contains("10 ms") &&
+            timeWindowProbe->property("retainedMaximum") == "3.821 s";
+    QMetaObject::invokeMethod(timeWindowProbe.get(), "displayed", Q_RETURN_ARG(QVariant, durationText),
+                             Q_ARG(QVariant, QStringLiteral("1230")), Q_ARG(QVariant, QStringLiteral("ms")));
+    QQmlExpression resetDuration(QQmlEngine::contextForObject(maximumTime), maximumTime,
+                                QStringLiteral("text = '1230'; editingFinished()"));
+    resetDuration.evaluate();
     for (const int selection : {1, 0}) {
         QQmlExpression choose(QQmlEngine::contextForObject(endMode), endMode,
                 QStringLiteral("currentIndex = %1; activated(%1)").arg(selection));

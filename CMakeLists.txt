@@ -465,6 +465,8 @@ set_target_properties(forevertas PROPERTIES
     WIN32_EXECUTABLE TRUE)
 set_source_files_properties(qml/AppTheme.qml PROPERTIES
     QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/DurationDisplay.qml PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE)
 if(NOT FOREVERTAS_QML_MODULE_EXTERNAL)
 qt_add_qml_module(forevertas_qml
     PLUGIN_TARGET forevertas_qml
@@ -473,6 +475,8 @@ qt_add_qml_module(forevertas_qml
     OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin/qml/ForeverTAS"
     QML_FILES
         qml/AppTheme.qml
+        qml/DurationDisplay.qml
+        qml/settings/DurationField.qml
         qml/EvaluationOverlay.qml
         qml/EditHistory.qml
         qml/GraphicsInspector.qml

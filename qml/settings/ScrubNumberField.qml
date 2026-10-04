@@ -14,6 +14,8 @@ TextField {
     property real maximum: Number.MAX_VALUE
     property real pixelsPerStep: 4
     property bool liveScrub: true
+    property var valueParser: null
+    property var valueFormatter: null
     readonly property bool scrubbable: true
     readonly property bool scrubbing: scrubArea.pressed
 
@@ -29,6 +31,7 @@ TextField {
 
     function formatNumber(number) {
         let numeric = control.clampNumber(number)
+        if (valueFormatter) return valueFormatter(numeric)
         if (control.integer)
             return Math.round(numeric).toString()
 
@@ -44,8 +47,12 @@ TextField {
         const raw = control.value.toString()
         if (raw.trim().length === 0)
             return raw
-        const numeric = Number(raw)
+        const numeric = parseNumber(raw)
         return Number.isFinite(numeric) ? control.formatNumber(numeric) : raw
+    }
+
+    function parseNumber(text) {
+        return valueParser ? valueParser(text) : Number(text)
     }
 
     function synchronizeText() {
@@ -122,8 +129,8 @@ TextField {
 
         onPressed: mouse => {
             startX = mouse.x
-            const current = Number(control.text)
-            const persisted = Number(control.value)
+            const current = control.parseNumber(control.text)
+            const persisted = control.parseNumber(control.value)
             startValue = Number.isFinite(current)
                     ? current
                     : Number.isFinite(persisted) ? persisted : 0
