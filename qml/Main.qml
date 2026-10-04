@@ -264,7 +264,7 @@ ApplicationWindow {
 
     width: 1420
     height: 820
-    minimumWidth: 1240
+    minimumWidth: window.controller.viewerVisible ? 1240 : 390
     minimumHeight: 580
     visible: true
     title: qsTr("ForeverTAS")
@@ -752,7 +752,10 @@ ApplicationWindow {
             objectName: "workspaceContent"
             SplitView.fillWidth: true
             SplitView.minimumWidth: 680
-            visible: !window.codeEditorExpanded
+            visible: window.controller.viewerVisible && !window.codeEditorExpanded
+            onVisibleChanged: {
+                if (!visible) viewport.releaseFreeMovement()
+            }
             color: AppTheme.window
 
             RowLayout {
@@ -1550,7 +1553,7 @@ ApplicationWindow {
 
                     FrameAnimation {
                         running: viewport.viewRotationSmoothing
-                                 && window.visible
+                                 && window.visible && workspaceContent.visible
                         onTriggered:
                             viewport.stepViewRotation(frameTime)
                     }
@@ -3123,7 +3126,7 @@ ApplicationWindow {
                         anchors.fill: parent
                         z: 1
                         visible: window.rayTracingEnabled
-                        active: window.rayTracingEnabled
+                        active: window.rayTracingEnabled && workspaceContent.visible
                                 && window.viewer.loaded
                         viewer: window.viewer
                         cameraPosition: viewCamera.scenePosition
@@ -4419,11 +4422,10 @@ ApplicationWindow {
             id: settingsPanel
 
             objectName: "settingsPanel"
-            SplitView.fillWidth: window.codeEditorExpanded
-            SplitView.preferredWidth: window.codeEditorExpanded
-                                      ? window.width : 390
-            SplitView.minimumWidth: window.codeEditorExpanded ? 0 : 340
-            SplitView.maximumWidth: window.codeEditorExpanded
+            SplitView.fillWidth: !workspaceContent.visible
+            SplitView.preferredWidth: 390
+            SplitView.minimumWidth: !workspaceContent.visible ? 0 : 340
+            SplitView.maximumWidth: !workspaceContent.visible
                                     ? window.width : 480
             color: AppTheme.panel
 
@@ -4434,6 +4436,14 @@ ApplicationWindow {
                 anchors.right: parent.right
                 anchors.margins: 20
                 spacing: 8
+
+                ThemedCheckBox {
+                    objectName: "showViewerToggle"
+                    text: qsTr("Show viewer")
+                    checked: window.controller.viewerVisible
+                    enabled: !window.viewer.manualDriving
+                    onToggled: window.controller.viewerVisible = checked
+                }
 
                 TabBar {
                     id: toolTabs

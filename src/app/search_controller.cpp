@@ -63,6 +63,7 @@ constexpr char kDrawTargetsThroughBlocksKey[] =
         "viewer/drawTargetsThroughBlocks";
 constexpr char kTargetMouseEditingLockedKey[] = "viewer/targetMouseEditingLocked";
 constexpr char kDarkModeKey[] = "appearance/darkMode";
+constexpr char kViewerVisibleKey[] = "viewer/visible";
 std::atomic_bool gAutomaticPacksSearchScheduled{false};
 
 std::optional<std::chrono::seconds> ParseRestartDuration(
@@ -361,6 +362,7 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     darkMode_ =
             QSettings().value(QLatin1String(kDarkModeKey), false).toBool();
     ApplyApplicationPalette(darkMode_);
+    viewerVisible_ = settings.value(QLatin1String(kViewerVisibleKey), true).toBool();
     const QString storedBackend = StoredValue(
             kSimulationBackendKey,
             BackendId(PhysicsBackend::Reference));
@@ -608,6 +610,15 @@ bool SearchController::drawTargetsThroughBlocks() const {
 
 bool SearchController::darkMode() const {
     return darkMode_;
+}
+
+bool SearchController::viewerVisible() const { return viewerVisible_; }
+
+void SearchController::setViewerVisible(bool value) {
+    if (viewerVisible_ == value) return;
+    viewerVisible_ = value;
+    QSettings().setValue(QLatin1String(kViewerVisibleKey), value);
+    emit viewerVisibleChanged();
 }
 
 bool SearchController::targetMouseEditingLocked() const {

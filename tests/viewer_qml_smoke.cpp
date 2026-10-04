@@ -799,6 +799,40 @@ int main(int argc, char **argv) {
     const bool passManagementOnly =
             qEnvironmentVariableIsSet("FOREVERTAS_PASS_UI_ONLY");
     bool passManagementValid = passEditor != nullptr && stablePassTabs;
+    {
+        auto *workspace = root->findChild<QQuickItem *>(QStringLiteral("workspaceContent"));
+        auto *settings = root->findChild<QQuickItem *>(QStringLiteral("settingsPanel"));
+        auto *show = root->findChild<QObject *>(QStringLiteral("showViewerToggle"));
+        auto *rt = root->findChild<QObject *>(QStringLiteral("gpuRayTracingView"));
+        QCoreApplication::processEvents();
+        const double settingsWidth = settings ? settings->width() : 0;
+        const QString script = controller.baseInputScript();
+        const QVariant renderMode = root->property("renderMode");
+        bool visibilityValid = workspace && settings && show && rt;
+        const auto settleLayout = []() {
+            QEventLoop loop;
+            QTimer::singleShot(30, &loop, &QEventLoop::quit);
+            loop.exec();
+        };
+        if (visibilityValid) {
+            QQmlExpression hide(QQmlEngine::contextForObject(show), show,
+                                QStringLiteral("checked = false; toggled()"));
+            hide.evaluate();
+            root->setProperty("renderMode", "textured-rt");
+            settleLayout();
+            visibilityValid &= !hide.hasError() && !workspace->isVisible() &&
+                    show->property("visible").toBool() && !rt->property("active").toBool() &&
+                    std::abs(settings->width() - root->property("width").toDouble()) < 1;
+            root->setProperty("renderMode", renderMode);
+            controller.setViewerVisible(true);
+            settleLayout();
+            visibilityValid &= workspace->isVisible() &&
+                    std::abs(settings->width() - settingsWidth) < 1 &&
+                    controller.baseInputScript() == script;
+        }
+        passManagementValid &= visibilityValid;
+        if (!visibilityValid) std::cerr << "viewer hide/show or splitter restoration failed\n";
+    }
     if (passManagementValid && passManagementOnly) {
         const auto settle = []() {
             QCoreApplication::processEvents();

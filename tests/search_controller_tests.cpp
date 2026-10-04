@@ -1542,6 +1542,7 @@ bool TestPersistence(const QString &packsDirectory,
         controller.setCudaCalibrationEnabled(true);
         controller.setCudaSessionSpecializationEnabled(false);
         controller.setDarkMode(true);
+        controller.setViewerVisible(false);
         controller.setSearchAlgorithmSetting(
                 QStringLiteral("autoPromoteBest"),
                 QStringLiteral("true"));
@@ -1562,6 +1563,7 @@ bool TestPersistence(const QString &packsDirectory,
                             .value(QStringLiteral("autoPromoteBest"))
                             .toString() == QStringLiteral("true"),
             "auto-promote search mode was not persisted");
+    okay &= Check(!restored.viewerVisible(), "viewer visibility did not persist");
     okay &= Check(
             restored.baseInputScript() ==
                     QStringLiteral("0.00 press up\n0.50 steer -16384") &&
@@ -2194,6 +2196,12 @@ bool TestAbortRetainsBest(const QString &packsDirectory, const QString &replayPa
         return controller.iterationCountRawText().toULongLong() > 0 &&
                 !controller.bestInputsText().isEmpty();
     }, 30000), "abort test did not reach a completed candidate");
+    const auto attemptsBeforeHide = controller.iterationCountRawText().toULongLong();
+    controller.setViewerVisible(false);
+    okay &= Check(WaitUntil([&]() {
+        return controller.iterationCountRawText().toULongLong() > attemptsBeforeHide;
+    }, 10000), "hiding the viewer interrupted the search worker");
+    controller.setViewerVisible(true);
     controller.stopSearch();
     controller.abortSearch();
     okay &= Check(controller.stopping() && controller.aborting(),
