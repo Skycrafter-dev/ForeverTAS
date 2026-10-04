@@ -1204,7 +1204,9 @@ SearchResult BasicBruteForceSearch::Run(
         return RunGpuBasicBruteForce(
                 context,
                 evaluationPlan,
-                earliestMutationTimeMs,
+                // The GPU session starts at the branch even when a custom
+                // target observes the unmodified prefix before the first pass.
+                std::min(earliestMutationTimeMs, evaluationPlan.startTimeMs),
                 branch,
                 baselineInputs,
                 autoPromoteBest_,
