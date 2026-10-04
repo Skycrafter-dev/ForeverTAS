@@ -1541,6 +1541,7 @@ void SearchController::startSearch() {
     });
     connect(thread, &QThread::finished, thread, &QObject::deleteLater);
 
+    emit searchStarted(searchSerial_);
     thread->start();
 }
 

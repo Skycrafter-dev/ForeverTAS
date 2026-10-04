@@ -13,6 +13,7 @@
 namespace forevertas::app {
 
 struct SearchCompletion {
+    std::uint64_t searchId = 0u;
     QString summary;
     QString inputsText;
     QString packsDirectory;
@@ -32,6 +33,7 @@ struct SearchImprovement {
     QString replayPath;
     QString simulationBackendId;
     std::vector<SearchTimelineFrame> timeline;
+    std::vector<SandboxInputEvent> inputs;
 };
 
 using SearchImprovementPtr = std::shared_ptr<const SearchImprovement>;

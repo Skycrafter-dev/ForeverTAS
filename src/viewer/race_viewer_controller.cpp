@@ -1,5 +1,6 @@
 #include "viewer/race_viewer_controller.h"
 
+#include "app/search_completion.h"
 #include "conditions/condition_program.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/input_event_utils.h"
@@ -2084,6 +2085,10 @@ void UpdateRunPose(RaceViewerRun &run, qint64 timeMs) {
 
 RaceViewerController::RaceViewerController(QObject *parent)
     : QObject(parent), simulationDebugger_(this) {
+    liveBestUpdates_ = QSettings().value(QStringLiteral("viewer/liveBestUpdates"), false).toBool();
+    liveBestTimer_.setSingleShot(true);
+    liveBestTimer_.setInterval(100);
+    connect(&liveBestTimer_, &QTimer::timeout, this, &RaceViewerController::applyLiveBest);
     cameraPreset_ = std::clamp(
             QSettings().value(
                     QStringLiteral("viewer/cameraPreset"), 1).toInt(),
@@ -3084,6 +3089,67 @@ RaceViewerInputSample RaceViewerController::inputSample(qint64 tick) const
     return {frame.accelerate, frame.brake, frame.steering};
 }
 
+void RaceViewerController::setLiveBestUpdates(bool value) {
+    if (liveBestUpdates_ == value) return;
+    liveBestUpdates_ = value;
+    QSettings().setValue(QStringLiteral("viewer/liveBestUpdates"), value);
+    if (!value) {
+        liveBestTimer_.stop();
+        pendingLiveBest_.reset();
+    }
+    emit liveBestUpdatesChanged();
+}
+
+void RaceViewerController::beginSearchPreview(std::uint64_t searchId) {
+    endSearchPreview();
+    liveSearchId_ = searchId;
+    liveImprovementNumber_ = 0;
+    autoSelectLiveBest_ = true;
+}
+
+void RaceViewerController::endSearchPreview() {
+    liveBestTimer_.stop();
+    pendingLiveBest_.reset();
+    liveSearchId_ = 0;
+}
+
+void RaceViewerController::queueLiveBest(std::shared_ptr<const app::SearchImprovement> improvement) {
+    if (!liveBestUpdates_ || !improvement || liveSearchId_ == 0 ||
+        improvement->searchId != liveSearchId_ ||
+        improvement->improvementNumber <= liveImprovementNumber_ ||
+        improvement->timeline.empty()) return;
+    liveImprovementNumber_ = improvement->improvementNumber;
+    pendingLiveBest_ = std::move(improvement);
+    if (!liveBestTimer_.isActive()) liveBestTimer_.start();
+}
+
+void RaceViewerController::applyLiveBest() {
+    auto improvement = std::move(pendingLiveBest_);
+    if (!improvement || !liveBestUpdates_ || improvement->searchId != liveSearchId_ ||
+        !loaded_ || loading_ || previewingHistory_ || manualDriving_ ||
+        simulationDebugger_.active() || improvement->packsDirectory != loadedPacksDirectory_ ||
+        improvement->replayPath != loadedReplayPath_) return;
+    auto frames = ToViewerFrames(improvement->timeline);
+    if (!IsViewableTrajectory(frames)) return;
+    // Changing the live pose must not pause playback, rewind, or reset the camera.
+    if (autoSelectLiveBest_ && selectedRunId_ != QStringLiteral("best")) {
+        selectedRunId_ = QStringLiteral("best");
+        emit selectedRunChanged();
+    }
+    upsertRun(QStringLiteral("best"), QStringLiteral("Best"), std::move(frames),
+              improvement->inputs, false);
+}
+
+void RaceViewerController::completeSearchPreview(std::shared_ptr<const app::SearchCompletion> completion) {
+    if (!completion || liveSearchId_ == 0 || completion->searchId != liveSearchId_) return;
+    const bool select = autoSelectLiveBest_ && !previewingHistory_ && !manualDriving_ &&
+                        !simulationDebugger_.active();
+    endSearchPreview();
+    applySearchRun(completion->packsDirectory, completion->replayPath,
+                   completion->bestTimeline, completion->bestInputs,
+                   completion->simulationBackendId, select, select);
+}
+
 void RaceViewerController::addSearchRun(
         const QString &packsDirectory,
         const QString &replayPath,
@@ -3125,7 +3191,15 @@ void RaceViewerController::addSearchRun(
         const std::vector<SearchTimelineFrame> &frames,
         const std::vector<SandboxInputEvent> &inputs,
         const QString &backendId) {
-    stopManualDrive();
+    applySearchRun(packsDirectory, replayPath, frames, inputs, backendId, true, true);
+}
+
+void RaceViewerController::applySearchRun(
+        const QString &packsDirectory, const QString &replayPath,
+        const std::vector<SearchTimelineFrame> &frames,
+        const std::vector<SandboxInputEvent> &inputs, const QString &backendId,
+        bool select, bool loadIfNeeded) {
+    if (select) stopManualDrive();
     if (frames.empty()) {
         setStatusText(QStringLiteral("Best run produced no viewable frames."));
         return;
@@ -3141,20 +3215,20 @@ void RaceViewerController::addSearchRun(
             replayPath,
             kAuxiliarySimulationBackend,
             ToViewerFrames(frames),
-            inputs};
+            inputs, select};
     if (loaded_ && loadedPacksDirectory_ == packsDirectory &&
         loadedReplayPath_ == replayPath) {
         upsertRun(QStringLiteral("best"),
                   QStringLiteral("Best"),
                   std::move(pending.frames),
                   std::move(pending.inputs),
-                  true);
+                  select);
         scheduleStoredRunRebuilds();
         setStatusText(QStringLiteral("Best run added"));
         return;
     }
     pendingRun_ = std::move(pending);
-    if (workerThread_ == nullptr) {
+    if (loadIfNeeded && workerThread_ == nullptr) {
         beginMapLoad(packsDirectory, replayPath,
                      kAuxiliarySimulationBackend);
     }
@@ -3453,7 +3527,9 @@ void RaceViewerController::setSelectedRunId(const QString &value) {
             runs_.begin(), runs_.end(), [&value](const RaceViewerRun &run) {
                 return run.id == value;
             });
-    if (selected == runs_.end() || selectedRunId_ == value) {
+    if (selected == runs_.end()) return;
+    autoSelectLiveBest_ = false;
+    if (selectedRunId_ == value) {
         return;
     }
     pause();
@@ -4683,6 +4759,7 @@ void RaceViewerController::startStoredRunRebuilds() {
 
     const std::uint64_t serial = storedRunSerial_;
     const std::uint64_t loadSerial = loadSerial_;
+    const quint64 bestRevision = bestRunRevision_;
     const QString packsDirectory = loadedPacksDirectory_;
     const QString replayPath = loadedReplayPath_;
     const std::uint32_t horizon =
@@ -4719,11 +4796,16 @@ void RaceViewerController::startStoredRunRebuilds() {
             });
     storedRunThread_ = thread;
     connect(thread, &QThread::finished, this,
-            [this, thread, serial, loadSerial, outputs]() mutable {
+            [this, thread, serial, loadSerial, bestRevision, outputs]() mutable {
                 if (storedRunThread_ == thread) storedRunThread_ = nullptr;
                 if (serial == storedRunSerial_ &&
                     loadSerial == loadSerial_) {
                     for (auto &[id, name, result] : *outputs) {
+                        // A later live improvement owns the best run, even if
+                        // this older rebuild finishes in another search cycle.
+                        if (id == QStringLiteral("best") && bestRevision != bestRunRevision_) {
+                            continue;
+                        }
                         if (result.canceled) {
                             continue;
                         }
@@ -5099,12 +5181,13 @@ void RaceViewerController::applyPendingRunIfReady() {
             std::move(pendingRun_->frames);
     std::vector<SandboxInputEvent> inputs =
             std::move(pendingRun_->inputs);
+    const bool select = pendingRun_->select && !previewingHistory_;
     pendingRun_.reset();
     upsertRun(QStringLiteral("best"),
               QStringLiteral("Best"),
               std::move(frames),
               std::move(inputs),
-              true);
+              select);
     scheduleStoredRunRebuilds();
 }
 
@@ -5176,6 +5259,7 @@ void RaceViewerController::upsertRun(QString id,
     }
     ++runGeometryRevision_;
     if (id == QStringLiteral("best")) {
+        ++bestRunRevision_;
         updateBestTrajectory(name, frames);
     }
     auto existing = std::find_if(

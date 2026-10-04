@@ -55,6 +55,12 @@ int main(int argc, char **argv) {
     forevertas::app::UpdateController updates;
     forevertas::viewer::RaceViewerController viewer;
     forevertas::app::BindInputPreview(controller, viewer);
+    QObject::connect(&controller, &forevertas::app::SearchController::searchStarted,
+                     &viewer, &forevertas::viewer::RaceViewerController::beginSearchPreview);
+    QObject::connect(&controller, &forevertas::app::SearchController::runningChanged,
+                     &viewer, [&]() {
+        if (!controller.running()) viewer.endSearchPreview();
+    });
     QObject::connect(
             &controller,
             &forevertas::app::SearchController::searchImprovement,
@@ -68,17 +74,14 @@ int main(int argc, char **argv) {
                         improvement->searchId,
                         improvement->improvementNumber,
                         improvement->generatedAt);
+                viewer.queueLiveBest(std::move(improvement));
             });
     QObject::connect(
             &controller,
             &forevertas::app::SearchController::searchCompleted,
             &viewer,
             [&viewer](forevertas::app::SearchCompletionPtr completion) {
-                viewer.addSearchRun(completion->packsDirectory,
-                                    completion->replayPath,
-                                    completion->bestTimeline,
-                                    completion->bestInputs,
-                                    completion->simulationBackendId);
+                viewer.completeSearchPreview(std::move(completion));
             });
     forevertas::viewer::RegisterRaceViewerQmlTypes();
     QQmlApplicationEngine engine;

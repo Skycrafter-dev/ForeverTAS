@@ -1125,6 +1125,15 @@ if(BUILD_TESTING)
         add_executable(forevertas-viewer-reload-smoke
             tests/viewer_reload_smoke.cpp)
         add_executable(forevertas-lazy-ray-tracing-smoke tests/lazy_ray_tracing_smoke.cpp)
+        add_executable(forevertas-live-best-tests tests/live_best_tests.cpp)
+        target_link_libraries(forevertas-live-best-tests PRIVATE forevertas_gui Qt6::Gui)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-live-best-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-live-best COMMAND forevertas-live-best-tests
+                 "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-live-best PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
         add_executable(forevertas-simulation-time-target-tests tests/simulation_time_target_tests.cpp)
         target_link_libraries(forevertas-simulation-time-target-tests PRIVATE forevertas_core)
         if(FOREVERTAS_WARNING_OPTIONS)

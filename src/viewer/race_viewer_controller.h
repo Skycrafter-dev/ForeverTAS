@@ -28,6 +28,11 @@
 
 class QThread;
 
+namespace forevertas::app {
+struct SearchImprovement;
+struct SearchCompletion;
+}
+
 namespace forevertas::viewer {
 
 class ManualDriveRuntime;
@@ -126,6 +131,8 @@ struct RaceViewerInputPreviewResult {
 
 class RaceViewerController final : public QObject {
     Q_OBJECT
+    Q_PROPERTY(bool liveBestUpdates READ liveBestUpdates WRITE setLiveBestUpdates
+               NOTIFY liveBestUpdatesChanged)
 
     Q_PROPERTY(QQuick3DGeometry *trackFilledGeometry READ
                        trackFilledGeometry CONSTANT)
@@ -336,6 +343,12 @@ public:
     std::shared_ptr<const RayTracingSceneData> rayTracingScene() const;
     void requestRayTracingScene();
     RaceViewerInputSample inputSample(qint64 tick) const noexcept;
+    bool liveBestUpdates() const { return liveBestUpdates_; }
+    void setLiveBestUpdates(bool value);
+    void beginSearchPreview(std::uint64_t searchId);
+    void queueLiveBest(std::shared_ptr<const app::SearchImprovement> improvement);
+    void completeSearchPreview(std::shared_ptr<const app::SearchCompletion> completion);
+    void endSearchPreview();
     void addSearchRun(
             const QString &packsDirectory,
             const QString &replayPath,
@@ -416,6 +429,7 @@ public slots:
     Q_INVOKABLE QString telemetryScriptError(const QString &script) const;
 
 signals:
+    void liveBestUpdatesChanged();
     void rayTracingSceneChanged();
     void sceneChanged();
     void poseChanged();
@@ -438,6 +452,11 @@ signals:
     void telemetryScriptChanged();
 
 private:
+    void applyLiveBest();
+    void applySearchRun(const QString &packsDirectory, const QString &replayPath,
+                        const std::vector<SearchTimelineFrame> &frames,
+                        const std::vector<SandboxInputEvent> &inputs,
+                        const QString &backendId, bool select, bool loadIfNeeded);
     void cancelRayTracingBuild();
     void applyLoadResult(std::uint64_t loadSerial,
                          RaceViewerLoadResult result);
@@ -521,6 +540,7 @@ private:
         PhysicsBackend backend = PhysicsBackend::OptimizedCpu;
         std::vector<RaceViewerFrame> frames;
         std::vector<SandboxInputEvent> inputs;
+        bool select = true;
     };
     struct PendingImprovement {
         QString packsDirectory;
@@ -534,6 +554,12 @@ private:
     std::vector<RaceViewerRun> runs_;
     std::optional<MapLoadRequest> queuedMapLoad_;
     std::optional<PendingRun> pendingRun_;
+    bool liveBestUpdates_ = false;
+    bool autoSelectLiveBest_ = false;
+    std::uint64_t liveSearchId_ = 0;
+    std::uint64_t liveImprovementNumber_ = 0;
+    QTimer liveBestTimer_;
+    std::shared_ptr<const app::SearchImprovement> pendingLiveBest_;
     std::vector<PendingImprovement> pendingImprovements_;
     std::chrono::steady_clock::time_point previewClearedAt_{};
     QVariantList carEllipsoids_;
@@ -554,6 +580,7 @@ private:
     };
     std::map<QString, TimeRangeCacheState> timeRangeCacheStates_;
     quint64 runGeometryRevision_ = 0;
+    quint64 bestRunRevision_ = 0;
     std::vector<QString> trajectoryKeys_;
     QVector3D carPosition_{};
     QQuaternion carRotation_{};

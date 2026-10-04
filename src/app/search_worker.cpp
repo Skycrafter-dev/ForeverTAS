@@ -326,6 +326,7 @@ void SearchWorker::run() {
                         backendId.data(),
                         static_cast<qsizetype>(backendId.size()));
                 improvement->timeline = live.bestTimeline;
+                improvement->inputs = live.bestInputs;
                 emit improvementFound(std::move(improvement));
             };
     std::optional<SearchLiveUpdate> retainedResult;
@@ -443,6 +444,7 @@ void SearchWorker::run() {
                     true);
         }
         auto completion = std::make_shared<SearchCompletion>();
+        completion->searchId = searchId_;
         completion->summary = FormatResult(*result);
         completion->inputsText = QString::fromStdString(
                 FormatResultInputScript(result->bestInputs, request_.evaluationTarget.id,

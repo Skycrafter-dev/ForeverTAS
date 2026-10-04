@@ -333,6 +333,7 @@ signals:
     void autoRestartChanged();
     void historyChanged();
     void searchSessionReset();
+    void searchStarted(std::uint64_t searchId);
     void basePreviewRequested();
     void searchImprovement(
             forevertas::app::SearchImprovementPtr improvement);
