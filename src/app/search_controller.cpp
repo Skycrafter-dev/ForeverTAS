@@ -3,6 +3,7 @@
 #include "app/compact_number_format.h"
 #include "app/packs_directory_finder.h"
 #include "app/search_worker.h"
+#include "app/search_diagnostic.h"
 #include "app/search_session_store.h"
 #include "app/system_file_dialog.h"
 #include "conditions/condition_catalog.h"
@@ -18,6 +19,7 @@
 #include <QColor>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDebug>
 #include <QFileInfo>
 #include <QPalette>
 #include <QRandomGenerator>
@@ -1477,6 +1479,8 @@ void SearchController::startSearch() {
     selectedInputsText_.clear();
     emit historyChanged();
     setResultText({});
+    failureDiagnostic_.clear();
+    emit resultChanged();
     setBestInputsText({});
     iterationCount_ = 0u;
     setLiveMetrics({}, {}, {}, false);
@@ -1616,7 +1620,10 @@ void SearchController::startSearch() {
             &SearchWorker::failed,
             this,
             [this](const QString &message) {
-                setResultText(message);
+                failureDiagnostic_ = SearchDiagnostic(statusText_, message);
+                const QString diagnostic = FormatSearchDiagnostic(failureDiagnostic_);
+                qWarning().noquote() << diagnostic;
+                setResultText(diagnostic);
                 setStatusText(QStringLiteral("Search failed"));
                 setProgress(false, progressValue_);
             });

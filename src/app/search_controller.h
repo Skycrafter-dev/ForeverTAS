@@ -141,6 +141,7 @@ class SearchController final : public QObject {
     Q_PROPERTY(QString throughputText READ throughputText NOTIFY metricsChanged)
     Q_PROPERTY(QString elapsedText READ elapsedText NOTIFY metricsChanged)
     Q_PROPERTY(QString resultText READ resultText NOTIFY resultChanged)
+    Q_PROPERTY(QVariantMap failureDiagnostic READ failureDiagnostic NOTIFY resultChanged)
     Q_PROPERTY(QString bestInputsText READ bestInputsText NOTIFY resultChanged)
     Q_PROPERTY(QString autoRestartMode READ autoRestartMode WRITE
                        setAutoRestartMode NOTIFY autoRestartChanged)
@@ -232,6 +233,7 @@ public:
     QString validationMessage() const;
     QVariantList conditionReference() const;
     QString statusText() const;
+    QVariantMap failureDiagnostic() const { return failureDiagnostic_; }
     bool liveMetricsVisible() const;
     QString iterationCountText() const;
     QString iterationCountExactText() const;
@@ -447,6 +449,7 @@ private:
     PoseTargetModel poseTargets_;
     QString validationMessage_;
     QString statusText_ = QStringLiteral("Ready");
+    QVariantMap failureDiagnostic_;
     QString iterationCountText_;
     std::uint64_t iterationCount_ = 0u;
     QString throughputText_;

@@ -6,11 +6,14 @@
 #include "app/search_configuration_model.h"
 #include "app/search_controller.h"
 #include "app/search_worker.h"
+#include "app/search_diagnostic.h"
 #include "app/search_session_store.h"
 #include "evaluators/scripted_target_evaluator.h"
 #include "mutations/random_steering_mutator.h"
+#include "replay_file_io.h"
 
 #include <forevervalidator/validation.h>
+#include <forevervalidator/native.h>
 
 #include <QCoreApplication>
 #include <QDir>
@@ -46,6 +49,67 @@ using forevertas::app::FormatCompactNumber;
 bool Check(bool condition, const char *message) {
     if (!condition) std::cerr << message << '\n';
     return condition;
+}
+
+bool TestSearchDiagnostics() {
+    const std::pair<const char *, const char *> cases[] = {
+        {"opening pack directory failed: permission denied", "assets"},
+        {"decoding replay failed: unknown chunk 0x03043000", "input"},
+        {"Unsupported target on this backend", "capability"},
+        {"Invalid simulation horizon", "configuration"},
+        {"Could not save /results/cycle.json: permission denied", "storage"},
+        {"restore failed: sandbox state is incompatible: backend", "state-compatibility"},
+        {"mystery error 123 /private/unsupported replay.Gbx", "internal"}};
+    for (const auto &[raw, category] : cases) {
+        const auto diagnostic = forevertas::app::SearchDiagnostic("Loading scene", raw);
+        const auto formatted = forevertas::app::FormatSearchDiagnostic(diagnostic);
+        if (!Check(diagnostic.value("category") == category &&
+                   diagnostic.value("stage") == "Loading scene" &&
+                   diagnostic.value("details") == raw &&
+                   !diagnostic.value("guidance").toString().isEmpty() &&
+                   formatted.endsWith(QString::fromUtf8(raw)),
+                   "search diagnostic lost context, exact details, or relevant guidance")) return false;
+    }
+    return true;
+}
+
+bool TestStateCompatibilityDiagnostics(const QString &packs, const QString &replay) {
+    using namespace forevervalidator;
+    using namespace forevervalidator::experimental;
+    const ReplayIdentity identity{replay.toStdString()};
+    auto bytes = forevertas::ReadReplayFileUtf8(replay.toStdString(), identity);
+    if (!bytes) return Check(false, "compatibility fixture could not be read");
+    const auto make = [&](SimulationBackend backend, bool load) {
+        PhysicsSandboxOptions options;
+        options.backend = backend;
+        auto assets = OpenInstalledPackDirectory(packs.toStdString());
+        auto created = CreatePhysicsSandbox(std::move(assets).Value(), options);
+        auto sandbox = std::move(created).Value();
+        if (load && !sandbox.LoadScenario({bytes.Value().data(), bytes.Value().size()}, identity))
+            throw std::runtime_error("compatibility fixture could not be loaded");
+        return sandbox;
+    };
+    auto source = make(SimulationBackend::Reference, true);
+    auto captured = source.CaptureState();
+    auto state = std::move(captured).Value();
+    auto destination = make(SimulationBackend::OptimizedCpu, true);
+    auto rejected = destination.RestoreState(state);
+    bool okay = Check(!rejected && rejected.Error().code == PhysicsSandboxErrorCode::IncompatibleState &&
+                      rejected.Error().diagnostic == "sandbox state is incompatible: backend",
+                      "state compatibility did not name backend mismatch");
+    auto unloaded = make(SimulationBackend::Reference, false);
+    rejected = unloaded.RestoreState(state);
+    okay &= Check(!rejected && rejected.Error().diagnostic ==
+                  "sandbox state is incompatible: destination is not loaded",
+                  "state compatibility did not name unloaded destination");
+    auto retained = std::move(state);
+    rejected = source.RestoreState(state);
+    okay &= Check(!rejected && rejected.Error().diagnostic ==
+                  "sandbox state is incompatible: source state is empty",
+                  "state compatibility did not name empty source");
+    okay &= Check(static_cast<bool>(source.RestoreState(retained)),
+                  "compatible state restore regressed");
+    return okay;
 }
 
 
@@ -2697,7 +2761,7 @@ int main(int argc, char **argv) {
     replay.write("test");
     replay.close();
 
-    bool okay = TestCompactNumberFormatting() &&
+    bool okay = TestSearchDiagnostics() && TestCompactNumberFormatting() &&
             TestAutomaticSeedRandomization() &&
             TestTargetVisibilityPersistence() &&
             TestUntilHorizonMode() &&
@@ -2731,7 +2795,7 @@ int main(int argc, char **argv) {
         QString::fromLocal8Bit(argv[1]) == QStringLiteral("--lifecycle")) {
         const QString packs = QString::fromLocal8Bit(argv[2]);
         const QString replay = QString::fromLocal8Bit(argv[3]);
-        okay = TestBaseEvaluation(packs, replay) &&
+        okay = TestStateCompatibilityDiagnostics(packs, replay) && TestBaseEvaluation(packs, replay) &&
                 TestAbortRetainsBest(packs, replay) &&
                 TestAutorestartHistory(packs, replay) &&
                 TestDurationAutorestartAndSaveFailure(packs, replay) &&

@@ -5672,18 +5672,34 @@ ApplicationWindow {
                                 window.controller.progressIndeterminate
                         }
 
-                        Label {
+                        TextArea {
+                            id: searchFailureDetails
+                            objectName: "searchFailureDetails"
                             Layout.fillWidth: true
                             visible: text.length > 0 &&
                                      (window.controller.running ||
                                       window.controller.statusText ===
                                           qsTr("Search failed"))
                             text: window.controller.resultText
+                            readOnly: true
+                            selectByMouse: true
                             wrapMode: Text.WordWrap
                             color: window.controller.statusText
                                            === qsTr("Search failed")
                                    ? AppTheme.error
                                    : AppTheme.text
+                            background: null
+                        }
+                        ThemedButton {
+                            objectName: "copySearchFailureDetails"
+                            visible: searchFailureDetails.visible &&
+                                     window.controller.statusText === qsTr("Search failed")
+                            text: qsTr("Copy details")
+                            onClicked: {
+                                searchFailureDetails.selectAll()
+                                searchFailureDetails.copy()
+                                searchFailureDetails.deselect()
+                            }
                         }
 
                         SearchSessionHistory {

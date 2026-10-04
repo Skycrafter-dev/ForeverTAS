@@ -374,6 +374,7 @@ void SearchWorker::run() {
         if (cancellationRequested_->load(std::memory_order_relaxed)) {
             throw SearchCancelled();
         }
+        emit stageChanged(QStringLiteral("Creating search history..."), true);
         activeSession = SearchSessionStore::Create(request_);
         const SearchSessionLocation &session = *activeSession;
         emit sessionCreated(session.mapKey, session.directory);
@@ -430,6 +431,7 @@ void SearchWorker::run() {
                 }
             }
             result.emplace(RunSearch(request_, &control));
+            emit stageChanged(QStringLiteral("Saving search result..."), true);
             SearchSessionStore::SaveCycle(
                     session, request_, restartNumber, *result);
             cyclePersisted = true;
