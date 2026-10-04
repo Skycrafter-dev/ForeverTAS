@@ -1,7 +1,10 @@
 #include "app/compact_number_format.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
+#include <tuple>
+#include <utility>
 
 namespace forevertas::app {
 QString FormatExactCount(std::uint64_t value) {
@@ -12,6 +15,8 @@ QString FormatExactCount(std::uint64_t value) {
     return text;
 }
 
+// Three significant digits with a magnitude suffix and no trailing zeros:
+// 999, 1k, 1.23k, 12.3k, 600k, 420M.
 QString FormatCompactNumber(double value) {
     if (!std::isfinite(value)) {
         return QString::number(value);
@@ -19,6 +24,14 @@ QString FormatCompactNumber(double value) {
 
     constexpr std::array<const char *, 6> suffixes{
             "", "k", "M", "B", "T", "Q"};
+    const auto roundSignificant = [](double scaled) {
+        const double magnitude = std::abs(scaled);
+        const int decimals = magnitude == 0.0 ? 0
+                : std::clamp(2 - static_cast<int>(std::floor(std::log10(magnitude))), 0, 6);
+        const double factor = std::pow(10.0, decimals);
+        return std::pair{std::round(scaled * factor) / factor, decimals};
+    };
+
     const double absolute = std::abs(value);
     std::size_t suffixIndex = 0u;
     double scale = 1.0;
@@ -28,22 +41,27 @@ QString FormatCompactNumber(double value) {
         scale *= 1000.0;
     }
 
-    double scaled = value / scale;
-    double rounded = std::round(scaled * 100.0) / 100.0;
+    auto [rounded, decimals] = roundSignificant(value / scale);
     if (suffixIndex + 1u < suffixes.size() &&
         std::abs(rounded) >= 1000.0) {
         ++suffixIndex;
         scale *= 1000.0;
-        scaled = value / scale;
-        rounded = std::round(scaled * 100.0) / 100.0;
+        std::tie(rounded, decimals) = roundSignificant(value / scale);
     }
 
-    if (suffixIndex == 0u && std::trunc(value) == value) {
-        return QString::number(value, 'f', 0);
+    QString text = QString::number(rounded, 'f', decimals);
+    if (text.contains(QLatin1Char('.'))) {
+        while (text.endsWith(QLatin1Char('0'))) {
+            text.chop(1);
+        }
+        if (text.endsWith(QLatin1Char('.'))) {
+            text.chop(1);
+        }
     }
-
-    return QString::number(rounded, 'f', 2) +
-            QString::fromLatin1(suffixes[suffixIndex]);
+    if (text == QStringLiteral("-0")) {
+        text = QStringLiteral("0");
+    }
+    return text + QString::fromLatin1(suffixes[suffixIndex]);
 }
 
 }  // namespace forevertas::app

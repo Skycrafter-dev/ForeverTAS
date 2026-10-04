@@ -326,7 +326,8 @@ QVariantMap SearchSessionStore::Cycle(const QString &directory, std::uint64_t re
     auto row = metadata.toVariantMap();
     const auto count = row.value(QStringLiteral("attemptsExact"), row.value(QStringLiteral("attempts"))).toULongLong();
     row.insert(QStringLiteral("attemptsExact"), QString::number(count));
-    row.insert(QStringLiteral("attemptsText"), FormatExactCount(count));
+    row.insert(QStringLiteral("attemptsText"), FormatCompactNumber(static_cast<double>(count)));
+    row.insert(QStringLiteral("attemptsExactText"), FormatExactCount(count));
     return row;
 }
 

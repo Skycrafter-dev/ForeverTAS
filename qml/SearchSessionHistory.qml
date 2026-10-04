@@ -245,7 +245,7 @@ ColumnLayout {
                                 }
                             }
                             ToolTip.visible: index === 1 && countHover.containsMouse
-                            ToolTip.text: String(modelData.data.attemptsText ?? modelData.data.attempts)
+                            ToolTip.text: String(modelData.data.attemptsExactText ?? modelData.data.attempts)
                             Menu {
                                 id: countMenu
                                 ThemedMenuItem {

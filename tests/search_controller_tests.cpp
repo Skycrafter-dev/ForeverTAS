@@ -205,19 +205,27 @@ bool TestCompactNumberFormatting() {
     };
     expect(0.0, "0");
     expect(4.0, "4");
-    expect(4.5, "4.50");
+    expect(4.5, "4.5");
+    expect(12.34, "12.3");
+    expect(0.004, "0.004");
     expect(999.0, "999");
-    expect(1000.0, "1.00k");
+    expect(999.6, "1k");
+    expect(1000.0, "1k");
     expect(1230.0, "1.23k");
-    expect(999999.0, "1.00M");
+    expect(12345.0, "12.3k");
+    expect(600000.0, "600k");
+    expect(612345.0, "612k");
+    expect(999999.0, "1M");
     expect(1250000.0, "1.25M");
+    expect(420000000.0, "420M");
     expect(1230000000.0, "1.23B");
     expect(1230000000000.0, "1.23T");
-    expect(999999999999999.0, "1.00Q");
+    expect(999999999999999.0, "1Q");
     expect(1230000000000000.0, "1.23Q");
-    expect(1000000000000000000.0, "1000.00Q");
+    expect(1000000000000000000.0, "1000Q");
     expect(-12.0, "-12");
-    expect(-12500.0, "-12.50k");
+    expect(-12500.0, "-12.5k");
+    expect(-0.0001, "-0.0001");
     return okay;
 }
 
@@ -2195,11 +2203,11 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
                                         QStringLiteral("Searching...") &&
                                 controller.liveMetricsVisible() &&
                                 QRegularExpression(QStringLiteral(
-                                        "^[0-9]+\\.[0-9]{2}[kMBTQ]?$"))
+                                        "^[0-9]{1,3}(\\.[0-9]*[1-9])?[kMBTQ]?$"))
                                         .match(controller.iterationCountText())
                                         .hasMatch() &&
                                 QRegularExpression(QStringLiteral(
-                                        "^[0-9]+\\.[0-9]{2}[kMBTQ]?$"))
+                                        "^[0-9]{1,3}(\\.[0-9]*[1-9])?[kMBTQ]?$"))
                                         .match(controller.throughputText())
                                         .hasMatch() &&
                                 controller.elapsedText().startsWith(
@@ -2638,8 +2646,12 @@ bool TestDurationAutorestartAndSaveFailure(
     const auto exactRows = forevertas::app::SearchSessionStore::Cycles(root.path());
     okay &= Check(exactRows.size() == 1 && exactRows.front().toMap()
                           .value(QStringLiteral("attemptsExact")).toString() ==
-                          QStringLiteral("18446744073709551615"),
-                  "saved count lost uint64 precision");
+                          QStringLiteral("18446744073709551615") &&
+                          exactRows.front().toMap().value(QStringLiteral("attemptsText")).toString() ==
+                          QStringLiteral("18447Q") &&
+                          exactRows.front().toMap().value(QStringLiteral("attemptsExactText")).toString() ==
+                          QStringLiteral("18,446,744,073,709,551,615"),
+                  "saved count lost uint64 precision or compact display");
     okay &= Check(blocked.open(QIODevice::WriteOnly),
                   "could not prepare save failure fixture");
     blocked.close();
