@@ -410,4 +410,19 @@ std::unique_ptr<IterationEvaluator> CreateCustomVolumeEntryEvaluator(
             *ParsePrism(settings));
 }
 
+forevervalidator::experimental::PhysicsSandboxCudaCustomVolumeEntryEvaluator
+BuildCudaCustomVolumeEntryEvaluator(const OptionSettings &settings,
+                                   std::uint32_t tickDurationMs) {
+    if (const auto error = ValidateCustomVolumeEntryOptionSettings(settings, tickDurationMs)) {
+        throw std::invalid_argument(*error);
+    }
+    const Prism prism = *ParsePrism(settings);
+    forevervalidator::experimental::PhysicsSandboxCudaCustomVolumeEntryEvaluator result;
+    result.plane = static_cast<decltype(result.plane)>(prism.plane);
+    result.origin = {prism.origin.x, prism.origin.y, prism.origin.z};
+    result.depth = prism.depth;
+    for (const auto &point : prism.polygon) result.polygon.push_back({point.x, point.y, 0.0});
+    return result;
+}
+
 }  // namespace forevertas

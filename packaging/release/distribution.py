@@ -277,6 +277,7 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
             "FOREVERTAS_HIP_ARCHITECTURES": cuda_arch if nvidia else ";".join(SUPPORTED_GFX) if amd else "",
             "FOREVERTAS_HIP_FLAGS": "-fPIC" if amd else "",
             "FOREVERTAS_CUDA_ARCHITECTURES": f"{cuda_arch}-real;{cuda_arch}-virtual" if nvidia else "",
+            "FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS": str(manifest["cuda"]["split_compile_jobs"]),
             "HIP_PLATFORM": "nvidia" if nvidia else "amd" if amd else "",
             "HIP_PATH": "/opt/rocm" if nvidia or amd else "",
             "ROCM_PATH": "/opt/rocm" if nvidia or amd else "",

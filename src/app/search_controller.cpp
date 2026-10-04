@@ -1790,16 +1790,23 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     }
     const SearchComponentConfiguration &configuration =
             *configurationValidation.configuration;
-    if (!baselineOnly && IsGpuBackend(simulationBackend_) &&
-#if FOREVERVALIDATOR_HAS_CUDA
-        simulationBackend_ != PhysicsBackend::Cuda &&
-#endif
+#if FOREVERVALIDATOR_HAS_VULKAN
+    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Vulkan &&
         configuration.evaluationTarget.id == kCheckpointTimeEvaluationId) {
         return {{}, QStringLiteral(
-                "Checkpoint time runs on the CPU or on CUDA. Choose Optimized CPU "
-                "or CUDA as the physics backend.")};
+                "Checkpoint time runs on the CPU, CUDA or HIP. Choose Optimized CPU, "
+                "CUDA or HIP as the physics backend.")};
     }
+#endif
     if (!baselineOnly && IsGpuBackend(simulationBackend_)) {
+#if FOREVERVALIDATOR_HAS_VULKAN
+        if (simulationBackend_ == PhysicsBackend::Vulkan &&
+            (configuration.searchAlgorithm.id == kTreeSearchId ||
+             configuration.searchAlgorithm.id == kAdaptiveEscalationSearchId)) {
+            return {{}, QStringLiteral(
+                    "Tree search and adaptive escalation require CPU, CUDA, or HIP.")};
+        }
+#endif
         const SearchAlgorithmRegistration *const searchRegistration =
                 FindSearchAlgorithm(configuration.searchAlgorithm.id);
         if (searchRegistration != nullptr &&
@@ -1864,14 +1871,6 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
         if (!cudaAvailable_) {
             return {{}, cudaStatusText_};
         }
-        if (configuration.evaluationTarget.id ==
-            kCustomVolumeEntryEvaluationId) {
-            return {
-                    {},
-                    QStringLiteral(
-                            "Custom volume targets currently require a CPU "
-                            "physics backend.")};
-        }
         calibrateCudaParallelSampleCount =
                 cudaCalibrationEnabled_;
         if (!calibrateCudaParallelSampleCount) {
@@ -1897,14 +1896,6 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
         if (!hipAvailable_) {
             return {{}, hipStatusText_};
         }
-        if (configuration.evaluationTarget.id ==
-            kCustomVolumeEntryEvaluationId) {
-            return {
-                    {},
-                    QStringLiteral(
-                            "Custom volume targets currently require a CPU "
-                            "physics backend.")};
-        }
         calibrateCudaParallelSampleCount = hipCalibrationEnabled_;
         if (!calibrateCudaParallelSampleCount) {
             bool parsed = false;
@@ -1928,7 +1919,7 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
             return {
                     {},
                     QStringLiteral(
-                            "Custom volume targets currently require a CPU "
+                            "Custom volume targets require a CPU, CUDA or HIP "
                             "physics backend.")};
         }
         calibrateCudaParallelSampleCount =

@@ -2006,22 +2006,95 @@ bool CheckTreeSearchBackends(const char *packsDirectory,
 #if FOREVERVALIDATOR_HAS_CUDA
     request.backend = forevertas::PhysicsBackend::Cuda;
     request.parallelSampleCount = 64u;
-    try {
-        static_cast<void>(forevertas::RunSearch(request, &control));
-        std::cerr << "tree search accepted the CUDA backend\n";
+    if (forevertas::RunSearch(request, &control).iterations != 30u) {
+        std::cerr << "CUDA tree search did not run 30 attempts\n";
         return false;
-    } catch (const std::invalid_argument &) {
     }
 #endif
     return true;
 }
 
+bool CheckGpuSegmentSearch(const char *packs, const char *replay,
+        forevertas::PhysicsBackend backend) {
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP
+    forevertas::SearchRequest request{packs, replay};
+    request.backend = backend;
+    request.useCudaSessionSpecialization = false;
+    request.parallelSampleCount = 2u;
+    request.simulationHorizonMs = 1000u;
+    const auto parsed = forevertas::ParseInputScript(
+            forevertas::ExtractReplayInputScript(packs, replay));
+    if (!parsed) throw std::runtime_error(*parsed.error);
+    request.baseInputCommands = parsed.commands;
+    const auto *modifier = forevertas::FindModifier(forevertas::kRandomSteeringModifierId);
+    request.modifiers = {{modifier->id, modifier->defaultSettings}};
+    request.modifiers.front().settings["minTimeMs"] = "0";
+    request.modifiers.front().settings["maxTimeMs"] = "790";
+    request.evaluationTarget.settings["minTimeMs"] = "1000";
+    request.evaluationTarget.settings["maxTimeMs"] = "1000";
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 8u;
+    control.sampleBestTimeline = false;
+    control.sampleImprovementTimelines = false;
+    for (const char *id : {forevertas::kTreeSearchId,
+                          forevertas::kAdaptiveEscalationSearchId}) {
+        const auto *algorithm = forevertas::FindSearchAlgorithm(id);
+        request.searchAlgorithm = {algorithm->id, algorithm->defaultSettings};
+        request.searchAlgorithm.settings["segmentCount"] = "4";
+        if (algorithm->id == forevertas::kAdaptiveEscalationSearchId) {
+            request.searchAlgorithm.settings["escalateAfterTrees"] = "1";
+        }
+        const auto result = forevertas::RunSearch(request, &control);
+        if (result.iterations != 8u || !std::isfinite(result.bestScore)) {
+            std::cerr << "GPU segment search failed: " << id << '\n';
+            return false;
+        }
+    }
+    control.iterationLimit = 2u;
+    request.searchAlgorithm = {forevertas::kTreeSearchId,
+            forevertas::FindSearchAlgorithm(forevertas::kTreeSearchId)->defaultSettings};
+    request.searchAlgorithm.settings["segmentCount"] = "4";
+    for (const char *id : {forevertas::kExistingEventPerturbationModifierId,
+                          forevertas::kSmoothSteeringModifierId,
+                          forevertas::kInputInsertionModifierId,
+                          forevertas::kInputDeletionModifierId}) {
+        const auto *registration = forevertas::FindModifier(id);
+        request.modifiers = {{registration->id, registration->defaultSettings}};
+        auto &settings = request.modifiers.front().settings;
+        settings["minTimeMs"] = "0";
+        settings["maxTimeMs"] = "790";
+        if (registration->id == forevertas::kExistingEventPerturbationModifierId) {
+            settings["maxTimeShiftMs"] = "100";
+        }
+        if (registration->id == forevertas::kInputInsertionModifierId) {
+            settings["steerMaxHoldMs"] = "300";
+            settings["accelerateMaxHoldMs"] = "300";
+            settings["brakeMaxHoldMs"] = "300";
+        }
+        const auto result = forevertas::RunSearch(request, &control);
+        if (result.iterations != 2u || !std::isfinite(result.bestScore)) {
+            std::cerr << "GPU segment modifier search failed: " << id << '\n';
+            return false;
+        }
+    }
+    std::cout << "PASS GPU tree/adaptive and all five segmented modifiers (24 candidates total)\n";
+    return true;
+#else
+    static_cast<void>(packs);
+    static_cast<void>(replay);
+    static_cast<void>(backend);
+    throw std::runtime_error("GPU segment smoke requires CUDA or HIP");
+#endif
+}
+
 int main(int argc, char **argv) {
+    const bool gpuSegmentsOnly = argc == 4 && std::string_view(argv[1]) == "--gpu-segments-only";
+    const bool hipSegmentsOnly = argc == 4 && std::string_view(argv[1]) == "--hip-segments-smoke";
     const bool finishExportOnly = argc == 4 && std::string_view(argv[1]) == "--finish-export-only";
     const bool inputAfterHorizonOnly =
             argc == 4 &&
             std::string_view(argv[1]) == "--input-after-horizon-only";
-    if ((!inputAfterHorizonOnly && !finishExportOnly && argc != 3 && argc != 5) ||
+    if ((!inputAfterHorizonOnly && !finishExportOnly && !gpuSegmentsOnly && !hipSegmentsOnly && argc != 3 && argc != 5) ||
         (inputAfterHorizonOnly && argc != 4)) {
         std::cerr << "expected Packs directory, replay path, and optional "
                      "paired replay/challenge paths\n";
@@ -2029,6 +2102,22 @@ int main(int argc, char **argv) {
     }
 
     try {
+        if (gpuSegmentsOnly) {
+#if FOREVERVALIDATOR_HAS_CUDA
+            return CheckGpuSegmentSearch(argv[2], argv[3],
+                    forevertas::PhysicsBackend::Cuda) ? 0 : 1;
+#else
+            throw std::runtime_error("CUDA segment smoke requires CUDA");
+#endif
+        }
+        if (hipSegmentsOnly) {
+#if FOREVERVALIDATOR_HAS_HIP
+            return CheckGpuSegmentSearch(argv[2], argv[3],
+                    forevertas::PhysicsBackend::Hip) ? 0 : 1;
+#else
+            throw std::runtime_error("HIP segment smoke requires HIP");
+#endif
+        }
         if (finishExportOnly) return CheckFinishExport(argv[2], argv[3]) ? 0 : 1;
         if (inputAfterHorizonOnly) {
             return CheckInputAfterHorizonAccepted(argv[2], argv[3])

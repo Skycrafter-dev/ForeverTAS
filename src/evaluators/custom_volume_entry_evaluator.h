@@ -11,6 +11,9 @@
 namespace forevertas {
 
 OptionSettings DefaultCustomVolumeEntryOptionSettings();
+forevervalidator::experimental::PhysicsSandboxCudaCustomVolumeEntryEvaluator
+BuildCudaCustomVolumeEntryEvaluator(const OptionSettings &settings,
+                                   std::uint32_t tickDurationMs);
 std::optional<std::string> ValidateCustomVolumeEntryOptionSettings(
         const OptionSettings &settings,
         std::uint32_t tickDurationMs);

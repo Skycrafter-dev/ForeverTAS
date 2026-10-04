@@ -1,6 +1,7 @@
 #include "conditions/condition_program.h"
 #include "evaluators/velocity_evaluator.h"
 #include "evaluators/volume_entry_evaluator.h"
+#include "evaluators/custom_volume_entry_evaluator.h"
 #include "mutations/existing_event_perturbation_mutator.h"
 #include "mutations/replay_input_script.h"
 #include "searches/search_runner.h"
@@ -12,11 +13,15 @@
 #include <vector>
 
 int main(int argc, char **argv) {
-    if (argc != 3) return 2;
+    const bool hipTargetsOnly = argc == 4 && std::string(argv[3]) == "--hip-targets-only";
+    const bool gpuTargetsOnly = hipTargetsOnly ||
+            (argc == 4 && std::string(argv[3]) == "--gpu-targets-only");
+    if (argc != 3 && !gpuTargetsOnly) return 2;
     using namespace forevertas;
     try {
         SearchRequest request(argv[1], argv[2]);
         request.backend = PhysicsBackend::OptimizedCpu;
+        request.useCudaSessionSpecialization = false;
         request.simulationHorizonMs = 3000;
         // Each mutation changes a real event after both tested entries, so the
         // candidates are evaluated but tie the baseline instead of being no-ops.
@@ -38,17 +43,26 @@ int main(int argc, char **argv) {
         control.iterationLimit = 0;
         control.sampleBestTimeline = true;
         const auto probe = RunSearch(request, &control);
-        std::vector<PhysicsBackend> backends{PhysicsBackend::Reference, PhysicsBackend::OptimizedCpu};
+        std::vector<PhysicsBackend> backends{PhysicsBackend::OptimizedCpu};
+        if (!hipTargetsOnly) backends.insert(backends.begin(), PhysicsBackend::Reference);
 #if FOREVERVALIDATOR_HAS_VULKAN
-        if (forevervalidator::QueryVulkanBackendDiagnostics().IsSearchReady()) backends.push_back(PhysicsBackend::Vulkan);
+        if (!hipTargetsOnly && forevervalidator::QueryVulkanBackendDiagnostics().IsSearchReady()) backends.push_back(PhysicsBackend::Vulkan);
 #endif
 #if FOREVERVALIDATOR_HAS_CUDA
-        if (forevervalidator::QueryCudaBackendDiagnostics().IsReady()) backends.push_back(PhysicsBackend::Cuda);
+        if (!hipTargetsOnly && forevervalidator::QueryCudaBackendDiagnostics().IsReady()) backends.push_back(PhysicsBackend::Cuda);
 #endif
 #if FOREVERVALIDATOR_HAS_HIP
         if (forevervalidator::QueryHipBackendDiagnostics().IsReady()) backends.push_back(PhysicsBackend::Hip);
+        else if (hipTargetsOnly) throw std::runtime_error("HIP target smoke requires a ready HIP device");
+#else
+        if (hipTargetsOnly) throw std::runtime_error("HIP target smoke requires a HIP build");
 #endif
+        for (const bool custom : {false, true}) {
+        if (gpuTargetsOnly && !custom) continue;
+        request.condition = CompileConditionScript("").program;
+        control.sampleBestTimeline = true;
         for (const int entryTime : {1000, 2800}) {
+            if (gpuTargetsOnly && entryTime != 1000) continue;
             const auto frame = std::find_if(probe.bestTimeline.begin(), probe.bestTimeline.end(),
                     [=](const auto &value) { return value.timeMs == entryTime; });
             if (frame == probe.bestTimeline.end()) throw std::runtime_error("missing volume fixture frame");
@@ -58,8 +72,20 @@ int main(int argc, char **argv) {
             target["centerZ"] = std::to_string(frame->positionZ);
             target["sizeX"] = target["sizeY"] = target["sizeZ"] = "1";
             request.evaluationTarget = {kVolumeEntryEvaluationId, target};
+            if (custom) {
+                auto prism = DefaultCustomVolumeEntryOptionSettings();
+                prism["originX"] = target["centerX"];
+                prism["originY"] = std::to_string(frame->positionY - 0.5);
+                prism["originZ"] = target["centerZ"];
+                prism["depth"] = "1";
+                prism["polygon"] = "-0.5,-0.5;0.5,-0.5;0.5,0.5;-0.5,0.5";
+                request.evaluationTarget = {kCustomVolumeEntryEvaluationId, prism};
+            }
             std::optional<SearchResult> expected;
             for (const auto backend : backends) {
+#if FOREVERVALIDATOR_HAS_VULKAN
+                if (custom && backend == PhysicsBackend::Vulkan) continue;
+#endif
                 request.backend = backend;
                 request.parallelSampleCount = IsGpuBackend(backend) ? 4u : 1u;
                 control.iterationLimit = 4;
@@ -74,7 +100,7 @@ int main(int argc, char **argv) {
                                  result.bestState.timeMs != expected->bestState.timeMs))
                     throw std::runtime_error("volume entry CPU/GPU mismatch");
                 expected = result;
-                std::cout << PhysicsBackendId(backend) << " entry=" << result.bestScore
+                std::cout << PhysicsBackendId(backend) << (custom ? " custom entry=" : " entry=") << result.bestScore
                           << " calls=" << result.evaluatorCalls << " full-window budget=1500\n";
             }
         }
@@ -82,6 +108,9 @@ int main(int argc, char **argv) {
         request.condition = CompileConditionScript("car.speed < 0").program;
         control.sampleBestTimeline = false;
         for (const auto backend : backends) {
+#if FOREVERVALIDATOR_HAS_VULKAN
+            if (custom && backend == PhysicsBackend::Vulkan) continue;
+#endif
             request.backend = backend;
             request.parallelSampleCount = 1u;
             try {
@@ -90,6 +119,7 @@ int main(int argc, char **argv) {
             } catch (const std::runtime_error &error) {
                 if (std::string(error.what()) != "no iteration satisfied the selected evaluation target") throw;
             }
+        }
         }
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

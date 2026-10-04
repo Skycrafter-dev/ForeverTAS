@@ -1482,14 +1482,22 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
         const auto id = option.toMap().value("id").toString();
         if (id != "cuda" && id != "hip" && id != "vulkan") continue;
         controller.setSimulationBackendId(id);
-        if (id == "cuda") {
+        if (id == "cuda" || id == "hip") {
             okay &= Check(!controller.validationMessage().contains("Checkpoint time"),
-                          "checkpoint target was rejected on CUDA");
+                          "checkpoint target was rejected on CUDA/HIP");
             continue;
         }
         okay &= Check(!controller.canStart() &&
-                              controller.validationMessage().contains("runs on the CPU or on CUDA"),
-                      "checkpoint target was not explicitly rejected on HIP or Vulkan");
+                              controller.validationMessage().contains("runs on the CPU, CUDA or HIP"),
+                      "checkpoint target was not explicitly rejected on Vulkan");
+    }
+    controller.setEvaluationTargetId(QStringLiteral("custom-volume-entry-time"));
+    for (const auto &option : controller.simulationBackendOptions()) {
+        const auto id = option.toMap().value("id").toString();
+        if (id != "cuda" && id != "hip") continue;
+        controller.setSimulationBackendId(id);
+        okay &= Check(!controller.validationMessage().contains("Custom volume targets"),
+                      "custom volume target was rejected on CUDA/HIP");
     }
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
     controller.setEvaluationTargetId(previousTarget);

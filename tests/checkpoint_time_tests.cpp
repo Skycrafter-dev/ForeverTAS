@@ -143,21 +143,18 @@ std::vector<PhysicsSandboxAcceptedCheckpointEvent> ReadAcceptedEvents(
     return events;
 }
 
-#if FOREVERVALIDATOR_HAS_CUDA
-// The CUDA kernel names each accepted event from the race counters. Every
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP
+// The CUDA/HIP kernel names each accepted event from the race counters. Every
 // event of the run, selected several ways, must be reported at the CPU
 // journal's tick (or not at all for a selector that names no event). The CPU
 // runs up to shortly before each event so each GPU launch stays short enough
 // for a display GPU's watchdog.
-void TestCudaEvents(const char *packs, const char *path,
+void TestGpuEvents(SimulationBackend backend, const char *packs, const char *path,
                     const std::vector<ParsedInputCommand> &commands,
-                    const std::vector<PhysicsSandboxAcceptedCheckpointEvent> &reference) {
-    if (!QueryCudaBackendDiagnostics().IsReady()) {
-        std::cout << "SKIP unavailable CUDA device\n";
-        return;
-    }
+                    const std::vector<PhysicsSandboxAcceptedCheckpointEvent> &reference,
+                    bool focused = false) {
     PhysicsSandboxOptions options;
-    options.backend = SimulationBackend::Cuda;
+    options.backend = backend;
     options.timelineMode = PhysicsSandboxTimelineMode::Canonical;
     // A run just past the last event keeps the GPU allocation small.
     options.simulationHorizonMs = static_cast<std::uint32_t>(reference.back().timeMs / 10 * 10 + 1000);
@@ -176,6 +173,7 @@ void TestCudaEvents(const char *packs, const char *path,
         Require(sandbox.RestoreState(start));
         Require(sandbox.AdvanceTicks(static_cast<std::uint32_t>((branch - 10) / 10)));
         for (int selector = 0; selector < 5; ++selector) {
+            if (focused && selector != 0 && selector != 3 && selector != 4) continue;
             PhysicsSandboxCudaCheckpointEvaluator evaluator;
             evaluator.finish = event.finish;
             evaluator.checkpointIndex = event.checkpointIndex;
@@ -206,7 +204,8 @@ void TestCudaEvents(const char *packs, const char *path,
             ++compared;
         }
     }
-    std::cout << "cuda: " << compared << " checkpoint selections match the CPU journal\n";
+    std::cout << (backend == SimulationBackend::Hip ? "hip: " : "cuda: ")
+              << compared << " checkpoint selections match the CPU journal\n";
 }
 #endif
 
@@ -270,15 +269,41 @@ void TestReplayAndSearch(const char *packs, const char *path) {
     request.evaluationTarget.settings["eventIndex"] = std::to_string(finish->eventIndex + 1);
     expectNoEvent();
 #if FOREVERVALIDATOR_HAS_CUDA
-    TestCudaEvents(packs, path, parsed.commands, reference);
+    if (QueryCudaBackendDiagnostics().IsReady())
+        TestGpuEvents(SimulationBackend::Cuda, packs, path, parsed.commands, reference);
+#endif
+#if FOREVERVALIDATOR_HAS_HIP
+    if (QueryHipBackendDiagnostics().IsReady())
+        TestGpuEvents(SimulationBackend::Hip, packs, path, parsed.commands, reference);
 #endif
 }
 }  // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 3) return 2;
+    const bool hipTargetsOnly = argc == 4 && std::string(argv[3]) == "--hip-targets-only";
+    if (argc != 3 && !hipTargetsOnly) return 2;
     try {
         TestEvaluator();
+        if (hipTargetsOnly) {
+#if FOREVERVALIDATOR_HAS_HIP
+            Check(QueryHipBackendDiagnostics().IsReady(), "HIP target smoke requires a ready HIP device");
+            const auto parsed = ParseInputScript(ExtractReplayInputScript(argv[1], argv[2]));
+            Check(!parsed.error, "checkpoint replay script failed to parse");
+            const auto reference = ReadAcceptedEvents(
+                    argv[1], argv[2], SimulationBackend::OptimizedCpu, parsed.commands);
+            const auto checkpoint = std::find_if(reference.begin(), reference.end(),
+                                                [](const auto &event) { return !event.finish; });
+            const auto finish = std::find_if(reference.begin(), reference.end(),
+                                            [](const auto &event) { return event.finish; });
+            Check(checkpoint != reference.end() && finish != reference.end(),
+                  "HIP checkpoint smoke requires one checkpoint and one finish");
+            TestGpuEvents(SimulationBackend::Hip, argv[1], argv[2], parsed.commands,
+                          {*checkpoint, *finish}, true);
+            return 0;
+#else
+            throw std::runtime_error("HIP target smoke requires a HIP build");
+#endif
+        }
         TestReplayAndSearch(argv[1], argv[2]);
         return 0;
     } catch (const std::exception &error) {

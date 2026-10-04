@@ -79,3 +79,8 @@ RUN curl --fail --location --retry 3 \
     && cp -a "/tmp/Vulkan-Headers-${VULKAN_HEADERS_COMMIT}/include/." /usr/include/ \
     && grep -q VK_KHR_SHADER_FLOAT_CONTROLS_2_EXTENSION_NAME /usr/include/vulkan/vulkan_core.h \
     && rm -rf /tmp/vulkan-headers.tar.gz "/tmp/Vulkan-Headers-${VULKAN_HEADERS_COMMIT}"
+
+# SDL's X11 backend requires Xext headers even when Qt owns the windows.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libxext-dev \
+    && rm -rf /var/lib/apt/lists/*

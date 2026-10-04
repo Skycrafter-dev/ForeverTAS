@@ -2,6 +2,7 @@
 
 #include "mutations/input_event_utils.h"
 #include "physics_backend.h"
+#include "searches/basic_brute_force_search.h"
 #include "searches/option_settings_utils.h"
 
 #include <algorithm>
@@ -1415,8 +1416,7 @@ SearchResult TreeSearch::Run(const SearchExecutionContext &context) const {
                 "tick duration must be greater than zero");
     }
     if (IsGpuSimulationBackend(context.sandbox.Backend())) {
-        throw std::invalid_argument(
-                "tree search requires a CPU physics backend");
+        return BasicBruteForceSearch(settings_).Run(context);
     }
     TreeSearchRun run(context, settings_, started);
     return run.Execute();

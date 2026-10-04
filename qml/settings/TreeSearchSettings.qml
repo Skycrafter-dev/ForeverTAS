@@ -118,7 +118,7 @@ ColumnLayout {
                            + "improvements for %1 s before adopting the "
                            + "shared best.").arg(root.migrationSeconds)
                     : qsTr(" CPU workers adopt every new best at once.")
-            return shape + islands + qsTr(" CPU physics backends only.")
+            return shape + islands
         }
         color: root.settingsValid
                ? ThemeControls.AppTheme.textMuted

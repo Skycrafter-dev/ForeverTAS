@@ -1,5 +1,6 @@
 #include "searches/basic_brute_force_search.h"
 #include "searches/gpu_submission_budget.h"
+#include "searches/gpu_segment_escalation.h"
 
 #include "evaluators/evaluator_utils.h"
 #include "physics_backend.h"
@@ -501,6 +502,17 @@ std::string CudaEvaluationDescription(
                             "Volume entry time", batch.bestTimeMs);
                 } else if constexpr (std::is_same_v<
                                              T,
+                                             PhysicsSandboxCudaCustomVolumeEntryEvaluator>) {
+                    return TimeMetricDescription(
+                            "Custom volume entry time", batch.bestTimeMs);
+                } else if constexpr (std::is_same_v<
+                                             T,
+                                             PhysicsSandboxCudaCheckpointEvaluator>) {
+                    return TimeMetricDescription(
+                            configured.finish ? "Finish checkpoint time" : "Checkpoint time",
+                            batch.bestTimeMs);
+                } else if constexpr (std::is_same_v<
+                                             T,
                                              PhysicsSandboxCudaStuntPointsEvaluator>) {
                     return "Stunt points: " +
                             std::to_string(
@@ -539,6 +551,7 @@ SearchResult RunGpuBasicBruteForce(
         const std::vector<PhysicsSandboxInputEvent>
                 &originalBaselineInputs,
         bool autoPromoteBest,
+        const TreeSearchSettings *treeSettings,
         std::chrono::steady_clock::time_point started) {
     using namespace forevervalidator::experimental;
     if (context.cudaModifiers == nullptr ||
@@ -570,6 +583,31 @@ SearchResult RunGpuBasicBruteForce(
     configuration.evaluationEndTimeMs = evaluationPlan.endTimeMs;
     configuration.modifiers = *context.cudaModifiers;
     configuration.evaluator = *context.cudaEvaluator;
+    std::optional<GpuSegmentEscalation> segmentEscalation;
+    if (treeSettings != nullptr) {
+        std::int64_t first = std::numeric_limits<std::int64_t>::max();
+        std::int64_t last = 0;
+        for (const auto &modifier : configuration.modifiers) {
+            std::visit([&](const auto &value) {
+                first = std::min(first, value.window.minimumTimeMs);
+                last = std::max(last, value.window.maximumTimeMs);
+            }, modifier);
+        }
+        for (const auto &range : TreeSegmentRanges(
+                     first, std::min(last, evaluationPlan.endTimeMs),
+                     treeSettings->segmentCount, context.tickDurationMs)) {
+            configuration.mutationSegments.push_back(
+                    {range.minimumTimeMs, range.maximumTimeMs});
+        }
+        if (configuration.mutationSegments.empty()) {
+            throw std::invalid_argument("GPU tree search has no mutable segments");
+        }
+        segmentEscalation.emplace(
+                static_cast<std::uint32_t>(configuration.mutationSegments.size()),
+                treeSettings->branchedSegmentCount,
+                treeSettings->escalateAfterTrees);
+        configuration.changedSegmentCount = segmentEscalation->ChangedSegmentCount();
+    }
     if (context.condition != nullptr) {
         configuration.condition = context.condition->cuda;
         configuration.condition->lastImprovementTimeSeconds =
@@ -1005,6 +1043,14 @@ SearchResult RunGpuBasicBruteForce(
                 autoPromoteBest &&
                 batch.mutationImprovementCount != 0u &&
                 batch.bestValid;
+        if (segmentEscalation) {
+            segmentEscalation->RecordBatch(batch.mutationImprovementCount != 0u);
+            configuration.changedSegmentCount = segmentEscalation->ChangedSegmentCount();
+            if (!promote) {
+                Require(session->UpdateChangedSegmentCount(configuration.changedSegmentCount),
+                        "updating GPU segment escalation");
+            }
+        }
         if (batch.bestChanged && batch.bestValid) {
             adoptBest(batch);
             best.mutationCount = EffectiveInputChangeCount(
@@ -1209,9 +1255,17 @@ std::unique_ptr<SearchAlgorithm> CreateBasicBruteForceSearch(
 BasicBruteForceSearch::BasicBruteForceSearch(bool autoPromoteBest)
     : autoPromoteBest_(autoPromoteBest) {}
 
+BasicBruteForceSearch::BasicBruteForceSearch(TreeSearchSettings gpuTreeSettings)
+    : autoPromoteBest_(true), gpuTreeSettings_(std::move(gpuTreeSettings)) {}
+
 SearchResult BasicBruteForceSearch::Run(
         const SearchExecutionContext &context) const {
     const auto started = std::chrono::steady_clock::now();
+    if (gpuTreeSettings_ &&
+        context.sandbox.Backend() != forevervalidator::SimulationBackend::Cuda &&
+        context.sandbox.Backend() != forevervalidator::SimulationBackend::Hip) {
+        throw std::invalid_argument("GPU segment search requires CUDA or HIP");
+    }
     if (context.tickDurationMs == 0u) {
         throw std::invalid_argument(
                 "tick duration must be greater than zero");
@@ -1291,6 +1345,7 @@ SearchResult BasicBruteForceSearch::Run(
                 branch,
                 baselineInputs,
                 autoPromoteBest_,
+                gpuTreeSettings_ ? &*gpuTreeSettings_ : nullptr,
                 started);
     }
 #endif

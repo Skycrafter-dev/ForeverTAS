@@ -61,6 +61,9 @@ if ($ExternalQmlModule) {
 if ($CudaArchitectures) {
     $FlavorOptions += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArchitectures"
 }
+if ($env:FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS) {
+    $FlavorOptions += "-DFOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS=$env:FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS"
+}
 if ($HipArchitectures) {
     $FlavorOptions += "-DCMAKE_HIP_ARCHITECTURES=$HipArchitectures"
 }

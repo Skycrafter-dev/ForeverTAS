@@ -1,11 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.2.5
 
 ### New and improved
 
-- **Tree search (CPU):** a new search that improves your run with small, local changes. By default each attempt changes one of four segments of the mutation window and keeps the rest at the current best, and every CPU worker follows its own improvements for five seconds before adopting the shared best ("islands"). In our tests it beat basic bruteforce in 48 of 56 paired runs, and with islands it escaped a slower outcome every time where basic bruteforce never did. Change the segments per attempt, what the other segments do, and the island migration time in the search settings; advanced options cover leaves per tree and mixing in basic bruteforce workers. GPU backends are not supported yet.
+- **Tree search (CPU):** a new search that improves your run with small, local changes. By default each attempt changes one of four segments of the mutation window and keeps the rest at the current best, and every CPU worker follows its own improvements for five seconds before adopting the shared best ("islands"). In our tests it beat basic bruteforce in 48 of 56 paired runs, and with islands it escaped a slower outcome every time where basic bruteforce never did. Change the segments per attempt, what the other segments do, and the island migration time in the search settings; advanced options cover leaves per tree and mixing in basic bruteforce workers.
 - **Adaptive escalation (CPU):** a new search that starts with one changed segment per attempt and doubles the number of changed segments each time it stalls, returning to one after any improvement.
+- **Tree search and adaptive escalation on CUDA/HIP:** each GPU candidate changes randomly selected segments and keeps the remaining controls at the current best. Adaptive escalation doubles the changed-segment count after stalled batches and resets it after an improvement. CPU prefix sharing, islands, and other CPU search behavior are unchanged.
+- **More GPU targets:** custom polygon-prism volume entry targets now run on CUDA/HIP, and checkpoint time targets are enabled on HIP.
 - **Faster finish and entry searches:** attempts that can no longer beat the current best finish or volume-entry time now stop early on CPU backends, with identical results.
 
 ## 0.2.4

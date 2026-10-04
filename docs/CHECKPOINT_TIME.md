@@ -26,18 +26,18 @@ on that exact tick. A rejected crossing, missing event, or condition-rejected
 event produces no eligible evaluation, not a later substitute. Observation
 starts at the first simulation tick, even when mutations begin later.
 
-Reference, Optimized CPU, Multi-threaded CPU and CUDA searches are supported.
-HIP and Vulkan searches are explicitly rejected for this target. Evaluate base
+Reference, Optimized CPU, Multi-threaded CPU, CUDA and HIP searches are supported.
+Vulkan searches are explicitly rejected for this target. Evaluate base
 uses Optimized CPU and remains available.
 
-CUDA has no event journal; its kernel names each accepted event from the race
+CUDA and HIP have no event journal; their kernels name each accepted event from the race
 counters before and after the tick (lap checkpoint count, global event count,
 completed laps, finishes). Checkpoint numbers, laps, event indices and the
 finish are therefore exact, as is the map slot of the finish and of the last
 checkpoint accepted in a tick (from its block). If several ordinary
 checkpoints are accepted in the same 10 ms tick, the map slots of the earlier
-ones are unknown, so a target that sets a map slot does not match them on CUDA
-(it never reports a wrong event). Every CUDA winner is also re-checked on the
+ones are unknown, so a target that sets a map slot does not match them on CUDA/HIP
+(it never reports a wrong event). Every GPU winner is also re-checked on the
 optimized CPU. Resolution is the canonical 10 ms
 tick; use Precise finish time for the separate sub-tick finish estimator.
 

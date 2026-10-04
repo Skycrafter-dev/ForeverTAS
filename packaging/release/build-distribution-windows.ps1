@@ -43,6 +43,7 @@ if (Test-Path C:\Tools\Enter-BuildEnv.ps1) {
 $env:FOREVERTAS_CACHE_ROOT = [string]$Release.cache.windows
 $env:VCPKG_COMMIT = [string]$Release.toolchains.windows.vcpkg_commit
 $env:CUDA_VERSION = [string]$Release.cuda.version
+$env:FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS = [string]$Release.cuda.split_compile_jobs
 . (Join-Path $PSScriptRoot "ensure-windows-cuda.ps1")
 . (Join-Path $PSScriptRoot "ensure-windows-dependencies.ps1")
 if (-not $env:VCPKG_INSTALLATION_ROOT -or -not $env:VCToolsRedistDir) {

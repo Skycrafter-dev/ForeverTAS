@@ -18,6 +18,7 @@
 #include "searches/search_runner.h"
 #include "searches/result_input_script.h"
 #include "searches/tree_search.h"
+#include "searches/gpu_segment_escalation.h"
 #include "time_format.h"
 #include "speed_format.h"
 #include <forevervalidator/experimental/search_limits.h>
@@ -1707,7 +1708,7 @@ bool TestRegistries() {
     const auto *const escalationSearch = forevertas::FindSearchAlgorithm(
             forevertas::kAdaptiveEscalationSearchId);
     okay &= Check(escalationSearch != nullptr &&
-                          !escalationSearch->supportsGpuBackends &&
+                          escalationSearch->supportsGpuBackends &&
                           escalationSearch->supportsMultiThreadedCpu &&
                           escalationSearch->settingsComponent ==
                                   "AdaptiveEscalationSearchSettings.qml",
@@ -1719,7 +1720,7 @@ bool TestRegistries() {
     okay &= Check(basic != nullptr && basic->supportsGpuBackends &&
                           basic->supportsMultiThreadedCpu,
                   "basic bruteforce lost a backend capability");
-    okay &= Check(tree != nullptr && !tree->supportsGpuBackends &&
+    okay &= Check(tree != nullptr && tree->supportsGpuBackends &&
                           tree->supportsMultiThreadedCpu &&
                           tree->settingsComponent ==
                                   "TreeSearchSettings.qml",
@@ -2224,20 +2225,6 @@ bool TestCudaConfigurationCoverage() {
     }
     for (const auto &registration :
          forevertas::EvaluationTargetRegistry()) {
-        if (registration.id ==
-                    forevertas::kCustomVolumeEntryEvaluationId) {
-            try {
-                static_cast<void>(forevertas::BuildCudaEvaluator(
-                        {registration.id, registration.defaultSettings},
-                        10u));
-                okay &= Check(
-                        false,
-                        "unsupported target unexpectedly used a CUDA "
-                        "evaluator");
-            } catch (const std::invalid_argument &) {
-            }
-            continue;
-        }
         try {
             const auto evaluator = forevertas::BuildCudaEvaluator(
                     {registration.id,
@@ -2246,6 +2233,14 @@ bool TestCudaConfigurationCoverage() {
             okay &= Check(
                     evaluator.has_value(),
                     "a registered evaluator skipped CUDA batching");
+            if (registration.id == forevertas::kCustomVolumeEntryEvaluationId) {
+                const auto *volume = std::get_if<forevervalidator::experimental::
+                        PhysicsSandboxCudaCustomVolumeEntryEvaluator>(&*evaluator);
+                okay &= Check(volume && volume->polygon.size() == 3u &&
+                              volume->polygon.front().x == -5.0 &&
+                              volume->depth == 5.0,
+                              "custom volume GPU conversion lost prism geometry");
+            }
         } catch (...) {
             okay &= Check(
                     false,
@@ -2849,9 +2844,30 @@ bool TestModifierAnchorsAndSegments() {
 }
 
 bool TestTreeSearchConfiguration() {
+    forevertas::GpuSegmentEscalation gpuEscalation(5u, 4u, 2u);
+    bool gpuOkay = Check(gpuEscalation.ChangedSegmentCount() == 1u,
+                         "GPU escalation must start at one segment");
+    gpuEscalation.RecordBatch(false);
+    gpuOkay &= Check(gpuEscalation.ChangedSegmentCount() == 1u,
+                     "GPU escalation advanced before the stalled batch limit");
+    gpuEscalation.RecordBatch(false);
+    gpuOkay &= Check(gpuEscalation.ChangedSegmentCount() == 2u,
+                     "GPU escalation did not double after stalled batches");
+    for (int batch = 0; batch < 8; ++batch) gpuEscalation.RecordBatch(false);
+    gpuOkay &= Check(gpuEscalation.ChangedSegmentCount() == 5u,
+                     "GPU escalation must cap at the actual segment count");
+    gpuEscalation.RecordBatch(true);
+    gpuEscalation.RecordBatch(false);
+    gpuOkay &= Check(gpuEscalation.ChangedSegmentCount() == 1u,
+                     "GPU improvement must reset both intensity and stalls");
+    forevertas::GpuSegmentEscalation gpuTree(4u, 2u, 0u);
+    gpuTree.RecordBatch(true);
+    gpuTree.RecordBatch(false);
+    gpuOkay &= Check(gpuTree.ChangedSegmentCount() == 2u,
+                     "ordinary GPU tree search must keep its configured count");
     const OptionSettings defaults =
             forevertas::DefaultTreeSearchOptionSettings();
-    bool okay = Check(!forevertas::ValidateTreeSearchOptionSettings(
+    bool okay = gpuOkay && Check(!forevertas::ValidateTreeSearchOptionSettings(
                               defaults, 10u),
                       "tree search defaults are invalid");
     okay &= Check(defaults.at("segmentCount") == "4" &&
@@ -3143,7 +3159,10 @@ bool TestEvaluationSessionClones() {
     return okay;
 }
 
-int main() {
+int main(int argc, char **argv) {
+    if (argc == 2 && std::string(argv[1]) == "--gpu-targets-only") {
+        return TestEvaluationTargets() && TestCudaConfigurationCoverage() ? 0 : 1;
+    }
     const bool okay = TestInputOnlyTimelineTimeOrigin() &&
             TestHumanDurationFormatting() &&
             TestDenseNormalization() &&

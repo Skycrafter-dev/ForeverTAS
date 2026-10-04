@@ -1,6 +1,7 @@
 #include "searches/cuda_search_configuration.h"
 
 #include "input_timeline_time.h"
+#include "evaluators/custom_volume_entry_evaluator.h"
 #include "searches/algorithm_registry.h"
 #include "evaluators/scripted_target_evaluator.h"
 #include "evaluators/time_evaluator.h"
@@ -235,12 +236,15 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
                 {centerX - halfX, centerY - halfY, centerZ - halfZ},
                 {centerX + halfX, centerY + halfY, centerZ + halfZ}};
     }
+    if (configuration.id == kCustomVolumeEntryEvaluationId) {
+        return BuildCudaCustomVolumeEntryEvaluator(settings, tickDurationMs);
+    }
     if (configuration.id == kPreciseFinishTimeEvaluationId ||
         configuration.id == "finish-time") {
         return PhysicsSandboxCudaFinishTimeEvaluator{};
     }
     if (configuration.id == kCheckpointTimeEvaluationId) {
-        // The CUDA kernel reconstructs accepted events from the race
+        // The CUDA/HIP kernel reconstructs accepted events from the race
         // counters; the selectors mirror the CPU checkpoint-time evaluator.
         PhysicsSandboxCudaCheckpointEvaluator checkpoint;
         checkpoint.finish = settings.at("eventType") == "finish";

@@ -187,7 +187,7 @@ const std::vector<SearchAlgorithmRegistration> &SearchAlgorithmRegistry() {
              {},
              &ValidateTreeSearchOptionSettings,
              &CreateTreeSearch,
-             false,
+             true,
              true},
             {kAdaptiveEscalationSearchId,
              {},
@@ -197,7 +197,7 @@ const std::vector<SearchAlgorithmRegistration> &SearchAlgorithmRegistry() {
              {},
              &ValidateAdaptiveEscalationOptionSettings,
              &CreateAdaptiveEscalationSearch,
-             false,
+             true,
              true}};
     return registrations;
 }

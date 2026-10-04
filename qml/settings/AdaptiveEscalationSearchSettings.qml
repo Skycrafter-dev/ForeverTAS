@@ -79,7 +79,7 @@ ColumnLayout {
               ? qsTr("Starts by changing one of %1 segments per attempt and "
                      + "doubles the changed segments after %2 trees without "
                      + "improvement, up to all of them. Any improvement "
-                     + "returns it to one. CPU physics backends only.")
+                     + "returns it to one.")
                     .arg(root.segmentCount).arg(root.escalateAfterTrees)
               : qsTr("Use 1 to 20 segments, at least one tree before "
                      + "widening, and whole seconds of migration.")

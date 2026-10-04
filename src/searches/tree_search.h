@@ -109,7 +109,8 @@ std::vector<std::uint64_t> TreeBranchCounts(
 // draws one ordinary candidate to fix how many items every modifier pass
 // anchors in each segment; every branch then redraws only the items of its
 // segment. Leaves keep ordinary candidate statistics, and each leaf is one
-// attempt. CPU physics backends only.
+// attempt. CUDA/HIP use resident batches of random local segment mutations
+// around the current best instead of CPU prefix-sharing trees.
 class TreeSearch final : public SearchAlgorithm {
 public:
     TreeSearch(std::uint32_t segmentCount, bool autoPromoteBest);
