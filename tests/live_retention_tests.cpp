@@ -63,8 +63,10 @@ int main(int argc, char **argv) {
         frames[i].timeMs = static_cast<std::int64_t>(i * 10);
         frames[i].positionX = static_cast<float>(i);
     }
+    // Two improvements per restart: only each restart's latest is kept, and
+    // at most 64 restarts.
     for (std::uint64_t i = 1; i <= 1200; ++i)
-        viewer.addSearchImprovement(packs, replay, frames, "optimized-cpu", 1, i);
+        viewer.addSearchImprovement(packs, replay, frames, "optimized-cpu", 1, i, (i - 1) / 2);
     if (!check(viewer.pendingImprovementBytes() == 64 * frames.size() * sizeof(viewer::RaceViewerFrame),
                "pending trajectories grew beyond their count budget")) return 1;
     QElapsedTimer timer;
@@ -76,16 +78,21 @@ int main(int argc, char **argv) {
     if (!check(viewer.loaded() && !viewer.loading(), "map did not load")) return 1;
     viewer.addSearchRun(packs, replay, frames);
     for (std::uint64_t i = 1201; i <= 2400; ++i)
-        viewer.addSearchImprovement(packs, replay, frames, "optimized-cpu", 1, i);
+        viewer.addSearchImprovement(packs, replay, frames, "optimized-cpu", 1, i, (i - 1) / 2);
     int retained = 0;
     for (const auto &path : viewer.trajectoryPaths()) {
         const auto row = path.toMap();
-        if (row.value("kind") == "improvement") {
-            ++retained;
-            if (!check(row.value("improvementNumber").toULongLong() >= 2337, "old path not evicted")) return 1;
-        }
+        if (row.value("kind") != "improvement") continue;
+        ++retained;
+        if (row.value("visualId") == "trajectory:improvements:latest" &&
+            !check(row.value("improvementNumber").toULongLong() == 2400 &&
+                   row.value("restartNumber").toULongLong() == 1199,
+                   "latest restart did not show its latest improvement")) return 1;
+        if (row.value("visualId") == "trajectory:improvements:earlier" &&
+            !check(row.value("name") == "Earlier restarts (63)", "old restarts were not evicted")) return 1;
     }
-    if (!check(retained == 64 && viewer.retainedImprovementBytes() <= RaceViewerController::kMaximumLiveTrajectoryBytes &&
+    if (!check(retained == 2 && viewer.improvementCarCount() == 64 &&
+               viewer.retainedImprovementBytes() <= RaceViewerController::kMaximumLiveTrajectoryBytes &&
                viewer.pendingImprovementBytes() == 0 && viewer.hasTrajectoryForRun("best") &&
                viewer.hasTrajectoryForRun("preview"), "eviction lost best/base or exceeded storage budget")) {
         std::cerr << "retained=" << retained << " bytes=" << viewer.retainedImprovementBytes()
@@ -100,13 +107,14 @@ int main(int argc, char **argv) {
         frames[i].positionX = static_cast<float>(i);
     }
     for (std::uint64_t i = 2401; i <= 2420; ++i)
-        viewer.addSearchImprovement(packs, replay, frames, "optimized-cpu", 1, i);
+        viewer.addSearchImprovement(packs, replay, frames, "optimized-cpu", 1, i, i);
     if (!check(viewer.retainedImprovementBytes() <= RaceViewerController::kMaximumLiveTrajectoryBytes &&
                viewer.retainedImprovementBytes() > RaceViewerController::kMaximumLiveTrajectoryBytes / 2,
                "vertex byte budget exceeded")) return 1;
     std::cout << "Retained vertex bytes after 2420 improvements: " << viewer.retainedImprovementBytes() << '\n';
     viewer.clearPreviewTrajectories();
     if (!check(viewer.retainedImprovementBytes() == 0 && viewer.pendingImprovementBytes() == 0 &&
+               viewer.improvementCarCount() == 0 &&
                viewer.hasTrajectoryForRun("best"), "clear leaked improvement geometry")) return 1;
     viewer.refreshInputPreview();
     viewer.requestRayTracingScene();

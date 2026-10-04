@@ -753,83 +753,51 @@ int main(int argc, char **argv) {
                              secondImprovement) {
                             frame.positionX += 6.0f;
                         }
+                        // Restart 0 then restart 1; a stale repeat and an
+                        // invalid trajectory are ignored, and a newer
+                        // improvement replaces its restart's preview.
                         viewer.addSearchImprovement(
-                                packsDirectory,
-                                replayPath,
-                                firstImprovement,
-                                QStringLiteral("optimized-cpu"),
-                                42u,
-                                1u);
+                                packsDirectory, replayPath, firstImprovement,
+                                QStringLiteral("optimized-cpu"), 42u, 1u, 0u);
                         viewer.addSearchImprovement(
-                                packsDirectory,
-                                replayPath,
-                                secondImprovement,
-                                QStringLiteral("optimized-cpu"),
-                                42u,
-                                2u);
+                                packsDirectory, replayPath, secondImprovement,
+                                QStringLiteral("optimized-cpu"), 42u, 2u, 1u);
                         viewer.addSearchImprovement(
-                                packsDirectory,
-                                replayPath,
-                                firstImprovement,
-                                QStringLiteral("optimized-cpu"),
-                                42u,
-                                1u);
+                                packsDirectory, replayPath, firstImprovement,
+                                QStringLiteral("optimized-cpu"), 42u, 1u, 0u);
                         std::vector<forevertas::SearchTimelineFrame>
                                 invalidImprovement = firstImprovement;
                         invalidImprovement.front().timeMs = 10;
                         viewer.addSearchImprovement(
-                                packsDirectory,
-                                replayPath,
-                                invalidImprovement,
-                                QStringLiteral("optimized-cpu"),
-                                42u,
-                                3u);
+                                packsDirectory, replayPath, invalidImprovement,
+                                QStringLiteral("optimized-cpu"), 42u, 3u, 1u);
+                        const auto path = [](const QVariantList &paths, int index, const char *key) {
+                            return paths.at(index).toMap().value(QString::fromLatin1(key));
+                        };
                         const QVariantList improvedPaths =
                                 viewer.trajectoryPaths();
                         improvementTrajectoriesValid =
                                 viewer.trajectoryCount() == 3 &&
                                 improvedPaths.size() == 3 &&
-                                improvedPaths.at(1)
-                                                .toMap()
-                                                .value(QStringLiteral("name"))
-                                                .toString() ==
-                                        QStringLiteral("Improvement 1") &&
-                                improvedPaths.at(1)
-                                                .toMap()
-                                                .value(QStringLiteral("kind"))
-                                                .toString() ==
+                                viewer.improvementCarCount() == 2 &&
+                                path(improvedPaths, 1, "name").toString() ==
+                                        QStringLiteral("Earlier restarts (1)") &&
+                                path(improvedPaths, 1, "kind").toString() ==
                                         QStringLiteral("improvement") &&
-                                std::fabs(
-                                        improvedPaths.at(1)
-                                                        .toMap()
-                                                        .value(QStringLiteral(
-                                                                "opacity"))
-                                                        .toDouble() -
-                                        0.3) < 0.001 &&
-                                improvedPaths.at(2)
-                                                .toMap()
-                                                .value(QStringLiteral("name"))
-                                                .toString() ==
-                                        QStringLiteral("Improvement 2") &&
-                                std::fabs(
-                                        improvedPaths.at(2)
-                                                        .toMap()
-                                                        .value(QStringLiteral(
-                                                                "opacity"))
-                                                        .toDouble() -
-                                        0.96) < 0.001 &&
-                                improvedPaths.at(1)
-                                                .toMap()
-                                                .value(QStringLiteral(
-                                                        "geometry"))
-                                                .value<QObject *>() !=
-                                        nullptr &&
-                                improvedPaths.at(2)
-                                                .toMap()
-                                                .value(QStringLiteral(
-                                                        "geometry"))
-                                                .value<QObject *>() !=
-                                        nullptr;
+                                std::fabs(path(improvedPaths, 1, "opacity").toDouble() - 0.35) < 0.001 &&
+                                path(improvedPaths, 2, "name").toString() ==
+                                        QStringLiteral("Improvement 2 (restart 1)") &&
+                                std::fabs(path(improvedPaths, 2, "opacity").toDouble() - 0.96) < 0.001 &&
+                                path(improvedPaths, 1, "geometry").value<QObject *>() != nullptr &&
+                                path(improvedPaths, 2, "geometry").value<QObject *>() != nullptr;
+                        viewer.addSearchImprovement(
+                                packsDirectory, replayPath, firstImprovement,
+                                QStringLiteral("optimized-cpu"), 42u, 4u, 1u);
+                        improvementTrajectoriesValid &=
+                                viewer.trajectoryCount() == 3 &&
+                                viewer.improvementCarCount() == 2 &&
+                                path(viewer.trajectoryPaths(), 2, "name").toString() ==
+                                        QStringLiteral("Improvement 4 (restart 1)");
                         if (!improvementTrajectoriesValid) {
                             completed = true;
                             std::cerr

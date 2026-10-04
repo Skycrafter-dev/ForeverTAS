@@ -6260,24 +6260,33 @@ int main(int argc, char **argv) {
                          secondImprovement) {
                         frame.positionZ += 4.0f;
                     }
-                    viewer.addSearchImprovement(
-                            QString::fromLocal8Bit(argv[1]),
-                            QString::fromLocal8Bit(argv[2]),
-                            firstImprovement,
-                            QStringLiteral("optimized-cpu"),
-                            9u,
-                            1u);
-                    viewer.addSearchImprovement(
-                            QString::fromLocal8Bit(argv[1]),
-                            QString::fromLocal8Bit(argv[2]),
-                            secondImprovement,
-                            QStringLiteral("optimized-cpu"),
-                            9u,
-                            2u);
+                    // Each restart keeps only its latest improvement, drawn
+                    // as a batched trajectory plus one instanced car.
+                    const auto addImprovement =
+                            [&](const std::vector<forevertas::SearchTimelineFrame> &frames,
+                                std::uint64_t search, std::uint64_t number, std::uint64_t restart) {
+                                viewer.addSearchImprovement(
+                                        QString::fromLocal8Bit(argv[1]),
+                                        QString::fromLocal8Bit(argv[2]), frames,
+                                        QStringLiteral("optimized-cpu"), search, number, restart);
+                            };
+                    const auto pathValue = [](const QVariantList &paths, int index, const char *key) {
+                        return index < paths.size()
+                                ? paths.at(index).toMap().value(QString::fromLatin1(key)) : QVariant{};
+                    };
+                    addImprovement(firstImprovement, 9u, 1u, 0u);
+                    addImprovement(secondImprovement, 9u, 2u, 0u);
                     QCoreApplication::processEvents();
                     QCoreApplication::processEvents();
                     const QVariantList improvementPaths =
                             viewer.trajectoryPaths();
+                    const bool singleRestartValid =
+                            improvementPaths.size() == 3 &&
+                            pathValue(improvementPaths, 2, "name").toString() ==
+                                    QStringLiteral("Improvement 2 (restart 0)") &&
+                            pathValue(improvementPaths, 2, "opacity").toDouble() > 0.95 &&
+                            pathValue(improvementPaths, 2, "vertexColors").toBool() &&
+                            viewer.improvementCarCount() == 1;
                     const bool bestToggleInitiallyVisible =
                             trajectoryVisibilityToggle == nullptr &&
                             viewer.hasTrajectoryForRun(
@@ -6288,9 +6297,7 @@ int main(int argc, char **argv) {
                             QStringLiteral("best"), false);
                     QCoreApplication::processEvents();
                     QObject *const bestTrajectoryGeometry =
-                            improvementPaths.at(1)
-                                    .toMap()
-                                    .value(QStringLiteral("geometry"))
+                            pathValue(improvementPaths, 1, "geometry")
                                     .value<QObject *>();
                     const auto hiddenBestModel =
                             [bestTrajectoryGeometry](
@@ -6324,44 +6331,83 @@ int main(int argc, char **argv) {
                     viewer.setTrajectoryVisibleForRun(
                             QStringLiteral("best"), true);
                     QCoreApplication::processEvents();
+                    addImprovement(firstImprovement, 9u, 3u, 1u);
+                    QCoreApplication::processEvents();
+                    const QVariantList restartPaths = viewer.trajectoryPaths();
+                    const quint64 restartBytes = viewer.retainedImprovementBytes();
+                    const bool restartsValid =
+                            restartPaths.size() == 4 &&
+                            pathValue(restartPaths, 2, "name").toString() ==
+                                    QStringLiteral("Earlier restarts (1)") &&
+                            pathValue(restartPaths, 2, "opacity").toDouble() < 0.4 &&
+                            pathValue(restartPaths, 3, "name").toString() ==
+                                    QStringLiteral("Improvement 3 (restart 1)") &&
+                            viewer.improvementCarCount() == 2;
+                    addImprovement(firstImprovement, 9u, 1u, 0u);
+                    QCoreApplication::processEvents();
+                    const bool staleImprovementIgnored =
+                            viewer.trajectoryPaths() == restartPaths &&
+                            viewer.retainedImprovementBytes() == restartBytes &&
+                            viewer.improvementCarCount() == 2;
+                    // Cars follow playback: restart 0 (z + 4) and restart 1
+                    // (z + 2), both moving 1 m per tick along x.
+                    int carInstances = 0;
+                    viewer.improvementCars()->instanceBuffer(&carInstances);
+                    const int ellipsoidCount = viewer.carEllipsoids().size();
+                    const QVector3D ellipsoidOffset = ellipsoidCount > 0
+                            ? viewer.carEllipsoids().front().toMap()
+                                      .value(QStringLiteral("position")).value<QVector3D>()
+                            : QVector3D{};
+                    const auto carAt = [&](int car) {
+                        return viewer.improvementCars()->instancePosition(car * ellipsoidCount);
+                    };
+                    const auto near = [](const QVector3D &left, const QVector3D &right) {
+                        return (left - right).length() < 0.001f;
+                    };
+                    viewer.setTimeMs(0);
+                    const bool carsAtStart =
+                            near(carAt(0), baselinePosition + QVector3D(5, 0, 4) + ellipsoidOffset) &&
+                            near(carAt(1), baselinePosition + QVector3D(5, 0, 2) + ellipsoidOffset);
+                    viewer.setTimeMs(20);
+                    const bool carsFollowPlayback =
+                            ellipsoidCount > 0 && carInstances == 2 * ellipsoidCount && carsAtStart &&
+                            near(carAt(0), baselinePosition + QVector3D(7, 0, 4) + ellipsoidOffset) &&
+                            viewer.improvementCars()->instanceColor(0).alphaF() < 0.5 &&
+                            viewer.improvementCars()->instanceColor(ellipsoidCount).alphaF() > 0.99;
+                    viewer.setTimeMs(0);
+                    QCoreApplication::processEvents();
+                    const QList<QObject *> carModels = root->findChildren<QObject *>(
+                            QStringLiteral("improvementCarsFilledModel"));
+                    const bool instancedCarsBound =
+                            carModels.size() == 2 &&
+                            std::all_of(carModels.begin(), carModels.end(), [&](const QObject *model) {
+                                return model->property("instancing").value<QObject *>() ==
+                                        viewer.improvementCars();
+                            }) &&
+                            root->findChild<QObject *>(QStringLiteral("improvementCarsRoot")) != nullptr &&
+                            root->findChild<QObject *>(QStringLiteral("improvementCarsRoot"))
+                                    ->property("visible").toBool() &&
+                            std::any_of(carModels.begin(), carModels.end(), [](const QObject *model) {
+                                return model->property("visible").toBool();
+                            });
+                    if (!(singleRestartValid && restartsValid && staleImprovementIgnored &&
+                          carsFollowPlayback && instancedCarsBound))
+                        std::cerr << "improvement previews: single=" << singleRestartValid
+                                  << " restarts=" << restartsValid << " stale=" << staleImprovementIgnored
+                                  << " cars=" << carsFollowPlayback << " bound=" << instancedCarsBound << '\n';
                     const bool improvementTrajectoryUiValid =
                             bestToggleInitiallyVisible &&
                             bestToggleHidesOnlyBest &&
                             trajectoryVisibilityToggle == nullptr &&
-                            viewer.trajectoryCount() == 4 &&
-                            improvementPaths.size() == 4 &&
-                            improvementPaths.at(1)
-                                            .toMap()
-                                            .value(QStringLiteral("name"))
-                                            .toString() ==
+                            singleRestartValid && restartsValid &&
+                            staleImprovementIgnored && carsFollowPlayback &&
+                            instancedCarsBound &&
+                            pathValue(improvementPaths, 1, "name").toString() ==
                                     QStringLiteral("Best") &&
-                            improvementPaths.at(1)
-                                            .toMap()
-                                            .value(QStringLiteral("runId"))
-                                            .toString() ==
-                                    QStringLiteral("best") &&
-                            improvementPaths.at(2)
-                                            .toMap()
-                                            .value(QStringLiteral("name"))
-                                            .toString() ==
-                                    QStringLiteral("Improvement 1") &&
-                            improvementPaths.at(2)
-                                            .toMap()
-                                            .value(QStringLiteral("opacity"))
-                                            .toDouble() < 0.31 &&
-                            improvementPaths.at(3)
-                                            .toMap()
-                                            .value(QStringLiteral("name"))
-                                            .toString() ==
-                                    QStringLiteral("Improvement 2") &&
-                            improvementPaths.at(3)
-                                            .toMap()
-                                            .value(QStringLiteral("opacity"))
-                                            .toDouble() > 0.95;
+                            pathValue(improvementPaths, 1, "runId").toString() ==
+                                    QStringLiteral("best");
                     const QObject *const inputTrajectoryGeometry =
-                            improvementPaths.at(0)
-                                    .toMap()
-                                    .value(QStringLiteral("geometry"))
+                            pathValue(improvementPaths, 0, "geometry")
                                     .value<QObject *>();
                     // Previews cannot be cleared from the UI; only a new
                     // search session clears them internally.
@@ -6378,45 +6424,32 @@ int main(int argc, char **argv) {
                     QCoreApplication::processEvents();
                     const QVariantList firstClearedPaths =
                             viewer.trajectoryPaths();
+                    int clearedInstances = -1;
+                    viewer.improvementCars()->instanceBuffer(&clearedInstances);
                     const bool firstClearRemovedPreviews =
                             firstClearInvoked &&
                             viewer.selectedRunId() ==
                                     QStringLiteral("best") &&
                             viewer.trajectoryCount() == 2 &&
                             !viewer.hasPreviewTrajectories() &&
+                            viewer.improvementCarCount() == 0 &&
+                            clearedInstances == 0 &&
+                            viewer.retainedImprovementBytes() == 0 &&
                             firstClearedPaths.size() == 2 &&
-                            firstClearedPaths.at(0)
-                                            .toMap()
-                                            .value(QStringLiteral("kind"))
-                                            .toString() ==
+                            pathValue(firstClearedPaths, 0, "kind").toString() ==
                                     QStringLiteral("preview") &&
-                            firstClearedPaths.at(0)
-                                            .toMap()
-                                            .value(QStringLiteral("geometry"))
-                                            .value<QObject *>() ==
+                            pathValue(firstClearedPaths, 0, "geometry").value<QObject *>() ==
                                     inputTrajectoryGeometry &&
-                            firstClearedPaths.at(1)
-                                            .toMap()
-                                            .value(QStringLiteral("runId"))
-                                            .toString() ==
+                            pathValue(firstClearedPaths, 1, "runId").toString() ==
                                     QStringLiteral("best") &&
-                            firstClearedPaths.at(1)
-                                            .toMap()
-                                            .value(QStringLiteral("geometry"))
-                                            .value<QObject *>() ==
+                            pathValue(firstClearedPaths, 1, "geometry").value<QObject *>() ==
                                     bestTrajectoryGeometry;
                     viewer.addSearchImprovement(
                             QString::fromLocal8Bit(argv[1]),
                             QString::fromLocal8Bit(argv[2]), firstImprovement,
-                            QStringLiteral("optimized-cpu"), 9u, 100u, beforeClear);
+                            QStringLiteral("optimized-cpu"), 9u, 100u, 0u, beforeClear);
                     const bool latePreviewIgnored = !viewer.hasPreviewTrajectories();
-                    viewer.addSearchImprovement(
-                            QString::fromLocal8Bit(argv[1]),
-                            QString::fromLocal8Bit(argv[2]),
-                            firstImprovement,
-                            QStringLiteral("optimized-cpu"),
-                            9u,
-                            1u);
+                    addImprovement(firstImprovement, 9u, 1u, 0u);
                     QCoreApplication::processEvents();
                     const bool clearedKeyWasReleased =
                             viewer.hasPreviewTrajectories() &&

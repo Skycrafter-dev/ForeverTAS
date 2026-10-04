@@ -150,6 +150,9 @@ Rectangle {
                                   "car", carPalette[index % carPalette.length],
                                   2, false))
             }
+            if (viewer.improvementCarCount > 0)
+                result.push(makeLayer("car:improvements", qsTr("Improvement cars"),
+                                      "car", "#ffffff", 2, false))
             result.push(makeGroup(qsTr("Trajectories")))
             const paths = viewer.trajectoryPaths
             for (let index = 0; index < paths.length; ++index) {

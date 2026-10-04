@@ -2081,6 +2081,23 @@ void UpdateRunPose(RaceViewerRun &run, qint64 timeMs) {
             before.rotation, after.rotation, blend);
 }
 
+// One color per restart, stable for the whole search.
+QColor ImprovementColor(std::uint64_t restartNumber) {
+    static constexpr std::array<const char *, 12> colors{
+            "#ffb84d", "#77cfa1", "#e88ac4", "#80b9f0",
+            "#d5cf6b", "#b695e7", "#f18b75", "#70d1d0",
+            "#c7a369", "#a9d879", "#de84a0", "#92a9ed"};
+    return QColor(QLatin1String(colors[restartNumber % colors.size()]));
+}
+
+// Upper bound of what one improvement preview keeps: its frames (for the
+// car pose) and its colored line vertices.
+std::size_t ImprovementPreviewBytes(std::size_t frameCount) {
+    return frameCount * sizeof(RaceViewerFrame) +
+            std::max<std::size_t>(6u, frameCount == 0u ? 0u : (frameCount - 1u) * 2u) *
+                    sizeof(FilledVertex);
+}
+
 }  // namespace
 
 RaceViewerController::RaceViewerController(QObject *parent)
@@ -3226,9 +3243,10 @@ void RaceViewerController::addSearchImprovement(
         const QString &backendId,
         std::uint64_t searchId,
         std::uint64_t improvementNumber,
+        std::uint64_t restartNumber,
         std::chrono::steady_clock::time_point generatedAt) {
     if (shuttingDown_ || generatedAt <= previewClearedAt_) return;
-    if (frames.size() > kMaximumLiveTrajectoryBytes / sizeof(RaceViewerFrame)) {
+    if (ImprovementPreviewBytes(frames.size()) > kMaximumLiveTrajectoryBytes) {
         setStatusText(QStringLiteral("Live trajectory exceeds the 64 MiB preview budget; saved results are unchanged."));
         return;
     }
@@ -3251,6 +3269,7 @@ void RaceViewerController::addSearchImprovement(
                 replayPath,
                 kAuxiliarySimulationBackend,
                 searchId,
+                restartNumber,
                 improvementNumber,
                 ToViewerFrames(frames)};
         if (!IsViewableTrajectory(pending.frames)) {
@@ -3258,43 +3277,36 @@ void RaceViewerController::addSearchImprovement(
                     "Search improvement produced an invalid trajectory."));
             return;
         }
-        const QString key =
-                QStringLiteral("improvement:%1:%2")
-                        .arg(searchId)
-                        .arg(improvementNumber);
-        if (std::find(trajectoryKeys_.begin(),
-                      trajectoryKeys_.end(),
-                      key) != trajectoryKeys_.end()) {
-            return;
-        }
-        const auto queued = std::find_if(
-                pendingImprovements_.begin(),
-                pendingImprovements_.end(),
-                [searchId, improvementNumber](
-                        const PendingImprovement &entry) {
-                    return entry.searchId == searchId &&
-                            entry.improvementNumber ==
-                                    improvementNumber;
-                });
-        if (queued != pendingImprovements_.end()) {
-            return;
-        }
         if (loaded_ &&
             loadedPacksDirectory_ == packsDirectory &&
             loadedReplayPath_ == replayPath) {
-            appendImprovementTrajectory(
+            upsertImprovementPreview(
                     searchId,
+                    restartNumber,
                     improvementNumber,
-                    pending.frames);
+                    std::move(pending.frames));
             return;
         }
-        while (!pendingImprovements_.empty() &&
-               (pendingImprovements_.size() >= kMaximumLiveTrajectories ||
-                pendingImprovementBytes() + pending.frames.size() * sizeof(RaceViewerFrame) >
-                        kMaximumLiveTrajectoryBytes)) {
-            pendingImprovements_.erase(pendingImprovements_.begin());
+        // While the map loads, keep only the latest improvement per restart.
+        const auto queued = std::find_if(
+                pendingImprovements_.begin(),
+                pendingImprovements_.end(),
+                [searchId, restartNumber](const PendingImprovement &entry) {
+                    return entry.searchId == searchId &&
+                            entry.restartNumber == restartNumber;
+                });
+        if (queued != pendingImprovements_.end()) {
+            if (queued->improvementNumber >= improvementNumber) return;
+            *queued = std::move(pending);
+        } else {
+            while (!pendingImprovements_.empty() &&
+                   (pendingImprovements_.size() >= kMaximumLiveTrajectories ||
+                    pendingImprovementBytes() + pending.frames.size() * sizeof(RaceViewerFrame) >
+                            kMaximumLiveTrajectoryBytes)) {
+                pendingImprovements_.erase(pendingImprovements_.begin());
+            }
+            pendingImprovements_.push_back(std::move(pending));
         }
-        pendingImprovements_.push_back(std::move(pending));
         if (workerThread_ == nullptr) {
             beginMapLoad(packsDirectory, replayPath,
                          kAuxiliarySimulationBackend);
@@ -3311,8 +3323,10 @@ void RaceViewerController::addSearchImprovement(
 }
 
 quint64 RaceViewerController::retainedImprovementBytes() const {
-    quint64 bytes = 0;
-    for (const auto &geometry : trajectoryGeometries_) bytes += geometry->vertexData().size();
+    quint64 bytes = static_cast<quint64>(latestImprovementGeometry_.vertexData().size() +
+                                         earlierImprovementGeometry_.vertexData().size());
+    for (const ImprovementPreview &preview : improvementPreviews_)
+        bytes += preview.run.frames.size() * sizeof(RaceViewerFrame);
     return bytes;
 }
 
@@ -3322,106 +3336,52 @@ quint64 RaceViewerController::pendingImprovementBytes() const {
     return bytes;
 }
 
-void RaceViewerController::evictOldestImprovement() {
-    if (trajectoryKeys_.empty()) return;
-    const auto key = trajectoryKeys_.front();
-    trajectoryPaths_.erase(std::remove_if(trajectoryPaths_.begin(), trajectoryPaths_.end(),
-            [&key](const QVariant &entry) {
-                return entry.toMap().value(QStringLiteral("visualId")).toString() == key;
-            }), trajectoryPaths_.end());
-    auto geometry = std::move(trajectoryGeometries_.front());
-    trajectoryGeometries_.erase(trajectoryGeometries_.begin());
-    trajectoryKeys_.erase(trajectoryKeys_.begin());
-    emit trajectoriesChanged();
-}
-
-bool RaceViewerController::appendImprovementTrajectory(
+bool RaceViewerController::upsertImprovementPreview(
         std::uint64_t searchId,
+        std::uint64_t restartNumber,
         std::uint64_t improvementNumber,
-        const std::vector<RaceViewerFrame> &frames) {
-    const QString key =
-            QStringLiteral("improvement:%1:%2")
-                    .arg(searchId)
-                    .arg(improvementNumber);
-    if (std::find(trajectoryKeys_.begin(),
-                  trajectoryKeys_.end(),
-                  key) != trajectoryKeys_.end()) {
-        return true;
-    }
-
+        std::vector<RaceViewerFrame> frames) {
     try {
-        const auto maximumVertices = std::max<std::size_t>(6, frames.empty() ? 0 : (frames.size() - 1) * 2);
-        if (maximumVertices > kMaximumLiveTrajectoryBytes / sizeof(WireVertex)) return false;
-        while (!trajectoryKeys_.empty() &&
-               (trajectoryKeys_.size() >= kMaximumLiveTrajectories ||
-                retainedImprovementBytes() + maximumVertices * sizeof(WireVertex) >
-                        kMaximumLiveTrajectoryBytes)) evictOldestImprovement();
-        const float radius = static_cast<float>(
-                std::clamp(sceneRadius_ * 0.0004, 0.015, 0.15));
-        RaceViewerMeshBuffers mesh =
-                BuildTrajectoryLineMesh(frames, radius * 2.0f);
-        if (mesh.wire.isEmpty()) {
-            setStatusText(QStringLiteral(
-                    "Search improvement produced no viewable trajectory."));
-            return false;
+        if (ImprovementPreviewBytes(frames.size()) > kMaximumLiveTrajectoryBytes) return false;
+        auto existing = std::find_if(
+                improvementPreviews_.begin(), improvementPreviews_.end(),
+                [searchId, restartNumber](const ImprovementPreview &preview) {
+                    return preview.searchId == searchId &&
+                            preview.restartNumber == restartNumber;
+                });
+        bool earlierChanged = false;
+        if (existing != improvementPreviews_.end()) {
+            if (existing->improvementNumber >= improvementNumber) return true;
+            existing->improvementNumber = improvementNumber;
+            existing->run.frames = std::move(frames);
+            earlierChanged = existing + 1 != improvementPreviews_.end();
+        } else {
+            // The previous latest restart joins the earlier restarts.
+            earlierChanged = !improvementPreviews_.empty();
+            ImprovementPreview preview;
+            preview.searchId = searchId;
+            preview.restartNumber = restartNumber;
+            preview.improvementNumber = improvementNumber;
+            preview.run.frames = std::move(frames);
+            improvementPreviews_.push_back(std::move(preview));
         }
-        auto geometry = std::make_unique<RaceGeometry>();
-        geometry->setMesh(
-                std::move(mesh.wire),
-                static_cast<int>(sizeof(WireVertex)),
-                QQuick3DGeometry::PrimitiveType::Lines,
-                false,
-                mesh.boundsMin,
-                mesh.boundsMax);
-
-        QVariantList paths = trajectoryPaths_;
-        for (QVariant &entry : paths) {
-            QVariantMap path = entry.toMap();
-            if (path.value(QStringLiteral("kind")).toString() ==
-                QStringLiteral("improvement")) {
-                path.insert(QStringLiteral("opacity"), 0.3);
-                entry = std::move(path);
-            }
+        const auto retainedBytes = [this] {
+            std::size_t bytes = 0u;
+            for (const ImprovementPreview &preview : improvementPreviews_)
+                bytes += ImprovementPreviewBytes(preview.run.frames.size());
+            return bytes;
+        };
+        // Drop the oldest restarts beyond the count or vertex budget; the
+        // latest restart always stays.
+        while (improvementPreviews_.size() > 1u &&
+               (improvementPreviews_.size() > kMaximumLiveTrajectories ||
+                retainedBytes() > kMaximumLiveTrajectoryBytes)) {
+            improvementPreviews_.erase(improvementPreviews_.begin());
+            earlierChanged = true;
         }
-        QVariantMap path;
-        path.insert(QStringLiteral("kind"),
-                    QStringLiteral("improvement"));
-        path.insert(QStringLiteral("visualId"), key);
-        path.insert(
-                QStringLiteral("name"),
-                QStringLiteral("Improvement %1")
-                        .arg(improvementNumber));
-        static constexpr std::array<const char *, 12> improvementColors{
-                "#ffb84d", "#77cfa1", "#e88ac4", "#80b9f0",
-                "#d5cf6b", "#b695e7", "#f18b75", "#70d1d0",
-                "#c7a369", "#a9d879", "#de84a0", "#92a9ed"};
-        path.insert(QStringLiteral("color"),
-                    QString::fromLatin1(improvementColors[
-                            (improvementNumber - 1u) %
-                            improvementColors.size()]));
-        path.insert(QStringLiteral("opacity"), 0.96);
-        path.insert(QStringLiteral("visible"), true);
-        path.insert(QStringLiteral("searchId"),
-                    QVariant::fromValue<qulonglong>(searchId));
-        path.insert(
-                QStringLiteral("improvementNumber"),
-                QVariant::fromValue<qulonglong>(improvementNumber));
-        path.insert(
-                QStringLiteral("geometry"),
-                QVariant::fromValue(
-                        static_cast<QObject *>(geometry.get())));
-        paths.push_back(std::move(path));
-
-        trajectoryGeometries_.reserve(
-                trajectoryGeometries_.size() + 1u);
-        trajectoryKeys_.reserve(trajectoryKeys_.size() + 1u);
-        trajectoryGeometries_.push_back(std::move(geometry));
-        trajectoryKeys_.push_back(key);
-        trajectoryPaths_ = std::move(paths);
-        emit trajectoriesChanged();
-        setStatusText(
-                QStringLiteral("Improvement %1 trajectory added")
-                        .arg(improvementNumber));
+        rebuildImprovementTrajectories(earlierChanged);
+        updateImprovementCars();
+        setStatusText(QStringLiteral("Improvement %1 shown").arg(improvementNumber));
         return true;
     } catch (const std::exception &exception) {
         setStatusText(
@@ -3433,6 +3393,137 @@ bool RaceViewerController::appendImprovementTrajectory(
                 "Adding search improvement trajectory failed unexpectedly."));
     }
     return false;
+}
+
+void RaceViewerController::rebuildImprovementTrajectories(bool earlierChanged) {
+    const float markerRadius = static_cast<float>(
+            std::clamp(sceneRadius_ * 0.0004, 0.015, 0.15)) * 2.0f;
+    // Several restarts share one colored line mesh, so they cost one draw call.
+    const auto build = [markerRadius](auto first, auto last, RaceGeometry &geometry) {
+        QByteArray vertices;
+        QVector3D boundsMin;
+        QVector3D boundsMax;
+        bool hasBounds = false;
+        for (auto preview = first; preview != last; ++preview) {
+            const RaceViewerMeshBuffers mesh =
+                    BuildTrajectoryLineMesh(preview->run.frames, markerRadius);
+            const qsizetype count = mesh.wire.size() / static_cast<qsizetype>(sizeof(WireVertex));
+            if (count == 0) continue;
+            const QColor color = ImprovementColor(preview->restartNumber);
+            const auto *wire = reinterpret_cast<const WireVertex *>(mesh.wire.constData());
+            const qsizetype offset = vertices.size();
+            vertices.resize(offset + count * static_cast<qsizetype>(sizeof(FilledVertex)));
+            auto *filled = reinterpret_cast<FilledVertex *>(vertices.data() + offset);
+            for (qsizetype index = 0; index < count; ++index) {
+                filled[index] = {wire[index].x, wire[index].y, wire[index].z,
+                                 static_cast<float>(color.redF()),
+                                 static_cast<float>(color.greenF()),
+                                 static_cast<float>(color.blueF()), 1.0f};
+            }
+            boundsMin = hasBounds ? QVector3D(std::min(boundsMin.x(), mesh.boundsMin.x()),
+                                              std::min(boundsMin.y(), mesh.boundsMin.y()),
+                                              std::min(boundsMin.z(), mesh.boundsMin.z()))
+                                  : mesh.boundsMin;
+            boundsMax = hasBounds ? QVector3D(std::max(boundsMax.x(), mesh.boundsMax.x()),
+                                              std::max(boundsMax.y(), mesh.boundsMax.y()),
+                                              std::max(boundsMax.z(), mesh.boundsMax.z()))
+                                  : mesh.boundsMax;
+            hasBounds = true;
+        }
+        if (vertices.isEmpty()) {
+            geometry.clearMesh();
+            return;
+        }
+        geometry.setMesh(std::move(vertices),
+                         static_cast<int>(sizeof(FilledVertex)),
+                         QQuick3DGeometry::PrimitiveType::Lines,
+                         true,
+                         boundsMin,
+                         boundsMax);
+    };
+    if (improvementPreviews_.empty()) {
+        latestImprovementGeometry_.clearMesh();
+        earlierImprovementGeometry_.clearMesh();
+    } else {
+        build(improvementPreviews_.end() - 1, improvementPreviews_.end(),
+              latestImprovementGeometry_);
+        if (earlierChanged)
+            build(improvementPreviews_.begin(), improvementPreviews_.end() - 1,
+                  earlierImprovementGeometry_);
+    }
+
+    QVariantList paths;
+    paths.reserve(trajectoryPaths_.size() + 2);
+    for (const QVariant &entry : trajectoryPaths_) {
+        if (entry.toMap().value(QStringLiteral("kind")).toString() !=
+            QStringLiteral("improvement"))
+            paths.push_back(entry);
+    }
+    const auto improvementPath = [](const QString &visualId, const QString &name,
+                                    double opacity, RaceGeometry *geometry) {
+        QVariantMap path;
+        path.insert(QStringLiteral("kind"), QStringLiteral("improvement"));
+        path.insert(QStringLiteral("visualId"), visualId);
+        path.insert(QStringLiteral("name"), name);
+        // Each restart keeps its own vertex color; the layer color tints it.
+        path.insert(QStringLiteral("color"), QStringLiteral("#ffffff"));
+        path.insert(QStringLiteral("vertexColors"), true);
+        path.insert(QStringLiteral("opacity"), opacity);
+        path.insert(QStringLiteral("visible"), true);
+        path.insert(QStringLiteral("geometry"),
+                    QVariant::fromValue(static_cast<QObject *>(geometry)));
+        return path;
+    };
+    if (improvementPreviews_.size() > 1u) {
+        paths.push_back(improvementPath(
+                QStringLiteral("trajectory:improvements:earlier"),
+                QStringLiteral("Earlier restarts (%1)")
+                        .arg(improvementPreviews_.size() - 1u),
+                0.35, &earlierImprovementGeometry_));
+    }
+    if (!improvementPreviews_.empty()) {
+        const ImprovementPreview &latest = improvementPreviews_.back();
+        QVariantMap path = improvementPath(
+                QStringLiteral("trajectory:improvements:latest"),
+                QStringLiteral("Improvement %1 (restart %2)")
+                        .arg(latest.improvementNumber)
+                        .arg(latest.restartNumber),
+                0.96, &latestImprovementGeometry_);
+        path.insert(QStringLiteral("searchId"),
+                    QVariant::fromValue<qulonglong>(latest.searchId));
+        path.insert(QStringLiteral("improvementNumber"),
+                    QVariant::fromValue<qulonglong>(latest.improvementNumber));
+        path.insert(QStringLiteral("restartNumber"),
+                    QVariant::fromValue<qulonglong>(latest.restartNumber));
+        paths.push_back(std::move(path));
+    }
+    trajectoryPaths_ = std::move(paths);
+    emit trajectoriesChanged();
+}
+
+void RaceViewerController::updateImprovementCars() {
+    std::vector<CarInstancing::Instance> instances;
+    instances.reserve(improvementPreviews_.size() *
+                      static_cast<std::size_t>(carEllipsoids_.size()));
+    for (std::size_t index = 0; index < improvementPreviews_.size(); ++index) {
+        ImprovementPreview &preview = improvementPreviews_[index];
+        UpdateRunPose(preview.run, timeMs_);
+        QMatrix4x4 car;
+        car.translate(preview.run.position);
+        car.rotate(preview.run.rotation);
+        QColor color = ImprovementColor(preview.restartNumber);
+        // Earlier restarts are dimmed like their trajectories.
+        if (index + 1u < improvementPreviews_.size()) color.setAlphaF(0.45);
+        for (const QVariant &value : carEllipsoids_) {
+            const QVariantMap ellipsoid = value.toMap();
+            QMatrix4x4 transform = car;
+            transform.translate(ellipsoid.value(QStringLiteral("position")).value<QVector3D>());
+            transform.rotate(ellipsoid.value(QStringLiteral("rotation")).value<QQuaternion>());
+            transform.scale(ellipsoid.value(QStringLiteral("radii")).value<QVector3D>());
+            instances.push_back({transform, color});
+        }
+    }
+    improvementCars_.setInstances(instances);
 }
 
 void RaceViewerController::updateBestTrajectory(
@@ -4548,17 +4639,7 @@ void RaceViewerController::setTrajectoryVisibleForRun(
 
 
 bool RaceViewerController::hasPreviewTrajectories() const {
-    return !pendingImprovements_.empty() ||
-            !trajectoryGeometries_.empty() ||
-            std::any_of(
-                    trajectoryPaths_.begin(),
-                    trajectoryPaths_.end(),
-                    [](const QVariant &entry) {
-                        return entry.toMap()
-                                       .value(QStringLiteral("kind"))
-                                       .toString() ==
-                                QStringLiteral("improvement");
-                    });
+    return !pendingImprovements_.empty() || !improvementPreviews_.empty();
 }
 
 void RaceViewerController::clearPreviewTrajectories() {
@@ -4566,30 +4647,10 @@ void RaceViewerController::clearPreviewTrajectories() {
     if (!hasPreviewTrajectories()) {
         return;
     }
-
-    QVariantList paths = trajectoryPaths_;
-    paths.erase(
-            std::remove_if(
-                    paths.begin(),
-                    paths.end(),
-                    [](const QVariant &entry) {
-                        return entry.toMap()
-                                       .value(QStringLiteral("kind"))
-                                       .toString() ==
-                                QStringLiteral("improvement");
-                    }),
-            paths.end());
-    const bool pathsChanged = paths.size() != trajectoryPaths_.size();
-    trajectoryPaths_ = std::move(paths);
-
-    std::vector<std::unique_ptr<RaceGeometry>>().swap(
-            trajectoryGeometries_);
-    std::vector<QString>().swap(trajectoryKeys_);
+    std::vector<ImprovementPreview>().swap(improvementPreviews_);
     std::vector<PendingImprovement>().swap(pendingImprovements_);
-
-    if (pathsChanged) {
-        emit trajectoriesChanged();
-    }
+    rebuildImprovementTrajectories(true);
+    updateImprovementCars();
     setStatusText(QStringLiteral("Preview trajectories cleared"));
 }
 
@@ -5222,8 +5283,9 @@ void RaceViewerController::applyLoadResult(
     inputPreviewGeometry_.clearMesh();
     bestTrajectoryGeometry_.clearMesh();
     inputPreviewVisible_ = false;
-    trajectoryGeometries_.clear();
-    trajectoryKeys_.clear();
+    improvementPreviews_.clear();
+    latestImprovementGeometry_.clearMesh();
+    earlierImprovementGeometry_.clearMesh();
     durationMs_ = 0;
     const bool addingPendingRun =
             pendingRun_ &&
@@ -5293,8 +5355,9 @@ bool RaceViewerController::applyPendingImprovementsIfReady() {
     for (PendingImprovement &pending : pendingImprovements_) {
         if (pending.packsDirectory == loadedPacksDirectory_ &&
             pending.replayPath == loadedReplayPath_) {
-            if (!appendImprovementTrajectory(
+            if (!upsertImprovementPreview(
                         pending.searchId,
+                        pending.restartNumber,
                         pending.improvementNumber,
                         pending.frames)) {
                 remaining.push_back(std::move(pending));
@@ -5413,6 +5476,7 @@ void RaceViewerController::waitForWorker() {
 }
 
 void RaceViewerController::updatePose() {
+    updateImprovementCars();
     if (runs_.empty()) {
         carPosition_ = {};
         carRotation_ = {};

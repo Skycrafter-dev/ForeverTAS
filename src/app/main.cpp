@@ -82,6 +82,7 @@ int main(int argc, char **argv) {
                         improvement->simulationBackendId,
                         improvement->searchId,
                         improvement->improvementNumber,
+                        improvement->restartNumber,
                         improvement->generatedAt);
             });
     QObject::connect(

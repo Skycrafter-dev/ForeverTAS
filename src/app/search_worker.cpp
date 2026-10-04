@@ -305,8 +305,9 @@ void SearchWorker::run() {
             };
     const auto publishedTrajectoryNumber =
             std::make_shared<std::atomic_uint64_t>(0u);
+    const auto currentRestart = std::make_shared<std::atomic_uint64_t>(0u);
     const auto publishImprovement =
-            [this, publishedTrajectoryNumber](
+            [this, publishedTrajectoryNumber, currentRestart](
                     const SearchLiveUpdate &live,
                     std::string_view backendId) {
                 if (live.bestTimeline.empty()) {
@@ -318,6 +319,8 @@ void SearchWorker::run() {
                         publishedTrajectoryNumber->fetch_add(
                                 1u, std::memory_order_relaxed) +
                         1u;
+                improvement->restartNumber =
+                        currentRestart->load(std::memory_order_relaxed);
                 improvement->packsDirectory =
                         FilePathFromUtf8(request_.packDirectory);
                 improvement->replayPath =
@@ -326,7 +329,6 @@ void SearchWorker::run() {
                         backendId.data(),
                         static_cast<qsizetype>(backendId.size()));
                 improvement->timeline = live.bestTimeline;
-                improvement->inputs = live.bestInputs;
                 emit improvementFound(std::move(improvement));
             };
     std::optional<SearchLiveUpdate> retainedResult;
@@ -430,6 +432,7 @@ void SearchWorker::run() {
                     seed->second = std::to_string(next);
                 }
             }
+            currentRestart->store(restartNumber, std::memory_order_relaxed);
             result.emplace(RunSearch(request_, &control));
             emit stageChanged(QStringLiteral("Saving search result..."), true);
             SearchSessionStore::SaveCycle(

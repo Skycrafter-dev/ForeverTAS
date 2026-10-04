@@ -281,6 +281,8 @@ add_library(forevertas_gui STATIC
     src/viewer/custom_volume_geometry.h
     src/viewer/material_classifier.cpp
     src/viewer/material_classifier.h
+    src/viewer/car_instancing.cpp
+    src/viewer/car_instancing.h
     src/viewer/race_geometry.cpp
     src/viewer/race_geometry.h
     src/viewer/ray_tracing_scene.cpp

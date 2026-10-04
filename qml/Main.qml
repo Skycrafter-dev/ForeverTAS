@@ -231,6 +231,11 @@ ApplicationWindow {
             if (style.visible && style.throughBlocks)
                 return true
         }
+        if (viewer.improvementCarCount > 0) {
+            const style = visualStyle("car:improvements", { color: "#ffffff" })
+            if (style.visible && style.throughBlocks)
+                return true
+        }
         const targets = [
             ["cuboid", controller.cuboidTargets.targets],
             ["custom", controller.customVolumeTargets.targets],
@@ -2365,6 +2370,47 @@ ApplicationWindow {
                         }
                     }
 
+                    // Every restart's latest improvement car, drawn with one
+                    // instanced call per render mode however many restarts.
+                    component ImprovementCars: Node {
+                        id: improvementCarsNode
+                        readonly property var layerStyle:
+                            window.visualStyle("car:improvements",
+                                               { color: "#ffffff", opacity: 1 })
+
+                        Model {
+                            objectName: "improvementCarsFilledModel"
+                            visible: window.renderMode !== "wireframe"
+                            geometry: window.viewer.ellipsoidFilledGeometry
+                            instancing: window.viewer.improvementCars
+                            castsShadows: false
+                            receivesShadows: false
+                            materials: DefaultMaterial {
+                                lighting: DefaultMaterial.NoLighting
+                                vertexColorsEnabled: true
+                                diffuseColor: improvementCarsNode.layerStyle.color
+                                opacity: improvementCarsNode.layerStyle.opacity
+                                cullMode: Material.BackFaceCulling
+                            }
+                        }
+
+                        Model {
+                            objectName: "improvementCarsWireModel"
+                            visible: window.renderMode === "wireframe"
+                            geometry: window.viewer.ellipsoidWireGeometry
+                            instancing: window.viewer.improvementCars
+                            castsShadows: false
+                            receivesShadows: false
+                            materials: DefaultMaterial {
+                                lighting: DefaultMaterial.NoLighting
+                                vertexColorsEnabled: true
+                                diffuseColor: improvementCarsNode.layerStyle.color
+                                opacity: improvementCarsNode.layerStyle.opacity
+                                cullMode: Material.NoCulling
+                            }
+                        }
+                    }
+
                     component PoseTargetEditorScene: Node {
                         id: poseScene
                         property bool interactive: false
@@ -2848,6 +2894,7 @@ ApplicationWindow {
                                 receivesShadows: false
                                 materials: DefaultMaterial {
                                     lighting: DefaultMaterial.NoLighting
+                                    vertexColorsEnabled: modelData.vertexColors ?? false
                                     diffuseColor: layerStyle.color
                                     opacity: layerStyle.opacity
                                     lineWidth: layerStyle.width
@@ -3213,6 +3260,13 @@ ApplicationWindow {
                                 }
                             }
                         }
+                        ImprovementCars {
+                            objectName: "improvementCarsRoot"
+                            visible: window.viewer.loaded
+                                     && window.viewer.improvementCarCount > 0
+                                     && layerStyle.visible
+                                     && !layerStyle.throughBlocks
+                        }
                     }
 
                     GpuRayTracingView {
@@ -3304,6 +3358,7 @@ ApplicationWindow {
                                 receivesShadows: false
                                 materials: DefaultMaterial {
                                     lighting: DefaultMaterial.NoLighting
+                                    vertexColorsEnabled: modelData.vertexColors ?? false
                                     diffuseColor: layerStyle.color
                                     opacity: layerStyle.opacity
                                     lineWidth: layerStyle.width
@@ -3371,6 +3426,14 @@ ApplicationWindow {
                                     }
                                 }
                             }
+                        }
+
+                        ImprovementCars {
+                            objectName: "throughImprovementCarsRoot"
+                            visible: window.viewer.improvementCarCount > 0
+                                     && layerStyle.visible
+                                     && (window.rayTracingEnabled
+                                         || layerStyle.throughBlocks)
                         }
 
                         CuboidEditorScene {

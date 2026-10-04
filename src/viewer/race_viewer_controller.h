@@ -3,6 +3,7 @@
 
 #include "physics_backend.h"
 #include "searches/search_algorithm.h"
+#include "viewer/car_instancing.h"
 #include "viewer/race_geometry.h"
 #include "viewer/simulation_debugger_model.h"
 #include "viewer/whiteboard_model.h"
@@ -166,6 +167,9 @@ class RaceViewerController final : public QObject {
                        setSimulationHorizonMs NOTIFY simulationHorizonMsChanged)
     Q_PROPERTY(QVariantList runOptions READ runOptions NOTIFY runsChanged)
     Q_PROPERTY(QVariantList runPoses READ runPoses NOTIFY poseChanged)
+    Q_PROPERTY(QQuick3DInstancing *improvementCars READ improvementCars CONSTANT)
+    Q_PROPERTY(int improvementCarCount READ improvementCarCount
+                       NOTIFY trajectoriesChanged)
     Q_PROPERTY(qint64 runCount READ runCount NOTIFY runsChanged)
     Q_PROPERTY(QString selectedRunId READ selectedRunId WRITE setSelectedRunId
                        NOTIFY selectedRunChanged)
@@ -277,6 +281,8 @@ public:
     qint64 simulationHorizonMs() const;
     QVariantList runOptions() const;
     QVariantList runPoses() const;
+    QQuick3DInstancing *improvementCars() { return &improvementCars_; }
+    int improvementCarCount() const { return static_cast<int>(improvementPreviews_.size()); }
     qint64 runCount() const;
     QString selectedRunId() const;
     int selectedRunIndex() const;
@@ -378,6 +384,7 @@ public:
             const QString &backendId,
             std::uint64_t searchId,
             std::uint64_t improvementNumber,
+            std::uint64_t restartNumber = 0u,
             std::chrono::steady_clock::time_point generatedAt = std::chrono::steady_clock::now());
     // Not exposed to QML: previews are only cleared with the search results.
     void clearPreviewTrajectories();
@@ -456,7 +463,6 @@ signals:
     void telemetryScriptChanged();
 
 private:
-    void evictOldestImprovement();
     void applySearchRun(const QString &packsDirectory, const QString &replayPath,
                         const std::vector<SearchTimelineFrame> &frames,
                         const std::vector<SandboxInputEvent> &inputs,
@@ -469,10 +475,13 @@ private:
                       PhysicsBackend backend);
     void applyPendingRunIfReady();
     bool applyPendingImprovementsIfReady();
-    bool appendImprovementTrajectory(
+    bool upsertImprovementPreview(
             std::uint64_t searchId,
+            std::uint64_t restartNumber,
             std::uint64_t improvementNumber,
-            const std::vector<RaceViewerFrame> &frames);
+            std::vector<RaceViewerFrame> frames);
+    void rebuildImprovementTrajectories(bool earlierChanged);
+    void updateImprovementCars();
     void updateBestTrajectory(
             const QString &name,
             const std::vector<RaceViewerFrame> &frames);
@@ -551,8 +560,17 @@ private:
         QString replayPath;
         PhysicsBackend backend = PhysicsBackend::OptimizedCpu;
         std::uint64_t searchId = 0u;
+        std::uint64_t restartNumber = 0u;
         std::uint64_t improvementNumber = 0u;
         std::vector<RaceViewerFrame> frames;
+    };
+    // The latest improvement of one auto-restart cycle: its trajectory and a
+    // car that follows playback time.
+    struct ImprovementPreview {
+        std::uint64_t searchId = 0u;
+        std::uint64_t restartNumber = 0u;
+        std::uint64_t improvementNumber = 0u;
+        RaceViewerRun run;
     };
 
     std::vector<RaceViewerRun> runs_;
@@ -573,7 +591,13 @@ private:
     quint64 visualStyleRevision_ = 0;
     RaceGeometry inputPreviewGeometry_;
     RaceGeometry bestTrajectoryGeometry_;
-    std::vector<std::unique_ptr<RaceGeometry>> trajectoryGeometries_;
+    // Improvement previews are drawn with a fixed number of draw calls,
+    // however many restarts there are: one line mesh for the latest restart,
+    // one for all earlier restarts, and one instanced car mesh.
+    std::vector<ImprovementPreview> improvementPreviews_;
+    RaceGeometry latestImprovementGeometry_;
+    RaceGeometry earlierImprovementGeometry_;
+    CarInstancing improvementCars_;
     std::map<QString, std::unique_ptr<RaceGeometry>> timeRangeGeometries_;
     struct TimeRangeCacheState {
         qint64 start = 0;
@@ -584,7 +608,6 @@ private:
     std::map<QString, TimeRangeCacheState> timeRangeCacheStates_;
     quint64 runGeometryRevision_ = 0;
     quint64 bestRunRevision_ = 0;
-    std::vector<QString> trajectoryKeys_;
     QVector3D carPosition_{};
     QQuaternion carRotation_{};
     QVector3D carCameraPosition_{};

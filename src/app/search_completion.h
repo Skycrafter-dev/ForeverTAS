@@ -29,11 +29,12 @@ struct SearchImprovement {
     std::chrono::steady_clock::time_point generatedAt = std::chrono::steady_clock::now();
     std::uint64_t searchId = 0u;
     std::uint64_t improvementNumber = 0u;
+    // Auto-restart cycle that found it, numbered like the history table.
+    std::uint64_t restartNumber = 0u;
     QString packsDirectory;
     QString replayPath;
     QString simulationBackendId;
     std::vector<SearchTimelineFrame> timeline;
-    std::vector<SandboxInputEvent> inputs;
 };
 
 using SearchImprovementPtr = std::shared_ptr<const SearchImprovement>;
