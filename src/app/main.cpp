@@ -83,7 +83,6 @@ int main(int argc, char **argv) {
                         improvement->searchId,
                         improvement->improvementNumber,
                         improvement->generatedAt);
-                viewer.queueLiveBest(std::move(improvement));
             });
     QObject::connect(
             &controller,

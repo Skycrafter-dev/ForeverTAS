@@ -30,7 +30,6 @@
 class QThread;
 
 namespace forevertas::app {
-struct SearchImprovement;
 struct SearchCompletion;
 }
 
@@ -132,8 +131,6 @@ struct RaceViewerInputPreviewResult {
 
 class RaceViewerController final : public QObject {
     Q_OBJECT
-    Q_PROPERTY(bool liveBestUpdates READ liveBestUpdates WRITE setLiveBestUpdates
-               NOTIFY liveBestUpdatesChanged)
 
     Q_PROPERTY(QQuick3DGeometry *trackFilledGeometry READ
                        trackFilledGeometry CONSTANT)
@@ -345,16 +342,13 @@ public:
     std::shared_ptr<const RayTracingSceneData> rayTracingScene() const;
     void requestRayTracingScene();
     RaceViewerInputSample inputSample(qint64 tick) const noexcept;
-    bool liveBestUpdates() const { return liveBestUpdates_; }
     void requestShutdown();
     bool shutdownReady() const;
     static constexpr std::size_t kMaximumLiveTrajectories = 64;
     static constexpr std::size_t kMaximumLiveTrajectoryBytes = 64u * 1024u * 1024u;
     Q_INVOKABLE quint64 retainedImprovementBytes() const;
     Q_INVOKABLE quint64 pendingImprovementBytes() const;
-    void setLiveBestUpdates(bool value);
     void beginSearchPreview(std::uint64_t searchId);
-    void queueLiveBest(std::shared_ptr<const app::SearchImprovement> improvement);
     void completeSearchPreview(std::shared_ptr<const app::SearchCompletion> completion);
     void endSearchPreview();
     void addSearchRun(
@@ -440,7 +434,6 @@ public slots:
     Q_INVOKABLE QString telemetryScriptError(const QString &script) const;
 
 signals:
-    void liveBestUpdatesChanged();
     void rayTracingSceneChanged();
     void sceneChanged();
     void poseChanged();
@@ -464,7 +457,6 @@ signals:
 
 private:
     void evictOldestImprovement();
-    void applyLiveBest();
     void applySearchRun(const QString &packsDirectory, const QString &replayPath,
                         const std::vector<SearchTimelineFrame> &frames,
                         const std::vector<SandboxInputEvent> &inputs,
@@ -566,13 +558,11 @@ private:
     std::vector<RaceViewerRun> runs_;
     std::optional<MapLoadRequest> queuedMapLoad_;
     std::optional<PendingRun> pendingRun_;
-    bool liveBestUpdates_ = false;
     bool shuttingDown_ = false;
-    bool autoSelectLiveBest_ = false;
+    // True until the user picks a run during a search; the finished best is
+    // then selected automatically.
+    bool autoSelectSearchBest_ = false;
     std::uint64_t liveSearchId_ = 0;
-    std::uint64_t liveImprovementNumber_ = 0;
-    QTimer liveBestTimer_;
-    std::shared_ptr<const app::SearchImprovement> pendingLiveBest_;
     std::vector<PendingImprovement> pendingImprovements_;
     std::chrono::steady_clock::time_point previewClearedAt_{};
     QVariantList carEllipsoids_;

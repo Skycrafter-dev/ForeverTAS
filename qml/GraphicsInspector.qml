@@ -282,17 +282,6 @@ Rectangle {
         anchors.fill: parent
         spacing: 0
 
-        ThemedCheckBox {
-            objectName: "liveBestUpdates"
-            visible: root.currentTab === 0
-            Layout.fillWidth: true
-            Layout.leftMargin: 12
-            Layout.rightMargin: 12
-            text: qsTr("Live best car")
-            checked: root.viewer && root.viewer.liveBestUpdates
-            onToggled: root.viewer.liveBestUpdates = checked
-        }
-
         Label {
             Layout.fillWidth: true
             Layout.leftMargin: 14
