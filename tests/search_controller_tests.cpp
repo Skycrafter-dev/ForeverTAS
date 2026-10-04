@@ -2384,6 +2384,7 @@ bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath
     const auto result = controller.baseEvaluationResult();
     okay &= Check(result.value("eligible").toBool() && result.value("metricValues").toList() == QVariantList{30.0, 0.0} &&
                           result.value("backend") == "optimized-cpu" && completed.isEmpty() &&
+                          !controller.baseEvaluationText().contains(QStringLiteral("Optimized")) &&
                           controller.baseInputScript() == script && controller.modifierPasses() == passes &&
                           controller.cycleRows() == cycles && controller.sessionOptions() == sessions &&
                           controller.bestInputsText().isEmpty(), "base evaluation mutated the search or history");

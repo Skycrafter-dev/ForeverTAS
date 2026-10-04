@@ -698,7 +698,7 @@ void SearchController::evaluateBase() {
     const auto cancelled = baselineEvaluationCancelled_;
     const auto generation = baselineEvaluationGeneration_;
     baseEvaluationResult_.clear();
-    baseEvaluationText_ = QStringLiteral("Evaluating base inputs (Optimized CPU)...");
+    baseEvaluationText_ = QStringLiteral("Evaluating base inputs...");
     auto thread = QThread::create([this, request = *validation.request, cancelled, generation] {
         QVariantMap data{{QStringLiteral("backend"), QStringLiteral("optimized-cpu")},
                          {QStringLiteral("targetId"), QString::fromStdString(request.evaluationTarget.id)},
@@ -718,12 +718,12 @@ void SearchController::evaluateBase() {
                 for (const auto value : result->metricValues) metrics.append(value);
                 data.insert(QStringLiteral("objectiveScores"), objectives);
                 data.insert(QStringLiteral("metricValues"), metrics);
-                text = QStringLiteral("Base evaluation (Optimized CPU)\n%1\nScore: %2 at %3 ms")
+                text = QStringLiteral("Base evaluation\n%1\nScore: %2 at %3 ms")
                         .arg(QString::fromStdString(result->bestEvaluationDescription),
                              QString::number(result->bestScore, 'g', 17),
                              QString::number(result->bestEvaluationTimeMs, 'g', 17));
             } else {
-                text = QStringLiteral("Base evaluation (Optimized CPU)\nNo eligible observation: the target or conditions were not satisfied.");
+                text = QStringLiteral("Base evaluation\nNo eligible observation: the target or conditions were not satisfied.");
             }
         } catch (const SearchCancelled &) {
             text = QStringLiteral("Base evaluation cancelled.");
