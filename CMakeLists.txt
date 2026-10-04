@@ -1113,6 +1113,16 @@ if(BUILD_TESTING)
 
         add_executable(forevertas-viewer-reload-smoke
             tests/viewer_reload_smoke.cpp)
+        add_executable(forevertas-lazy-ray-tracing-smoke tests/lazy_ray_tracing_smoke.cpp)
+        target_link_libraries(forevertas-lazy-ray-tracing-smoke PRIVATE forevertas_gui Qt6::Gui)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-lazy-ray-tracing-smoke PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-lazy-ray-tracing
+                 COMMAND forevertas-lazy-ray-tracing-smoke
+                    "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-lazy-ray-tracing PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
         target_link_libraries(forevertas-viewer-reload-smoke PRIVATE
             forevertas_gui
             Qt6::Gui)

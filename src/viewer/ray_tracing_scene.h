@@ -5,6 +5,7 @@
 
 #include <QByteArray>
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <vector>
@@ -23,7 +24,8 @@ struct RayTracingSceneData {
 };
 
 std::shared_ptr<const RayTracingSceneData> BuildRayTracingScene(
-        const std::vector<StaticVisualBatch> &batches);
+        const std::vector<StaticVisualBatch> &batches,
+        const std::atomic_bool *cancelled = nullptr);
 
 }  // namespace forevertas::viewer
 

@@ -18,6 +18,13 @@ namespace {
 constexpr std::uint32_t kLeafTriangleCount = 4u;
 constexpr std::uint32_t kMaterialClassCount = 17u;
 
+struct BuildCancelled {};
+
+void CheckCancellation(const std::atomic_bool *cancelled) {
+    if (cancelled && cancelled->load(std::memory_order_relaxed))
+        throw BuildCancelled{};
+}
+
 struct GpuVertex {
     std::array<float, 4> position{};
     std::array<float, 4> normal{};
@@ -84,13 +91,16 @@ float AxisValue(const QVector3D &value, int axis) {
 std::uint32_t BuildBvhNode(std::vector<BuildTriangle> &triangles,
                            std::uint32_t first,
                            std::uint32_t count,
-                           std::vector<GpuBvhNode> &nodes) {
+                           std::vector<GpuBvhNode> &nodes,
+                           const std::atomic_bool *cancelled) {
+    CheckCancellation(cancelled);
     const float infinity = std::numeric_limits<float>::infinity();
     QVector3D boundsMin(infinity, infinity, infinity);
     QVector3D boundsMax(-infinity, -infinity, -infinity);
     QVector3D centroidMin(infinity, infinity, infinity);
     QVector3D centroidMax(-infinity, -infinity, -infinity);
     for (std::uint32_t index = first; index < first + count; ++index) {
+        if (index % 1024u == 0u) CheckCancellation(cancelled);
         boundsMin = Minimum(boundsMin, triangles[index].boundsMin);
         boundsMax = Maximum(boundsMax, triangles[index].boundsMax);
         centroidMin = Minimum(centroidMin, triangles[index].centroid);
@@ -121,9 +131,9 @@ std::uint32_t BuildBvhNode(std::vector<BuildTriangle> &triangles,
                      });
 
     const std::uint32_t left =
-            BuildBvhNode(triangles, first, leftCount, nodes);
+            BuildBvhNode(triangles, first, leftCount, nodes, cancelled);
     const std::uint32_t right = BuildBvhNode(
-            triangles, first + leftCount, count - leftCount, nodes);
+            triangles, first + leftCount, count - leftCount, nodes, cancelled);
     nodes[nodeIndex].metadata = {left, right, 0u, 0u};
     return nodeIndex;
 }
@@ -131,12 +141,15 @@ std::uint32_t BuildBvhNode(std::vector<BuildTriangle> &triangles,
 }  // namespace
 
 std::shared_ptr<const RayTracingSceneData> BuildRayTracingScene(
-        const std::vector<StaticVisualBatch> &batches) {
+        const std::vector<StaticVisualBatch> &batches,
+        const std::atomic_bool *cancelled) try {
+    CheckCancellation(cancelled);
     auto result = std::make_shared<RayTracingSceneData>();
     std::vector<GpuVertex> vertices;
     std::vector<BuildTriangle> buildTriangles;
 
     for (const StaticVisualBatch &batch : batches) {
+        CheckCancellation(cancelled);
         if (!batch.defaultVisible ||
             batch.vertices.size() % StaticVisualVertexStride != 0 ||
             batch.indices.size() %
@@ -154,6 +167,7 @@ std::shared_ptr<const RayTracingSceneData> BuildRayTracingScene(
         vertices.reserve(vertices.size() +
                          static_cast<std::size_t>(sourceVertexCount));
         for (qsizetype index = 0; index < sourceVertexCount; ++index) {
+            if (index % 1024 == 0) CheckCancellation(cancelled);
             const float *const source = sourceVertices + index * 17;
             GpuVertex vertex;
             vertex.position = {source[0], source[1], source[2], 1.0f};
@@ -175,6 +189,7 @@ std::shared_ptr<const RayTracingSceneData> BuildRayTracingScene(
                 buildTriangles.size() +
                 static_cast<std::size_t>(indexCount / 3));
         for (qsizetype index = 0; index + 2 < indexCount; index += 3) {
+            if (index % 3072 == 0) CheckCancellation(cancelled);
             const std::uint32_t localA = indices[index];
             const std::uint32_t localB = indices[index + 1];
             const std::uint32_t localC = indices[index + 2];
@@ -209,12 +224,13 @@ std::shared_ptr<const RayTracingSceneData> BuildRayTracingScene(
         nodes.reserve(buildTriangles.size() * 2u);
         BuildBvhNode(buildTriangles, 0u,
                      static_cast<std::uint32_t>(buildTriangles.size()),
-                     nodes);
+                     nodes, cancelled);
     }
 
     std::vector<GpuTriangle> triangles;
     triangles.reserve(buildTriangles.size());
     for (const BuildTriangle &triangle : buildTriangles) {
+        if (triangles.size() % 1024u == 0u) CheckCancellation(cancelled);
         triangles.push_back(triangle.triangle);
     }
 
@@ -231,6 +247,7 @@ std::shared_ptr<const RayTracingSceneData> BuildRayTracingScene(
         materials.push_back(material);
     }
 
+    CheckCancellation(cancelled);
     result->vertices = ToBytes(vertices);
     result->triangles = ToBytes(triangles);
     result->bvhNodes = ToBytes(nodes);
@@ -241,6 +258,8 @@ std::shared_ptr<const RayTracingSceneData> BuildRayTracingScene(
     result->bvhNodeCount = static_cast<std::uint32_t>(nodes.size());
     result->materialCount = static_cast<std::uint32_t>(materials.size());
     return result;
+} catch (const BuildCancelled &) {
+    return nullptr;
 }
 
 }  // namespace forevertas::viewer

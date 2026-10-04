@@ -162,7 +162,7 @@ void GpuRayTracingRenderer::initialize(
 void GpuRayTracingRenderer::synchronize(QQuickRhiItem *rhiItem) {
     auto *const item = static_cast<GpuRayTracingView *>(rhiItem);
     const std::shared_ptr<const RayTracingSceneData> nextScene =
-            item->viewerController() != nullptr
+            item->active() && item->viewerController() != nullptr
             ? item->viewerController()->rayTracingScene()
             : nullptr;
     if (scene_ != nextScene) {
@@ -529,6 +529,7 @@ void GpuRayTracingRenderer::render(
         !rhi_->isFeatureSupported(QRhi::Compute) ||
         !rhi_->isFeatureSupported(QRhi::TextureArrays) ||
         !rhi_->isTextureFormatSupported(QRhiTexture::RGBA32F)) {
+        if (uploadedScene_ && uploadedScene_ != scene_) releaseResources();
         commandBuffer->beginPass(
                 renderTarget(), clearColor, {1.0f, 0});
         commandBuffer->endPass();
@@ -586,7 +587,17 @@ QObject *GpuRayTracingView::viewer() const { return viewer_; }
 void GpuRayTracingView::setViewer(QObject *viewer) {
     auto *const controller = qobject_cast<RaceViewerController *>(viewer);
     if (viewer_ == controller) return;
+    if (viewer_) disconnect(viewer_, nullptr, this, nullptr);
     viewer_ = controller;
+    if (viewer_) {
+        connect(viewer_, &RaceViewerController::rayTracingSceneChanged,
+                this, [this]() { update(); });
+        connect(viewer_, &RaceViewerController::sceneChanged, this, [this]() {
+            if (active_ && supported()) viewer_->requestRayTracingScene();
+            update();
+        });
+        if (active_ && supported()) viewer_->requestRayTracingScene();
+    }
     emit viewerChanged();
     update();
 }
@@ -596,6 +607,7 @@ bool GpuRayTracingView::active() const { return active_; }
 void GpuRayTracingView::setActive(bool active) {
     if (active_ == active) return;
     active_ = active;
+    if (active_ && supported() && viewer_) viewer_->requestRayTracingScene();
     emit activeChanged();
     update();
 }

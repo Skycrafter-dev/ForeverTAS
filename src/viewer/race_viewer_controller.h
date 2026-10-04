@@ -334,6 +334,7 @@ public:
     QVector3D sceneBoundsMin() const;
     QVector3D sceneBoundsMax() const;
     std::shared_ptr<const RayTracingSceneData> rayTracingScene() const;
+    void requestRayTracingScene();
     RaceViewerInputSample inputSample(qint64 tick) const noexcept;
     void addSearchRun(
             const QString &packsDirectory,
@@ -415,6 +416,7 @@ public slots:
     Q_INVOKABLE QString telemetryScriptError(const QString &script) const;
 
 signals:
+    void rayTracingSceneChanged();
     void sceneChanged();
     void poseChanged();
     void timelineChanged();
@@ -436,6 +438,7 @@ signals:
     void telemetryScriptChanged();
 
 private:
+    void cancelRayTracingBuild();
     void applyLoadResult(std::uint64_t loadSerial,
                          RaceViewerLoadResult result);
     void beginMapLoad(const QString &packsDirectory,
@@ -501,6 +504,9 @@ private:
     WhiteboardModel whiteboard_;
     std::vector<std::unique_ptr<RaceGeometry>> visualGeometries_;
     std::shared_ptr<const RayTracingSceneData> rayTracingScene_;
+    std::vector<StaticVisualBatch> rayTracingSourceBatches_;
+    std::shared_ptr<std::atomic_bool> rayTracingCancelled_;
+    std::uint64_t rayTracingGeneration_ = 0;
     std::vector<std::unique_ptr<RaceGeometry>>
             ellipsoidFilledGeometries_;
     RaceGeometry ellipsoidWireGeometry_;

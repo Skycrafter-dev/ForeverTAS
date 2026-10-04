@@ -623,6 +623,9 @@ bool TestStaticBatching() {
     }
     const auto rayTracingScene =
             forevertas::viewer::BuildRayTracingScene(result.batches);
+    const std::atomic_bool cancelled(true);
+    okay &= Check(!forevertas::viewer::BuildRayTracingScene(result.batches, &cancelled),
+                  "cancelled ray tracing build must not publish a partial scene");
     std::uint32_t expectedRayTracingTriangles = 0u;
     for (const StaticVisualBatch &batch : result.batches) {
         if (batch.defaultVisible) {

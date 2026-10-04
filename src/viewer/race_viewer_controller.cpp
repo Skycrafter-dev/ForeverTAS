@@ -14,6 +14,7 @@
 
 #include <QCryptographicHash>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QMetaObject>
 #include <QMatrix4x4>
 #include <QJsonDocument>
@@ -24,6 +25,7 @@
 #include <QThread>
 #include <QVariantMap>
 #include <QtEndian>
+#include <QtConcurrentRun>
 
 #include <algorithm>
 #include <array>
@@ -1533,7 +1535,6 @@ RaceViewerLoadResult LoadMapData(const QString &packsDirectory,
 
         StaticVisualBatchResult batches =
                 BuildStaticVisualBatches(*renderScene);
-        result.rayTracingScene = BuildRayTracingScene(batches.batches);
         result.materialCount =
                 static_cast<qint64>(renderScene->materials.size());
         result.diagnosticCount +=
@@ -2161,6 +2162,7 @@ RaceViewerController::RaceViewerController(QObject *parent)
 }
 
 RaceViewerController::~RaceViewerController() {
+    cancelRayTracingBuild();
     playbackTimer_.stop();
     manualDriveTimer_.stop();
     simulationDebugger_.stopSession();
@@ -3011,6 +3013,45 @@ QVector3D RaceViewerController::sceneBoundsMax() const {
 std::shared_ptr<const RayTracingSceneData>
 RaceViewerController::rayTracingScene() const {
     return rayTracingScene_;
+}
+
+void RaceViewerController::cancelRayTracingBuild() {
+    ++rayTracingGeneration_;
+    if (rayTracingCancelled_) rayTracingCancelled_->store(true);
+    rayTracingCancelled_.reset();
+}
+
+void RaceViewerController::requestRayTracingScene() {
+    if (!loaded_ || loading_ || rayTracingScene_ || rayTracingCancelled_ ||
+        rayTracingSourceBatches_.empty()) return;
+    using Result = std::pair<std::shared_ptr<const RayTracingSceneData>, QString>;
+    auto *watcher = new QFutureWatcher<Result>(this);
+    const auto generation = rayTracingGeneration_;
+    const auto cancelled = std::make_shared<std::atomic_bool>(false);
+    rayTracingCancelled_ = cancelled;
+    connect(watcher, &QFutureWatcher<Result>::finished, this,
+            [this, watcher, generation]() {
+        const Result result = watcher->result();
+        watcher->deleteLater();
+        if (generation != rayTracingGeneration_) return;
+        rayTracingCancelled_.reset();
+        if (!result.second.isEmpty()) {
+            setStatusText(tr("Ray-tracing scene failed: %1").arg(result.second));
+            return;
+        }
+        rayTracingScene_ = result.first;
+        emit rayTracingSceneChanged();
+    });
+    // QByteArray copies share the immutable raster buffers; no second vertex
+    // allocation is made until ray tracing is explicitly requested.
+    watcher->setFuture(QtConcurrent::run(
+            [batches = rayTracingSourceBatches_, cancelled]() -> Result {
+        try {
+            return {BuildRayTracingScene(batches, cancelled.get()), {}};
+        } catch (const std::exception &error) {
+            return {nullptr, QString::fromUtf8(error.what())};
+        }
+    }));
 }
 
 QVector2D
@@ -4826,6 +4867,7 @@ void RaceViewerController::beginMapLoad(const QString &packsDirectory,
     // Keep the published 3D scene attached until the replacement is complete.
     // Publishing an empty run/ellipsoid model detaches nested Repeater3D render
     // nodes on some Qt Quick 3D backends.
+    cancelRayTracingBuild();
     setLoading(true);
     cancelInputPreviewBuild();
     cancelStoredRunRebuilds();
@@ -4911,6 +4953,8 @@ void RaceViewerController::applyLoadResult(
     }
     stopManualDrive();
 
+    cancelRayTracingBuild();
+    rayTracingSourceBatches_ = result.visualBatches;
     trackFilledGeometry_.setMesh(
             std::move(result.track.filled),
             static_cast<int>(sizeof(FilledVertex)),
@@ -4958,6 +5002,7 @@ void RaceViewerController::applyLoadResult(
     }
     visualGeometries_ = std::move(visualGeometries);
     rayTracingScene_ = std::move(result.rayTracingScene);
+    emit rayTracingSceneChanged();
     visualMaterials_ = std::move(result.visualMaterials);
     visualBatches_ = std::move(visualBatches);
     carEllipsoids_ = std::move(result.carEllipsoids);
