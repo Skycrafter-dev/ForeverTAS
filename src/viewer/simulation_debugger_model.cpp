@@ -1,4 +1,5 @@
 #include "viewer/simulation_debugger_model.h"
+#include "viewer/debugger_tools.h"
 
 #include "simulation_debug_sources.h"
 
@@ -745,15 +746,14 @@ void SimulationDebuggerModel::beginPendingSession() {
     setStatus(QStringLiteral("Starting the real reference physics engine..."));
     emit stateChanged();
     debugger_.setWorkingDirectory(QCoreApplication::applicationDirPath());
-    const QString debuggerCommand = quoteShellArgument(lldbExecutablePath()) +
-                                    QStringLiteral(" --no-lldbinit");
-    debugger_.start(scriptExecutablePath(),
-                    {QStringLiteral("-qefc"), debuggerCommand,
-                     QStringLiteral("/dev/null")});
+    debugger_.start(runtimeTerminalPath_, DebuggerTerminalArguments(
+            NativeDebuggerTerminalPlatform(), runtimeLldbPath_,
+            {QStringLiteral("--no-lldbinit"), QStringLiteral("--no-use-colors")}));
     QTimer::singleShot(5000, this, [this, generation]() {
         if (generation == sessionGeneration_ && active_ &&
-            debugger_.state() != QProcess::Running) {
-            failSession(QStringLiteral("LLDB could not be started."));
+            (debugger_.state() != QProcess::Running || startupPromptsRemaining_ > 0)) {
+            failSession(QStringLiteral("LLDB did not produce an interactive prompt. Check Debugger tools and terminal runtime dependencies.\n%1")
+                                .arg(debuggerBuffer_.right(2000)));
         }
     });
 }
@@ -1118,20 +1118,44 @@ int SimulationDebuggerModel::depth(const QString &path) {
     return path.count(QLatin1Char('/'));
 }
 
-QString SimulationDebuggerModel::lldbExecutablePath() {
-#ifdef FOREVERTAS_LLDB_EXECUTABLE
-    return QString::fromUtf8(FOREVERTAS_LLDB_EXECUTABLE);
-#else
-    return {};
-#endif
+QString SimulationDebuggerModel::configuredLldbPath() const {
+    return QSettings().value(QStringLiteral("simulationDebugger/lldbPath")).toString();
 }
 
-QString SimulationDebuggerModel::scriptExecutablePath() {
-#ifdef FOREVERTAS_SCRIPT_EXECUTABLE
-    return QString::fromUtf8(FOREVERTAS_SCRIPT_EXECUTABLE);
-#else
-    return {};
-#endif
+QString SimulationDebuggerModel::configuredTerminalPath() const {
+    return QSettings().value(QStringLiteral("simulationDebugger/terminalPath")).toString();
+}
+
+void SimulationDebuggerModel::configureTools(const QString &lldb, const QString &terminal) {
+    if (active_ || preparing_) return;
+    QSettings().setValue(QStringLiteral("simulationDebugger/lldbPath"), lldb.trimmed());
+    QSettings().setValue(QStringLiteral("simulationDebugger/terminalPath"), terminal.trimmed());
+    refreshDebuggerTools();
+}
+
+void SimulationDebuggerModel::refreshDebuggerTools() {
+    if (active_ || preparing_) return;
+    const auto tools = DiscoverDebuggerTools();
+    runtimeLldbPath_ = tools.lldb;
+    runtimeTerminalPath_ = tools.terminal;
+    preparing_ = true;
+    available_ = false;
+    setStatus(QStringLiteral("Checking debugger runtime..."));
+    emit stateChanged();
+    auto watcher = new QFutureWatcher<QString>(this);
+    connect(watcher, &QFutureWatcher<QString>::finished, this, [this, watcher] {
+        const auto error = watcher->result();
+        watcher->deleteLater();
+        preparing_ = false;
+        available_ = error.isEmpty() && !sources_.empty();
+        setStatus(available_ ? QStringLiteral("Real reference engine source is ready.")
+                            : error.isEmpty() ? QStringLiteral("Reference source resources are missing; reinstall the application.") : error);
+        emit stateChanged();
+        if (pendingStart_ && available_) beginPendingSession();
+        else if (!available_) pendingStart_ = false;
+    });
+    const auto worker = workerExecutablePath();
+    watcher->setFuture(QtConcurrent::run([tools, worker] { return ProbeDebuggerTools(tools, worker); }));
 }
 
 QString SimulationDebuggerModel::workerExecutablePath() {
@@ -1163,12 +1187,6 @@ QString SimulationDebuggerModel::quoteDebuggerArgument(const QString &value) {
     escaped.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
     escaped.replace(QLatin1Char('"'), QStringLiteral("\\\""));
     return QLatin1Char('"') + escaped + QLatin1Char('"');
-}
-
-QString SimulationDebuggerModel::quoteShellArgument(const QString &value) {
-    QString escaped = value;
-    escaped.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
-    return QLatin1Char('\'') + escaped + QLatin1Char('\'');
 }
 
 int SimulationDebuggerModel::sourceIndex(const QString &path) const {
@@ -1511,9 +1529,10 @@ void SimulationDebuggerModel::loadSources() {
 
     const QString root = sourceRootPath();
     const QString workerPath = workerExecutablePath();
-    const QString lldbPath = lldbExecutablePath();
-    const QString scriptPath = scriptExecutablePath();
-    using SourcePreparation = std::pair<std::vector<SourceFile>, bool>;
+    const auto tools = DiscoverDebuggerTools();
+    runtimeLldbPath_ = tools.lldb;
+    runtimeTerminalPath_ = tools.terminal;
+    using SourcePreparation = std::pair<std::vector<SourceFile>, QString>;
     auto *const watcher = new QFutureWatcher<SourcePreparation>(this);
     connect(watcher, &QFutureWatcher<SourcePreparation>::finished, this,
             [this, watcher, generation]() {
@@ -1532,7 +1551,7 @@ void SimulationDebuggerModel::loadSources() {
                                 ? preferred
                                 : (sources_.empty() ? QString()
                                                     : sources_.front().path);
-                available_ = prepared.second && !sources_.empty();
+                available_ = prepared.second.isEmpty() && !sources_.empty();
                 preparing_ = false;
                 restoreBreakpoints();
                 statusText_ =
@@ -1540,10 +1559,9 @@ void SimulationDebuggerModel::loadSources() {
                                 ? QStringLiteral(
                                           "Real reference engine source is "
                                           "ready.")
-                                : QStringLiteral(
-                                          "Native source debugging requires "
-                                          "the reference worker, LLDB, and a "
-                                          "terminal bridge.");
+                                : prepared.second.isEmpty()
+                                    ? QStringLiteral("Reference source resources are missing; reinstall the application.")
+                                    : prepared.second;
                 emit selectionChanged();
                 emit filesChanged();
                 emit linesChanged();
@@ -1555,8 +1573,7 @@ void SimulationDebuggerModel::loadSources() {
                     pendingStart_ = false;
                 }
             });
-    watcher->setFuture(QtConcurrent::run([root, workerPath, lldbPath,
-                                          scriptPath]() {
+    watcher->setFuture(QtConcurrent::run([root, workerPath, tools]() {
         std::vector<SourceFile> sources;
         sources.reserve(kSimulationDebugSourcePaths.size());
         for (const std::string_view entry : kSimulationDebugSourcePaths) {
@@ -1605,10 +1622,7 @@ void SimulationDebuggerModel::loadSources() {
                   [](const SourceFile &left, const SourceFile &right) {
                       return left.path < right.path;
                   });
-        const bool toolsAvailable = QFileInfo::exists(workerPath) &&
-                                    QFileInfo::exists(lldbPath) &&
-                                    QFileInfo::exists(scriptPath);
-        return SourcePreparation{std::move(sources), toolsAvailable};
+        return SourcePreparation{std::move(sources), ProbeDebuggerTools(tools, workerPath)};
     }));
 }
 

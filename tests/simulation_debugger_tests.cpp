@@ -210,6 +210,19 @@ int main(int argc, char **argv) {
     okay &= Check(WaitForPreparation(*model, &preparationPulses) &&
                           preparationPulses > 0,
                   "reference source preparation blocked the UI event loop");
+    const auto originalToolCheckLine = SourceLine(*model, QString::fromLatin1(kVehicleSource), kApplyControlsLine);
+    const auto editedToolCheckLine = originalToolCheckLine + QStringLiteral(" // preserved during tool discovery");
+    okay &= Check(model->updateLine(kApplyControlsLine, editedToolCheckLine), "could not prepare source edit for runtime refresh");
+    model->configureTools(QStringLiteral("/missing/forevertas-test-lldb"), {});
+    static_cast<void>(WaitForPreparation(*model));
+    okay &= Check(!model->available() && model->statusText().contains(QStringLiteral("LLDB")) &&
+                          SourceLine(*model, QString::fromLatin1(kVehicleSource), kApplyControlsLine) == editedToolCheckLine,
+                  "invalid configured tool was ignored or runtime refresh discarded source edits");
+    model->configureTools({}, {});
+    okay &= Check(WaitForPreparation(*model) && model->hasEdits() &&
+                          SourceLine(*model, QString::fromLatin1(kVehicleSource), kApplyControlsLine) == editedToolCheckLine,
+                  "PATH runtime discovery failed or overwrote source edits");
+    model->resetEdits();
     okay &= Check(model->toggleBreakpoint(QString::fromLatin1(kVehicleSource),
                                           kApplyControlsLine),
                   "persistent breakpoint setup failed");

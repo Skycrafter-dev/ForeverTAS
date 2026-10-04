@@ -50,6 +50,7 @@ find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(ZLIB REQUIRED)
 find_program(FOREVERTAS_LLDB_EXECUTABLE NAMES lldb)
 find_program(FOREVERTAS_SCRIPT_EXECUTABLE NAMES script)
+find_program(FOREVERTAS_WINPTY_EXECUTABLE NAMES winpty)
 
 set(FOREVERTAS_APP_ID "dev.skycrafter.forevertas")
 set(FOREVERTAS_DISPLAY_NAME "ForeverTAS")
@@ -280,6 +281,8 @@ add_library(forevertas_gui STATIC
     src/app/shutdown_controller.h
     src/viewer/simulation_debugger_model.cpp
     src/viewer/simulation_debugger_model.h
+    src/viewer/debugger_tools.cpp
+    src/viewer/debugger_tools.h
     src/viewer/visual_scene_pipeline.cpp
     src/viewer/visual_scene_pipeline.h
     src/viewer/whiteboard_canvas_item.cpp
@@ -337,14 +340,6 @@ configure_file(
 qt_add_resources(forevertas_gui "simulation_debug_sources"
     PREFIX "/simulation-debug"
     FILES ${FOREVERTAS_SIMULATION_DEBUG_SOURCE_FILES})
-if(FOREVERTAS_LLDB_EXECUTABLE)
-    target_compile_definitions(forevertas_gui PRIVATE
-        FOREVERTAS_LLDB_EXECUTABLE="${FOREVERTAS_LLDB_EXECUTABLE}")
-endif()
-if(FOREVERTAS_SCRIPT_EXECUTABLE)
-    target_compile_definitions(forevertas_gui PRIVATE
-        FOREVERTAS_SCRIPT_EXECUTABLE="${FOREVERTAS_SCRIPT_EXECUTABLE}")
-endif()
 target_compile_definitions(forevertas_gui PRIVATE
     FOREVERTAS_SIMULATION_DEBUG_SOURCE_ROOT="${forevervalidator_SOURCE_DIR}")
 target_include_directories(forevertas_gui PUBLIC
@@ -909,6 +904,13 @@ if(BUILD_TESTING)
     add_executable(forevertas-controller-tests
         tests/search_controller_tests.cpp)
     add_executable(forevertas-shutdown-tests tests/shutdown_tests.cpp src/app/shutdown_controller.cpp)
+    add_executable(forevertas-debugger-tools-tests tests/debugger_tools_tests.cpp src/viewer/debugger_tools.cpp)
+    target_include_directories(forevertas-debugger-tools-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(forevertas-debugger-tools-tests PRIVATE Qt6::Core)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-debugger-tools-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-debugger-tools COMMAND forevertas-debugger-tools-tests)
     target_include_directories(forevertas-shutdown-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(forevertas-shutdown-tests PRIVATE Qt6::Core)
     if(FOREVERTAS_WARNING_OPTIONS)
@@ -1248,7 +1250,8 @@ if(BUILD_TESTING)
                 forevertas-simulation-debugger-tests PRIVATE
                 ${FOREVERTAS_WARNING_OPTIONS})
         endif()
-        if(FOREVERTAS_LLDB_EXECUTABLE AND FOREVERTAS_SCRIPT_EXECUTABLE)
+        if(FOREVERTAS_LLDB_EXECUTABLE AND ((WIN32 AND FOREVERTAS_WINPTY_EXECUTABLE) OR
+                                         (NOT WIN32 AND FOREVERTAS_SCRIPT_EXECUTABLE)))
             add_test(NAME forevertas-simulation-debugger
                      COMMAND forevertas-simulation-debugger-tests
                          "${FOREVERTAS_TEST_PACK_DIRECTORY}"

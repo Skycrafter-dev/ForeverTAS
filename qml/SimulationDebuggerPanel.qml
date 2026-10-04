@@ -17,6 +17,40 @@ Item {
 
     implicitHeight: 760
 
+    Dialog {
+        id: toolsDialog
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, root.width - 24)
+        title: qsTr("Debugger tools")
+        modal: true
+        footer: DialogButtonBox {
+            ThemedButton { text: qsTr("Apply"); DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
+            ThemedButton { text: qsTr("Cancel"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
+        }
+        onOpened: {
+            lldbPath.text = root.debuggerModel.configuredLldbPath
+            terminalPath.text = root.debuggerModel.configuredTerminalPath
+        }
+        onAccepted: root.debuggerModel.configureTools(lldbPath.text, terminalPath.text)
+        contentItem: ColumnLayout {
+            Label { text: qsTr("LLDB executable"); color: AppTheme.text }
+            TextField {
+                id: lldbPath
+                Layout.fillWidth: true
+                placeholderText: qsTr("Automatic")
+                selectByMouse: true
+            }
+            Label { text: qsTr("Terminal bridge executable"); color: AppTheme.text }
+            TextField {
+                id: terminalPath
+                Layout.fillWidth: true
+                placeholderText: Qt.platform.os === "windows" ? "winpty.exe" : "script"
+                selectByMouse: true
+            }
+        }
+    }
+
     Rectangle {
         anchors.fill: parent
         z: -1
@@ -222,6 +256,23 @@ Item {
                                  : qsTr("Expand code panel")
                 ToolTip.visible: hovered
                 ToolTip.text: Accessible.name
+            }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            Item { Layout.fillWidth: true }
+            ThemedButton {
+                objectName: "debuggerToolsButton"
+                text: qsTr("Tools")
+                enabled: !root.debuggerModel.active && !root.debuggerModel.preparing
+                onClicked: toolsDialog.open()
+            }
+            ThemedButton {
+                objectName: "refreshDebuggerToolsButton"
+                text: qsTr("Recheck")
+                enabled: !root.debuggerModel.active && !root.debuggerModel.preparing
+                onClicked: root.debuggerModel.refreshDebuggerTools()
             }
         }
 

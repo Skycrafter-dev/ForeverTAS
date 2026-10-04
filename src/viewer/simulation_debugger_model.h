@@ -18,6 +18,8 @@ class SimulationDebuggerModel final : public QObject {
     Q_OBJECT
 
     Q_PROPERTY(bool available READ available NOTIFY stateChanged)
+    Q_PROPERTY(QString configuredLldbPath READ configuredLldbPath NOTIFY stateChanged)
+    Q_PROPERTY(QString configuredTerminalPath READ configuredTerminalPath NOTIFY stateChanged)
     Q_PROPERTY(bool preparing READ preparing NOTIFY stateChanged)
     Q_PROPERTY(bool active READ active NOTIFY stateChanged)
     Q_PROPERTY(bool running READ running NOTIFY stateChanged)
@@ -48,6 +50,10 @@ class SimulationDebuggerModel final : public QObject {
     ~SimulationDebuggerModel() override;
 
     bool available() const;
+    QString configuredLldbPath() const;
+    QString configuredTerminalPath() const;
+    Q_INVOKABLE void configureTools(const QString &lldb, const QString &terminal);
+    Q_INVOKABLE void refreshDebuggerTools();
     bool shutdownReady() const { return debugger_.state() == QProcess::NotRunning; }
     bool preparing() const;
     bool active() const;
@@ -194,12 +200,9 @@ class SimulationDebuggerModel final : public QObject {
                           const QHash<QString, QStringList> &sourceLines);
     static QString fileName(const QString &path);
     static int depth(const QString &path);
-    static QString lldbExecutablePath();
-    static QString scriptExecutablePath();
     static QString workerExecutablePath();
     static QString sourceRootPath();
     static QString quoteDebuggerArgument(const QString &value);
-    static QString quoteShellArgument(const QString &value);
 
     int sourceIndex(const QString &path) const;
     SourceFile *selectedSource();
@@ -285,6 +288,8 @@ class SimulationDebuggerModel final : public QObject {
     QString selectedFilePath_;
     QString backendName_ = QStringLiteral("Reference");
     QString statusText_;
+    QString runtimeLldbPath_;
+    QString runtimeTerminalPath_;
     QString editError_;
     QString debuggerBuffer_;
     QString packsDirectory_;
