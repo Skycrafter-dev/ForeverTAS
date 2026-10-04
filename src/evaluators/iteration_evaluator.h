@@ -42,6 +42,8 @@ class IterationEvaluationSession {
 public:
     virtual ~IterationEvaluationSession() = default;
     virtual void SetExecutionContext(const ConditionExecutionContext &) {}
+    // True only after all samples relevant to this candidate have been consumed.
+    virtual bool IsComplete() const { return false; }
     virtual std::optional<EvaluationSample> Observe(
             const std::optional<
                     forevervalidator::experimental::PhysicsSandboxStateView>

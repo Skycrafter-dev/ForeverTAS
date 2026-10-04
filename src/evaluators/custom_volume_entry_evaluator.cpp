@@ -297,6 +297,7 @@ class CustomVolumeEntrySession final
 public:
     explicit CustomVolumeEntrySession(Prism prism)
         : prism_(std::move(prism)) {}
+    bool IsComplete() const override { return reported_; }
 
     std::optional<EvaluationSample> Observe(
             const std::optional<

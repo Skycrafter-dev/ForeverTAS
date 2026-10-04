@@ -1264,7 +1264,8 @@ SearchResult BasicBruteForceSearch::Run(
                 context.evaluator.CreateSession();
         std::optional<EvaluationSample> cumulativeSample;
         PhysicsSandboxStateView cumulativeView;
-        for (std::uint64_t tick = 0u; tick < evaluationTicks; ++tick) {
+        for (std::uint64_t tick = 0u;
+             tick < evaluationTicks && !session->IsComplete(); ++tick) {
             CheckCancellation(context.control);
             state = Require(context.sandbox.AdvanceTicks(1u),
                             "advancing evaluation tick");

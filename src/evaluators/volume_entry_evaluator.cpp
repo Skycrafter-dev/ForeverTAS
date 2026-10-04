@@ -63,6 +63,7 @@ std::optional<double> SegmentEntryFraction(const Box &box,
 class VolumeEntrySession final : public IterationEvaluationSession {
 public:
     explicit VolumeEntrySession(Box box) : box_(box) {}
+    bool IsComplete() const override { return reported_; }
 
     std::optional<EvaluationSample> Observe(
             const std::optional<

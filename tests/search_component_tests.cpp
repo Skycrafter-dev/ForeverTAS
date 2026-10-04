@@ -547,14 +547,23 @@ bool TestEvaluationTargets() {
         current.timeMs = 110u;
         current.car.position = {0.0f, 0.0f, 0.0f};
         const auto sample = session->Observe(previous, current);
-        okay &= Check(sample && std::abs(sample->timeMs - 109.0) < 1e-9,
+        okay &= Check(sample && session->IsComplete() &&
+                              std::abs(sample->timeMs - 109.0) < 1e-9,
                       "volume entry interpolation was incorrect");
+        okay &= Check(!session->Observe(previous, current),
+                      "completed volume session emitted another sample");
 
         session = evaluator->CreateSession();
         previous.car.position = {-10.0f, 5.0f, 0.0f};
         current.car.position = {10.0f, 6.0f, 0.0f};
-        okay &= Check(!session->Observe(previous, current),
+        okay &= Check(!session->Observe(previous, current) && !session->IsComplete(),
                       "disjoint swept segment entered the volume");
+        // A condition-rejected crossing is not passed to Observe. It must not
+        // prevent a later eligible crossing from completing this candidate.
+        previous.car.position = {-10.0f, 0.0f, 0.0f};
+        current.car.position = {0.0f, 0.0f, 0.0f};
+        okay &= Check(session->Observe(previous, current) && session->IsComplete(),
+                      "later eligible volume crossing did not complete");
     }
 
     {
