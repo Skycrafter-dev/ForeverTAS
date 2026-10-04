@@ -481,6 +481,7 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
             tickDurationMs);
     if (evaluationRegistration->id != kScriptedTargetEvaluationId &&
         evaluationRegistration->id != kCheckpointTimeEvaluationId &&
+        evaluationRegistration->id != kTimeEvaluationId &&
         plan.startTimeMs < earliestMutationTimeMs) {
         return {{},
                 QStringLiteral(

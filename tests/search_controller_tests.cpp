@@ -8,6 +8,7 @@
 #include "app/search_worker.h"
 #include "app/search_diagnostic.h"
 #include "app/search_session_store.h"
+#include "evaluators/time_evaluator.h"
 #include "evaluators/scripted_target_evaluator.h"
 #include "mutations/random_steering_mutator.h"
 #include "replay_file_io.h"
@@ -1357,7 +1358,10 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
             "auto-promote search mode was unexpectedly enabled by default");
     okay &= Check(controller.modifierOptions().size() == 5,
                   "required modifier options were not exposed");
-    okay &= Check(controller.evaluationTargetOptions().size() == 9,
+    okay &= Check(controller.evaluationTargetOptions().size() == 10 &&
+                          HasOption(controller.evaluationTargetOptions(),
+                                    QStringLiteral("time"),
+                                    QStringLiteral("TimeEvaluationSettings.qml")),
                   "required evaluation targets were not exposed");
     okay &= Check(HasOption(
                           controller.evaluationTargetOptions(),
@@ -2343,12 +2347,12 @@ bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath
     request.simulationHorizonMs = 100;
     request.modifiers[0].settings["minTimeMs"] = "0";
     request.modifiers[0].settings["maxTimeMs"] = "50";
-    auto target = DefaultScriptedTargetOptionSettings();
-    target["script"] = "min time.ms\nmax car.cps";
-    target["minTimeMs"] = "10";
+    auto target = DefaultTimeOptionSettings();
+    target["minTimeMs"] = "30";
     target["maxTimeMs"] = "100";
-    request.evaluationTarget = {kScriptedTargetEvaluationId, target};
-    request.condition = CompileConditionScript("time.ms >= 30").program;
+    request.evaluationTarget = {kTimeEvaluationId, target};
+    // Always true: the Time target scores the window start.
+    request.condition = CompileConditionScript("car.speed >= 0").program;
     SearchRunControl control;
     control.iterationLimit = 0;
     control.sampleBestTimeline = false;
@@ -2357,7 +2361,7 @@ bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath
     request.searchAlgorithm.id = "not-a-search";
     request.backend = PhysicsBackend::Vulkan;
     const auto base = EvaluateBaseline(request);
-    bool okay = Check(base && base->iterations == 0 && base->mutationImprovementCount == 0 &&
+    bool okay = Check(base && base->bestScore == 30.0 && base->iterations == 0 && base->mutationImprovementCount == 0 &&
                       base->winnerSource == SearchWinnerSource::Baseline && base->bestTimeline.empty() &&
                       base->bestScore == ordinary.bestScore && base->bestEvaluationTimeMs == ordinary.bestEvaluationTimeMs &&
                       base->metricValues == ordinary.metricValues && base->objectiveScores == ordinary.objectiveScores,
@@ -2373,11 +2377,14 @@ bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     controller.setSimulationHorizonMs("100");
-    controller.setEvaluationTargetId(QString::fromLatin1(kScriptedTargetEvaluationId));
-    controller.setEvaluationTargetSetting("script", "min time.ms\nmax car.cps");
-    controller.setEvaluationTargetSetting("minTimeMs", "10");
+    controller.setEvaluationTargetId(QString::fromLatin1(kTimeEvaluationId));
+    controller.setEvaluationTargetSetting("minTimeMs", "30");
     controller.setEvaluationTargetSetting("maxTimeMs", "100");
-    controller.setConditionScript("time.ms >= 30");
+    controller.setConditionScript("// no condition yet");
+    okay &= Check(!controller.canEvaluateBase() &&
+                          controller.validationMessage().contains(QStringLiteral("at least one condition")),
+                  "the Time target was accepted without a condition");
+    controller.setConditionScript("car.speed >= 0");
     for (int i = 0; i < controller.modifierPasses().size(); ++i) controller.setModifierPassEnabled(i, false);
     controller.setAutoRestartMode("attempts");
     controller.setAutoRestartAttempts("invalid");
@@ -2392,13 +2399,13 @@ bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath
                   "base worker did not gate concurrent operations");
     okay &= Check(WaitUntil([&] { return !controller.evaluatingBase(); }, 30000), "base evaluation timed out");
     const auto result = controller.baseEvaluationResult();
-    okay &= Check(result.value("eligible").toBool() && result.value("metricValues").toList() == QVariantList{30.0, 0.0} &&
+    okay &= Check(result.value("eligible").toBool() && result.value("score").toDouble() == 30.0 &&
                           result.value("backend") == "optimized-cpu" && completed.isEmpty() &&
                           !controller.baseEvaluationText().contains(QStringLiteral("Optimized")) &&
                           controller.baseInputScript() == script && controller.modifierPasses() == passes &&
                           controller.cycleRows() == cycles && controller.sessionOptions() == sessions &&
                           controller.bestInputsText().isEmpty(), "base evaluation mutated the search or history");
-    controller.setConditionScript("time.ms < 0");
+    controller.setConditionScript("car.speed < 0");
     okay &= Check(controller.baseEvaluationResult().isEmpty(), "changed settings retained a current-looking base result");
     controller.evaluateBase();
     okay &= Check(WaitUntil([&] { return !controller.evaluatingBase(); }, 30000) &&

@@ -162,7 +162,9 @@ setting keys ending in `TimeMs` are translated by one physics tick exactly once
 when a registry creates a simulation component; stored values and relative
 durations remain user-facing.
 Built-in targets cover precise finish time, stunt points by a chosen deadline,
-cuboid entry time, velocity, point distance, and weighted pose error. The stunt
+cuboid entry time, velocity, point distance, weighted pose error, and **Time**:
+the first moment all Conditions are true, made as early or as late as
+possible. The stunt
 target observes only the chosen deadline because the score is monotonic.
 The Custom target accepts one `min EXPRESSION`, `max EXPRESSION`, or
 `target VALUE EXPRESSION` directive per line, with `#` comment lines and a time

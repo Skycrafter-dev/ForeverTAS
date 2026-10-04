@@ -1,5 +1,6 @@
 #include "conditions/condition_program.h"
 #include "evaluators/scripted_target_evaluator.h"
+#include "evaluators/time_evaluator.h"
 #include "mutations/random_steering_mutator.h"
 #include "mutations/input_insertion_mutator.h"
 #include "mutations/replay_input_script.h"
@@ -9,6 +10,8 @@
 #include <forevervalidator/native.h>
 
 #include <iostream>
+#include <map>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
@@ -28,28 +31,48 @@ int main(int argc, char **argv) {
     if (forevervalidator::QueryHipBackendDiagnostics().IsReady()) backends.push_back(PhysicsBackend::Hip);
     else std::cout << "SKIP unavailable HIP device\n";
 #endif
+    // Time target cases with fixed answers. With an always-true condition
+    // the first match is the window start (at least the first 10 ms tick).
     struct Case {
-        const char *script;
+        const char *goal;
         const char *condition;
         const char *minimum;
         const char *maximum;
-        std::vector<double> expected;
+        std::optional<double> expected;
         bool mutation;
     };
     const std::vector<Case> cases{
-        {"min time.ms", "time.ms >= 30", "10", "100", {30}, false},
-        {"min time.ms", "time.ms >= 30", "50", "90", {50}, false},
-        {"max time.ms", "time.ms <= 80", "20", "100", {80}, false},
-        {"min time.ms", "time.ms < 0", "10", "100", {}, false},
-        {"min time.ms", "time.ms >= 30\niterations > 0", "10", "100", {30}, true},
-        {"min time.ms", "time.ms >= 30\ntime_since(last_restart.time) >= 0", "10", "100", {30}, false},
-        {"max car.completed_laps", "car.laps = 0", "10", "100", {0}, false},
-        {"min time.ms", "car.completed_laps >= 1", "10", "100", {}, false},
-        {"min time.ms", "# disabled\n(time.ms == 30 || time.ms >= 80) AND car.cps != 1 // entry", "10", "100", {30}, false},
-        {"min time.ms", "time.ms == 30 OR time.ms = 50 AND car.cps != 0", "10", "100", {30}, false},
-        {"min time.ms", "(time.ms == 30 OR time.ms = 50) AND car.cps != 0", "10", "100", {}, false},
-        {"max time.ms", "time.ms != 100 && (time.ms <= 50 OR time.ms >= 80)", "10", "100", {90}, false}
+        {"earliest", "car.speed >= 0", "0", "100", 10.0, false},
+        {"earliest", "car.speed >= 0", "50", "90", 50.0, false},
+        {"latest", "car.speed >= 0", "20", "100", 20.0, false},
+        {"earliest", "car.speed < 0", "10", "100", std::nullopt, false},
+        {"earliest", "car.speed >= 0\niterations > 0", "10", "100", 10.0, true},
+        {"earliest", "car.speed >= 0\ntime_since(last_restart.time) >= 0", "10", "100", 10.0, false},
+        {"earliest", "car.completed_laps >= 1", "10", "100", std::nullopt, false},
+        {"earliest", "# disabled\n(car.speed >= 1000 || car.speed >= 0) AND car.cps != 1 // entry", "10", "100", 10.0, false},
+        {"earliest", "car.speed >= 0 OR car.speed >= 1000 AND car.cps != 0", "10", "100", 10.0, false},
+        {"earliest", "(car.speed >= 0 OR car.speed >= 1000) AND car.cps != 0", "10", "100", std::nullopt, false},
+        {"latest", "car.speed != -1 && (car.cps <= 0 OR car.cps >= 5)", "30", "100", 30.0, false}
     };
+    const auto timeTarget = [](const char *goal, const char *minimum, const char *maximum) {
+        auto target = DefaultTimeOptionSettings();
+        target["goal"] = goal;
+        target["minTimeMs"] = minimum;
+        target["maxTimeMs"] = maximum;
+        return OptionConfiguration{kTimeEvaluationId, target};
+    };
+    const auto runOrNothing = [](const SearchRequest &request, SearchRunControl &control)
+            -> std::optional<SearchResult> {
+        try {
+            return RunSearch(request, &control);
+        } catch (const std::runtime_error &error) {
+            if (std::string(error.what()) == "no iteration satisfied the selected evaluation target")
+                return std::nullopt;
+            throw;
+        }
+    };
+    // Data-dependent first matches: Reference decides, every backend must agree.
+    std::map<std::string, std::optional<SearchResult>> referenceResults;
     try {
         for (const auto backend : backends) {
             for (const auto &test : cases) {
@@ -62,38 +85,58 @@ int main(int argc, char **argv) {
                 modifier["minTimeMs"] = "0";
                 modifier["maxTimeMs"] = "100";
                 request.modifiers = {{kRandomSteeringModifierId, modifier}};
-                auto target = DefaultScriptedTargetOptionSettings();
-                target["script"] = test.script;
-                target["minTimeMs"] = test.minimum;
-                target["maxTimeMs"] = test.maximum;
-                request.evaluationTarget = {kScriptedTargetEvaluationId, target};
+                request.evaluationTarget = timeTarget(test.goal, test.minimum, test.maximum);
                 request.condition = CompileConditionScript(test.condition).program;
                 SearchRunControl control;
                 control.iterationLimit = 4;
                 control.sampleBestTimeline = false;
                 control.reuseLoadedSandbox = true;
-                const auto run = [&]() -> std::optional<SearchResult> {
-                    try {
-                        return RunSearch(request, &control);
-                    } catch (const std::runtime_error &error) {
-                        if (test.expected.empty() && std::string(error.what()) ==
-                                "no iteration satisfied the selected evaluation target") return std::nullopt;
-                        throw;
-                    }
-                };
-                const auto actual = run();
-                if (!actual) continue;
-                const auto &result = *actual;
-                if (result.metricValues != test.expected ||
-                    (result.winnerSource == SearchWinnerSource::Mutation) != test.mutation) {
-                    std::cerr << PhysicsBackendId(backend) << ' ' << test.script << " / " << test.condition
-                              << ": unexpected metric or winner; metrics=";
-                    for (const auto value : result.metricValues) std::cerr << value << ',';
-                    std::cerr << " winner=" << static_cast<int>(result.winnerSource) << '\n';
+                const auto result = runOrNothing(request, control);
+                if (result.has_value() != test.expected.has_value() ||
+                    (result && (result->bestScore != *test.expected ||
+                                (result->winnerSource == SearchWinnerSource::Mutation) != test.mutation))) {
+                    std::cerr << PhysicsBackendId(backend) << ' ' << test.goal << " / " << test.condition
+                              << ": unexpected result " << (result ? result->bestScore : -1.0)
+                              << " winner=" << (result ? static_cast<int>(result->winnerSource) : -1) << '\n';
                     return 1;
                 }
             }
-            std::cout << PhysicsBackendId(backend) << ": " << cases.size() << " simulation-time/lap target cases passed\n";
+            for (const char *goal : {"earliest", "latest"}) {
+                SearchRequest request(argv[1], argv[2]);
+                request.backend = backend;
+                request.parallelSampleCount = IsGpuBackend(backend) ? 4u : 1u;
+                request.simulationHorizonMs = 3000;
+                request.baseInputCommands = ParseInputScript("0.00 steer 0\n0.00 press up").commands;
+                auto modifier = DefaultRandomSteeringOptionSettings();
+                modifier["minTimeMs"] = "0";
+                modifier["maxTimeMs"] = "2000";
+                modifier["seed"] = "1234";
+                request.modifiers = {{kRandomSteeringModifierId, modifier}};
+                request.evaluationTarget = timeTarget(goal, "0", "3000");
+                request.condition = CompileConditionScript("car.speed >= 8").program;
+                SearchRunControl control;
+                control.iterationLimit = 16;
+                control.sampleBestTimeline = false;
+                const auto result = runOrNothing(request, control);
+                auto &reference = referenceResults[goal];
+                if (backend == backends.front()) {
+                    if (!result) throw std::runtime_error("reference never reached 8 m/s");
+                    reference = result;
+                    std::cout << goal << " first reached 8 m/s at " << result->bestScore
+                              << " ms (" << (result->winnerSource == SearchWinnerSource::Mutation
+                                                     ? "mutation" : "baseline") << ")\n";
+                } else if (!result || !reference || result->bestScore != reference->bestScore ||
+                           result->bestEvaluationTimeMs != reference->bestEvaluationTimeMs ||
+                           result->winnerSource != reference->winnerSource ||
+                           result->winningIterationIndex != reference->winningIterationIndex) {
+                    std::cerr << PhysicsBackendId(backend) << ' ' << goal
+                              << ": first match differs from Reference ("
+                              << (result ? result->bestScore : -1.0) << " vs "
+                              << (reference ? reference->bestScore : -1.0) << ")\n";
+                    return 1;
+                }
+            }
+            std::cout << PhysicsBackendId(backend) << ": " << cases.size() << " Time target cases and Reference parity passed\n";
             {
                 SearchRequest insertion(argv[1], argv[2]);
                 insertion.backend = backend;
@@ -107,10 +150,8 @@ int main(int argc, char **argv) {
                 modifier["steerMinCount"] = modifier["steerMaxCount"] = "1";
                 modifier["steerMaxHoldMs"] = "0";
                 insertion.modifiers = {{kInputInsertionModifierId, modifier}};
-                auto objective = DefaultScriptedTargetOptionSettings();
-                objective["script"] = "max time.ms";
-                objective["maxTimeMs"] = "200";
-                insertion.evaluationTarget = {kScriptedTargetEvaluationId, objective};
+                insertion.evaluationTarget = timeTarget("latest", "0", "200");
+                insertion.condition = CompileConditionScript("car.speed >= 0").program;
                 SearchRunControl control;
                 control.iterationLimit = 4;
                 control.sampleBestTimeline = false;
@@ -169,10 +210,8 @@ int main(int argc, char **argv) {
                 modifier["minTimeMs"] = "0";
                 modifier["maxTimeMs"] = "90";
                 safety.modifiers = {{kRandomSteeringModifierId, modifier}};
-                auto objective = DefaultScriptedTargetOptionSettings();
-                objective["script"] = "max time.ms";
-                objective["maxTimeMs"] = "100";
-                safety.evaluationTarget = {kScriptedTargetEvaluationId, objective};
+                safety.evaluationTarget = timeTarget("latest", "0", "100");
+                safety.condition = CompileConditionScript("car.speed >= 0").program;
                 SearchRunControl bounded;
                 bounded.sampleBestTimeline = false;
                 bounded.iterationLimit = 1;
@@ -204,6 +243,16 @@ int main(int argc, char **argv) {
                 std::cerr << PhysicsBackendId(backend) << ": final finish not counted as a completed lap\n";
                 return 1;
             }
+            finish.evaluationTarget = timeTarget("earliest", "0", "60000");
+            const auto lap = RunSearch(finish, &finishControl);
+            auto &finishReference = referenceResults["finish"];
+            if (backend == backends.front()) finishReference = lap;
+            else if (!finishReference || lap.bestScore != finishReference->bestScore) {
+                std::cerr << PhysicsBackendId(backend) << ": first completed lap differs from Reference ("
+                          << lap.bestScore << ")\n";
+                return 1;
+            }
+            std::cout << PhysicsBackendId(backend) << ": first completed lap at " << lap.bestScore << " ms\n";
         }
     } catch (const std::exception &error) {
         std::cerr << error.what() << '\n';

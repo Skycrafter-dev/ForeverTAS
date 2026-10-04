@@ -2622,7 +2622,6 @@ QVariantMap RaceViewerController::conditionPreview(
         case Value::PreviousSpeed:
         case Value::CheckpointCount:
         case Value::CompletedLaps:
-        case Value::SimulationTimeMilliseconds:
         case Value::WheelGroundContact0:
         case Value::WheelGroundContact1:
         case Value::WheelGroundContact2:
@@ -2708,8 +2707,6 @@ QVariantMap RaceViewerController::conditionPreview(
         } else if (instruction.value == Value::CompletedLaps) {
             readouts.push_back(QStringLiteral("%1 completed laps")
                                        .arg(current.completedLaps));
-        } else if (instruction.value == Value::SimulationTimeMilliseconds) {
-            readouts.push_back(QStringLiteral("%1 ms").arg(current.timeMs));
         } else if (instruction.value == Value::Velocity ||
                    instruction.value == Value::PreviousVelocity) {
             const bool prior = instruction.value == Value::PreviousVelocity;

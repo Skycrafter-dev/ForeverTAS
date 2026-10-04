@@ -1,6 +1,8 @@
 #include "app/rolling_throughput.h"
+#include "conditions/condition_catalog.h"
 #include "evaluators/iteration_evaluator.h"
 #include "evaluators/scripted_target_evaluator.h"
+#include "evaluators/time_evaluator.h"
 #include "input_timeline_time.h"
 #include "mutations/composite_input_mutator.h"
 #include "mutations/input_event_formatter.h"
@@ -1698,7 +1700,8 @@ bool TestRegistries() {
     }
     okay &= Check(forevertas::ModifierRegistry().size() == 5u,
                   "not all required modifiers are registered");
-    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 9u,
+    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 10u &&
+                          forevertas::FindEvaluationTarget(forevertas::kTimeEvaluationId) != nullptr,
                   "not all required evaluation targets are registered");
     return okay;
 }
@@ -2489,7 +2492,7 @@ bool TestBooleanConditions() {
     okay &= Check(CompileConditionScript(std::string(16385, ' ')).error.has_value(),
                   "oversized source bypassed its limit");
     auto target = DefaultScriptedTargetOptionSettings();
-    target["script"] = "// retained target\nmin time.ms // simulation time";
+    target["script"] = "// retained target\nmin car.speed // retained objective";
     okay &= Check(!ValidateScriptedTargetOptionSettings(target, 10),
                   "custom targets did not share comment syntax");
     const auto scalar = CompileScalarExpression("var(\"a#b//c\") // trailing", names);
@@ -2570,36 +2573,70 @@ bool TestScriptedTarget() {
     okay &= Check(dynamicMetric &&
                           dynamicMetric->find("line 2") != std::string::npos,
                   "search-time custom metric was not rejected at its line");
+    // Simulation time is not a custom-target value; the Time target owns it.
     settings["script"] = "min time.ms";
-    settings["minTimeMs"] = "20";
-    settings["maxTimeMs"] = "100";
-    const auto earliest = forevertas::CreateScriptedTargetEvaluator(settings, 10u);
-    const auto timeGpu = forevertas::BuildCudaScriptedTargetEvaluator(settings, 10u);
-    okay &= Check(timeGpu.objectives[0].instructions[0].value ==
-                          forevervalidator::experimental::PhysicsSandboxCudaConditionValue::SimulationTimeMilliseconds &&
-                          earliest->Plan(100, 0, 10).startTimeMs == 20 &&
+    const auto simulationTime =
+            forevertas::ValidateScriptedTargetOptionSettings(settings, 10u);
+    okay &= Check(simulationTime && simulationTime->find("line 1") != std::string::npos,
+                  "custom targets still accept simulation time");
+    okay &= Check(std::none_of(forevertas::ConditionSymbols().begin(),
+                               forevertas::ConditionSymbols().end(),
+                               [](const auto &symbol) { return symbol.name == "time.ms"; }),
+                  "simulation time is still listed as a condition property");
+
+    // Time target: the first tick with all conditions true, earliest or latest.
+    auto timeSettings = forevertas::DefaultTimeOptionSettings();
+    timeSettings["minTimeMs"] = "20";
+    timeSettings["maxTimeMs"] = "100";
+    const auto earliest = forevertas::CreateTimeEvaluator(timeSettings, 10u);
+    okay &= Check(earliest->Plan(100, 0, 10).startTimeMs == 20 &&
+                          earliest->Plan(100, 50, 10).startTimeMs == 20 &&
                           earliest->Plan(100, 0, 10).endTimeMs == 100,
-                  "simulation time lost its GPU value or evaluation window");
+                  "the Time target window skipped ticks before the first mutation");
     auto earliestSession = earliest->CreateSession();
     const auto eligible = forevertas::CompileConditionScript("car.x >= 10");
     std::optional<EvaluationSample> earliestSample;
-    for (int tick = 20; tick <= 100; tick += 10) {
+    int observations = 0;
+    for (int tick = 20; tick <= 100 && !earliestSession->IsComplete(); tick += 10) {
         previous = current;
         current.timeMs = tick;
         current.car.position.x = static_cast<float>(tick - 20);
-        if (eligible.program->Evaluate(previous, current, {100u, 9000, 8000, 9999}))
+        if (eligible.program->Evaluate(previous, current, {100u, 9000, 8000, 9999})) {
             earliestSample = earliestSession->Observe(previous, current);
+            ++observations;
+        }
     }
-    okay &= Check(earliestSample && earliestSample->metricValues == std::vector<double>{30} &&
-                          earliestSample->objectiveScores == std::vector<double>{-30},
-                  "min time.ms did not retain the first qualifying simulation tick");
+    okay &= Check(earliestSample && earliestSample->score == 30 && earliestSample->timeMs == 30 &&
+                          observations == 1 && earliestSession->IsComplete() &&
+                          earliestSample->description == "Conditions first met at " +
+                                  forevertas::FormatRaceTimeMilliseconds(30),
+                  "the Time target did not keep the first tick its conditions held");
     auto laterSession = earliest->CreateSession();
     current.timeMs = 50;
-    current.car.linearSpeed.x = 1000;
     const auto later = laterSession->Observe(previous, current);
     okay &= Check(later && earliestSample && earliest->IsBetter(*earliestSample, *later) &&
                           !earliest->IsBetter(*later, *earliestSample),
-                  "a faster but later candidate outranked the earliest qualifying tick");
+                  "As early as possible preferred a later first match");
+    timeSettings["goal"] = "latest";
+    const auto latest = forevertas::CreateTimeEvaluator(timeSettings, 10u);
+    okay &= Check(later && earliestSample && latest->IsBetter(*later, *earliestSample) &&
+                          !latest->IsBetter(*earliestSample, *later),
+                  "As late as possible preferred an earlier first match");
+    const auto earliestGpu = forevertas::BuildCudaEvaluator(
+            {forevertas::kTimeEvaluationId, forevertas::DefaultTimeOptionSettings()}, 10u);
+    const auto latestGpu = forevertas::BuildCudaEvaluator(
+            {forevertas::kTimeEvaluationId, timeSettings}, 10u);
+    const auto *earliestKind = earliestGpu
+            ? std::get_if<forevervalidator::experimental::PhysicsSandboxCudaConditionTimeEvaluator>(&*earliestGpu)
+            : nullptr;
+    const auto *latestKind = latestGpu
+            ? std::get_if<forevervalidator::experimental::PhysicsSandboxCudaConditionTimeEvaluator>(&*latestGpu)
+            : nullptr;
+    okay &= Check(earliestKind && !earliestKind->maximize && latestKind && latestKind->maximize,
+                  "the Time target did not map to the GPU first-match evaluator");
+    timeSettings["goal"] = "sideways";
+    okay &= Check(forevertas::ValidateTimeOptionSettings(timeSettings, 10u).has_value(),
+                  "an unknown Time goal was accepted");
     return okay;
 }
 

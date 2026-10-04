@@ -79,7 +79,7 @@ int main(int argc, char **argv) {
             }
         }
         // A rejected crossing must not turn into an eligible zero-time result.
-        request.condition = CompileConditionScript("time.ms < 0").program;
+        request.condition = CompileConditionScript("car.speed < 0").program;
         control.sampleBestTimeline = false;
         for (const auto backend : backends) {
             request.backend = backend;

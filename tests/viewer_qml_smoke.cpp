@@ -3542,7 +3542,7 @@ int main(int argc, char **argv) {
                                             .toInt() == 5 &&
                             modifierPassSelector->property("count").toInt() == 1 &&
                             evaluationTargetCombo->property("count").toInt() ==
-                                    9 &&
+                                    10 &&
                             searchAlgorithmCombo->property("currentValue")
                                             .toString() ==
                                     QStringLiteral("basic-brute-force") &&
@@ -4341,7 +4341,7 @@ int main(int argc, char **argv) {
                     if (settingsTabs != nullptr)
                         settingsTabs->setProperty("currentIndex", 1);
                     QCoreApplication::processEvents();
-                    const std::array<std::pair<const char *, const char *>, 8>
+                    const std::array<std::pair<const char *, const char *>, 9>
                             evaluationPanels{{
                                     {"velocity",
                                      "velocityEvaluationSettings"},
@@ -4357,6 +4357,8 @@ int main(int argc, char **argv) {
                                      "pointTargetEvaluationSettings"},
                                     {"pose-target",
                                      "poseTargetEvaluationSettings"},
+                                    {"time",
+                                     "timeEvaluationSettings"},
                                     {"checkpoint-time",
                                      "checkpointTimeEvaluationSettings"}}};
                     for (const auto &[id, objectName] : evaluationPanels) {

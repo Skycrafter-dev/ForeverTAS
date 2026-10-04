@@ -16,9 +16,9 @@ Conditions use one boolean expression per line; all non-comment lines must hold.
 
 Custom targets use `min EXPRESSION`, `max EXPRESSION`, or `target VALUE EXPRESSION`, one per line. Search-clock values are not car-state objectives and are rejected there. Previous values refer to the previous simulation observation, not another candidate. Conditions filter eligible observations; they do not stop the simulation.
 
-`min time.ms` finds the earliest eligible observation in the evaluation window. `time.ms` is the public simulation timestamp in milliseconds, matching the viewer and evaluation windows, with 10 ms tick precision. It is not the input-command timestamp (which has a one-tick offset), wall-clock search time, or a sub-tick crossing time. No eligible observation means no objective value, not a zero-time success.
+To reach a state as early (or as late) as possible, use the Time target: it scores the first tick in its evaluation window on which every condition holds, at 10 ms tick precision. A run whose conditions never hold has no score, not a zero-time success.
 
-For multilap constraints use `car.completed_laps >= 1` (alias `car.laps`) to require the first finish passage, or `min time.ms` with that condition to optimize its tick. `car.cps` counts accepted ordinary checkpoints cumulatively across laps and deliberately excludes finish passages.
+For multilap constraints use `car.completed_laps >= 1` (alias `car.laps`) to require the first finish passage, or the Time target with that condition to reach it as early as possible. `car.cps` counts accepted ordinary checkpoints cumulatively across laps and deliberately excludes finish passages.
 
 The Properties and functions panel is always shown below both editors. It browses names as a tree: `car` opens to `car.prev`, `car.wheels` and the other car properties, so each level stays short. While you type in the editor, its search follows the word at the caret: the text before the last dot opens that branch and the rest filters it. Ctrl+Space moves focus to the results for keyboard selection. Selecting an entry replaces the word at the caret with the canonical spelling. Aliases remain valid.
 
@@ -76,7 +76,6 @@ The Properties and functions panel is always shown below both editors. It browse
 | `car.turbo_boost_factor` | `car.tbf` | scalar | factor | conditions and custom targets | Turbo boost multiplier |
 | `car.cps` |  | integer | checkpoints | conditions and custom targets | Cumulative accepted ordinary checkpoints across laps; excludes finish passages |
 | `car.completed_laps` | `car.laps` | integer | laps | conditions and custom targets | Completed laps, including the final finish passage; separate from car.cps |
-| `time.ms` |  | scalar | simulation ms | conditions and custom targets | Observed simulation timestamp, matching the viewer and evaluation windows; 10 ms tick precision, not wall-clock or input-command time |
 | `iterations` |  | integer | attempts | conditions only | Search iteration counter |
 | `last_improvement.time` |  | scalar | wall-clock s | conditions only | Search clock at last improvement; use time_since for elapsed time |
 | `last_restart.time` |  | scalar | wall-clock s | conditions only | Search clock at last restart; not simulation time |

@@ -584,6 +584,12 @@ No search-loop or controller branch should be added for the target.
 - `volume-entry-time`: minimizes interpolated entry time into a cuboid.
 - `point-target`: minimizes distance to a target point over a window.
 - `pose-target`: minimizes weighted position and orientation error.
+- `time`: finds the first tick in its window on which every condition holds
+  and makes it happen as early (`earliest`) or as late (`latest`) as possible.
+  Its value comes only from the Conditions, so the app requires at least one.
+  The run stops at that first match. It observes ticks before the first
+  mutation, because a later first match would misreport that run. CPU, CUDA,
+  HIP and Vulkan all score the same first-match tick.
 
 Spatial target models expose atomic absolute-placement operations. Their QML
 editors receive the viewport's rendered camera pose and the viewer's simulated

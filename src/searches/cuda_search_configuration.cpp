@@ -3,6 +3,7 @@
 #include "input_timeline_time.h"
 #include "searches/algorithm_registry.h"
 #include "evaluators/scripted_target_evaluator.h"
+#include "evaluators/time_evaluator.h"
 #include "searches/option_settings_utils.h"
 
 #include <cmath>
@@ -246,6 +247,10 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
     }
     if (configuration.id == kScriptedTargetEvaluationId) {
         return BuildCudaScriptedTargetEvaluator(settings, tickDurationMs);
+    }
+    if (configuration.id == kTimeEvaluationId) {
+        return PhysicsSandboxCudaConditionTimeEvaluator{
+                TimeEvaluatorMaximizes(settings)};
     }
     throw std::invalid_argument(
             "CUDA does not support evaluator: " + configuration.id);

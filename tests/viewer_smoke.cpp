@@ -1815,7 +1815,7 @@ int main(int argc, char **argv) {
                             viewer.conditionPreview(QStringLiteral(
                                     "car.rpm >= 0"));
                     const QVariantMap booleanCondition = viewer.conditionPreview(
-                            QStringLiteral("# retained\n(time.ms >= 0 OR car.laps != 0) AND car.x >= -10000000 // valid"));
+                            QStringLiteral("# retained\n(car.speed >= 0 OR car.laps != 0) AND car.x >= -10000000 // valid"));
                     const bool overlayDataValid =
                             !overlaySamples.isEmpty() &&
                             viewer.conditionPreview(QStringLiteral("# disabled\n// disabled")).isEmpty() &&

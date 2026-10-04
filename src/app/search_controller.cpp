@@ -1782,6 +1782,11 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     if (condition.error) {
         return {{}, QString::fromStdString(*condition.error)};
     }
+    if (configuration.evaluationTarget.id == kTimeEvaluationId && !condition.program) {
+        return {{}, QStringLiteral(
+                "The Time target needs at least one condition. Add one under "
+                "Conditions on the Search tab.")};
+    }
     if (!baseInputScriptError_.isEmpty()) {
         return {{}, baseInputScriptError_};
     }

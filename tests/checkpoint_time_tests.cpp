@@ -165,7 +165,9 @@ void TestReplayAndSearch(const char *packs, const char *path) {
     target["checkpointSlot"] = std::to_string(finish->checkpointSlot);
     target["eventIndex"] = std::to_string(finish->eventIndex);
     request.evaluationTarget = {kCheckpointTimeEvaluationId, target};
-    request.condition = CompileConditionScript("time.ms == " + std::to_string(finish->timeMs)).program;
+    // Completed laps rise on the finish tick itself, so this holds exactly
+    // from the selected event onward and its negation rejects that tick.
+    request.condition = CompileConditionScript("car.completed_laps >= " + std::to_string(finish->lap)).program;
     SearchRunControl control;
     control.sampleBestTimeline = false;
     control.iterationLimit = 4;
@@ -190,7 +192,7 @@ void TestReplayAndSearch(const char *packs, const char *path) {
         }
         Check(missing, "missing or condition-rejected checkpoint was reported later");
     };
-    request.condition = CompileConditionScript("time.ms != " + std::to_string(finish->timeMs)).program;
+    request.condition = CompileConditionScript("car.completed_laps < " + std::to_string(finish->lap)).program;
     expectNoEvent();
     request.condition = CompileConditionScript("").program;
     request.evaluationTarget.settings["eventIndex"] = std::to_string(finish->eventIndex + 1);

@@ -50,7 +50,6 @@ const std::vector<ConditionSymbol> &ConditionSymbols() {
         add("car.turbo_boost_factor", {"car.tbf"}, "scalar", "factor", "Turbo boost multiplier", Value::TurboBoostFactor);
         add("car.cps", {}, "integer", "checkpoints", "Cumulative accepted ordinary checkpoints across laps; excludes finish passages", Value::CheckpointCount);
         add("car.completed_laps", {"car.laps"}, "integer", "laps", "Completed laps, including the final finish passage; separate from car.cps", Value::CompletedLaps);
-        add("time.ms", {}, "scalar", "simulation ms", "Observed simulation timestamp, matching the viewer and evaluation windows; 10 ms tick precision, not wall-clock or input-command time", Value::SimulationTimeMilliseconds);
         add("iterations", {}, "integer", "attempts", "Search iteration counter", Value::Iterations, 0, true);
         add("last_improvement.time", {}, "scalar", "wall-clock s", "Search clock at last improvement; use time_since for elapsed time", Value::LastImprovementTime, 0, true);
         add("last_restart.time", {}, "scalar", "wall-clock s", "Search clock at last restart; not simulation time", Value::LastRestartTime, 0, true);

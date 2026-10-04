@@ -171,7 +171,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 04b035f6dfb674cdf6d6ce7233ed081bcdd9aea6
+        GIT_TAG 50bbbe10f7e24568ca915443d92e12b3ad845e99
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -198,6 +198,8 @@ add_library(forevertas_core STATIC
     src/evaluators/precise_finish_time_evaluator.h
     src/evaluators/checkpoint_time_evaluator.cpp
     src/evaluators/checkpoint_time_evaluator.h
+    src/evaluators/time_evaluator.cpp
+    src/evaluators/time_evaluator.h
     src/evaluators/point_target_evaluator.cpp
     src/evaluators/point_target_evaluator.h
     src/evaluators/pose_target_evaluator.cpp
@@ -543,6 +545,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/SmoothSteeringSettings.qml
         qml/settings/StuntPointsEvaluationSettings.qml
         qml/settings/StyledComboBox.qml
+        qml/settings/TimeEvaluationSettings.qml
         qml/settings/TimeUnits.qml
         qml/settings/TimeWindowSettings.qml
         qml/settings/Vector3Settings.qml
@@ -1189,15 +1192,15 @@ if(BUILD_TESTING)
                  "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-search-preview PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
-        add_executable(forevertas-simulation-time-target-tests tests/simulation_time_target_tests.cpp)
-        target_link_libraries(forevertas-simulation-time-target-tests PRIVATE forevertas_core)
+        add_executable(forevertas-time-target-tests tests/time_target_tests.cpp)
+        target_link_libraries(forevertas-time-target-tests PRIVATE forevertas_core)
         if(FOREVERTAS_WARNING_OPTIONS)
-            target_compile_options(forevertas-simulation-time-target-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+            target_compile_options(forevertas-time-target-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
         endif()
-        add_test(NAME forevertas-simulation-time-target
-                 COMMAND forevertas-simulation-time-target-tests
+        add_test(NAME forevertas-time-target
+                 COMMAND forevertas-time-target-tests
                      "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
-        set_tests_properties(forevertas-simulation-time-target PROPERTIES TIMEOUT 180)
+        set_tests_properties(forevertas-time-target PROPERTIES TIMEOUT 180)
         add_executable(forevertas-checkpoint-time-tests tests/checkpoint_time_tests.cpp)
         target_link_libraries(forevertas-checkpoint-time-tests PRIVATE forevertas_core)
         if(FOREVERTAS_WARNING_OPTIONS)
