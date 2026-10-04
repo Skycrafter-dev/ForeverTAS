@@ -5,6 +5,7 @@
 #include "replay_file_io.h"
 #include "searches/cuda_search_configuration.h"
 #include "searches/search_runner.h"
+#include "time_format.h"
 
 #include <forevervalidator/native.h>
 
@@ -61,6 +62,9 @@ void TestEvaluator() {
     const auto sample = session->Observe({}, state);
     Check(sample && sample->score == 100 && sample->timeMs == 100 && session->IsComplete(),
           "simultaneous event selection or canonical timestamp failed");
+    Check(sample->description == "Checkpoint 1 of lap 2 (map slot 3, event index 5): " +
+                  FormatRaceTimeMilliseconds(100),
+          "evaluation description did not name the checkpoint number, map slot and event index");
     Check(!session->Observe({}, state), "accepted event was reported twice");
     Check(evaluator->IsBetter({90, 90, {}}, *sample) && !evaluator->IsBetter({110, 110, {}}, *sample),
           "checkpoint time was not minimized");
@@ -72,7 +76,9 @@ void TestEvaluator() {
     settings["eventType"] = "finish";
     settings["checkpointSlot"] = "8";
     settings["eventIndex"] = "6";
-    Check(CreateCheckpointTimeEvaluator(settings, 10)->CreateSession()->Observe({}, state).has_value(),
+    const auto finish = CreateCheckpointTimeEvaluator(settings, 10)->CreateSession()->Observe({}, state);
+    Check(finish && finish->description == "Finish of lap 2 (map slot 8, event index 6): " +
+                  FormatRaceTimeMilliseconds(100),
           "accepted finish selector failed");
     settings["checkpointSlot"] = "-1";
     settings["eventIndex"] = "18446744073709551615";

@@ -16,8 +16,11 @@ Selectors:
   for any. The sequence continues across laps and respawns. It is stored and
   edited as an exact 64-bit integer, never a floating-point identifier.
 
-The result identifies the accepted event, map slot and lap. All selectors must
-match. Multiple events in one tick remain separate and are examined in engine
+The result names the checkpoint number (or finish), lap, map slot and event
+index, for example `Checkpoint 2 of lap 1 (map slot 5, event index 2): 0:12.34`.
+Evaluate base shows these numbers for the base inputs, which is the easiest
+way to find the values to enter; each selector also has an (i) explanation.
+All selectors must match. Multiple events in one tick remain separate and are examined in engine
 acceptance order; the first eligible matching event wins. Conditions are tested
 on that exact tick. A rejected crossing, missing event, or condition-rejected
 event produces no eligible evaluation, not a later substitute. Observation

@@ -520,6 +520,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/ExistingEventPerturbationSettings.qml
         qml/settings/PreciseFinishTimeEvaluationSettings.qml
         qml/settings/CheckpointTimeEvaluationSettings.qml
+        qml/settings/InfoTip.qml
         qml/settings/InputDeletionSettings.qml
         qml/settings/InputInsertionSettings.qml
         qml/settings/ModifierComposition.qml

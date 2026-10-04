@@ -7,6 +7,7 @@ RowLayout {
     id: root
 
     property string label
+    property string info: ""
     property string value
     property bool running: false
     property string fieldObjectName: ""
@@ -28,10 +29,26 @@ RowLayout {
     Layout.fillWidth: true
     spacing: 12
 
-    Label {
+    RowLayout {
         Layout.fillWidth: true
-        text: root.label
-        wrapMode: Text.WordWrap
+        spacing: 4
+
+        Label {
+            Layout.fillWidth: true
+            Layout.maximumWidth: implicitWidth
+            text: root.label
+            wrapMode: Text.WordWrap
+        }
+
+        InfoTip {
+            objectName: root.fieldObjectName.length > 0 ? root.fieldObjectName + "Info" : ""
+            visible: root.info.length > 0
+            info: root.info
+        }
+
+        Item {
+            Layout.fillWidth: true
+        }
     }
 
     ScrubNumberField {

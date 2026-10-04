@@ -39,10 +39,12 @@ public:
                 (settings_.checkpointSlot && event.checkpointSlot != *settings_.checkpointSlot) ||
                 (settings_.eventIndex != 0 && event.eventIndex != settings_.eventIndex)) continue;
             reported_ = true;
-            const auto description = std::string(event.finish ? "Finish" : "Checkpoint") +
-                    " event " + std::to_string(event.eventIndex) + ", slot " +
-                    std::to_string(event.checkpointSlot) + ", lap " + std::to_string(event.lap) +
-                    ": " + FormatRaceTimeMilliseconds(event.timeMs);
+            const auto description =
+                    (event.finish ? std::string("Finish")
+                                  : "Checkpoint " + std::to_string(std::uint64_t{event.checkpointIndex} + 1u)) +
+                    " of lap " + std::to_string(event.lap) + " (map slot " +
+                    std::to_string(event.checkpointSlot) + ", event index " +
+                    std::to_string(event.eventIndex) + "): " + FormatRaceTimeMilliseconds(event.timeMs);
             return EvaluationSample{static_cast<double>(event.timeMs),
                                     static_cast<double>(event.timeMs), description};
         }

@@ -4269,6 +4269,27 @@ int main(int argc, char **argv) {
                         QCoreApplication::processEvents();
                         checkCheckpointUi(controller.evaluationTargetSettings().value("eventIndex").toString() ==
                                 QStringLiteral("18446744073709551615"), "event index was not stored exactly");
+                        QVariant displayedEventIndex;
+                        checkCheckpointUi(checkpointIndex->property("scrubbable").toBool() &&
+                                QMetaObject::invokeMethod(checkpointIndex, "displayValue",
+                                        Q_RETURN_ARG(QVariant, displayedEventIndex)) &&
+                                displayedEventIndex.toString() == QStringLiteral("18446744073709551615"),
+                                "event index is not a standard number field showing the exact 64-bit value");
+                        for (const char *infoName : {"checkpointTimeNumberFieldInfo", "checkpointTimeSlotFieldInfo",
+                                                     "checkpointTimeEventIndexFieldInfo"}) {
+                            auto *const info = checkpointField(infoName);
+                            checkCheckpointUi(info != nullptr && info->property("visible").toBool() &&
+                                    info->property("info").toString().contains(QStringLiteral("Evaluate base")),
+                                    "checkpoint selector has no explanation recommending Evaluate base");
+                            if (info == nullptr) continue;
+                            info->setProperty("checked", true);
+                            checkCheckpointUi(WaitUntil([&]() { return info->property("tipShown").toBool(); }, 2000),
+                                    "checkpoint selector explanation did not open");
+                            info->setProperty("checked", false);
+                        }
+                        checkCheckpointUi(checkpointField("checkpointTimeLapFieldInfo") == nullptr ||
+                                !checkpointField("checkpointTimeLapFieldInfo")->property("visible").toBool(),
+                                "lap shows an empty explanation");
                         checkCheckpointUi(QMetaObject::invokeMethod(checkpointEvent, "activated", Q_ARG(int, 1)), "finish selection failed");
                         SettleQuickLayout();
                         checkCheckpointUi(controller.evaluationTargetSettings().value("eventType").toString() ==

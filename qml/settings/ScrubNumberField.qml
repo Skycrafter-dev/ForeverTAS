@@ -43,9 +43,19 @@ TextField {
         return formatted === "-0" ? "0" : formatted
     }
 
+    // Whole numbers beyond 2^53 cannot round-trip through a JavaScript
+    // number, so they are shown exactly as stored instead of reformatted.
+    function isExactLargeInteger(text) {
+        return control.integer && !control.valueFormatter
+                && /^-?[0-9]+$/.test(text)
+                && !Number.isSafeInteger(Number(text))
+    }
+
     function displayValue() {
         const raw = control.value.toString()
         if (raw.trim().length === 0)
+            return raw
+        if (control.isExactLargeInteger(raw))
             return raw
         const numeric = parseNumber(raw)
         return Number.isFinite(numeric) ? control.formatNumber(numeric) : raw
@@ -70,6 +80,8 @@ TextField {
         if (modifiers & Qt.ControlModifier)
             step *= 10
 
+        if (control.integer && !Number.isSafeInteger(Math.round(scrubArea.startValue)))
+            return
         let proposed = scrubArea.startValue + stepCount * step
         if (control.integer)
             proposed = Math.round(proposed)
