@@ -240,7 +240,17 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
         return PhysicsSandboxCudaFinishTimeEvaluator{};
     }
     if (configuration.id == kCheckpointTimeEvaluationId) {
-        throw std::invalid_argument("Checkpoint time requires a CPU physics backend; GPU accepted-event journals are unavailable");
+        // The CUDA kernel reconstructs accepted events from the race
+        // counters; the selectors mirror the CPU checkpoint-time evaluator.
+        PhysicsSandboxCudaCheckpointEvaluator checkpoint;
+        checkpoint.finish = settings.at("eventType") == "finish";
+        checkpoint.checkpointIndex =
+                *ParseUnsignedDecimal32(settings.at("checkpointIndex")) - 1u;
+        checkpoint.lap = *ParseUnsignedDecimal32(settings.at("lap"));
+        if (settings.at("checkpointSlot") != "-1")
+            checkpoint.checkpointSlot = *ParseUnsignedDecimal32(settings.at("checkpointSlot"));
+        checkpoint.eventIndex = *ParseUnsignedDecimal64(settings.at("eventIndex"));
+        return checkpoint;
     }
     if (configuration.id == kStuntPointsEvaluationId) {
         return PhysicsSandboxCudaStuntPointsEvaluator{};

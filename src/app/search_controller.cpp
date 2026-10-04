@@ -1757,8 +1757,11 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     const SearchComponentConfiguration &configuration =
             *configurationValidation.configuration;
     if (!baselineOnly && IsGpuBackend(simulationBackend_) &&
+        simulationBackend_ != PhysicsBackend::Cuda &&
         configuration.evaluationTarget.id == kCheckpointTimeEvaluationId) {
-        return {{}, QStringLiteral("Checkpoint time requires a CPU physics backend.")};
+        return {{}, QStringLiteral(
+                "Checkpoint time runs on the CPU or on CUDA. Choose Optimized CPU "
+                "or CUDA as the physics backend.")};
     }
     ConditionVariables conditionVariables;
     if (configuration.evaluationTarget.id == kPointTargetEvaluationId) {

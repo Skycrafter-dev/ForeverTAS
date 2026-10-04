@@ -294,7 +294,7 @@ const std::vector<EvaluationTargetRegistration> &EvaluationTargetRegistry() {
              &CreateScriptedTargetEvaluator},
             {kCheckpointTimeEvaluationId,
              {},
-             "Checkpoint time (CPU)",
+             "Checkpoint time",
              "CheckpointTimeEvaluationSettings.qml",
              DefaultCheckpointTimeOptionSettings(),
              {},

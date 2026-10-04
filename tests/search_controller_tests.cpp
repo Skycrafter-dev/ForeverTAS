@@ -1435,8 +1435,14 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
         const auto id = option.toMap().value("id").toString();
         if (id != "cuda" && id != "hip" && id != "vulkan") continue;
         controller.setSimulationBackendId(id);
-        okay &= Check(!controller.canStart() && controller.validationMessage().contains("CPU physics backend"),
-                      "checkpoint target was not explicitly rejected on GPU");
+        if (id == "cuda") {
+            okay &= Check(!controller.validationMessage().contains("Checkpoint time"),
+                          "checkpoint target was rejected on CUDA");
+            continue;
+        }
+        okay &= Check(!controller.canStart() &&
+                              controller.validationMessage().contains("runs on the CPU or on CUDA"),
+                      "checkpoint target was not explicitly rejected on HIP or Vulkan");
     }
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
     controller.setEvaluationTargetId(previousTarget);

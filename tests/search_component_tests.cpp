@@ -2201,8 +2201,7 @@ bool TestCudaConfigurationCoverage() {
     for (const auto &registration :
          forevertas::EvaluationTargetRegistry()) {
         if (registration.id ==
-                    forevertas::kCustomVolumeEntryEvaluationId ||
-            registration.id == forevertas::kCheckpointTimeEvaluationId) {
+                    forevertas::kCustomVolumeEntryEvaluationId) {
             try {
                 static_cast<void>(forevertas::BuildCudaEvaluator(
                         {registration.id, registration.defaultSettings},

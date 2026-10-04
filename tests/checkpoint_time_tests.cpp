@@ -10,6 +10,7 @@
 #include <forevervalidator/native.h>
 
 #include <algorithm>
+#include <optional>
 #include <iostream>
 #include <stdexcept>
 
@@ -92,12 +93,16 @@ void TestEvaluator() {
         invalid[key] = value;
         Check(ValidateCheckpointTimeOptionSettings(invalid, 10).has_value(), "invalid checkpoint selector accepted");
     }
-    bool gpuRejected = false;
-    try { BuildCudaEvaluator({kCheckpointTimeEvaluationId, DefaultCheckpointTimeOptionSettings()}, 10); }
-    catch (const std::invalid_argument &error) {
-        gpuRejected = std::string(error.what()).find("CPU physics backend") != std::string::npos;
-    }
-    Check(gpuRejected, "CPU-only event target silently used a GPU approximation");
+    auto gpuSettings = DefaultCheckpointTimeOptionSettings();
+    gpuSettings["checkpointIndex"] = "3";
+    gpuSettings["lap"] = "2";
+    gpuSettings["checkpointSlot"] = "7";
+    gpuSettings["eventIndex"] = "18446744073709551615";
+    const auto gpu = BuildCudaEvaluator({kCheckpointTimeEvaluationId, gpuSettings}, 10);
+    const auto *checkpoint = gpu ? std::get_if<PhysicsSandboxCudaCheckpointEvaluator>(&*gpu) : nullptr;
+    Check(checkpoint && !checkpoint->finish && checkpoint->checkpointIndex == 2 && checkpoint->lap == 2 &&
+                  checkpoint->checkpointSlot == 7u && checkpoint->eventIndex == UINT64_MAX,
+          "checkpoint selectors did not reach the CUDA evaluator exactly");
 }
 
 std::vector<PhysicsSandboxAcceptedCheckpointEvent> ReadAcceptedEvents(
@@ -137,6 +142,73 @@ std::vector<PhysicsSandboxAcceptedCheckpointEvent> ReadAcceptedEvents(
     Check(testedSnapshot, "replay fixture did not produce accepted events");
     return events;
 }
+
+#if FOREVERVALIDATOR_HAS_CUDA
+// The CUDA kernel names each accepted event from the race counters. Every
+// event of the run, selected several ways, must be reported at the CPU
+// journal's tick (or not at all for a selector that names no event). The CPU
+// runs up to shortly before each event so each GPU launch stays short enough
+// for a display GPU's watchdog.
+void TestCudaEvents(const char *packs, const char *path,
+                    const std::vector<ParsedInputCommand> &commands,
+                    const std::vector<PhysicsSandboxAcceptedCheckpointEvent> &reference) {
+    if (!QueryCudaBackendDiagnostics().IsReady()) {
+        std::cout << "SKIP unavailable CUDA device\n";
+        return;
+    }
+    PhysicsSandboxOptions options;
+    options.backend = SimulationBackend::Cuda;
+    options.timelineMode = PhysicsSandboxTimelineMode::Canonical;
+    // A run just past the last event keeps the GPU allocation small.
+    options.simulationHorizonMs = static_cast<std::uint32_t>(reference.back().timeMs / 10 * 10 + 1000);
+    auto sandbox = Require(CreatePhysicsSandbox(Require(OpenInstalledPackDirectory(packs)), options));
+    ReplayIdentity identity{path};
+    const auto bytes = Require(ReadReplayFileUtf8(path, identity));
+    Require(sandbox.LoadReplay({bytes.data(), bytes.size()}, identity));
+    const auto baseline = BuildInputScriptBaseline(Require(sandbox.ReadInputs()), commands, 10);
+    Check(!baseline.error, "CUDA checkpoint fixture input conversion failed");
+    Require(sandbox.ReplaceInputs(baseline.events));
+    const auto start = Require(sandbox.CaptureState());
+    std::size_t compared = 0;
+    for (const auto &event : reference) {
+        // The GPU branch starts one tick after the sandbox's current time.
+        const std::int64_t branch = (static_cast<std::int64_t>(event.timeMs) - 200) / 10 * 10;
+        Require(sandbox.RestoreState(start));
+        Require(sandbox.AdvanceTicks(static_cast<std::uint32_t>((branch - 10) / 10)));
+        for (int selector = 0; selector < 5; ++selector) {
+            PhysicsSandboxCudaCheckpointEvaluator evaluator;
+            evaluator.finish = event.finish;
+            evaluator.checkpointIndex = event.checkpointIndex;
+            evaluator.lap = static_cast<std::uint32_t>(event.lap);
+            if (selector == 1 || selector == 3) evaluator.checkpointSlot = event.checkpointSlot;
+            if (selector == 2 || selector == 3) evaluator.eventIndex = event.eventIndex;
+            if (selector == 4) evaluator.checkpointSlot = event.checkpointSlot + 1u;
+            PhysicsSandboxCudaSearchConfiguration configuration;
+            configuration.maximumBatchSize = 4;
+            configuration.earliestMutationTimeMs = branch;
+            configuration.evaluationStartTimeMs = branch;
+            configuration.evaluationEndTimeMs = static_cast<std::int64_t>(event.timeMs) + 100;
+            // Mutations come after the event, so every candidate reaches it
+            // at the same tick as the base inputs.
+            PhysicsSandboxCudaRandomSteeringModifier steering;
+            steering.window = {static_cast<std::int64_t>(event.timeMs) + 50,
+                               static_cast<std::int64_t>(event.timeMs) + 50, 7u};
+            configuration.modifiers = {steering};
+            configuration.evaluator = evaluator;
+            auto session = Require(CreatePhysicsSandboxCudaSearchSession(sandbox, configuration));
+            const auto base = Require(session.EvaluateBaseline());
+            const auto batch = Require(session.RunBatch(0, 4));
+            const bool expected = selector != 4;
+            Check(base.bestValid == expected && (!expected || base.bestScore == event.timeMs),
+                  "CUDA baseline named a different accepted checkpoint event than the CPU journal");
+            Check(!batch.bestChanged || !batch.bestIsMutation,
+                  "a CUDA candidate reached the same accepted event earlier than possible");
+            ++compared;
+        }
+    }
+    std::cout << "cuda: " << compared << " checkpoint selections match the CPU journal\n";
+}
+#endif
 
 void TestReplayAndSearch(const char *packs, const char *path) {
     auto parsed = ParseInputScript(ExtractReplayInputScript(packs, path));
@@ -197,6 +269,9 @@ void TestReplayAndSearch(const char *packs, const char *path) {
     request.condition = CompileConditionScript("").program;
     request.evaluationTarget.settings["eventIndex"] = std::to_string(finish->eventIndex + 1);
     expectNoEvent();
+#if FOREVERVALIDATOR_HAS_CUDA
+    TestCudaEvents(packs, path, parsed.commands, reference);
+#endif
 }
 }  // namespace
 

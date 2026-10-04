@@ -171,7 +171,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 50bbbe10f7e24568ca915443d92e12b3ad845e99
+        GIT_TAG a9f3832bc685a2ee8ccf9a864bd35f767c80c6be
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -1219,6 +1219,12 @@ if(BUILD_TESTING)
                  COMMAND forevertas-checkpoint-time-tests
                      "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-checkpoint-time PROPERTIES TIMEOUT 240)
+        if(FOREVERTAS_ENABLE_CUDA)
+            # Both compare CPU results with CUDA sessions, whose memory
+            # headroom check fails while other tests use the GPU.
+            set_tests_properties(forevertas-time-target forevertas-checkpoint-time
+                PROPERTIES RESOURCE_LOCK cuda RUN_SERIAL TRUE)
+        endif()
         add_executable(forevertas-volume-completion-tests tests/volume_completion_tests.cpp)
         target_link_libraries(forevertas-volume-completion-tests PRIVATE forevertas_core)
         if(FOREVERTAS_WARNING_OPTIONS)
