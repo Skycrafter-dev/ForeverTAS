@@ -16,8 +16,33 @@ namespace forevertas {
 
 inline constexpr std::uint32_t kMinimumTreeSegmentCount = 1u;
 inline constexpr std::uint32_t kMaximumTreeSegmentCount = 20u;
+inline constexpr std::uint32_t kMaximumTreeLeafCount = 1u << 20u;
+inline constexpr std::uint32_t kMaximumTreeFlatWorkerCount = 256u;
+
+struct TreeSearchSettings {
+    std::uint32_t segmentCount = 10u;
+    // Leaves each tree targets; 0 means 2^segmentCount.
+    std::uint32_t leafCount = 0u;
+    // Active segments each tree branches, chosen at random per tree; the
+    // other active segments apply one shared draw. 0 branches all of them.
+    std::uint32_t branchedSegmentCount = 0u;
+    // Each tree branches a random number of segments from one up to that
+    // limit instead, mixing small and large changes.
+    bool varyBranchedSegmentCount = false;
+    // Unbranched active segments keep the tree's base inputs instead, so
+    // every leaf changes only its branched segments.
+    bool keepUnbranchedSegments = false;
+    // Multi-threaded CPU workers that run basic bruteforce attempts instead
+    // of trees while sharing the promoted best (a portfolio). Other backends
+    // ignore it.
+    std::uint32_t flatWorkerCount = 0u;
+    bool autoPromoteBest = false;
+};
 
 OptionSettings DefaultTreeSearchOptionSettings();
+// Parses settings that ValidateTreeSearchOptionSettings accepts.
+std::optional<TreeSearchSettings> ParseTreeSearchSettings(
+        const OptionSettings &settings);
 std::optional<std::string> ValidateTreeSearchOptionSettings(
         const OptionSettings &settings,
         std::uint32_t tickDurationMs);
@@ -48,12 +73,12 @@ std::vector<std::uint64_t> TreeBranchCounts(
 class TreeSearch final : public SearchAlgorithm {
 public:
     TreeSearch(std::uint32_t segmentCount, bool autoPromoteBest);
+    explicit TreeSearch(TreeSearchSettings settings);
 
     SearchResult Run(const SearchExecutionContext &context) const override;
 
 private:
-    std::uint32_t segmentCount_ = 10u;
-    bool autoPromoteBest_ = false;
+    TreeSearchSettings settings_;
 };
 
 }  // namespace forevertas

@@ -7,6 +7,7 @@
 #include "searches/algorithm_registry.h"
 #include "searches/cuda_search_configuration.h"
 #include "searches/option_settings_utils.h"
+#include "searches/tree_search.h"
 
 #include <forevervalidator/experimental/physics_sandbox.h>
 #include <forevervalidator/native.h>
@@ -922,6 +923,16 @@ SearchResult RunMultiThreadedCpuSearch(
     const bool autoPromoteBest = *ParseBoolean(
             request.searchAlgorithm.settings.at(
                     "autoPromoteBest"));
+    // A tree-search portfolio runs its first workers as basic bruteforce;
+    // every worker shares the promoted best.
+    const SearchAlgorithmRegistration *const flatRegistration =
+            FindSearchAlgorithm(kBasicBruteForceSearchId);
+    std::uint32_t flatWorkerCount = 0u;
+    if (request.searchAlgorithm.id == kTreeSearchId) {
+        const std::optional<TreeSearchSettings> treeSettings =
+                ParseTreeSearchSettings(request.searchAlgorithm.settings);
+        flatWorkerCount = treeSettings ? treeSettings->flatWorkerCount : 0u;
+    }
     std::optional<EvaluationSample> promotedEvaluation;
     std::vector<SandboxInputEvent> promotedInputs;
     std::uint64_t revision = 0u;
@@ -1082,12 +1093,25 @@ SearchResult RunMultiThreadedCpuSearch(
                     workerControl.sampleBestTimeline = false;
                     workerControl.reuseLoadedSandbox = false;
 
+                    const SearchAlgorithmRegistration *workerRegistration =
+                            &searchRegistration;
+                    if (workerIndex < flatWorkerCount) {
+                        workerRegistration = flatRegistration;
+                        OptionSettings flatSettings =
+                                flatRegistration->defaultSettings;
+                        flatSettings["autoPromoteBest"] =
+                                autoPromoteBest ? "true" : "false";
+                        workerRequest.searchAlgorithm = {
+                                kBasicBruteForceSearchId,
+                                std::move(flatSettings)};
+                    }
+
                     SearchResult result = RunLoadedSearch(
                             workerRequest,
                             replay,
                             identity,
                             workerSandboxes[workerIndex],
-                            searchRegistration,
+                            *workerRegistration,
                             evaluationRegistration,
                             &workerControl);
                     std::lock_guard<std::mutex> guard(stateMutex);

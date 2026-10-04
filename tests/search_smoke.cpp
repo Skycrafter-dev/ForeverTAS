@@ -1838,9 +1838,20 @@ bool CheckTreeSearchMatchesIndependentReplays(const char *packsDirectory,
     const auto start = Require(verifier.CaptureState(),
                                "capturing independent start");
 
+    // The later shapes decouple leaves from segments and branch a random
+    // subset of the active segments; the others apply a single shared draw
+    // or keep the tree's base inputs.
+    const std::vector<forevertas::TreeSearchSettings> shapes{
+            {4u, 0u, 0u, false, false, 0u, false},
+            {6u, 12u, 2u, false, false, 0u, false},
+            {6u, 12u, 1u, false, true, 0u, false},
+            {6u, 8u, 0u, true, true, 0u, false}};
+    for (const forevertas::TreeSearchSettings &shape : shapes)
     for (const bool autoPromoteBest : {false, true}) {
         PhysicsSandbox sandbox =
                 CreateReplayInputSandbox(packsDirectory, replayPath);
+        forevertas::TreeSearchSettings settings = shape;
+        settings.autoPromoteBest = autoPromoteBest;
         std::vector<std::pair<std::uint64_t, forevertas::SearchLiveUpdate>>
                 attempts;
         bool missingAttempt = false;
@@ -1858,7 +1869,7 @@ bool CheckTreeSearchMatchesIndependentReplays(const char *packsDirectory,
                     attempts.emplace_back(*index, std::move(*attempt));
                 };
         const forevertas::SearchResult result =
-                forevertas::TreeSearch(4u, autoPromoteBest)
+                forevertas::TreeSearch(settings)
                         .Run({sandbox,
                               forevertas::kSearchTickDurationMs,
                               mutator,
@@ -1955,6 +1966,15 @@ bool CheckTreeSearchBackends(const char *packsDirectory,
     if (promoted.iterations != 30u) {
         std::cerr << "promoting multi-threaded tree search did not run 30 "
                      "leaves\n";
+        return false;
+    }
+    // A portfolio runs one worker as basic bruteforce on the shared best.
+    request.searchAlgorithm.settings["flatWorkerCount"] = "1";
+    const forevertas::SearchResult portfolio =
+            forevertas::RunSearch(request, &control);
+    if (portfolio.iterations != 30u || portfolio.bestInputs.empty()) {
+        std::cerr << "tree search portfolio did not run 30 attempts: "
+                  << portfolio.iterations << '\n';
         return false;
     }
 #if FOREVERVALIDATOR_HAS_CUDA

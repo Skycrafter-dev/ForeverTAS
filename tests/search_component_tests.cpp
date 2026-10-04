@@ -2866,6 +2866,47 @@ bool TestTreeSearchConfiguration() {
     okay &= Check(forevertas::ValidateTreeSearchOptionSettings(
                           extra, 10u).has_value(),
                   "an unknown tree search key was accepted");
+    okay &= Check(defaults.at("leafCount") == "0" &&
+                          defaults.at("branchedSegmentCount") == "0" &&
+                          defaults.at("flatWorkerCount") == "0" &&
+                          defaults.at("unbranchedSegments") == "draw" &&
+                          defaults.at("varyBranchedSegmentCount") == "false",
+                  "tree shape defaults changed the original tree");
+    const std::vector<std::pair<const char *, const char *>> invalidShapes{
+            {"leafCount", "1048577"},
+            {"leafCount", "-1"},
+            {"leafCount", "many"},
+            {"branchedSegmentCount", "11"},
+            {"branchedSegmentCount", ""},
+            {"flatWorkerCount", "257"},
+            {"unbranchedSegments", "drop"},
+            {"varyBranchedSegmentCount", "sometimes"},
+            {"flatWorkerCount", "x"}};
+    for (const auto &[key, invalid] : invalidShapes) {
+        OptionSettings settings = defaults;
+        settings[key] = invalid;
+        okay &= Check(forevertas::ValidateTreeSearchOptionSettings(
+                              settings, 10u).has_value() &&
+                              !forevertas::ParseTreeSearchSettings(settings),
+                      "an invalid tree shape setting was accepted");
+    }
+    OptionSettings shape = defaults;
+    shape["segmentCount"] = "6";
+    shape["leafCount"] = "64";
+    shape["branchedSegmentCount"] = "6";
+    shape["flatWorkerCount"] = "3";
+    shape["unbranchedSegments"] = "keep";
+    shape["varyBranchedSegmentCount"] = "true";
+    const auto parsedShape = forevertas::ParseTreeSearchSettings(shape);
+    okay &= Check(!forevertas::ValidateTreeSearchOptionSettings(shape, 10u) &&
+                          parsedShape && parsedShape->segmentCount == 6u &&
+                          parsedShape->leafCount == 64u &&
+                          parsedShape->branchedSegmentCount == 6u &&
+                          parsedShape->keepUnbranchedSegments &&
+                          parsedShape->varyBranchedSegmentCount &&
+                          parsedShape->flatWorkerCount == 3u &&
+                          !parsedShape->autoPromoteBest,
+                  "a valid tree shape was not parsed");
 
     const auto ranges = forevertas::TreeSegmentRanges(1010, 5990, 10u, 10u);
     okay &= Check(ranges.size() == 10u &&

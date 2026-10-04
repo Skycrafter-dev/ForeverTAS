@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <iterator>
 #include <optional>
 #include <random>
 #include <string>
@@ -26,14 +27,97 @@ struct ModifierWindow {
     std::uint32_t seed = 0u;
 };
 
+// Produces exactly the words std::seed_seq generates for the same four
+// inputs; the standard fixes that algorithm. Advancing the wrapped indices
+// instead of taking three remainders per step makes seeding several times
+// faster, which matters because every draw seeds one engine per pass.
+class ModifierSeedSequence {
+public:
+    using result_type = std::uint_least32_t;
+
+    ModifierSeedSequence(std::uint32_t first,
+                         std::uint32_t second,
+                         std::uint32_t third,
+                         std::uint32_t fourth)
+        : values_{first, second, third, fourth} {}
+
+    std::size_t size() const { return kValueCount; }
+
+    template <typename OutputIterator>
+    void param(OutputIterator destination) const {
+        std::copy(std::begin(values_), std::end(values_), destination);
+    }
+
+    template <typename RandomAccessIterator>
+    void generate(RandomAccessIterator begin,
+                  RandomAccessIterator end) const {
+        if (begin == end) return;
+        const std::size_t n = static_cast<std::size_t>(end - begin);
+        for (std::size_t index = 0u; index < n; ++index) {
+            begin[index] = 0x8b8b8b8bu;
+        }
+        const std::size_t t = n >= 623u ? 11u
+                : n >= 68u ? 7u
+                : n >= 39u ? 5u
+                : n >= 7u ? 3u
+                : (n - 1u) / 2u;
+        const std::size_t p = (n - t) / 2u;
+        const std::size_t q = p + t;
+        const std::size_t m = std::max(kValueCount + 1u, n);
+        const auto mix = [](std::uint32_t value) {
+            return value ^ (value >> 27u);
+        };
+        // k, k + p, k + q, and k - 1, all modulo n.
+        std::size_t current = 0u;
+        std::size_t plusP = p % n;
+        std::size_t plusQ = q % n;
+        std::size_t previous = n - 1u;
+        const auto advance = [n](std::size_t &index) {
+            if (++index == n) index = 0u;
+        };
+        const auto step = [&]() {
+            previous = current;
+            advance(current);
+            advance(plusP);
+            advance(plusQ);
+        };
+        for (std::size_t k = 0u; k < m; ++k) {
+            const std::uint32_t r1 = 1664525u * mix(static_cast<std::uint32_t>(
+                    begin[current] ^ begin[plusP] ^ begin[previous]));
+            const std::uint32_t r2 = r1 + static_cast<std::uint32_t>(
+                    k == 0u ? kValueCount
+                    : k <= kValueCount ? current + values_[k - 1u]
+                    : current);
+            begin[plusP] = static_cast<std::uint32_t>(begin[plusP] + r1);
+            begin[plusQ] = static_cast<std::uint32_t>(begin[plusQ] + r2);
+            begin[current] = r2;
+            step();
+        }
+        for (std::size_t k = 0u; k < n; ++k) {
+            const std::uint32_t r3 = 1566083941u * mix(static_cast<std::uint32_t>(
+                    begin[current] + begin[plusP] + begin[previous]));
+            const std::uint32_t r4 =
+                    r3 - static_cast<std::uint32_t>(current);
+            begin[plusP] = static_cast<std::uint32_t>(begin[plusP] ^ r3);
+            begin[plusQ] = static_cast<std::uint32_t>(begin[plusQ] ^ r4);
+            begin[current] = r4;
+            step();
+        }
+    }
+
+private:
+    static constexpr std::size_t kValueCount = 4u;
+    std::uint32_t values_[kValueCount];
+};
+
 inline std::mt19937 ModifierRandom(std::uint32_t seed,
                                   std::uint64_t iterationIndex,
                                   std::uint32_t passIndex) {
-    std::seed_seq sequence{
+    ModifierSeedSequence sequence(
             seed,
             static_cast<std::uint32_t>(iterationIndex),
             static_cast<std::uint32_t>(iterationIndex >> 32u),
-            passIndex};
+            passIndex);
     return std::mt19937(sequence);
 }
 

@@ -162,6 +162,7 @@ private:
     // segment. Rejection keeps each (event, shift) pair distributed as an
     // ordinary draw conditioned on that anchor.
     MutationResult MutateSegment(const MutationRequest &request) const {
+        if (SegmentPassIsEmpty(request)) return UnchangedSegmentPass(request);
         const MutationSegment &segment = *request.segment;
         std::vector<SandboxInputEvent> inputs = request.baselineInputs;
         const std::int64_t tick = request.tickDurationMs;

@@ -3639,12 +3639,27 @@ int main(int argc, char **argv) {
                     QObject *const treeSearchSummary =
                             root->findChild<QObject *>(QStringLiteral(
                                     "treeSearchSummary"));
+                    QObject *const treeLeafCountField =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "treeLeafCountField"));
+                    QObject *const treeUnbranchedSegmentsCombo =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "treeUnbranchedSegmentsCombo"));
                     const bool treeSearchSettingsValid =
                             treeSearchSettings != nullptr &&
                             treeSegmentCountField != nullptr &&
                             treeSegmentCountField->property("value")
                                             .toString() ==
                                     QStringLiteral("10") &&
+                            treeLeafCountField != nullptr &&
+                            treeLeafCountField->property("value")
+                                            .toString() ==
+                                    QStringLiteral("0") &&
+                            treeUnbranchedSegmentsCombo != nullptr &&
+                            treeUnbranchedSegmentsCombo
+                                            ->property("currentValue")
+                                            .toString() ==
+                                    QStringLiteral("draw") &&
                             treeSearchSummary != nullptr &&
                             treeSearchSummary->property("text")
                                     .toString()

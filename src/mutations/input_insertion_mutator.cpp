@@ -102,6 +102,7 @@ public:
     explicit InputInsertionMutator(Settings settings) : settings_(settings) {}
 
     MutationResult Mutate(const MutationRequest &request) const override {
+        if (SegmentPassIsEmpty(request)) return UnchangedSegmentPass(request);
         std::vector<SandboxInputEvent> inputs = request.baselineInputs;
         const std::vector<SandboxInputEvent> original = inputs;
         std::mt19937 random = ModifierRandom(

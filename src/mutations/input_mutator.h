@@ -3,6 +3,7 @@
 
 #include "mutations/input_event_utils.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -63,6 +64,20 @@ inline std::uint32_t SegmentSlotCount(const MutationRequest &request,
     return slot < counts.size() ? counts[slot] : 0u;
 }
 
+// True for a segment draw in which this pass anchors no items. Count-driven
+// passes then return their input unchanged and need no random engine.
+inline bool SegmentPassIsEmpty(const MutationRequest &request) {
+    if (request.segment == nullptr) return false;
+    if (request.segment->slotCounts == nullptr ||
+        request.passIndex >= request.segment->slotCounts->size()) {
+        return true;
+    }
+    const std::vector<std::uint32_t> &counts =
+            (*request.segment->slotCounts)[request.passIndex];
+    return std::all_of(counts.begin(), counts.end(),
+                       [](std::uint32_t count) { return count == 0u; });
+}
+
 inline bool InAnchorRange(const MutationSegment &segment,
                           std::int64_t timeMs) {
     return timeMs >= segment.anchorRange.minimumTimeMs &&
@@ -98,6 +113,19 @@ struct MutationResult {
           mutationCount(configuredMutationCount),
           windowPatch(std::move(configuredWindowPatch)) {}
 };
+
+// What a count-driven pass returns when SegmentPassIsEmpty: its input
+// normalized exactly as a draw without items would leave it.
+inline MutationResult UnchangedSegmentPass(const MutationRequest &request) {
+    std::vector<SandboxInputEvent> inputs = request.baselineInputs;
+    NormalizeMutableInputEvents(inputs,
+                                request.baselineInputs,
+                                request.tickDurationMs,
+                                request.mutableFromTimeMs);
+    const std::size_t mutationCount =
+            EffectiveInputChangeCount(request.baselineInputs, inputs);
+    return {std::move(inputs), mutationCount};
+}
 
 class InputMutator {
 public:

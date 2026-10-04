@@ -230,8 +230,11 @@ segments. Each tree then:
    physics state and clones the evaluation session, then each child restores
    them, redraws only that segment's items through a segment draw, replaces
    the input window from the segment start, and simulates to the segment end.
-   Siblings never repeat a draw. Segments without items are simulated once
-   for every branch below them.
+   Siblings never repeat a draw. A child matches its parent's inputs
+   until its first changed input, so it resumes from the latest state an
+   earlier sibling captured on that shared timeline before the evaluation
+   window, replacing only the inputs after it. Segments without items are
+   simulated once for every branch below them.
 4. Finishes each leaf by simulating to the evaluation end. Every leaf is one
    attempt: it increments `iterations`, receives the next interleaved
    attempt index, and is reported through `attemptCompleted`. Attempts per
@@ -255,6 +258,39 @@ Leaves keep ordinary candidate statistics individually, but siblings share
 their early segments: per tree, segment `k` of `segmentCount` sees about
 `2^(k+1)` distinct variants. Compare improvements over time, not attempts per
 second, when choosing between algorithms.
+
+Optional settings reshape each tree; their defaults keep the tree above.
+
+- `leafCount` (default `0`, meaning `2^segmentCount`, at most `2^20`) is the
+  leaf target the branch counts aim for, independent of the segment count.
+- `branchedSegmentCount` (default `0`, all active segments; at most
+  `segmentCount`) branches only that many active segments per tree, chosen at
+  random from a hash of the drawn anchors so the choice follows the modifier
+  seeds. With `varyBranchedSegmentCount=true` each tree instead branches a
+  random number of segments from one up to that limit.
+- `unbranchedSegments` decides what the other active segments do: `draw`
+  (default) applies one segment draw shared by every leaf, so each leaf still
+  changes every anchored item; `keep` drops their items so the leaves keep the
+  tree's base inputs there and change only the branched segments. `keep` is a
+  local search: with one branched segment of four, a leaf changes about a
+  quarter of the items the user's count ranges would otherwise draw.
+- `flatWorkerCount` (default `0`) is a portfolio for the multi-threaded CPU
+  backend: workers with an index below it run `basic-brute-force` with the
+  same `autoPromoteBest`, sharing the promoted best with the tree workers.
+  Single-worker backends ignore it.
+
+The settings were compared with `forevertas-search-strategy-comparison`
+(6 workers, auto-promote, seed trials of 30 s, pose and velocity targets over
+the end of the mutation window). `unbranchedSegments=keep` with one branched
+segment, or with `varyBranchedSegmentCount=true`, found five to eight times
+as many improvements per minute as basic bruteforce and the default tree and
+reached a lower pose error. Most of the gain comes from changing fewer inputs
+per attempt rather than from shared prefixes: one leaf per tree did about as
+well. The velocity target has two basins far apart. Basic bruteforce
+reached the faster one in 6 of 8 seeds and `varyBranchedSegmentCount=true`
+with `keep` in 3 of 8, which is within noise but suggests that large changes
+still escape basins better. Within the slower basin the `keep` variants
+refined further.
 
 ### Winner retention and final sampling
 
@@ -348,7 +384,9 @@ composite to every pass:
   samplers.
 - `segment`: when set, the pass draws only `slotCounts[passIndex][slot]`
   items whose anchors fall inside `anchorRange`, applying each item in full
-  even where its effect extends past the segment. Draws use the same value
+  even where its effect extends past the segment. Count-driven passes with
+  no items in the segment return their normalized input without seeding a
+  random engine. Draws use the same value
   distributions as ordinary draws conditioned on the anchor: uniform starts
   and event picks restricted to the segment, or rejection for items whose
   anchor depends on a drawn offset.
@@ -650,7 +688,9 @@ No search-loop or controller branch should be added for the target.
 - `basic-brute-force`: baseline plus independent deterministic iterations,
   continuing until Stop is requested.
 - `tree-search`: CPU-only trees of candidates that share simulated prefixes;
-  every leaf is one attempt.
+  every leaf is one attempt. Optional settings branch a random subset of the
+  segments, keep the other segments unchanged, or run some multi-threaded
+  workers as basic bruteforce.
 
 ### Modifiers
 

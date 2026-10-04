@@ -100,6 +100,34 @@ std::uint64_t HashInputs(const std::vector<PhysicsSandboxInputEvent> &events) {
     return hash;
 }
 
+// Earliest input time at which applying the patch changes the inputs, or
+// nothing when the patch reproduces them.
+std::optional<std::int64_t> FirstPatchedChangeMs(
+        const std::vector<PhysicsSandboxInputEvent> &inputs,
+        const MutationWindowPatch &patch) {
+    auto current = std::lower_bound(
+            inputs.begin(), inputs.end(), patch.minimumTimeMs,
+            [](const PhysicsSandboxInputEvent &event, std::int64_t timeMs) {
+                return event.timeMs < timeMs;
+            });
+    const auto last = std::upper_bound(
+            current, inputs.end(), patch.maximumTimeMs,
+            [](std::int64_t timeMs, const PhysicsSandboxInputEvent &event) {
+                return timeMs < event.timeMs;
+            });
+    auto replacement = patch.events.begin();
+    for (; current != last && replacement != patch.events.end();
+         ++current, ++replacement) {
+        if (!SameInputEvent(*current, *replacement)) {
+            return std::min<std::int64_t>(current->timeMs,
+                                          replacement->timeMs);
+        }
+    }
+    if (current != last) return current->timeMs;
+    if (replacement != patch.events.end()) return replacement->timeMs;
+    return std::nullopt;
+}
+
 void CheckCancellation(const SearchRunControl *control) {
     if (control != nullptr && control->cancellationRequested &&
         control->cancellationRequested()) {
@@ -170,21 +198,43 @@ double WallClockSeconds() {
             .count();
 }
 
-struct TreeSettings {
-    std::uint32_t segmentCount = 10u;
-    bool autoPromoteBest = false;
-};
-
-std::optional<TreeSettings> ParseTreeSettings(const OptionSettings &settings) {
+std::optional<TreeSearchSettings> ParseTreeSettings(
+        const OptionSettings &settings) {
     const auto segmentCount =
             ParseUnsignedDecimal32(settings.at("segmentCount"));
+    const auto leafCount = ParseUnsignedDecimal32(settings.at("leafCount"));
+    const auto branchedSegmentCount =
+            ParseUnsignedDecimal32(settings.at("branchedSegmentCount"));
+    const auto flatWorkerCount =
+            ParseUnsignedDecimal32(settings.at("flatWorkerCount"));
+    const std::string &unbranched = settings.at("unbranchedSegments");
+    const auto varyBranchedSegmentCount =
+            ParseBoolean(settings.at("varyBranchedSegmentCount"));
     const auto autoPromoteBest = ParseBoolean(settings.at("autoPromoteBest"));
-    if (!segmentCount || !autoPromoteBest ||
+    if (!segmentCount || !leafCount || !branchedSegmentCount ||
+        !varyBranchedSegmentCount || !flatWorkerCount || !autoPromoteBest ||
+        (unbranched != "draw" && unbranched != "keep") ||
         *segmentCount < kMinimumTreeSegmentCount ||
-        *segmentCount > kMaximumTreeSegmentCount) {
+        *segmentCount > kMaximumTreeSegmentCount ||
+        *leafCount > kMaximumTreeLeafCount ||
+        *branchedSegmentCount > *segmentCount ||
+        *flatWorkerCount > kMaximumTreeFlatWorkerCount) {
         return std::nullopt;
     }
-    return TreeSettings{*segmentCount, *autoPromoteBest};
+    return TreeSearchSettings{*segmentCount,
+                              *leafCount,
+                              *branchedSegmentCount,
+                              *varyBranchedSegmentCount,
+                              unbranched == "keep",
+                              *flatWorkerCount,
+                              *autoPromoteBest};
+}
+
+std::uint64_t MixBits(std::uint64_t value) {
+    value += 0x9e3779b97f4a7c15ull;
+    value = (value ^ (value >> 30u)) * 0xbf58476d1ce4e5b9ull;
+    value = (value ^ (value >> 27u)) * 0x94d049bb133111ebull;
+    return value ^ (value >> 31u);
 }
 
 struct BestIteration {
@@ -223,7 +273,7 @@ using SegmentAllocation = std::vector<std::vector<std::uint32_t>>;
 class TreeSearchRun final {
 public:
     TreeSearchRun(const SearchExecutionContext &context,
-                  TreeSettings settings,
+                  TreeSearchSettings settings,
                   std::chrono::steady_clock::time_point started)
         : context_(context),
           sandbox_(context.sandbox),
@@ -249,6 +299,7 @@ private:
     std::optional<MutationWindowPatch> DrawSegment(
             std::size_t segmentIndex,
             const Branch &parent,
+            std::uint64_t parentGeneration,
             std::unordered_multimap<std::uint64_t,
                                     std::vector<PhysicsSandboxInputEvent>>
                     &siblings);
@@ -263,7 +314,7 @@ private:
     const SearchExecutionContext &context_;
     PhysicsSandbox &sandbox_;
     const std::uint32_t tick_;
-    const TreeSettings settings_;
+    const TreeSearchSettings settings_;
     const std::chrono::steady_clock::time_point started_;
 
     EvaluationPlan plan_;
@@ -525,6 +576,7 @@ void TreeSearchRun::FinishLeaf(Branch &branch) {
 std::optional<MutationWindowPatch> TreeSearchRun::DrawSegment(
         std::size_t segmentIndex,
         const Branch &parent,
+        std::uint64_t parentGeneration,
         std::unordered_multimap<std::uint64_t,
                                 std::vector<PhysicsSandboxInputEvent>>
                 &siblings) {
@@ -540,7 +592,7 @@ std::optional<MutationWindowPatch> TreeSearchRun::DrawSegment(
                  tick_,
                  range.minimumTimeMs,
                  true,
-                 ++generation_,
+                 parentGeneration,
                  pruneRedundantAnalogInsertions_,
                  nullptr,
                  &segment});
@@ -589,15 +641,39 @@ void TreeSearchRun::Expand(std::size_t segmentIndex, Branch &branch) {
     const MutationTimeRange &range = segments_[segmentIndex];
     const std::uint64_t branchCount = branchCounts_[segmentIndex];
     if (branchCount <= 1u) {
-        // Nothing is anchored here: every branch shares this simulation.
+        // Every branch shares this simulation. Unbranched segments with
+        // anchored items still apply one draw so each leaf keeps them.
+        if (!allocations_[segmentIndex].empty()) {
+            std::unordered_multimap<std::uint64_t,
+                                    std::vector<PhysicsSandboxInputEvent>>
+                    siblings;
+            std::optional<MutationWindowPatch> patch = DrawSegment(
+                    segmentIndex, branch, ++generation_, siblings);
+            Require(sandbox_.ReplaceInputWindow(patch->minimumTimeMs,
+                                                patch->maximumTimeMs,
+                                                std::move(patch->events)),
+                    "replacing tree segment inputs");
+            branch.inputs = Require(sandbox_.ReadInputs(),
+                                    "reading tree segment inputs");
+        }
         Simulate(branch, range.maximumTimeMs);
         Expand(segmentIndex + 1u, branch);
         return;
     }
 
-    const PhysicsSandboxState node =
-            Require(sandbox_.CaptureState(), "capturing tree node");
+    const std::int64_t nodeTimeMs =
+            static_cast<std::int64_t>(branch.state.timeMs);
+    // States every child reaches before its first changed input, ordered
+    // by time. Each child simulates the parent's timeline up to that input,
+    // so later children resume from the latest such state instead of
+    // repeating those ticks. Only unobserved ticks are shared, which keeps
+    // every session observing exactly the ticks of a full simulation.
+    std::vector<PhysicsSandboxState> prefix;
+    prefix.push_back(Require(sandbox_.CaptureState(), "capturing tree node"));
     const Branch parent = branch.Clone();
+    // Every draw at this node reads the same parent inputs, so modifiers
+    // may reuse what they derived from them.
+    const std::uint64_t parentGeneration = ++generation_;
     std::unordered_multimap<std::uint64_t,
                             std::vector<PhysicsSandboxInputEvent>>
             siblings;
@@ -606,22 +682,58 @@ void TreeSearchRun::Expand(std::size_t segmentIndex, Branch &branch) {
          child < branchCount && !abandonTree_;
          ++child) {
         std::optional<MutationWindowPatch> patch =
-                DrawSegment(segmentIndex, parent, siblings);
+                DrawSegment(segmentIndex, parent, parentGeneration, siblings);
         if (!patch) continue;
+        std::int64_t sharedUntilMs = std::min<std::int64_t>(
+                {range.maximumTimeMs,
+                 plan_.startTimeMs - tick_,
+                 patch->maximumTimeMs - tick_});
+        if (const std::optional<std::int64_t> changedMs =
+                    FirstPatchedChangeMs(parent.inputs, *patch)) {
+            sharedUntilMs = std::min(sharedUntilMs, *changedMs - tick_);
+        }
+        sharedUntilMs = std::max(sharedUntilMs, nodeTimeMs);
+        const auto resume = std::upper_bound(
+                prefix.begin() + 1, prefix.end(), sharedUntilMs,
+                [](std::int64_t timeMs, const PhysicsSandboxState &state) {
+                    return timeMs <
+                            static_cast<std::int64_t>(state.View().timeMs);
+                }) - 1;
+        const std::int64_t resumeTimeMs =
+                static_cast<std::int64_t>(resume->View().timeMs);
         // The sandbox still holds the node state until the first child
-        // runs; later children restore it.
+        // runs; later children restore a shared state.
         Branch current = atNode ? std::move(branch) : parent.Clone();
         if (!atNode) {
-            current.state = Require(sandbox_.RestoreState(node),
+            current.state = Require(sandbox_.RestoreState(*resume),
                                     "restoring tree node");
         }
         atNode = false;
+        if (resumeTimeMs > nodeTimeMs) {
+            // Inputs before the resumed tick already match this child.
+            patch->minimumTimeMs = resumeTimeMs + tick_;
+            patch->events.erase(
+                    patch->events.begin(),
+                    std::lower_bound(
+                            patch->events.begin(), patch->events.end(),
+                            patch->minimumTimeMs,
+                            [](const PhysicsSandboxInputEvent &event,
+                               std::int64_t timeMs) {
+                                return event.timeMs < timeMs;
+                            }));
+        }
         Require(sandbox_.ReplaceInputWindow(patch->minimumTimeMs,
                                             patch->maximumTimeMs,
                                             std::move(patch->events)),
                 "replacing tree segment inputs");
         current.inputs = Require(sandbox_.ReadInputs(),
                                  "reading tree segment inputs");
+        if (sharedUntilMs > resumeTimeMs) {
+            Simulate(current, sharedUntilMs);
+            prefix.insert(resume + 1,
+                          Require(sandbox_.CaptureState(),
+                                  "capturing shared tree state"));
+        }
         Simulate(current, range.maximumTimeMs);
         Expand(segmentIndex + 1u, current);
     }
@@ -669,22 +781,55 @@ bool TreeSearchRun::RunTree() {
         }
         ++slots[anchor.slot];
     }
-    std::size_t activeSegmentCount = 0u;
-    for (const SegmentAllocation &allocation : allocations_) {
-        activeSegmentCount += allocation.empty() ? 0u : 1u;
+    std::vector<std::size_t> branchedSegments;
+    for (std::size_t index = 0u; index < segments_.size(); ++index) {
+        if (!allocations_[index].empty()) branchedSegments.push_back(index);
     }
-    if (activeSegmentCount == 0u) {
+    if (branchedSegments.empty()) {
         // The drawn candidate changes nothing the target can observe.
         return false;
     }
-    const std::vector<std::uint64_t> activeBranchCounts =
-            TreeBranchCounts(activeSegmentCount, targetLeafCount_);
-    branchCounts_.assign(segments_.size(), 1u);
-    for (std::size_t index = 0u, active = 0u;
-         index < segments_.size(); ++index) {
-        if (!allocations_[index].empty()) {
-            branchCounts_[index] = activeBranchCounts[active++];
+    std::size_t branchedCount = settings_.branchedSegmentCount == 0u
+            ? branchedSegments.size()
+            : std::min<std::size_t>(branchedSegments.size(),
+                                    settings_.branchedSegmentCount);
+    if (branchedCount < branchedSegments.size() ||
+        settings_.varyBranchedSegmentCount) {
+        // A random subset of the active segments branches; the others
+        // apply one shared draw or keep the base inputs. The anchors seed
+        // the choice, so it follows the modifier seeds.
+        std::uint64_t random = MixBits(drawCount_ ^ drawOffset_);
+        for (const MutationAnchor &anchor : anchors) {
+            random = MixBits(random ^ static_cast<std::uint64_t>(
+                                              anchor.timeMs) ^
+                             (std::uint64_t{anchor.passIndex} << 32u) ^
+                             (std::uint64_t{anchor.slot} << 48u));
         }
+        if (settings_.varyBranchedSegmentCount) {
+            random = MixBits(random);
+            branchedCount = 1u + random % branchedCount;
+        }
+        for (std::size_t index = 0u; index < branchedCount; ++index) {
+            random = MixBits(random);
+            std::swap(branchedSegments[index],
+                      branchedSegments[index +
+                                       random % (branchedSegments.size() -
+                                                 index)]);
+        }
+        if (settings_.keepUnbranchedSegments) {
+            for (std::size_t index = branchedCount;
+                 index < branchedSegments.size(); ++index) {
+                allocations_[branchedSegments[index]].clear();
+            }
+        }
+        branchedSegments.resize(branchedCount);
+        std::sort(branchedSegments.begin(), branchedSegments.end());
+    }
+    const std::vector<std::uint64_t> activeBranchCounts =
+            TreeBranchCounts(branchedSegments.size(), targetLeafCount_);
+    branchCounts_.assign(segments_.size(), 1u);
+    for (std::size_t index = 0u; index < branchedSegments.size(); ++index) {
+        branchCounts_[branchedSegments[index]] = activeBranchCounts[index];
     }
 
     Branch root;
@@ -750,7 +895,9 @@ SearchResult TreeSearchRun::Execute() {
                 "tree search needs mutable inputs inside the evaluation "
                 "window; the window ends before the first mutable input");
     }
-    targetLeafCount_ = std::uint64_t{1} << settings_.segmentCount;
+    targetLeafCount_ = settings_.leafCount != 0u
+            ? settings_.leafCount
+            : std::uint64_t{1} << settings_.segmentCount;
 
     const std::int64_t branchTimeMs =
             std::min(earliestMutationTimeMs_, plan_.startTimeMs) - tick_;
@@ -844,7 +991,22 @@ SearchResult TreeSearchRun::Execute() {
 }  // namespace
 
 OptionSettings DefaultTreeSearchOptionSettings() {
-    return {{"segmentCount", "10"}, {"autoPromoteBest", "false"}};
+    return {{"segmentCount", "10"},
+            {"leafCount", "0"},
+            {"branchedSegmentCount", "0"},
+            {"varyBranchedSegmentCount", "false"},
+            {"unbranchedSegments", "draw"},
+            {"flatWorkerCount", "0"},
+            {"autoPromoteBest", "false"}};
+}
+
+std::optional<TreeSearchSettings> ParseTreeSearchSettings(
+        const OptionSettings &settings) {
+    if (ValidateOptionSettingKeys(settings,
+                                  DefaultTreeSearchOptionSettings())) {
+        return std::nullopt;
+    }
+    return ParseTreeSettings(settings);
 }
 
 std::optional<std::string> ValidateTreeSearchOptionSettings(
@@ -857,10 +1019,38 @@ std::optional<std::string> ValidateTreeSearchOptionSettings(
     if (!ParseBoolean(settings.at("autoPromoteBest"))) {
         return "auto-promote best must be true or false";
     }
-    if (!ParseTreeSettings(settings)) {
+    const auto segmentCount =
+            ParseUnsignedDecimal32(settings.at("segmentCount"));
+    if (!segmentCount || *segmentCount < kMinimumTreeSegmentCount ||
+        *segmentCount > kMaximumTreeSegmentCount) {
         return "segment count must be a whole number between " +
                 std::to_string(kMinimumTreeSegmentCount) + " and " +
                 std::to_string(kMaximumTreeSegmentCount);
+    }
+    const auto leafCount = ParseUnsignedDecimal32(settings.at("leafCount"));
+    if (!leafCount || *leafCount > kMaximumTreeLeafCount) {
+        return "leaves per tree must be 0 (automatic) or a whole number up "
+               "to " + std::to_string(kMaximumTreeLeafCount);
+    }
+    const auto branchedSegmentCount =
+            ParseUnsignedDecimal32(settings.at("branchedSegmentCount"));
+    if (!branchedSegmentCount || *branchedSegmentCount > *segmentCount) {
+        return "branched segments must be 0 (all) or a whole number up to "
+               "the segment count";
+    }
+    if (!ParseBoolean(settings.at("varyBranchedSegmentCount"))) {
+        return "varying branched segments must be true or false";
+    }
+    const std::string &unbranched = settings.at("unbranchedSegments");
+    if (unbranched != "draw" && unbranched != "keep") {
+        return "unbranched segments must be draw or keep";
+    }
+    const auto flatWorkerCount =
+            ParseUnsignedDecimal32(settings.at("flatWorkerCount"));
+    if (!flatWorkerCount ||
+        *flatWorkerCount > kMaximumTreeFlatWorkerCount) {
+        return "flat workers must be a whole number up to " +
+                std::to_string(kMaximumTreeFlatWorkerCount);
     }
     if (tickDurationMs == 0u) {
         return "tick duration must be greater than zero";
@@ -875,9 +1065,7 @@ std::unique_ptr<SearchAlgorithm> CreateTreeSearch(
                 ValidateTreeSearchOptionSettings(settings, tickDurationMs)) {
         throw std::invalid_argument(*error);
     }
-    const TreeSettings parsed = *ParseTreeSettings(settings);
-    return std::make_unique<TreeSearch>(parsed.segmentCount,
-                                        parsed.autoPromoteBest);
+    return std::make_unique<TreeSearch>(*ParseTreeSettings(settings));
 }
 
 std::vector<MutationTimeRange> TreeSegmentRanges(
@@ -942,7 +1130,9 @@ std::vector<std::uint64_t> TreeBranchCounts(
 }
 
 TreeSearch::TreeSearch(std::uint32_t segmentCount, bool autoPromoteBest)
-    : segmentCount_(segmentCount), autoPromoteBest_(autoPromoteBest) {}
+    : settings_{segmentCount, 0u, 0u, false, false, 0u, autoPromoteBest} {}
+
+TreeSearch::TreeSearch(TreeSearchSettings settings) : settings_(settings) {}
 
 SearchResult TreeSearch::Run(const SearchExecutionContext &context) const {
     const auto started = std::chrono::steady_clock::now();
@@ -954,7 +1144,7 @@ SearchResult TreeSearch::Run(const SearchExecutionContext &context) const {
         throw std::invalid_argument(
                 "tree search requires a CPU physics backend");
     }
-    TreeSearchRun run(context, {segmentCount_, autoPromoteBest_}, started);
+    TreeSearchRun run(context, settings_, started);
     return run.Execute();
 }
 
