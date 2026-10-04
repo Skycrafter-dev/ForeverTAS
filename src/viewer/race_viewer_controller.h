@@ -155,6 +155,8 @@ class RaceViewerController final : public QObject {
                        trajectoriesChanged)
     Q_PROPERTY(QString previewInputScript READ previewInputScript WRITE
                        setPreviewInputScript NOTIFY previewInputScriptChanged)
+    Q_PROPERTY(bool previewingHistory READ previewingHistory WRITE setPreviewingHistory
+                       NOTIFY previewingHistoryChanged)
     Q_PROPERTY(qint64 simulationHorizonMs READ simulationHorizonMs WRITE
                        setSimulationHorizonMs NOTIFY simulationHorizonMsChanged)
     Q_PROPERTY(QVariantList runOptions READ runOptions NOTIFY runsChanged)
@@ -265,6 +267,7 @@ public:
                                    const QVariant &value);
     qint64 trajectoryCount() const;
     QString previewInputScript() const;
+    bool previewingHistory() const;
     qint64 simulationHorizonMs() const;
     QVariantList runOptions() const;
     QVariantList runPoses() const;
@@ -366,6 +369,7 @@ public slots:
     void setCurrentTick(qint64 tick);
     void setSelectedRunId(const QString &value);
     void setPreviewInputScript(const QString &value);
+    void setPreviewingHistory(bool value);
     void setSimulationHorizonMs(qint64 value);
     void setTakeOverOnInput(bool value);
     void setCameraPreset(int value);
@@ -392,6 +396,7 @@ public slots:
     Q_INVOKABLE void clearPreviewTrajectories();
     void clearSearchResults();
     Q_INVOKABLE void refreshInputPreview();
+    Q_INVOKABLE void focusInputPreview();
     Q_INVOKABLE void loadMap(const QString &packsDirectory,
                             const QString &replayPath);
     Q_INVOKABLE void loadMap(const QString &packsDirectory,
@@ -424,6 +429,7 @@ signals:
     void trajectoriesChanged();
     void visualStylesChanged();
     void previewInputScriptChanged();
+    void previewingHistoryChanged();
     void simulationHorizonMsChanged();
     void cameraPresetChanged();
     void cameraChanged();
@@ -557,6 +563,8 @@ private:
     QString loadedPacksDirectory_;
     QString loadedReplayPath_;
     QString previewInputScript_;
+    bool previewingHistory_ = false;
+    bool selectNextInputPreview_ = false;
     qint64 simulationHorizonMs_ = 6000;
     std::vector<SandboxInputEvent> takeoverSourceInputs_;
     QString takeoverSourceRunId_;

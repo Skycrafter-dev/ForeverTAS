@@ -1145,6 +1145,11 @@ if(BUILD_TESTING)
                  COMMAND forevertas-viewer-smoke
                      "${FOREVERTAS_TEST_PACK_DIRECTORY}"
                      "${FOREVERTAS_TEST_REPLAY}")
+        add_test(NAME forevertas-base-preview
+                 COMMAND forevertas-viewer-smoke --base-preview
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-base-preview PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
         set_tests_properties(forevertas-viewer PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             TIMEOUT 180)

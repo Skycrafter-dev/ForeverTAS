@@ -529,6 +529,10 @@ bool SearchController::extendSimulationHorizon() {
     return true;
 }
 
+void SearchController::previewBaseInputs() {
+    emit basePreviewRequested();
+}
+
 QString SearchController::conditionScript() const {
     return conditionScript_;
 }

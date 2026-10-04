@@ -1151,6 +1151,7 @@ int main(int argc, char **argv) {
             }
             property QtObject v: QtObject {
                 property string previewInputScript: "base"
+                property bool previewingHistory: false
                 property int simulationHorizonMs: 1000
                 property bool loaded: true
                 function refreshInputPreview() {}
@@ -1171,6 +1172,7 @@ int main(int argc, char **argv) {
         QMetaObject::invokeMethod(history, "chooseRow", Q_ARG(QVariant, 0),
                                   Q_ARG(QVariant, true));
         passiveHistoryValid &= v->property("previewInputScript") == "winner0" &&
+                v->property("previewingHistory").toBool() &&
                 v->property("simulationHorizonMs").toInt() == 4000;
         QMetaObject::invokeMethod(c, "addCycle");
         QCoreApplication::processEvents();

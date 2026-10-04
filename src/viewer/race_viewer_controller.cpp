@@ -2312,6 +2312,16 @@ QString RaceViewerController::previewInputScript() const {
     return previewInputScript_;
 }
 
+bool RaceViewerController::previewingHistory() const {
+    return previewingHistory_;
+}
+
+void RaceViewerController::setPreviewingHistory(bool value) {
+    if (previewingHistory_ == value) return;
+    previewingHistory_ = value;
+    emit previewingHistoryChanged();
+}
+
 qint64 RaceViewerController::simulationHorizonMs() const {
     return simulationHorizonMs_;
 }
@@ -3417,6 +3427,14 @@ void RaceViewerController::setPreviewInputScript(const QString &value) {
 
 void RaceViewerController::refreshInputPreview() {
     scheduleInputPreviewRebuild();
+}
+
+void RaceViewerController::focusInputPreview() {
+    stopManualDrive();
+    stopSimulationDebugger();
+    selectNextInputPreview_ = true;
+    setSelectedRunId(QStringLiteral("preview"));
+    jumpToStart();
 }
 
 void RaceViewerController::setSimulationHorizonMs(qint64 value) {
@@ -4543,6 +4561,11 @@ void RaceViewerController::applyInputPreviewResult(
             std::move(result.inputs),
             false,
             result.runtime);
+    if (selectNextInputPreview_) {
+        selectNextInputPreview_ = false;
+        setSelectedRunId(QStringLiteral("preview"));
+        jumpToStart();
+    }
     if (visualStyle(QStringLiteral("trajectory:preview"))
                 .contains(QStringLiteral("width"))) {
         refreshStyledTrajectory(QStringLiteral("preview"));

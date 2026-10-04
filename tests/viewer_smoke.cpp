@@ -1,10 +1,14 @@
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
+#include "app/search_controller.h"
+#include "app/input_preview_binding.h"
 
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QGuiApplication>
 #include <QFileInfo>
+#include <QFile>
+#include <QTemporaryDir>
 #include <QImage>
 #include <QMouseEvent>
 #include <QPainter>
@@ -111,6 +115,52 @@ bool WaitUntil(Predicate predicate, int timeoutMs = 60000) {
         QThread::msleep(1);
     }
     return predicate();
+}
+
+bool TestBasePreviewReturn(const QString &packs, const QString &replay) {
+    forevertas::app::SearchController controller;
+    RaceViewerController viewer;
+    controller.setPacksDirectory(packs);
+    controller.setReplayPath(replay);
+    controller.setSimulationHorizonMs("1000");
+    controller.setModifierPassSetting(0, "minTimeMs", "0");
+    controller.setModifierPassSetting(0, "maxTimeMs", "990");
+    controller.setEvaluationTargetSetting("minTimeMs", "0");
+    controller.setEvaluationTargetSetting("maxTimeMs", "1000");
+    const QString base = QStringLiteral("0.00 press up\n0.11 rel up");
+    controller.setBaseInputScript(base);
+    forevertas::app::BindInputPreview(controller, viewer);
+    QTemporaryDir history;
+    const QString otherReplay = history.filePath("history.Replay.Gbx");
+    if (!QFile::copy(replay, otherReplay)) return false;
+    for (const QString &historyReplay : {replay, otherReplay}) {
+        viewer.setPreviewingHistory(true);
+        viewer.setSimulationHorizonMs(2000);
+        viewer.setPreviewInputScript("0.00 press down");
+        viewer.loadMap(packs, historyReplay);
+        if (!WaitUntil([&]() { return viewer.loaded() && !viewer.loading() &&
+                viewer.loadedReplayPath() == historyReplay && viewer.runCount() > 0 &&
+                viewer.inputSample(5).brake > 0.99f; })) return false;
+        viewer.jumpToEnd();
+        const auto rows = controller.cycleRows();
+        const auto selected = controller.selectedInputsText();
+        controller.previewBaseInputs();
+        if (!WaitUntil([&]() { return viewer.loaded() && !viewer.loading() &&
+                viewer.loadedReplayPath() == replay && viewer.selectedRunId() == "preview" &&
+                viewer.inputSample(5).accelerate > 0.99f && viewer.inputSample(20).accelerate < 0.01f; })) return false;
+        if (viewer.previewingHistory() || viewer.previewInputScript() != base ||
+            viewer.simulationHorizonMs() != 1000 || viewer.currentTick() != 0 || viewer.playing() ||
+            controller.baseInputScript() != base || controller.selectedInputsText() != selected ||
+            controller.cycleRows() != rows || controller.running()) return false;
+    }
+    viewer.setPreviewingHistory(true);
+    viewer.loadMap(packs, otherReplay);
+    controller.previewBaseInputs();
+    return WaitUntil([&]() {
+        return viewer.loaded() && !viewer.loading() && viewer.loadedReplayPath() == replay &&
+                !viewer.previewingHistory() && viewer.selectedRunId() == "preview" &&
+                viewer.inputSample(5).accelerate > 0.99f;
+    });
 }
 
 qint64 FindActivityTick(const RaceViewerController &viewer, char channel) {
@@ -225,7 +275,8 @@ void DragTimeline(RaceTimelineItem &timeline,
 }  // namespace
 
 int main(int argc, char **argv) {
-    if (argc != 3) {
+    const bool basePreviewOnly = argc == 4 && QString::fromLocal8Bit(argv[1]) == "--base-preview";
+    if (argc != 3 && !basePreviewOnly) {
         std::cerr << "usage: forevertas-viewer-smoke <Packs> <replay>\n";
         return 2;
     }
@@ -237,6 +288,12 @@ int main(int argc, char **argv) {
             QStringLiteral("ViewerSmoke"));
     QStandardPaths::setTestModeEnabled(true);
     QSettings().clear();
+    if (basePreviewOnly) {
+        const bool okay = TestBasePreviewReturn(QString::fromLocal8Bit(argv[2]), QString::fromLocal8Bit(argv[3]));
+        if (!okay) std::cerr << "return to base preview failed\n";
+        QSettings().clear();
+        return okay ? 0 : 1;
+    }
     {
         RaceViewerController settingsProbe;
         if (settingsProbe.cameraPreset() != 1) {

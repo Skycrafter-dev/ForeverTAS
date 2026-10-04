@@ -56,6 +56,7 @@ ColumnLayout {
         if (!preview)
             return
         inputsSelected()
+        viewer.previewingHistory = true
         let session = null
         for (let i = 0; i < controller.sessionOptions.length; ++i) {
             if (controller.sessionOptions[i].directory ===
@@ -74,7 +75,7 @@ ColumnLayout {
         const replay = session && session.replayPath
             ? session.replayPath : controller.replayPath
         const needsMap = packs.length > 0 && replay.length > 0 &&
-            (!viewer.loaded || viewer.loadedReplayPath !== replay ||
+            (!viewer.loaded || viewer.loading || viewer.loadedReplayPath !== replay ||
              viewer.loadedPacksDirectory !== packs)
         if (needsMap)
             viewer.loadMap(packs, replay)
@@ -109,6 +110,15 @@ ColumnLayout {
         observedRowCount = controller.cycleRows.length
         if (observedRowCount > 0)
             Qt.callLater(() => chooseRow(observedRowCount - 1, false))
+    }
+
+    ThemedButton {
+        objectName: "previewBaseInputsButton"
+        Layout.alignment: Qt.AlignRight
+        visible: root.viewer.previewingHistory
+        icon.source: "qrc:/icons/flag.svg"
+        text: qsTr("Preview base inputs")
+        onClicked: root.controller.previewBaseInputs()
     }
 
     RowLayout {
