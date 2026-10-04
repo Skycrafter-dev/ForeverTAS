@@ -171,7 +171,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG da61da08d437cdf77dead2f164b8902ca3129917
+        GIT_TAG 04b035f6dfb674cdf6d6ce7233ed081bcdd9aea6
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -196,6 +196,8 @@ add_library(forevertas_core STATIC
     src/evaluators/evaluator_utils.h
     src/evaluators/precise_finish_time_evaluator.cpp
     src/evaluators/precise_finish_time_evaluator.h
+    src/evaluators/checkpoint_time_evaluator.cpp
+    src/evaluators/checkpoint_time_evaluator.h
     src/evaluators/point_target_evaluator.cpp
     src/evaluators/point_target_evaluator.h
     src/evaluators/pose_target_evaluator.cpp
@@ -517,6 +519,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/ConfigurationSection.qml
         qml/settings/ExistingEventPerturbationSettings.qml
         qml/settings/PreciseFinishTimeEvaluationSettings.qml
+        qml/settings/CheckpointTimeEvaluationSettings.qml
         qml/settings/InputDeletionSettings.qml
         qml/settings/InputInsertionSettings.qml
         qml/settings/ModifierComposition.qml
@@ -1188,6 +1191,15 @@ if(BUILD_TESTING)
                  COMMAND forevertas-simulation-time-target-tests
                      "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-simulation-time-target PROPERTIES TIMEOUT 180)
+        add_executable(forevertas-checkpoint-time-tests tests/checkpoint_time_tests.cpp)
+        target_link_libraries(forevertas-checkpoint-time-tests PRIVATE forevertas_core)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-checkpoint-time-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-checkpoint-time
+                 COMMAND forevertas-checkpoint-time-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-checkpoint-time PROPERTIES TIMEOUT 240)
         add_executable(forevertas-volume-completion-tests tests/volume_completion_tests.cpp)
         target_link_libraries(forevertas-volume-completion-tests PRIVATE forevertas_core)
         if(FOREVERTAS_WARNING_OPTIONS)

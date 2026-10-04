@@ -2,6 +2,7 @@
 
 #include "input_timeline_time.h"
 #include "evaluators/precise_finish_time_evaluator.h"
+#include "evaluators/checkpoint_time_evaluator.h"
 #include "evaluators/custom_volume_entry_evaluator.h"
 #include "evaluators/point_target_evaluator.h"
 #include "evaluators/pose_target_evaluator.h"
@@ -289,7 +290,15 @@ const std::vector<EvaluationTargetRegistration> &EvaluationTargetRegistry() {
              DefaultScriptedTargetOptionSettings(),
              {},
              &ValidateScriptedTargetOptionSettings,
-             &CreateScriptedTargetEvaluator}};
+             &CreateScriptedTargetEvaluator},
+            {kCheckpointTimeEvaluationId,
+             {},
+             "Checkpoint time (CPU)",
+             "CheckpointTimeEvaluationSettings.qml",
+             DefaultCheckpointTimeOptionSettings(),
+             {},
+             &ValidateCheckpointTimeOptionSettings,
+             &CreateCheckpointTimeEvaluator}};
     return registrations;
 }
 

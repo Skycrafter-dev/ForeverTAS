@@ -1339,7 +1339,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
             "auto-promote search mode was unexpectedly enabled by default");
     okay &= Check(controller.modifierOptions().size() == 5,
                   "required modifier options were not exposed");
-    okay &= Check(controller.evaluationTargetOptions().size() == 8,
+    okay &= Check(controller.evaluationTargetOptions().size() == 9,
                   "required evaluation targets were not exposed");
     okay &= Check(HasOption(
                           controller.evaluationTargetOptions(),
@@ -1397,6 +1397,29 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                           QStringLiteral("optimized-cpu") &&
                           controller.canStart(),
                   "CPU Optimized backend was not selectable");
+    const auto previousTarget = controller.evaluationTargetId();
+    const auto previousTargetSettings = controller.evaluationTargetSettings();
+    controller.setEvaluationTargetId(QStringLiteral("checkpoint-time"));
+    okay &= Check(controller.canStart() && HasOption(controller.evaluationTargetOptions(),
+                          QStringLiteral("checkpoint-time"), QStringLiteral("CheckpointTimeEvaluationSettings.qml")),
+                  "checkpoint-time target was unavailable on CPU");
+    controller.setEvaluationTargetSetting("eventIndex", "18446744073709551615");
+    okay &= Check(controller.canStart() && controller.evaluationTargetSettings().value("eventIndex").toString() ==
+                  QStringLiteral("18446744073709551615"), "checkpoint event identity was rounded");
+    controller.setEvaluationTargetSetting("lap", "0");
+    okay &= Check(!controller.canStart(), "invalid checkpoint lap enabled Start");
+    controller.setEvaluationTargetSetting("lap", "1");
+    for (const auto &option : controller.simulationBackendOptions()) {
+        const auto id = option.toMap().value("id").toString();
+        if (id != "cuda" && id != "hip" && id != "vulkan") continue;
+        controller.setSimulationBackendId(id);
+        okay &= Check(!controller.canStart() && controller.validationMessage().contains("CPU physics backend"),
+                      "checkpoint target was not explicitly rejected on GPU");
+    }
+    controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
+    controller.setEvaluationTargetId(previousTarget);
+    for (auto setting = previousTargetSettings.begin(); setting != previousTargetSettings.end(); ++setting)
+        controller.setEvaluationTargetSetting(setting.key(), setting.value().toString());
     controller.setSimulationBackendId(
             QStringLiteral("multi-threaded-cpu"));
     okay &= Check(controller.simulationBackendId() ==

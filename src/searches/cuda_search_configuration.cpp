@@ -238,6 +238,9 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
         configuration.id == "finish-time") {
         return PhysicsSandboxCudaFinishTimeEvaluator{};
     }
+    if (configuration.id == kCheckpointTimeEvaluationId) {
+        throw std::invalid_argument("Checkpoint time requires a CPU physics backend; GPU accepted-event journals are unavailable");
+    }
     if (configuration.id == kStuntPointsEvaluationId) {
         return PhysicsSandboxCudaStuntPointsEvaluator{};
     }

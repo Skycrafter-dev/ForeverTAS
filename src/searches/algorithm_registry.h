@@ -24,6 +24,7 @@ inline constexpr char kVelocityEvaluationId[] = "velocity";
 inline constexpr char kPreciseFinishTimeEvaluationId[] =
         "precise-finish-time";
 inline constexpr char kStuntPointsEvaluationId[] = "stunt-points";
+inline constexpr char kCheckpointTimeEvaluationId[] = "checkpoint-time";
 inline constexpr char kVolumeEntryEvaluationId[] = "volume-entry-time";
 inline constexpr char kCustomVolumeEntryEvaluationId[] =
         "custom-volume-entry-time";

@@ -1698,7 +1698,7 @@ bool TestRegistries() {
     }
     okay &= Check(forevertas::ModifierRegistry().size() == 5u,
                   "not all required modifiers are registered");
-    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 8u,
+    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 9u,
                   "not all required evaluation targets are registered");
     return okay;
 }
@@ -2198,7 +2198,8 @@ bool TestCudaConfigurationCoverage() {
     for (const auto &registration :
          forevertas::EvaluationTargetRegistry()) {
         if (registration.id ==
-                    forevertas::kCustomVolumeEntryEvaluationId) {
+                    forevertas::kCustomVolumeEntryEvaluationId ||
+            registration.id == forevertas::kCheckpointTimeEvaluationId) {
             try {
                 static_cast<void>(forevertas::BuildCudaEvaluator(
                         {registration.id, registration.defaultSettings},

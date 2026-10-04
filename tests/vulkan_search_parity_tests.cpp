@@ -1209,6 +1209,7 @@ int main(int argc, char **argv) {
              forevertas::EvaluationTargetRegistry()) {
             if (registration.id ==
                         forevertas::kCustomVolumeEntryEvaluationId ||
+                registration.id == forevertas::kCheckpointTimeEvaluationId ||
                 registration.id ==
                         forevertas::kPreciseFinishTimeEvaluationId) {
                 continue;

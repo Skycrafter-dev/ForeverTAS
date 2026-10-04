@@ -1502,6 +1502,7 @@ SearchResult RunSearch(const SearchRequest &request,
             kSearchTickDurationMs);
     if (evaluationPlan.startTimeMs < kSearchTickDurationMs ||
         (evaluationRegistration->id != kScriptedTargetEvaluationId &&
+         evaluationRegistration->id != kCheckpointTimeEvaluationId &&
          evaluationPlan.startTimeMs < earliestMutationTimeMs) ||
         evaluationPlan.endTimeMs < evaluationPlan.startTimeMs ||
         evaluationPlan.endTimeMs > request.simulationHorizonMs ||

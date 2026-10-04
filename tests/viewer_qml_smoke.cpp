@@ -3442,7 +3442,7 @@ int main(int argc, char **argv) {
                                             .toInt() == 5 &&
                             modifierPassSelector->property("count").toInt() == 1 &&
                             evaluationTargetCombo->property("count").toInt() ==
-                                    8 &&
+                                    9 &&
                             searchAlgorithmCombo->property("currentValue")
                                             .toString() ==
                                     QStringLiteral("basic-brute-force") &&
@@ -4199,7 +4199,7 @@ int main(int argc, char **argv) {
                     if (settingsTabs != nullptr)
                         settingsTabs->setProperty("currentIndex", 1);
                     QCoreApplication::processEvents();
-                    const std::array<std::pair<const char *, const char *>, 7>
+                    const std::array<std::pair<const char *, const char *>, 8>
                             evaluationPanels{{
                                     {"velocity",
                                      "velocityEvaluationSettings"},
@@ -4214,7 +4214,9 @@ int main(int argc, char **argv) {
                                     {"point-target",
                                      "pointTargetEvaluationSettings"},
                                     {"pose-target",
-                                     "poseTargetEvaluationSettings"}}};
+                                     "poseTargetEvaluationSettings"},
+                                    {"checkpoint-time",
+                                     "checkpointTimeEvaluationSettings"}}};
                     for (const auto &[id, objectName] : evaluationPanels) {
                         controller.setEvaluationTargetId(
                                 QString::fromLatin1(id));
@@ -4229,6 +4231,60 @@ int main(int argc, char **argv) {
                                                         "settingsObjectName")
                                                 .toString() ==
                                         QString::fromLatin1(objectName);
+                    }
+                    SettleQuickLayout();
+                    auto *const checkpointSettings = evaluationTargetSelector == nullptr
+                            ? nullptr : qobject_cast<QQuickItem *>(evaluationTargetSelector
+                                      ->property("settingsItem").value<QObject *>());
+                    const auto checkpointField = [&](const char *name) -> QObject * {
+                        return checkpointSettings == nullptr ? nullptr
+                                : checkpointSettings->findChild<QObject *>(QString::fromLatin1(name));
+                    };
+                    auto *const checkpointEvent = checkpointField("checkpointTimeEventTypeField");
+                    auto *const checkpointNumber = checkpointField("checkpointTimeNumberField");
+                    auto *const checkpointLap = checkpointField("checkpointTimeLapField");
+                    auto *const checkpointSlot = checkpointField("checkpointTimeSlotField");
+                    auto *const checkpointIndex = checkpointField("checkpointTimeEventIndexField");
+                    bool checkpointSettingsValid = checkpointSettings != nullptr &&
+                            checkpointEvent != nullptr && checkpointNumber != nullptr &&
+                            checkpointLap != nullptr && checkpointSlot != nullptr && checkpointIndex != nullptr;
+                    if (checkpointSettingsValid) {
+                        const auto checkCheckpointUi = [&](bool valid, const char *detail) {
+                            if (!valid) std::cerr << "checkpoint settings: " << detail << '\n';
+                            checkpointSettingsValid &= valid;
+                        };
+                        const auto editCheckpointField = [](QObject *field, const QString &value) {
+                            if (!field->setProperty("text", value)) return false;
+                            const bool invoked = QMetaObject::invokeMethod(field, "editingFinished");
+                            QCoreApplication::processEvents();
+                            return invoked;
+                        };
+                        checkCheckpointUi(editCheckpointField(checkpointLap, QStringLiteral("2")) &&
+                                editCheckpointField(checkpointSlot, QStringLiteral("7")) &&
+                                controller.evaluationTargetSettings().value("lap").toString() == QStringLiteral("2") &&
+                                controller.evaluationTargetSettings().value("checkpointSlot").toString() == QStringLiteral("7"),
+                                "lap/slot edits were not stored");
+                        checkpointIndex->setProperty("text", QStringLiteral("18446744073709551615"));
+                        checkCheckpointUi(QMetaObject::invokeMethod(checkpointIndex, "editingFinished"), "event index signal missing");
+                        QCoreApplication::processEvents();
+                        checkCheckpointUi(controller.evaluationTargetSettings().value("eventIndex").toString() ==
+                                QStringLiteral("18446744073709551615"), "event index was not stored exactly");
+                        checkCheckpointUi(QMetaObject::invokeMethod(checkpointEvent, "activated", Q_ARG(int, 1)), "finish selection failed");
+                        SettleQuickLayout();
+                        checkCheckpointUi(controller.evaluationTargetSettings().value("eventType").toString() ==
+                                QStringLiteral("finish") && !checkpointNumber->property("visible").toBool(), "finish did not hide checkpoint number");
+                        checkCheckpointUi(QMetaObject::invokeMethod(checkpointEvent, "activated", Q_ARG(int, 0)) &&
+                                editCheckpointField(checkpointLap, QStringLiteral("1")) &&
+                                editCheckpointField(checkpointSlot, QStringLiteral("-1")), "default selectors could not be restored");
+                        checkpointIndex->setProperty("text", QStringLiteral("0"));
+                        checkCheckpointUi(QMetaObject::invokeMethod(checkpointIndex, "editingFinished"), "default event index signal failed");
+                        SettleQuickLayout();
+                        checkCheckpointUi(checkpointNumber->property("visible").toBool(), "checkpoint number did not reappear");
+                        const auto grab = checkpointSettings->grabToImage();
+                        checkCheckpointUi(grab && WaitUntil([&]() { return !grab->image().isNull(); }, 5000), "settings did not render");
+                        const auto capturePath = qEnvironmentVariable("FOREVERTAS_CHECKPOINT_UI_CAPTURE");
+                        if (!capturePath.isEmpty())
+                            checkpointSettingsValid &= grab && grab->image().save(capturePath);
                     }
                     controller.setEvaluationTargetId(
                             QStringLiteral("pose-target"));
@@ -4272,7 +4328,10 @@ int main(int argc, char **argv) {
                             : evaluationTargetSelector
                                       ->property("settingsItem")
                                       .value<QObject *>();
+                    auto *const targetIconGrid = root->findChild<QQuickItem *>(
+                            QStringLiteral("evaluationTargetIconRow"));
                     const bool targetLayoutUpdatesImmediately =
+                            targetIconGrid != nullptr &&
                             expandedSettingsObjectName ==
                                     QStringLiteral(
                                             "poseTargetEvaluationSettings") &&
@@ -4286,7 +4345,8 @@ int main(int argc, char **argv) {
                             expandedSelectorHeight >
                                     compactSelectorHeight + 250.0 &&
                             compactSelectorHeight >= 100.0 &&
-                            compactSelectorHeight < 200.0;
+                            compactSelectorHeight <
+                                    targetIconGrid->height() + 100.0;
                     controller.setEvaluationTargetId(
                             QStringLiteral("stunt-points"));
                     QCoreApplication::processEvents();
@@ -5378,7 +5438,7 @@ int main(int argc, char **argv) {
                             automaticPacksUi && backendSelectorValid &&
                             algorithmSelectorsValid &&
                             autoPromoteBestValid &&
-                            everyOwnedPanelLoaded && stuntPointsFieldValid &&
+                            everyOwnedPanelLoaded && checkpointSettingsValid && stuntPointsFieldValid &&
                             targetLayoutUpdatesImmediately &&
                             configurationSectionsValid &&
                             comboSlotsStyled && settingComboTextValid &&
@@ -5463,6 +5523,7 @@ int main(int argc, char **argv) {
                                 << ", backend=" << backendSelectorValid
                                 << ", selectors=" << algorithmSelectorsValid
                                 << ", panels=" << everyOwnedPanelLoaded
+                                << ", checkpointSettings=" << checkpointSettingsValid
                                 << ", stuntField=" << stuntPointsFieldValid
                                 << ", sections=" << configurationSectionsValid
                                 << ", comboStyle=" << comboSlotsStyled
