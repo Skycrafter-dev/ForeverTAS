@@ -1,4 +1,5 @@
 #include "mutations/input_event_formatter.h"
+#include <forevervalidator/experimental/search_limits.h>
 
 #include "input_timeline_time.h"
 
@@ -221,6 +222,10 @@ std::string_view SwitchCommand(
 }  // namespace
 
 InputScriptParseResult ParseInputScript(std::string_view script) {
+    constexpr std::size_t maximumScriptBytes =
+            forevervalidator::experimental::kMaximumSearchInputEvents * 128u;
+    if (script.size() > maximumScriptBytes)
+        return {{}, "Input script exceeds the 128 MiB limit; reduce input density or comments."};
     InputScriptParseResult result;
     std::size_t lineNumber = 1u;
     while (true) {
@@ -297,6 +302,9 @@ InputScriptParseResult ParseInputScript(std::string_view script) {
                         "command must be press, rel, release, steer, or gas.");
                 return result;
             }
+            if (result.commands.size() >= forevervalidator::experimental::kMaximumSearchInputEvents)
+                return {{}, LineError(lineNumber,
+                        "input script exceeds the 1048576-command limit; reduce input density.")};
             result.commands.push_back(command);
         }
 
@@ -312,6 +320,13 @@ InputScriptBaselineResult BuildInputScriptBaseline(
         const std::vector<ParsedInputCommand> &commands,
         std::uint32_t tickDurationMs) {
     InputScriptBaselineResult result;
+    const auto structuralCount = static_cast<std::size_t>(std::count_if(
+            fixedInputs.begin(), fixedInputs.end(), [](const SandboxInputEvent &event) {
+                return IsStructuralAction(event.action);
+            }));
+    constexpr auto limit = forevervalidator::experimental::kMaximumSearchInputEvents;
+    if (structuralCount > limit || commands.size() > limit - structuralCount)
+        return {{}, "Baseline exceeds the 1048576-event limit; reduce input density."};
     std::int64_t originMs = 0;
     for (const SandboxInputEvent &event : fixedInputs) {
         if (event.action == SandboxInputAction::RaceRunning) {

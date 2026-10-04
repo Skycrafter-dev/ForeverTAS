@@ -17,6 +17,7 @@
 #include "searches/result_input_script.h"
 #include "time_format.h"
 #include "speed_format.h"
+#include <forevervalidator/experimental/search_limits.h>
 
 #include <algorithm>
 #include <array>
@@ -1352,6 +1353,27 @@ bool TestInputScriptFormatting() {
             "input script formatting was incorrect or locale-sensitive");
 }
 
+bool TestInputAdmissionLimit() {
+    constexpr auto limit = forevervalidator::experimental::kMaximumSearchInputEvents;
+    std::string script;
+    script.reserve((limit + 1) * 13);
+    for (std::size_t i = 0; i < limit; ++i) script += "0.00 steer 0\n";
+    const auto allowed = forevertas::ParseInputScript(script);
+    bool okay = Check(allowed && allowed.commands.size() == limit,
+                      "exact-limit input script was rejected");
+    script += "0.00 steer 0\n";
+    const auto excessive = forevertas::ParseInputScript(script);
+    okay &= Check(!excessive && excessive.error->find("1048576") != std::string::npos &&
+                          excessive.commands.empty(), "oversized script was not rejected before further growth");
+    const std::vector<SandboxInputEvent> structural{
+            Switch(0, SandboxInputAction::RaceRunning, true)};
+    const auto baseline = forevertas::BuildInputScriptBaseline(structural, allowed.commands, 10);
+    okay &= Check(!baseline && baseline.events.empty() &&
+                          baseline.error->find("1048576") != std::string::npos,
+                  "structural events bypassed the baseline cap");
+    return okay;
+}
+
 bool TestFinishedResultInputExport() {
     const std::vector<SandboxInputEvent> inputs{
         Switch(100, SandboxInputAction::RaceRunning, true),
@@ -2475,6 +2497,7 @@ int main() {
             TestNonCanonicalModifierWindowFallback() &&
             TestModifierWindowBaselineGeneration() &&
             TestInputScriptFormatting() &&
+            TestInputAdmissionLimit() &&
             TestFinishedResultInputExport() &&
             TestInputScriptParsingAndBaseline() &&
             TestAnalogInputRepresentation() &&

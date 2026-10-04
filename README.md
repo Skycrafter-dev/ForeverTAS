@@ -124,6 +124,12 @@ reference-engine Code debugger is diagnostic, not a search preview. Viewable
 input-backed runs keep physics snapshots at one-second
 intervals, so edits and Simulation-horizon changes resume from the latest valid
 snapshot rather than replaying the whole run from zero.
+
+Input scripts are limited to 1,048,576 commands and 128 MiB. Baselines include
+structural events in that event limit; GPU pipelines also account for events
+added by every modifier. Exceeding a limit reports an error rather than truncating
+controls. Reduce input density or insertion/deformation settings to continue.
+
 The optional Conditions script filters which simulated ticks are eligible for
 the selected evaluation target. Each non-empty line is an ANDed comparison;
 it supports the BfV2 car, previous-car, wheel, and search-state variables,
