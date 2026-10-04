@@ -559,7 +559,7 @@ SearchResult RunLoadedSearch(
     ReportProgress(control, SearchProgressStage::PreparingSearch, 0u, 0u);
 #if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
     if (IsGpuBackend(request.backend)) {
-        if (request.searchAlgorithm.id != kBasicBruteForceSearchId) {
+        if (!searchRegistration.supportsGpuBackends) {
             throw std::invalid_argument(
                     "GPU backend does not support search algorithm: " +
                     request.searchAlgorithm.id);
@@ -823,7 +823,7 @@ SearchResult RunMultiThreadedCpuSearch(
                 "CPU worker count must be between 1 and " +
                 std::to_string(kMaximumCpuWorkerCount));
     }
-    if (request.searchAlgorithm.id != kBasicBruteForceSearchId) {
+    if (!searchRegistration.supportsMultiThreadedCpu) {
         throw std::invalid_argument(
                 "multi-threaded CPU does not support search algorithm: " +
                 request.searchAlgorithm.id);

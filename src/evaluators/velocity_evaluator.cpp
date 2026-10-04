@@ -19,6 +19,10 @@ struct VelocitySettings {
 
 class VelocitySession final : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<VelocitySession>(*this);
+    }
+
     explicit VelocitySession(VelocitySettings settings)
         : settings_(settings) {}
 

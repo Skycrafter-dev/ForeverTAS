@@ -50,6 +50,9 @@ public:
                     &previous,
             const forevervalidator::experimental::PhysicsSandboxStateView
                     &current) = 0;
+    // Tree search continues several branches from one observed prefix, so
+    // every session must copy its complete timeline state.
+    virtual std::unique_ptr<IterationEvaluationSession> Clone() const = 0;
 };
 
 class IterationEvaluator {

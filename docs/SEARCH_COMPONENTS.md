@@ -66,7 +66,8 @@ ForeverTAS/
 │   │   ├── option_settings_utils.h
 │   │   ├── search_algorithm.h
 │   │   ├── search_runner.h/.cpp
-│   │   └── basic_brute_force_search.h/.cpp
+│   │   ├── basic_brute_force_search.h/.cpp
+│   │   └── tree_search.h/.cpp
 │   │
 │   ├── mutations/
 │   │   ├── input_mutator.h
@@ -169,7 +170,14 @@ defaultSettings
 legacyPersistenceKeys
 validateSettings callback
 create callback
+supportsGpuBackends (search algorithms only)
+supportsMultiThreadedCpu (search algorithms only)
 ```
+
+The two search-algorithm capability flags replace ID checks: the runner and
+controller reject a GPU backend or the multi-threaded CPU backend for an
+algorithm that does not declare support, and the controller reports
+"<display name> currently requires a CPU physics backend." before Start.
 
 Stable IDs use lowercase hyphen-separated names. Released IDs must not be
 silently reused for a different behavior. Renames require an alias in
@@ -201,6 +209,52 @@ It asks:
 - The evaluation target whether a sample is better than the incumbent.
 
 This keeps search orchestration independent from every target and modifier ID.
+
+### Tree search
+
+`tree-search` shares simulated prefixes between candidates. It splits the
+mutable range, from the earliest modifier time to the earlier of the last
+affected input and the evaluation end, into `segmentCount` whole-tick
+segments. Each tree then:
+
+1. Draws one ordinary candidate with anchor reporting enabled. Each applied
+   item reports the earliest input tick it changes, its pass, and its count
+   slot. Counting anchors per segment fixes how many items every pass places
+   in every segment, so the user's count ranges are drawn once per tree.
+   Items anchored after the last observed tick are dropped because they
+   cannot change any attempt.
+2. Branches only at segments that received items. Branch counts adapt to the
+   number of active segments so every tree targets `2^segmentCount` leaves,
+   and later segments receive any extra branch.
+3. Walks the tree depth first. At a branching segment it captures the
+   physics state and clones the evaluation session, then each child restores
+   them, redraws only that segment's items through a segment draw, replaces
+   the input window from the segment start, and simulates to the segment end.
+   Siblings never repeat a draw. Segments without items are simulated once
+   for every branch below them.
+4. Finishes each leaf by simulating to the evaluation end. Every leaf is one
+   attempt: it increments `iterations`, receives the next interleaved
+   attempt index, and is reported through `attemptCompleted`. Attempts per
+   second therefore count leaves.
+
+Every leaf replays exactly like a flat attempt with the same inputs; the
+search smoke test re-simulates every reported leaf from tick zero and
+requires identical scores. Improvements found inside the shared prefix use
+the inputs applied so far. A race that completes ends its path as one
+attempt. A tree whose drawn candidate changes nothing observable is redrawn
+without counting an attempt, and a search whose evaluation window ends
+before the first mutable input is rejected.
+
+Stop and iteration limits apply after the current leaf. With
+`autoPromoteBest`, an improvement, or a different promoted baseline shared by
+multi-threaded workers, abandons the rest of the tree so the next tree grows
+from the new best. Workers run independent trees. Tree search runs on CPU
+physics backends only.
+
+Leaves keep ordinary candidate statistics individually, but siblings share
+their early segments: per tree, segment `k` of `segmentCount` sees about
+`2^(k+1)` distinct variants. Compare improvements over time, not attempts per
+second, when choosing between algorithms.
 
 ### Winner retention and final sampling
 
@@ -281,6 +335,33 @@ Each modifier instance owns its own active window, seed, channel selection,
 and modification parameters. `EarliestMutationTimeMs()` reports the earliest
 input tick that the pass may change. `CompositeInputMutator` uses the minimum
 across all passes.
+
+### Tree-search anchors and segment draws
+
+`MutationRequest` carries two optional tree-search fields, forwarded by the
+composite to every pass:
+
+- `anchors`: when set, an ordinary draw appends one `MutationAnchor` per
+  applied item: the earliest input time the item changes, the pass index,
+  and a modifier-defined count slot. Recording must not consume random
+  numbers, so ordinary draws stay identical to the CUDA, Vulkan, and HIP
+  samplers.
+- `segment`: when set, the pass draws only `slotCounts[passIndex][slot]`
+  items whose anchors fall inside `anchorRange`, applying each item in full
+  even where its effect extends past the segment. Draws use the same value
+  distributions as ordinary draws conditioned on the anchor: uniform starts
+  and event picks restricted to the segment, or rejection for items whose
+  anchor depends on a drawn offset.
+
+Current slots and anchors:
+
+| Modifier | Slots | Anchor |
+| --- | --- | --- |
+| `random-steering` | 0 | each rewritten event; segment draws rewrite every eligible event in the segment |
+| `existing-event-perturbation` | 0 | earlier of the original and shifted event time |
+| `smooth-steering` | 0 | first tick the deformation writes |
+| `input-insertion` | 0 steer, 1 accelerate, 2 brake | inserted start |
+| `input-deletion` | 0 steer, 1 accelerate, 2 brake | deleted event time |
 
 ### User timeline origin
 
@@ -376,6 +457,10 @@ their metric wording.
 Timeline sessions receive the previous and current sandbox states. This lets
 transition targets, such as entering a volume, interpolate crossing time
 between ticks without adding target-specific logic to the search algorithm.
+
+`IterationEvaluationSession::Clone()` copies the complete timeline state.
+Tree search clones a session at every branching segment, so a clone must
+produce exactly the samples the original would for the same later states.
 
 ## Controller Responsibilities
 
@@ -517,7 +602,8 @@ logic and implementation-specific field lists belong in the owned component.
 Assume a new modifier named **Steering Jitter** with ID `steering-jitter`.
 
 1. Create `src/mutations/steering_jitter_mutator.h/.cpp`.
-2. Implement `InputMutator`, including `EarliestMutationTimeMs()`.
+2. Implement `InputMutator`, including `EarliestMutationTimeMs()`, anchor
+   reporting, and segment draws for tree search.
 3. Define a typed settings structure owned by the modifier.
 4. Provide defaults, validation, and a factory matching
    `ModifierRegistration`.
@@ -536,7 +622,8 @@ No change to `Main.qml`, `SearchController`, `SearchRequest`, or
 ## Adding an Evaluation Target
 
 1. Create target files under `src/evaluators/`.
-2. Implement `IterationEvaluator` and a per-iteration session.
+2. Implement `IterationEvaluator` and a per-iteration session, including
+   `Clone()`.
 3. Define the target's observation plan and comparison direction.
 4. Provide defaults, validation, and a factory.
 5. Return a clear target-owned `EvaluationSample::description`.
@@ -562,6 +649,8 @@ No search-loop or controller branch should be added for the target.
 
 - `basic-brute-force`: baseline plus independent deterministic iterations,
   continuing until Stop is requested.
+- `tree-search`: CPU-only trees of candidates that share simulated prefixes;
+  every leaf is one attempt.
 
 ### Modifiers
 

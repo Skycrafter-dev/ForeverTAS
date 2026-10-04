@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### New and improved
+
+- **Tree search (CPU):** a new search algorithm that splits the mutation window into segments and branches candidates so they share every simulated prefix. Each tree draws your pass counts once, then every branch redraws only its own segment; every leaf counts as one attempt. Expect several times more attempts per second than basic bruteforce on CPU backends. Branches share their early segments, so compare improvements over time rather than attempts per second. GPU backends are not supported yet.
+
 ## 0.2.4
 
 Changes since **0.2.2**.

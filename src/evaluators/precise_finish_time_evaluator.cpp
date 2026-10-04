@@ -11,6 +11,10 @@ namespace {
 
 class PreciseFinishTimeSession final : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<PreciseFinishTimeSession>(*this);
+    }
+
     std::optional<EvaluationSample> Observe(
             const std::optional<
                     forevervalidator::experimental::PhysicsSandboxStateView>

@@ -1799,6 +1799,18 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
                 "Checkpoint time runs on the CPU or on CUDA. Choose Optimized CPU "
                 "or CUDA as the physics backend.")};
     }
+    if (!baselineOnly && IsGpuBackend(simulationBackend_)) {
+        const SearchAlgorithmRegistration *const searchRegistration =
+                FindSearchAlgorithm(configuration.searchAlgorithm.id);
+        if (searchRegistration != nullptr &&
+            !searchRegistration->supportsGpuBackends) {
+            return {{},
+                    QStringLiteral(
+                            "%1 currently requires a CPU physics backend.")
+                            .arg(QString::fromStdString(
+                                    searchRegistration->displayName))};
+        }
+    }
     ConditionVariables conditionVariables;
     if (configuration.evaluationTarget.id == kPointTargetEvaluationId) {
         const OptionSettings &settings =

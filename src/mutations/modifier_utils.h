@@ -6,6 +6,7 @@
 #include "searches/option_settings_utils.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <optional>
@@ -14,6 +15,10 @@
 #include <type_traits>
 
 namespace forevertas {
+
+// Segment draws reject items anchored outside their segment. The bound only
+// stops pathological settings from looping; typical acceptance is far higher.
+inline constexpr std::size_t kSegmentAttemptsPerItem = 64u;
 
 struct ModifierWindow {
     std::int64_t minimumTimeMs = 0;

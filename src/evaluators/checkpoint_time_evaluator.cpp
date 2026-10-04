@@ -26,6 +26,9 @@ Settings ParseSettings(const OptionSettings &settings) {
 
 class CheckpointTimeSession final : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<CheckpointTimeSession>(*this);
+    }
     explicit CheckpointTimeSession(Settings settings) : settings_(settings) {}
     bool IsComplete() const override { return reported_; }
     std::optional<EvaluationSample> Observe(

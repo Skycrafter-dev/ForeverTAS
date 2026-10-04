@@ -295,6 +295,10 @@ std::optional<Prism> ParsePrism(const OptionSettings &settings) {
 class CustomVolumeEntrySession final
     : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<CustomVolumeEntrySession>(*this);
+    }
+
     explicit CustomVolumeEntrySession(Prism prism)
         : prism_(std::move(prism)) {}
     bool IsComplete() const override { return reported_; }

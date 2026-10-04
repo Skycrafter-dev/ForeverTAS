@@ -1,3 +1,4 @@
+#include "mutations/composite_input_mutator.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/input_event_utils.h"
 #include "mutations/replay_input_script.h"
@@ -6,12 +7,18 @@
 #include "searches/algorithm_registry.h"
 #include "searches/search_runner.h"
 #include "searches/result_input_script.h"
+#include "searches/tree_search.h"
 
 #include <forevervalidator/native.h>
 #if FOREVERVALIDATOR_HAS_CUDA
 #include "simulation/backends/cuda/cuda_session_specialization.h"
 #endif
 
+#include <algorithm>
+#include <memory>
+#include <optional>
+#include <vector>
+#include <utility>
 #include <chrono>
 #include <cmath>
 #include <exception>
@@ -122,6 +129,11 @@ public:
 class SteeringSession final
     : public forevertas::IterationEvaluationSession {
 public:
+    std::unique_ptr<forevertas::IterationEvaluationSession> Clone()
+            const override {
+        return std::make_unique<SteeringSession>(*this);
+    }
+
     std::optional<forevertas::EvaluationSample> Observe(
             const std::optional<PhysicsSandboxStateView> &,
             const PhysicsSandboxStateView &current) override {
@@ -1700,6 +1712,264 @@ bool CheckStandaloneChallengeFixture(
 
 }  // namespace
 
+// Accumulates the observed trajectory, so a branch that inherited the wrong
+// physics state, inputs, or session would report a different score.
+class TrajectorySession final
+    : public forevertas::IterationEvaluationSession {
+public:
+    std::unique_ptr<forevertas::IterationEvaluationSession> Clone()
+            const override {
+        return std::make_unique<TrajectorySession>(*this);
+    }
+
+    std::optional<forevertas::EvaluationSample> Observe(
+            const std::optional<PhysicsSandboxStateView> &,
+            const PhysicsSandboxStateView &current) override {
+        sum_ += 3.0 * static_cast<double>(current.car.position.x) +
+                static_cast<double>(current.car.position.z) +
+                static_cast<double>(current.steering);
+        return forevertas::EvaluationSample{
+                sum_, static_cast<double>(current.timeMs), "trajectory"};
+    }
+
+private:
+    double sum_ = 0.0;
+};
+
+class TrajectoryEvaluator final : public forevertas::IterationEvaluator {
+public:
+    forevertas::EvaluationPlan Plan(
+            std::int64_t simulationHorizonMs,
+            std::int64_t earliestMutationTimeMs,
+            std::uint32_t) const override {
+        return {earliestMutationTimeMs, simulationHorizonMs};
+    }
+
+    std::unique_ptr<forevertas::IterationEvaluationSession>
+    CreateSession() const override {
+        return std::make_unique<TrajectorySession>();
+    }
+
+    bool IsBetter(const forevertas::EvaluationSample &iteration,
+                  const forevertas::EvaluationSample &incumbent)
+            const override {
+        return iteration.score > incumbent.score;
+    }
+
+    bool CompareAtEndOnly() const override { return true; }
+};
+
+PhysicsSandbox CreateReplayInputSandbox(const char *packsDirectory,
+                                        const char *replayPath) {
+    const forevervalidator::ReplayIdentity identity{replayPath};
+    const forevervalidator::AssetBytes replay = Require(
+            forevertas::ReadReplayFileUtf8(replayPath, identity),
+            "reading tree-search replay");
+    forevervalidator::experimental::PhysicsSandboxOptions options;
+    options.backend = forevertas::ToForeverValidatorBackend(
+            forevertas::PhysicsBackend::OptimizedCpu);
+    options.tickDurationMs = forevertas::kSearchTickDurationMs;
+    options.timelineMode = forevervalidator::experimental::
+            PhysicsSandboxTimelineMode::Canonical;
+    options.simulationHorizonMs = forevertas::kDefaultSimulationHorizonMs;
+    PhysicsSandbox sandbox = Require(
+            forevervalidator::experimental::CreatePhysicsSandbox(
+                    Require(forevervalidator::OpenInstalledPackDirectory(
+                                    packsDirectory),
+                            "opening tree-search Packs"),
+                    options),
+            "creating tree-search sandbox");
+    Require(sandbox.LoadScenario({replay.data(), replay.size()}, identity),
+            "loading tree-search scenario");
+    const forevertas::InputScriptParseResult parsed =
+            forevertas::ParseInputScript(
+                    forevertas::ExtractReplayInputScript(
+                            packsDirectory, replayPath));
+    if (!parsed) throw std::runtime_error(*parsed.error);
+    forevertas::InputScriptBaselineResult baseline =
+            forevertas::BuildInputScriptBaseline(
+                    Require(sandbox.ReadInputs(), "reading tree inputs"),
+                    parsed.commands,
+                    forevertas::kSearchTickDurationMs);
+    if (!baseline) throw std::runtime_error(*baseline.error);
+    forevertas::ConvertKeyboardSteeringToAnalog(baseline.events);
+    Require(sandbox.ReplaceInputs(std::move(baseline.events)),
+            "applying tree-search replay inputs");
+    return sandbox;
+}
+
+// Replays one attempt from tick zero exactly as a flat iteration observes it.
+double IndependentTrajectoryScore(
+        PhysicsSandbox &sandbox,
+        const forevervalidator::experimental::PhysicsSandboxState &start,
+        const std::vector<PhysicsSandboxInputEvent> &inputs,
+        std::int64_t evaluationStartMs) {
+    Require(sandbox.RestoreState(start), "restoring independent replay");
+    Require(sandbox.ReplaceInputs(inputs), "applying independent inputs");
+    PhysicsSandboxStateView state =
+            Require(sandbox.ReadState(), "reading independent state");
+    while (static_cast<std::int64_t>(state.timeMs) + 10 < evaluationStartMs) {
+        state = Require(sandbox.AdvanceTicks(1u), "advancing independent");
+    }
+    TrajectorySession session;
+    double score = 0.0;
+    while (state.timeMs <
+           forevertas::kDefaultSimulationHorizonMs) {
+        const PhysicsSandboxStateView previous = state;
+        state = Require(sandbox.AdvanceTicks(1u), "observing independent");
+        score = session.Observe(previous, state)->score;
+        if (state.raceCompleted) break;
+    }
+    return score;
+}
+
+bool CheckTreeSearchMatchesIndependentReplays(const char *packsDirectory,
+                                              const char *replayPath) {
+    std::vector<std::unique_ptr<forevertas::InputMutator>> passes;
+    for (const auto &registration : forevertas::ModifierRegistry()) {
+        passes.push_back(registration.create(
+                registration.defaultSettings,
+                forevertas::kSearchTickDurationMs));
+    }
+    const forevertas::CompositeInputMutator mutator(std::move(passes));
+    const TrajectoryEvaluator evaluator;
+    PhysicsSandbox verifier =
+            CreateReplayInputSandbox(packsDirectory, replayPath);
+    const auto start = Require(verifier.CaptureState(),
+                               "capturing independent start");
+
+    for (const bool autoPromoteBest : {false, true}) {
+        PhysicsSandbox sandbox =
+                CreateReplayInputSandbox(packsDirectory, replayPath);
+        std::vector<std::pair<std::uint64_t, forevertas::SearchLiveUpdate>>
+                attempts;
+        bool missingAttempt = false;
+        forevertas::SearchRunControl control;
+        control.iterationLimit = 48u;
+        control.sampleBestTimeline = false;
+        control.attemptCompleted =
+                [&](std::optional<std::uint64_t> index,
+                    std::optional<forevertas::SearchLiveUpdate> attempt) {
+                    if (!index) return;
+                    if (!attempt) {
+                        missingAttempt = true;
+                        return;
+                    }
+                    attempts.emplace_back(*index, std::move(*attempt));
+                };
+        const forevertas::SearchResult result =
+                forevertas::TreeSearch(4u, autoPromoteBest)
+                        .Run({sandbox,
+                              forevertas::kSearchTickDurationMs,
+                              mutator,
+                              evaluator,
+                              &control});
+        bool dense = attempts.size() == result.iterations;
+        for (std::size_t index = 0u; index < attempts.size(); ++index) {
+            dense &= attempts[index].first == index;
+        }
+        if (result.iterations != 48u || missingAttempt || !dense) {
+            std::cerr << "tree search did not report one ordered attempt per "
+                         "leaf: iterations="
+                      << result.iterations << " attempts=" << attempts.size()
+                      << '\n';
+            return false;
+        }
+        std::size_t distinctInputs = 0u;
+        for (std::size_t index = 0u; index < attempts.size(); ++index) {
+            const forevertas::SearchLiveUpdate &attempt =
+                    attempts[index].second;
+            const double independent = IndependentTrajectoryScore(
+                    verifier, start, attempt.bestInputs,
+                    mutator.EarliestMutationTimeMs());
+            if (independent != attempt.bestScore) {
+                std::cerr << "tree attempt " << attempts[index].first
+                          << " scored " << attempt.bestScore
+                          << " but an independent replay scored "
+                          << independent << '\n';
+                return false;
+            }
+            const bool repeated = std::any_of(
+                    attempts.begin(),
+                    attempts.begin() + static_cast<std::ptrdiff_t>(index),
+                    [&](const auto &earlier) {
+                        return forevertas::FormatInputScript(
+                                       earlier.second.bestInputs) ==
+                                forevertas::FormatInputScript(
+                                        attempt.bestInputs);
+                    });
+            distinctInputs += repeated ? 0u : 1u;
+        }
+        // Siblings never repeat a draw; only separate trees could.
+        if (distinctInputs + 2u < attempts.size()) {
+            std::cerr << "tree search repeated attempts: " << distinctInputs
+                      << " distinct of " << attempts.size() << '\n';
+            return false;
+        }
+        const double bestIndependent = IndependentTrajectoryScore(
+                verifier, start, result.bestInputs,
+                mutator.EarliestMutationTimeMs());
+        if (bestIndependent != result.bestScore) {
+            std::cerr << "tree search best scored " << result.bestScore
+                      << " but its inputs replay to " << bestIndependent
+                      << '\n';
+            return false;
+        }
+    }
+    return true;
+}
+
+bool CheckTreeSearchBackends(const char *packsDirectory,
+                             const char *replayPath) {
+    const forevertas::InputScriptParseResult parsed =
+            forevertas::ParseInputScript(
+                    forevertas::ExtractReplayInputScript(
+                            packsDirectory, replayPath));
+    if (!parsed) throw std::runtime_error(*parsed.error);
+    forevertas::SearchRequest request{packsDirectory, replayPath};
+    request.backend = forevertas::PhysicsBackend::MultiThreadedCpu;
+    request.parallelSampleCount = 3u;
+    request.baseInputCommands = parsed.commands;
+    request.searchAlgorithm = {forevertas::kTreeSearchId,
+                               forevertas::DefaultTreeSearchOptionSettings()};
+    request.searchAlgorithm.settings["segmentCount"] = "5";
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 30u;
+    control.sampleBestTimeline = false;
+    std::uint64_t reported = 0u;
+    control.statisticsChanged =
+            [&](const forevertas::SearchStatisticsUpdate &statistics) {
+                reported = std::max(reported, statistics.iterations);
+            };
+    const forevertas::SearchResult parallel =
+            forevertas::RunSearch(request, &control);
+    if (parallel.iterations != 30u || reported > 30u ||
+        parallel.bestInputs.empty()) {
+        std::cerr << "multi-threaded tree search did not run 30 leaves: "
+                  << parallel.iterations << '\n';
+        return false;
+    }
+    request.searchAlgorithm.settings["autoPromoteBest"] = "true";
+    const forevertas::SearchResult promoted =
+            forevertas::RunSearch(request, &control);
+    if (promoted.iterations != 30u) {
+        std::cerr << "promoting multi-threaded tree search did not run 30 "
+                     "leaves\n";
+        return false;
+    }
+#if FOREVERVALIDATOR_HAS_CUDA
+    request.backend = forevertas::PhysicsBackend::Cuda;
+    request.parallelSampleCount = 64u;
+    try {
+        static_cast<void>(forevertas::RunSearch(request, &control));
+        std::cerr << "tree search accepted the CUDA backend\n";
+        return false;
+    } catch (const std::invalid_argument &) {
+    }
+#endif
+    return true;
+}
+
 int main(int argc, char **argv) {
     const bool finishExportOnly = argc == 4 && std::string_view(argv[1]) == "--finish-export-only";
     const bool inputAfterHorizonOnly =
@@ -1739,6 +2009,8 @@ int main(int argc, char **argv) {
             !CheckSandboxCloneAndWindowParity(argv[1], argv[2]) ||
             !CheckResizableCanonicalHorizon(argv[1], argv[2]) ||
             !CheckMultiThreadedCpuBackend(argv[1], argv[2]) ||
+            !CheckTreeSearchMatchesIndependentReplays(argv[1], argv[2]) ||
+            !CheckTreeSearchBackends(argv[1], argv[2]) ||
             !CheckStuntTargetBackend(
                     argv[1],
                     argv[2],

@@ -3,6 +3,7 @@
 #include "mutations/input_event_utils.h"
 #include "mutations/modifier_utils.h"
 
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <stdexcept>
@@ -44,8 +45,6 @@ public:
         std::mt19937 random = ModifierRandom(
                 settings_.window.seed, request.iterationIndex, request.passIndex);
         const std::int64_t tick = request.tickDurationMs;
-        const std::int64_t minimumTick = settings_.window.minimumTimeMs / tick;
-        const std::int64_t maximumTick = settings_.window.maximumTimeMs / tick;
         const bool indexed = settings_.window.minimumTimeMs >= request.mutableFromTimeMs &&
                 InputEventsAreCanonical(inputs, request.tickDurationMs);
         struct SteeringValue {
@@ -64,16 +63,8 @@ public:
             }
         }
         constexpr double pi = 3.14159265358979323846;
-        for (std::uint32_t deformation = 0u;
-             deformation < settings_.deformationCount;
-             ++deformation) {
-            const std::int64_t center = RandomInteger<std::int64_t>(
-                    random, minimumTick, maximumTick) * tick;
-            const AnalogInputState amplitude =
-                    RandomInteger<AnalogInputState>(
-                            random,
-                            settings_.amplitudeMinimum,
-                            settings_.amplitudeMaximum);
+        const auto applyDeformation = [&](std::int64_t center,
+                                          AnalogInputState amplitude) {
             const std::int64_t start = std::max(
                     settings_.window.minimumTimeMs,
                     center - settings_.radiusMs);
@@ -117,6 +108,37 @@ public:
                                     request.baselineInputs,
                                     request.tickDurationMs,
                                     request.mutableFromTimeMs);
+        };
+        if (request.segment != nullptr) {
+            // Rejection keeps each center distributed as an ordinary draw
+            // conditioned on the deformation's first changed tick.
+            std::uint32_t remaining = SegmentSlotCount(request, 0u);
+            const std::size_t attemptLimit =
+                    static_cast<std::size_t>(remaining) *
+                    kSegmentAttemptsPerItem *
+                    static_cast<std::size_t>(std::max<std::int64_t>(
+                            1, (settings_.window.maximumTimeMs -
+                                settings_.window.minimumTimeMs) / tick + 1));
+            for (std::size_t attempt = 0u;
+                 remaining != 0u && attempt < attemptLimit;
+                 ++attempt) {
+                const std::int64_t center = RandomCenter(random, tick);
+                if (!InAnchorRange(*request.segment,
+                                   FirstChangedTimeMs(center, tick))) {
+                    continue;
+                }
+                applyDeformation(center, RandomAmplitude(random));
+                --remaining;
+            }
+        } else {
+            for (std::uint32_t deformation = 0u;
+                 deformation < settings_.deformationCount;
+                 ++deformation) {
+                const std::int64_t center = RandomCenter(random, tick);
+                applyDeformation(center, RandomAmplitude(random));
+                RecordMutationAnchor(request,
+                                     FirstChangedTimeMs(center, tick));
+            }
         }
         if (indexed) {
             for (const auto &[time, state] : steering) {
@@ -141,6 +163,28 @@ public:
     }
 
 private:
+    std::int64_t RandomCenter(std::mt19937 &random, std::int64_t tick) const {
+        return RandomInteger<std::int64_t>(
+                       random,
+                       settings_.window.minimumTimeMs / tick,
+                       settings_.window.maximumTimeMs / tick) * tick;
+    }
+
+    AnalogInputState RandomAmplitude(std::mt19937 &random) const {
+        return RandomInteger<AnalogInputState>(
+                random,
+                settings_.amplitudeMinimum,
+                settings_.amplitudeMaximum);
+    }
+
+    std::int64_t FirstChangedTimeMs(std::int64_t center,
+                                    std::int64_t tick) const {
+        return AlignInputTime(
+                std::max(settings_.window.minimumTimeMs,
+                         center - settings_.radiusMs),
+                tick);
+    }
+
     Settings settings_;
 };
 

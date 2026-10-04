@@ -242,6 +242,8 @@ add_library(forevertas_core STATIC
     src/searches/option_settings_utils.h
     src/searches/basic_brute_force_search.cpp
     src/searches/basic_brute_force_search.h
+    src/searches/tree_search.cpp
+    src/searches/tree_search.h
     src/searches/cuda_batch_calibrator.cpp
     src/searches/cuda_batch_calibrator.h
     src/searches/cuda_calibration_safety.cpp
@@ -526,6 +528,7 @@ qt_add_qml_module(forevertas_qml
         qml/WhiteboardPlanes.qml
         qml/settings/AlgorithmSelector.qml
         qml/settings/BasicBruteForceSearchSettings.qml
+        qml/settings/TreeSearchSettings.qml
         qml/settings/ConfigurationSection.qml
         qml/settings/ExistingEventPerturbationSettings.qml
         qml/settings/PreciseFinishTimeEvaluationSettings.qml
@@ -935,6 +938,24 @@ if(BUILD_TESTING)
         target_compile_options(forevertas-condition-catalog-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
     endif()
     add_test(NAME forevertas-condition-catalog COMMAND forevertas-condition-catalog-tests)
+
+    # Manual benchmarks: need a copy of the persisted settings and game packs.
+    add_executable(forevertas-node-cost-benchmark
+        tests/node_cost_benchmark.cpp)
+    target_link_libraries(forevertas-node-cost-benchmark PRIVATE
+        forevertas_gui)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-node-cost-benchmark PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_executable(forevertas-search-strategy-comparison
+        tests/search_strategy_comparison.cpp)
+    target_link_libraries(forevertas-search-strategy-comparison PRIVATE
+        forevertas_gui)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-search-strategy-comparison PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
 
     add_executable(forevertas-controller-tests
         tests/search_controller_tests.cpp)

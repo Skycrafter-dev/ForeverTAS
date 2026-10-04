@@ -97,6 +97,12 @@ MutationResult RandomSteeringMutator::Mutate(
             event.value.kind != PhysicsSandboxInputValueKind::Analog) {
             continue;
         }
+        // Every eligible event is rewritten, so a segment simply rewrites
+        // the events it contains.
+        if (request.segment != nullptr &&
+            !InAnchorRange(*request.segment, event.timeMs)) {
+            continue;
+        }
 
         AnalogInputState value = RandomSteering(random);
         if (value == event.value.analog) {
@@ -106,6 +112,7 @@ MutationResult RandomSteeringMutator::Mutate(
         }
         event.value.analog = value;
         ++result.mutationCount;
+        RecordMutationAnchor(request, event.timeMs);
     }
     NormalizeMutableInputEvents(result.inputs,
                                 request.baselineInputs,

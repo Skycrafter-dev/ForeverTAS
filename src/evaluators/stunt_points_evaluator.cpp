@@ -11,6 +11,10 @@ namespace {
 
 class StuntPointsSession final : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<StuntPointsSession>(*this);
+    }
+
     std::optional<EvaluationSample> Observe(
             const std::optional<
                     forevervalidator::experimental::PhysicsSandboxStateView>

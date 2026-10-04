@@ -95,6 +95,7 @@ public:
         : settings_(settings) {}
 
     MutationResult Mutate(const MutationRequest &request) const override {
+        if (request.segment != nullptr) return MutateSegment(request);
         PrepareWindow(request.baselineInputs);
         std::vector<SandboxInputEvent> inputs = cachedWindowInputs_;
         std::vector<std::size_t> eligibleIndices = cachedEligibleIndices_;
@@ -122,43 +123,15 @@ public:
                 : settings_.maximumTimeShiftMs / tick;
         for (std::size_t n = 0u; n < count; ++n) {
             SandboxInputEvent &event = inputs[eligibleIndices[n]];
+            const std::int64_t originalTimeMs = event.timeMs;
             const std::int64_t shiftTicks = RandomInteger<std::int64_t>(
                     random, -maximumShiftTicks, maximumShiftTicks);
-            event.timeMs = static_cast<std::int32_t>(std::clamp<std::int64_t>(
-                    static_cast<std::int64_t>(event.timeMs) +
-                            shiftTicks * tick,
-                    settings_.window.minimumTimeMs,
-                    settings_.window.maximumTimeMs));
-            if ((IsSteerAction(event.action) &&
-                 event.value.kind == forevervalidator::experimental::
-                         PhysicsSandboxInputValueKind::Analog)) {
-                if (settings_.absoluteSteering) {
-                    event.value.analog = RandomInteger<AnalogInputState>(
-                            random,
-                            settings_.steeringAbsoluteMinimum,
-                            settings_.steeringAbsoluteMaximum);
-                } else {
-                    const AnalogInputState delta =
-                            RandomInteger<AnalogInputState>(
-                                    random,
-                                    settings_.steeringDeltaMinimum,
-                                    settings_.steeringDeltaMaximum);
-                    event.value.analog = SaturateAnalogInputState(
-                            static_cast<std::int64_t>(event.value.analog) +
-                            delta);
-                }
-            } else if (event.value.kind == forevervalidator::experimental::
-                               PhysicsSandboxInputValueKind::Switch) {
-                event.value.switchState =
-                        event.value.switchState !=
-                                        forevervalidator::experimental::
-                                                PhysicsSandboxSwitchState::
-                                                        Released
-                        ? forevervalidator::experimental::
-                                  PhysicsSandboxSwitchState::Released
-                        : forevervalidator::experimental::
-                                  PhysicsSandboxSwitchState::Pressed;
-            }
+            event.timeMs = static_cast<std::int32_t>(
+                    ShiftedTimeMs(originalTimeMs, shiftTicks * tick));
+            PerturbValue(event, random);
+            RecordMutationAnchor(
+                    request,
+                    std::min<std::int64_t>(originalTimeMs, event.timeMs));
         }
         NormalizeInputEvents(inputs, request.tickDurationMs);
         const std::size_t mutationCount =
@@ -185,6 +158,117 @@ public:
     }
 
 private:
+    // Draws only the events whose earliest changed tick falls inside the
+    // segment. Rejection keeps each (event, shift) pair distributed as an
+    // ordinary draw conditioned on that anchor.
+    MutationResult MutateSegment(const MutationRequest &request) const {
+        const MutationSegment &segment = *request.segment;
+        std::vector<SandboxInputEvent> inputs = request.baselineInputs;
+        const std::int64_t tick = request.tickDurationMs;
+        const std::int64_t maximumShiftTicks = tick == 0
+                ? 0
+                : settings_.maximumTimeShiftMs / tick;
+        // An event before the segment, or more than one maximal shift after
+        // it, can never anchor inside it.
+        const std::int64_t latestCandidateMs =
+                segment.anchorRange.maximumTimeMs + maximumShiftTicks * tick;
+        std::vector<std::size_t> candidates;
+        for (std::size_t index = 0u; index < inputs.size(); ++index) {
+            const SandboxInputEvent &event = inputs[index];
+            if (event.timeMs >= settings_.window.minimumTimeMs &&
+                event.timeMs <= settings_.window.maximumTimeMs &&
+                event.timeMs >= segment.anchorRange.minimumTimeMs &&
+                event.timeMs <= latestCandidateMs &&
+                IsEligible(event)) {
+                candidates.push_back(index);
+            }
+        }
+
+        std::mt19937 random = ModifierRandom(
+                settings_.window.seed, request.iterationIndex, request.passIndex);
+        std::uint32_t remaining = SegmentSlotCount(request, 0u);
+        const std::size_t attemptLimit =
+                (static_cast<std::size_t>(remaining) + candidates.size()) *
+                kSegmentAttemptsPerItem;
+        for (std::size_t attempt = 0u;
+             remaining != 0u && !candidates.empty() &&
+             attempt < attemptLimit;
+             ++attempt) {
+            const std::size_t pick = RandomInteger<std::size_t>(
+                    random, 0u, candidates.size() - 1u);
+            SandboxInputEvent &event = inputs[candidates[pick]];
+            const std::int64_t shiftTicks = RandomInteger<std::int64_t>(
+                    random, -maximumShiftTicks, maximumShiftTicks);
+            const std::int64_t shiftedTimeMs =
+                    ShiftedTimeMs(event.timeMs, shiftTicks * tick);
+            if (!InAnchorRange(segment,
+                               std::min<std::int64_t>(
+                                       event.timeMs, shiftedTimeMs))) {
+                continue;
+            }
+            event.timeMs = static_cast<std::int32_t>(shiftedTimeMs);
+            PerturbValue(event, random);
+            candidates.erase(candidates.begin() +
+                             static_cast<std::ptrdiff_t>(pick));
+            --remaining;
+        }
+        NormalizeMutableInputEvents(inputs,
+                                    request.baselineInputs,
+                                    request.tickDurationMs,
+                                    request.mutableFromTimeMs);
+        return {inputs,
+                EffectiveInputChangeCount(request.baselineInputs, inputs)};
+    }
+
+    std::int64_t ShiftedTimeMs(std::int64_t timeMs,
+                               std::int64_t shiftMs) const {
+        return std::clamp<std::int64_t>(timeMs + shiftMs,
+                                        settings_.window.minimumTimeMs,
+                                        settings_.window.maximumTimeMs);
+    }
+
+    bool IsEligible(const SandboxInputEvent &event) const {
+        return (IsSteerAction(event.action) &&
+                event.value.kind == forevervalidator::experimental::
+                        PhysicsSandboxInputValueKind::Analog) ||
+                (settings_.toggleAccelerate &&
+                 IsAccelerateAction(event.action)) ||
+                (settings_.toggleBrake && IsBrakeAction(event.action));
+    }
+
+    void PerturbValue(SandboxInputEvent &event, std::mt19937 &random) const {
+        if ((IsSteerAction(event.action) &&
+             event.value.kind == forevervalidator::experimental::
+                     PhysicsSandboxInputValueKind::Analog)) {
+            if (settings_.absoluteSteering) {
+                event.value.analog = RandomInteger<AnalogInputState>(
+                        random,
+                        settings_.steeringAbsoluteMinimum,
+                        settings_.steeringAbsoluteMaximum);
+            } else {
+                const AnalogInputState delta =
+                        RandomInteger<AnalogInputState>(
+                                random,
+                                settings_.steeringDeltaMinimum,
+                                settings_.steeringDeltaMaximum);
+                event.value.analog = SaturateAnalogInputState(
+                        static_cast<std::int64_t>(event.value.analog) +
+                        delta);
+            }
+        } else if (event.value.kind == forevervalidator::experimental::
+                           PhysicsSandboxInputValueKind::Switch) {
+            event.value.switchState =
+                    event.value.switchState !=
+                                    forevervalidator::experimental::
+                                            PhysicsSandboxSwitchState::
+                                                    Released
+                    ? forevervalidator::experimental::
+                              PhysicsSandboxSwitchState::Released
+                    : forevervalidator::experimental::
+                              PhysicsSandboxSwitchState::Pressed;
+        }
+    }
+
     void PrepareWindow(
             const std::vector<SandboxInputEvent> &baseline) const {
         std::uint64_t fingerprint = baseline.size();
@@ -228,13 +312,7 @@ private:
         cachedEligibleIndices_.clear();
         for (std::size_t index = 0u;
              index < cachedWindowInputs_.size(); ++index) {
-            const SandboxInputEvent &event = cachedWindowInputs_[index];
-            if ((IsSteerAction(event.action) &&
-                 event.value.kind == forevervalidator::experimental::
-                         PhysicsSandboxInputValueKind::Analog) ||
-                (settings_.toggleAccelerate &&
-                 IsAccelerateAction(event.action)) ||
-                (settings_.toggleBrake && IsBrakeAction(event.action))) {
+            if (IsEligible(cachedWindowInputs_[index])) {
                 cachedEligibleIndices_.push_back(index);
             }
         }

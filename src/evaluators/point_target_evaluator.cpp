@@ -16,6 +16,10 @@ struct PointSettings {
 
 class PointSession final : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<PointSession>(*this);
+    }
+
     explicit PointSession(EvaluationVector3 target) : target_(target) {}
 
     std::optional<EvaluationSample> Observe(

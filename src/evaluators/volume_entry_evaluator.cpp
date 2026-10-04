@@ -62,6 +62,10 @@ std::optional<double> SegmentEntryFraction(const Box &box,
 
 class VolumeEntrySession final : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<VolumeEntrySession>(*this);
+    }
+
     explicit VolumeEntrySession(Box box) : box_(box) {}
     bool IsComplete() const override { return reported_; }
 

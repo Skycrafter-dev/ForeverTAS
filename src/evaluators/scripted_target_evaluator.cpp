@@ -134,6 +134,10 @@ std::optional<ScriptedSettings> ParseSettings(
 
 class ScriptedSession final : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<ScriptedSession>(*this);
+    }
+
     explicit ScriptedSession(const ScriptedSettings &settings)
         : settings_(settings),
           scores_(settings.objectives.size(),

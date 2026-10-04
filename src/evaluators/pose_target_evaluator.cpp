@@ -52,6 +52,10 @@ struct PoseSettings {
 
 class PoseSession final : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<PoseSession>(*this);
+    }
+
     explicit PoseSession(PoseSettings settings) : settings_(settings) {}
 
     std::optional<EvaluationSample> Observe(

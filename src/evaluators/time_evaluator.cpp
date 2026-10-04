@@ -20,6 +20,9 @@ struct TimeSettings {
 // observation is the moment they are first met.
 class TimeSession final : public IterationEvaluationSession {
 public:
+    std::unique_ptr<IterationEvaluationSession> Clone() const override {
+        return std::make_unique<TimeSession>(*this);
+    }
     bool IsComplete() const override { return reported_; }
 
     std::optional<EvaluationSample> Observe(

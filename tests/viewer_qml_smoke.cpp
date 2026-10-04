@@ -3585,7 +3585,7 @@ int main(int argc, char **argv) {
                             !evaluationTargetCombo->property("visible")
                                      .toBool() &&
                             searchAlgorithmCombo->property("count").toInt() ==
-                                    1 &&
+                                    2 &&
                             modifierComposition
                                             ->property("firstPassOptionCount")
                                             .toInt() == 5 &&
@@ -3626,6 +3626,34 @@ int main(int argc, char **argv) {
                     controller.setSearchAlgorithmSetting(
                             QStringLiteral("autoPromoteBest"),
                             QStringLiteral("false"));
+                    QCoreApplication::processEvents();
+                    controller.setSearchAlgorithmId(
+                            QStringLiteral("tree-search"));
+                    QCoreApplication::processEvents();
+                    QObject *const treeSearchSettings =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "treeSearchSettings"));
+                    QObject *const treeSegmentCountField =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "treeSegmentCountField"));
+                    QObject *const treeSearchSummary =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "treeSearchSummary"));
+                    const bool treeSearchSettingsValid =
+                            treeSearchSettings != nullptr &&
+                            treeSegmentCountField != nullptr &&
+                            treeSegmentCountField->property("value")
+                                            .toString() ==
+                                    QStringLiteral("10") &&
+                            treeSearchSummary != nullptr &&
+                            treeSearchSummary->property("text")
+                                    .toString()
+                                    .contains(QStringLiteral("CPU")) &&
+                            searchAlgorithmCombo->property("currentValue")
+                                            .toString() ==
+                                    QStringLiteral("tree-search");
+                    controller.setSearchAlgorithmId(
+                            QStringLiteral("basic-brute-force"));
                     QCoreApplication::processEvents();
                     const bool settingComboTextValid =
                             velocityModeCombo != nullptr &&
@@ -5652,6 +5680,7 @@ int main(int argc, char **argv) {
                             automaticPacksUi && backendSelectorValid &&
                             algorithmSelectorsValid &&
                             autoPromoteBestValid &&
+                            treeSearchSettingsValid &&
                             everyOwnedPanelLoaded && checkpointSettingsValid && stuntPointsFieldValid &&
                             targetLayoutUpdatesImmediately &&
                             configurationSectionsValid &&
@@ -5771,6 +5800,7 @@ int main(int argc, char **argv) {
                                 << ", metrics=" << searchMetricsUiValid
                                 << ", descriptions=" << removedSectionDescriptions
                                 << ", promote=" << autoPromoteBestValid
+                                << ", tree=" << treeSearchSettingsValid
                                 << ", timeline=" << timeline->isEnabled()
                                 << "/" << (timeline->viewer() == &viewer)
                                 << "/" << (timelinePanel->x() < viewport->x())

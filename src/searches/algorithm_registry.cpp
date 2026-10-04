@@ -17,6 +17,7 @@
 #include "mutations/random_steering_mutator.h"
 #include "mutations/smooth_steering_mutator.h"
 #include "searches/basic_brute_force_search.h"
+#include "searches/tree_search.h"
 
 #include <algorithm>
 #include <stdexcept>
@@ -175,7 +176,19 @@ const std::vector<SearchAlgorithmRegistration> &SearchAlgorithmRegistry() {
              DefaultBasicBruteForceOptionSettings(),
              {},
              &ValidateBasicBruteForceOptionSettings,
-             &CreateBasicBruteForceSearch}};
+             &CreateBasicBruteForceSearch,
+             true,
+             true},
+            {kTreeSearchId,
+             {},
+             "Tree search",
+             "TreeSearchSettings.qml",
+             DefaultTreeSearchOptionSettings(),
+             {},
+             &ValidateTreeSearchOptionSettings,
+             &CreateTreeSearch,
+             false,
+             true}};
     return registrations;
 }
 

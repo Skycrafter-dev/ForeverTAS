@@ -53,17 +53,23 @@ public:
         std::mt19937 random = ModifierRandom(
                 settings_.window.seed, request.iterationIndex, request.passIndex);
 
+        // A segment draw deletes uniformly among the segment's events, which
+        // is an ordinary uniform deletion conditioned on its time.
         const auto deleteChannel = [&](const ChannelSettings &channel,
-                                       auto matches) {
+                                       auto matches,
+                                       std::uint32_t slot) {
             if (!channel.enabled) return;
-            const std::uint32_t requested = RandomInteger(
-                    random, 0u, channel.maximumCount);
+            const std::uint32_t requested = request.segment != nullptr
+                    ? SegmentSlotCount(request, slot)
+                    : RandomInteger(random, 0u, channel.maximumCount);
             for (std::uint32_t removal = 0u; removal < requested; ++removal) {
                 std::vector<std::size_t> eligibleIndices;
                 for (std::size_t index = 0u; index < inputs.size(); ++index) {
                     const SandboxInputEvent &event = inputs[index];
                     if (event.timeMs >= settings_.window.minimumTimeMs &&
                         event.timeMs <= settings_.window.maximumTimeMs &&
+                        (request.segment == nullptr ||
+                         InAnchorRange(*request.segment, event.timeMs)) &&
                         matches(event.action)) {
                         eligibleIndices.push_back(index);
                     }
@@ -71,12 +77,13 @@ public:
                 if (eligibleIndices.empty()) break;
                 const std::size_t selected = eligibleIndices[RandomInteger<std::size_t>(
                         random, 0u, eligibleIndices.size() - 1u)];
+                RecordMutationAnchor(request, inputs[selected].timeMs, slot);
                 inputs.erase(inputs.begin() + static_cast<std::ptrdiff_t>(selected));
             }
         };
-        deleteChannel(settings_.steering, IsSteerAction);
-        deleteChannel(settings_.accelerate, IsAccelerateAction);
-        deleteChannel(settings_.brake, IsBrakeAction);
+        deleteChannel(settings_.steering, IsSteerAction, 0u);
+        deleteChannel(settings_.accelerate, IsAccelerateAction, 1u);
+        deleteChannel(settings_.brake, IsBrakeAction, 2u);
         NormalizeMutableInputEvents(inputs,
                                     request.baselineInputs,
                                     request.tickDurationMs,

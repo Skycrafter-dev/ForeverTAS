@@ -17,6 +17,7 @@
 #include "searches/option_settings_utils.h"
 #include "searches/search_runner.h"
 #include "searches/result_input_script.h"
+#include "searches/tree_search.h"
 #include "time_format.h"
 #include "speed_format.h"
 #include <forevervalidator/experimental/search_limits.h>
@@ -32,6 +33,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -1700,6 +1702,20 @@ bool TestRegistries() {
     }
     okay &= Check(forevertas::ModifierRegistry().size() == 5u,
                   "not all required modifiers are registered");
+    okay &= Check(forevertas::SearchAlgorithmRegistry().size() == 2u,
+                  "not all search algorithms are registered");
+    const auto *const basic =
+            forevertas::FindSearchAlgorithm(forevertas::kBasicBruteForceSearchId);
+    const auto *const tree =
+            forevertas::FindSearchAlgorithm(forevertas::kTreeSearchId);
+    okay &= Check(basic != nullptr && basic->supportsGpuBackends &&
+                          basic->supportsMultiThreadedCpu,
+                  "basic bruteforce lost a backend capability");
+    okay &= Check(tree != nullptr && !tree->supportsGpuBackends &&
+                          tree->supportsMultiThreadedCpu &&
+                          tree->settingsComponent ==
+                                  "TreeSearchSettings.qml",
+                  "tree search registration is incomplete");
     okay &= Check(forevertas::EvaluationTargetRegistry().size() == 10u &&
                           forevertas::FindEvaluationTarget(forevertas::kTimeEvaluationId) != nullptr,
                   "not all required evaluation targets are registered");
@@ -2697,6 +2713,278 @@ bool TestRedundantSteeringInsertion() {
 
 }  // namespace
 
+// Earliest time whose events differ between two time-sorted timelines.
+std::optional<std::int64_t> EarliestDifference(
+        const std::vector<SandboxInputEvent> &left,
+        const std::vector<SandboxInputEvent> &right) {
+    std::size_t index = 0u;
+    while (index < left.size() && index < right.size() &&
+           forevertas::SameInputEvent(left[index], right[index])) {
+        ++index;
+    }
+    if (index == left.size() && index == right.size()) return std::nullopt;
+    if (index == left.size()) return right[index].timeMs;
+    if (index == right.size()) return left[index].timeMs;
+    return std::min<std::int64_t>(left[index].timeMs, right[index].timeMs);
+}
+
+std::size_t CountEvents(const std::vector<SandboxInputEvent> &events,
+                        SandboxInputAction action,
+                        std::int64_t minimumTimeMs,
+                        std::int64_t maximumTimeMs) {
+    return static_cast<std::size_t>(std::count_if(
+            events.begin(), events.end(),
+            [&](const SandboxInputEvent &event) {
+                return event.action == action &&
+                        event.timeMs >= minimumTimeMs &&
+                        event.timeMs <= maximumTimeMs;
+            }));
+}
+
+bool TestModifierAnchorsAndSegments() {
+    constexpr const char *ids[] = {
+            forevertas::kRandomSteeringModifierId,
+            forevertas::kExistingEventPerturbationModifierId,
+            forevertas::kSmoothSteeringModifierId,
+            forevertas::kInputInsertionModifierId,
+            forevertas::kInputDeletionModifierId};
+    const std::vector<SandboxInputEvent> baseline = ModifierParityBaseline();
+    const forevertas::MutationTimeRange range{600, 990};
+    const std::vector<std::vector<std::uint32_t>> slotCounts{{2u, 1u, 1u}};
+    const forevertas::MutationSegment segment{range, &slotCounts};
+    bool okay = true;
+    for (std::uint32_t index = 0u; index < std::size(ids); ++index) {
+        const std::vector<ModifierParitySpec> specs{{
+                ids[index],
+                ModifierParitySettings(
+                        ids[index], 100, 1700, 1179926867u + index)}};
+        std::unique_ptr<forevertas::CompositeInputMutator> recorder =
+                BuildParityComposite(specs);
+        std::unique_ptr<forevertas::CompositeInputMutator> reference =
+                BuildParityComposite(specs);
+        const std::int64_t mutableFromTimeMs =
+                recorder->EarliestMutationTimeMs();
+        std::size_t changedSegments = 0u;
+        for (std::uint64_t iteration = 0u; iteration < 64u; ++iteration) {
+            std::vector<forevertas::MutationAnchor> anchors;
+            const MutationResult recorded = recorder->Mutate(
+                    {baseline, iteration, 0u, 10u, mutableFromTimeMs,
+                     false, 0u, false, &anchors});
+            const MutationResult plain = reference->Mutate(
+                    {baseline, iteration, 0u, 10u, mutableFromTimeMs,
+                     false, 0u});
+            okay &= Check(SameEvents(recorded.inputs, plain.inputs),
+                          "recording anchors changed an ordinary draw");
+            for (const forevertas::MutationAnchor &anchor : anchors) {
+                okay &= Check(anchor.timeMs >= 100 && anchor.timeMs <= 1700 &&
+                                      anchor.passIndex == 0u &&
+                                      anchor.slot < 3u,
+                              "a modifier anchor left its window");
+            }
+            const std::optional<std::int64_t> earliest =
+                    EarliestDifference(baseline, recorded.inputs);
+            if (earliest) {
+                const auto first = std::min_element(
+                        anchors.begin(), anchors.end(),
+                        [](const auto &left, const auto &right) {
+                            return left.timeMs < right.timeMs;
+                        });
+                okay &= Check(first != anchors.end() &&
+                                      *earliest >= first->timeMs,
+                              "a modifier changed inputs before its "
+                              "earliest anchor");
+            }
+
+            const MutationResult drawn = recorder->Mutate(
+                    {baseline, iteration, 0u, 10u, range.minimumTimeMs, true,
+                     2u * iteration + 1u, false, nullptr, &segment});
+            const MutationResult repeated = reference->Mutate(
+                    {baseline, iteration, 0u, 10u, range.minimumTimeMs, true,
+                     2u * iteration + 2u, false, nullptr, &segment});
+            if (!drawn.windowPatch || !repeated.windowPatch) {
+                okay &= Check(false, "a segment draw returned no patch");
+                continue;
+            }
+            const std::vector<SandboxInputEvent> materialized =
+                    forevertas::ApplyInputWindowPatch(
+                            baseline, *drawn.windowPatch);
+            okay &= Check(SameEvents(materialized,
+                                     forevertas::ApplyInputWindowPatch(
+                                             baseline,
+                                             *repeated.windowPatch)),
+                          "segment draws were not deterministic");
+            const std::optional<std::int64_t> segmentEarliest =
+                    EarliestDifference(baseline, materialized);
+            okay &= Check(!segmentEarliest ||
+                                  (*segmentEarliest >= range.minimumTimeMs &&
+                                   *segmentEarliest <= range.maximumTimeMs),
+                          "a segment draw changed inputs outside its "
+                          "segment anchors");
+            changedSegments += segmentEarliest ? 1u : 0u;
+            if (std::string(ids[index]) ==
+                forevertas::kInputDeletionModifierId) {
+                okay &= Check(
+                        CountEvents(baseline, SandboxInputAction::Steer,
+                                    range.minimumTimeMs,
+                                    range.maximumTimeMs) ==
+                                CountEvents(materialized,
+                                            SandboxInputAction::Steer,
+                                            range.minimumTimeMs,
+                                            range.maximumTimeMs) + 2u,
+                        "segment deletion ignored its allocated count");
+            }
+        }
+        okay &= Check(changedSegments > 32u,
+                      "segment draws rarely changed their segment");
+    }
+    return okay;
+}
+
+bool TestTreeSearchConfiguration() {
+    const OptionSettings defaults =
+            forevertas::DefaultTreeSearchOptionSettings();
+    bool okay = Check(!forevertas::ValidateTreeSearchOptionSettings(
+                              defaults, 10u),
+                      "tree search defaults are invalid");
+    okay &= Check(defaults.at("segmentCount") == "10" &&
+                          defaults.at("autoPromoteBest") == "false",
+                  "unexpected tree search defaults");
+    for (const char *invalid : {"0", "21", "", "ten", "-1"}) {
+        OptionSettings settings = defaults;
+        settings["segmentCount"] = invalid;
+        okay &= Check(forevertas::ValidateTreeSearchOptionSettings(
+                              settings, 10u).has_value(),
+                      "an invalid tree segment count was accepted");
+    }
+    OptionSettings promote = defaults;
+    promote["autoPromoteBest"] = "maybe";
+    okay &= Check(forevertas::ValidateTreeSearchOptionSettings(
+                          promote, 10u).has_value(),
+                  "an invalid tree promotion flag was accepted");
+    OptionSettings extra = defaults;
+    extra["unknown"] = "1";
+    okay &= Check(forevertas::ValidateTreeSearchOptionSettings(
+                          extra, 10u).has_value(),
+                  "an unknown tree search key was accepted");
+
+    const auto ranges = forevertas::TreeSegmentRanges(1010, 5990, 10u, 10u);
+    okay &= Check(ranges.size() == 10u &&
+                          ranges.front().minimumTimeMs == 1010 &&
+                          ranges.back().maximumTimeMs == 5990,
+                  "tree segments did not cover the mutation window");
+    std::int64_t shortest = std::numeric_limits<std::int64_t>::max();
+    std::int64_t longest = 0;
+    for (std::size_t index = 0u; index < ranges.size(); ++index) {
+        const std::int64_t ticks =
+                (ranges[index].maximumTimeMs - ranges[index].minimumTimeMs) /
+                        10 + 1;
+        shortest = std::min(shortest, ticks);
+        longest = std::max(longest, ticks);
+        if (index + 1u < ranges.size()) {
+            okay &= Check(ranges[index + 1u].minimumTimeMs ==
+                                  ranges[index].maximumTimeMs + 10,
+                          "tree segments are not contiguous");
+        }
+    }
+    okay &= Check(longest - shortest <= 1,
+                  "tree segment lengths differ by more than one tick");
+    okay &= Check(forevertas::TreeSegmentRanges(1000, 1030, 10u, 10u)
+                                  .size() == 4u &&
+                          forevertas::TreeSegmentRanges(1000, 990, 10u, 10u)
+                                  .empty(),
+                  "short tree windows were not split per tick");
+
+    const auto product = [](const std::vector<std::uint64_t> &counts) {
+        std::uint64_t value = 1u;
+        for (const std::uint64_t count : counts) value *= count;
+        return value;
+    };
+    okay &= Check(forevertas::TreeBranchCounts(10u, 1024u) ==
+                          std::vector<std::uint64_t>(10u, 2u),
+                  "a full binary tree did not branch in two");
+    okay &= Check(forevertas::TreeBranchCounts(1u, 1024u) ==
+                          std::vector<std::uint64_t>{1024u},
+                  "a single active segment did not take every branch");
+    okay &= Check(forevertas::TreeBranchCounts(3u, 1024u) ==
+                          std::vector<std::uint64_t>{10u, 10u, 10u},
+                  "three active segments did not branch evenly");
+    okay &= Check(forevertas::TreeBranchCounts(7u, 1024u) ==
+                          std::vector<std::uint64_t>{2u, 2u, 3u, 3u, 3u, 3u,
+                                                     3u},
+                  "extra branches did not go to the latest segments");
+    okay &= Check(forevertas::TreeBranchCounts(0u, 1024u).empty(),
+                  "an empty tree reported branches");
+    for (std::size_t active = 1u; active <= 20u; ++active) {
+        const auto counts =
+                forevertas::TreeBranchCounts(active, std::uint64_t{1} << 20u);
+        okay &= Check(counts.size() == active &&
+                              product(counts) <= (std::uint64_t{1} << 20u) &&
+                              product(counts) * 2u >
+                                      (std::uint64_t{1} << 20u) / 2u,
+                      "tree branch counts strayed from the leaf target");
+    }
+    return okay;
+}
+
+bool SameSample(const std::optional<EvaluationSample> &left,
+                const std::optional<EvaluationSample> &right) {
+    if (left.has_value() != right.has_value()) return false;
+    if (!left) return true;
+    return left->score == right->score && left->timeMs == right->timeMs &&
+            left->description == right->description &&
+            left->objectiveScores == right->objectiveScores &&
+            left->metricValues == right->metricValues;
+}
+
+bool TestEvaluationSessionClones() {
+    const auto stateAt = [](std::uint32_t tick) {
+        PhysicsSandboxStateView state;
+        state.tick = tick;
+        state.timeMs = tick * 10u;
+        const float t = static_cast<float>(tick);
+        state.car.position = {t * 1.5f - 20.0f, 2.0f + std::sin(t * 0.3f),
+                              t * 0.7f - 10.0f};
+        state.car.linearSpeed = {std::cos(t * 0.2f) * 30.0f, 1.0f,
+                                 t * 0.9f};
+        const float angle = t * 0.05f;
+        state.car.rotationY = std::sin(angle);
+        state.car.rotationW = std::cos(angle);
+        state.steering = std::sin(t * 0.4f);
+        state.checkpointsCollected = tick / 10u;
+        state.checkpointsTotal = 4u;
+        state.stuntsScore = tick * 3u;
+        if (tick >= 35u) {
+            state.raceCompleted = true;
+            state.finishTimeMs = 350u;
+        }
+        return state;
+    };
+    bool okay = true;
+    for (const auto &registration : forevertas::EvaluationTargetRegistry()) {
+        std::unique_ptr<forevertas::IterationEvaluator> evaluator =
+                registration.create(registration.defaultSettings, 10u);
+        std::unique_ptr<forevertas::IterationEvaluationSession> session =
+                evaluator->CreateSession();
+        std::optional<PhysicsSandboxStateView> previous;
+        for (std::uint32_t tick = 1u; tick <= 20u; ++tick) {
+            const PhysicsSandboxStateView state = stateAt(tick);
+            static_cast<void>(session->Observe(previous, state));
+            previous = state;
+        }
+        std::unique_ptr<forevertas::IterationEvaluationSession> clone =
+                session->Clone();
+        for (std::uint32_t tick = 21u; tick <= 40u; ++tick) {
+            const PhysicsSandboxStateView state = stateAt(tick);
+            okay &= Check(SameSample(session->Observe(previous, state),
+                                     clone->Observe(previous, state)),
+                          ("a cloned session diverged: " +
+                           registration.id).c_str());
+            previous = state;
+        }
+    }
+    return okay;
+}
+
 int main() {
     const bool okay = TestInputOnlyTimelineTimeOrigin() &&
             TestHumanDurationFormatting() &&
@@ -2721,6 +3009,9 @@ int main() {
             TestKeyboardSteeringConversion() &&
             TestAllModifierAnalogInvariants() &&
             TestRegistries() &&
+            TestModifierAnchorsAndSegments() &&
+            TestTreeSearchConfiguration() &&
+            TestEvaluationSessionClones() &&
             TestLocaleIndependentFloatingPointSettings() &&
             TestSearchControl() &&
             TestRollingThroughput() &&

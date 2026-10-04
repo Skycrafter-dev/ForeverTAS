@@ -14,6 +14,7 @@
 namespace forevertas {
 
 inline constexpr char kBasicBruteForceSearchId[] = "basic-brute-force";
+inline constexpr char kTreeSearchId[] = "tree-search";
 inline constexpr char kRandomSteeringModifierId[] = "random-steering";
 inline constexpr char kExistingEventPerturbationModifierId[] =
         "existing-event-perturbation";
@@ -47,6 +48,11 @@ struct SearchAlgorithmRegistration {
             const OptionSettings &, std::uint32_t);
     std::unique_ptr<SearchAlgorithm> (*createFromSimulationSettings)(
             const OptionSettings &, std::uint32_t);
+    // Runs on GPU-resident search sessions.
+    bool supportsGpuBackends = false;
+    // Runs as independent workers that honour the iteration index offset,
+    // stride, and promoted-baseline callbacks of SearchRunControl.
+    bool supportsMultiThreadedCpu = false;
 
     std::optional<std::string> validateSettings(
             const OptionSettings &settings,

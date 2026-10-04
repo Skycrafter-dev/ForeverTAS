@@ -107,12 +107,24 @@ public:
         std::mt19937 random = ModifierRandom(
                 settings_.window.seed, request.iterationIndex, request.passIndex);
         const std::int64_t tick = request.tickDurationMs;
+        // A segment draw inserts uniformly inside the segment, which is an
+        // ordinary uniform draw conditioned on starting there.
+        std::int64_t firstTick = settings_.window.minimumTimeMs / tick;
+        std::int64_t lastTick = settings_.window.maximumTimeMs / tick;
+        if (request.segment != nullptr) {
+            firstTick = std::max(
+                    firstTick,
+                    (request.segment->anchorRange.minimumTimeMs + tick - 1) /
+                            tick);
+            lastTick = std::min(
+                    lastTick,
+                    request.segment->anchorRange.maximumTimeMs / tick);
+        }
+        const bool insertable = firstTick <= lastTick;
 
         const auto randomTime = [&]() {
             return RandomInteger<std::int64_t>(
-                           random,
-                           settings_.window.minimumTimeMs / tick,
-                           settings_.window.maximumTimeMs / tick) * tick;
+                           random, firstTick, lastTick) * tick;
         };
         const auto randomHold = [&](std::int64_t maximum) {
             if (maximum <= 0) return std::int64_t{0};
@@ -120,11 +132,13 @@ public:
                            random, 0, maximum / tick) * tick;
         };
 
-        const std::uint32_t steeringCount = settings_.steering.enabled
-                ? RandomInteger(random,
+        const std::uint32_t steeringCount = !settings_.steering.enabled
+                ? 0u
+                : request.segment != nullptr
+                ? (insertable ? SegmentSlotCount(request, 0u) : 0u)
+                : RandomInteger(random,
                                 settings_.steering.minimumCount,
-                                settings_.steering.maximumCount)
-                : 0u;
+                                settings_.steering.maximumCount);
         for (std::uint32_t index = 0u; index < steeringCount; ++index) {
             const std::int64_t start = randomTime();
             const std::int64_t end = std::min(
@@ -151,13 +165,18 @@ public:
                         SandboxInputAction::Steer,
                         SteeringStateAt(original, end)));
             }
+            RecordMutationAnchor(request, start, 0u);
         }
 
         const auto insertSwitch = [&](const ChannelSettings &channel,
-                                      SandboxInputAction action) {
+                                      SandboxInputAction action,
+                                      std::uint32_t slot) {
             if (!channel.enabled) return;
-            const std::uint32_t count = RandomInteger(
-                    random, channel.minimumCount, channel.maximumCount);
+            const std::uint32_t count = request.segment != nullptr
+                    ? (insertable ? SegmentSlotCount(request, slot) : 0u)
+                    : RandomInteger(random,
+                                    channel.minimumCount,
+                                    channel.maximumCount);
             for (std::uint32_t index = 0u; index < count; ++index) {
                 const std::int64_t start = randomTime();
                 const std::int64_t end = std::min(
@@ -170,10 +189,11 @@ public:
                     inputs.push_back(SwitchEvent(
                             end, action, SwitchStateAt(original, action, end)));
                 }
+                RecordMutationAnchor(request, start, slot);
             }
         };
-        insertSwitch(settings_.accelerate, SandboxInputAction::Accelerate);
-        insertSwitch(settings_.brake, SandboxInputAction::Brake);
+        insertSwitch(settings_.accelerate, SandboxInputAction::Accelerate, 1u);
+        insertSwitch(settings_.brake, SandboxInputAction::Brake, 2u);
         NormalizeMutableInputEvents(inputs,
                                     request.baselineInputs,
                                     request.tickDurationMs,
