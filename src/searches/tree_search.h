@@ -19,6 +19,14 @@ inline constexpr std::uint32_t kMaximumTreeSegmentCount = 20u;
 inline constexpr std::uint32_t kMaximumTreeLeafCount = 1u << 20u;
 inline constexpr std::uint32_t kMaximumTreeFlatWorkerCount = 256u;
 
+enum class TreeSegmentChoice : std::uint8_t {
+    Random,
+    // Favours segments whose trees improved (upper confidence bound).
+    Bandit,
+    // Favours later segments, whose branches are cheaper to simulate.
+    Late,
+};
+
 struct TreeSearchSettings {
     std::uint32_t segmentCount = 10u;
     // Leaves each tree targets; 0 means 2^segmentCount.
@@ -37,6 +45,23 @@ struct TreeSearchSettings {
     // ignore it.
     std::uint32_t flatWorkerCount = 0u;
     bool autoPromoteBest = false;
+    // A varied branched-segment count halves its odds for every extra
+    // segment instead of being uniform.
+    bool geometricBranchedSegmentCount = false;
+    // Adaptive intensity: trees branch one segment, doubling the count after
+    // this many trees without improvement and resetting after one. 0 is off.
+    // Only the adaptive escalation search sets it.
+    std::uint32_t escalateAfterTrees = 0u;
+    // Share of the drawn candidate's anchored items a tree keeps.
+    std::uint32_t itemKeepPercent = 100u;
+    // How a tree picks the segments it branches.
+    TreeSegmentChoice segmentChoice = TreeSegmentChoice::Random;
+    // Multi-threaded workers follow their own improvements for this many
+    // seconds before adopting the shared best. 0 adopts it immediately.
+    std::uint32_t migrationSeconds = 0u;
+    // After an improving tree, this many trees branch the same segments
+    // again, refining where the last gain came from. 0 is off.
+    std::uint32_t repeatImprovedSegments = 0u;
 };
 
 OptionSettings DefaultTreeSearchOptionSettings();
@@ -47,6 +72,21 @@ std::optional<std::string> ValidateTreeSearchOptionSettings(
         const OptionSettings &settings,
         std::uint32_t tickDurationMs);
 std::unique_ptr<SearchAlgorithm> CreateTreeSearch(
+        const OptionSettings &settings,
+        std::uint32_t tickDurationMs);
+
+inline constexpr std::uint32_t kMaximumEscalateAfterTrees = 1000000u;
+
+// Adaptive escalation: a tree search that changes one segment per attempt
+// and doubles the number of changed segments after escalateAfterTrees trees
+// without improvement, resetting after one.
+OptionSettings DefaultAdaptiveEscalationOptionSettings();
+std::optional<TreeSearchSettings> ParseAdaptiveEscalationSettings(
+        const OptionSettings &settings);
+std::optional<std::string> ValidateAdaptiveEscalationOptionSettings(
+        const OptionSettings &settings,
+        std::uint32_t tickDurationMs);
+std::unique_ptr<SearchAlgorithm> CreateAdaptiveEscalationSearch(
         const OptionSettings &settings,
         std::uint32_t tickDurationMs);
 

@@ -128,6 +128,12 @@ public:
         return iteration.score < incumbent.score;
     }
 
+    // Entry samples report their own entry time, so later attempts lose.
+    std::optional<double> LatestImprovingTimeMs(
+            const EvaluationSample &incumbent) const override {
+        return incumbent.timeMs;
+    }
+
 private:
     Box box_;
 };

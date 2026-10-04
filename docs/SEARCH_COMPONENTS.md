@@ -259,7 +259,12 @@ their early segments: per tree, segment `k` of `segmentCount` sees about
 `2^(k+1)` distinct variants. Compare improvements over time, not attempts per
 second, when choosing between algorithms.
 
-Optional settings reshape each tree; their defaults keep the tree above.
+Settings reshape each tree. Their defaults are the local search that won
+the strategy experiments below: four segments, one changed per attempt
+(`branchedSegmentCount=1`), the others kept at the current best
+(`unbranchedSegments=keep`), and five-second islands (`migrationSeconds=5`).
+Setting `branchedSegmentCount=0` and `unbranchedSegments=draw` restores the
+full tree described above.
 
 - `leafCount` (default `0`, meaning `2^segmentCount`, at most `2^20`) is the
   leaf target the branch counts aim for, independent of the segment count.
@@ -278,6 +283,46 @@ Optional settings reshape each tree; their defaults keep the tree above.
   backend: workers with an index below it run `basic-brute-force` with the
   same `autoPromoteBest`, sharing the promoted best with the tree workers.
   Single-worker backends ignore it.
+- `branchedSegmentDistribution` (`uniform` or `geometric`) draws a varied
+  branched-segment count uniformly or with halving odds per extra segment.
+- `itemKeepPercent` (default `100`) keeps each drawn item with that chance,
+  shrinking every candidate further.
+- `segmentChoice` picks branched segments `random`ly (default), by an upper
+  confidence bound on each segment's improvement rate (`bandit`), or weighted
+  toward later, cheaper segments (`late`).
+- `repeatImprovedSegments` (default `0`) makes that many trees after an
+  improvement branch the improving segments again.
+- `migrationSeconds` (default `5`) runs islands on the multi-threaded CPU
+  backend: between adoptions of the shared best, each worker promotes only its
+  own improvements, so workers keep separate lineages. `0` adopts every
+  shared best at once. Single-worker backends ignore it.
+
+The UI shows the segment count, `branchedSegmentCount`,
+`unbranchedSegments`, `migrationSeconds`, and promotion directly, and the
+leaf count, varied counts, and basic workers under advanced options. The
+remaining settings are engine options for experiments.
+
+### Hopeless attempts end early
+
+Targets whose samples only get worse with time report
+`IterationEvaluator::LatestImprovingTimeMs`: precise finish time, both
+volume-entry targets, checkpoint time, and the earliest Time goal return the
+incumbent's sample time. Once an attempt has
+observed the tick containing that time without beating the incumbent, no
+later sample can, so the CPU loops of basic bruteforce and the tree searches
+stop it there. This is always on and changes no result: single-worker runs
+with fixed seeds and attempt counts produce identical improvements and final
+scores with and without it. GPU sessions are unaffected.
+
+### Adaptive escalation
+
+`adaptive-escalation` is a search option that runs the tree engine with
+`unbranchedSegments=keep`. It changes one of `segmentCount` segments per
+attempt (default 8), doubles the number of changed segments after
+`escalateAfterTrees` trees without improvement (default 8), up to all of
+them, and returns to one after any improvement, so it polishes while
+progress comes and widens when it stalls. `migrationSeconds` (default `0`)
+adds islands. It runs on CPU physics backends, including multi-threaded CPU.
 
 The settings were compared with `forevertas-search-strategy-comparison`
 (6 workers, auto-promote, seed trials of 30 s, pose and velocity targets over
@@ -291,6 +336,17 @@ reached the faster one in 6 of 8 seeds and `varyBranchedSegmentCount=true`
 with `keep` in 3 of 8, which is within noise but suggests that large changes
 still escape basins better. Within the slower basin the `keep` variants
 refined further.
+
+A larger study with `forevertas-search-lab` (498 runs over 14 scenarios on
+seven maps; pose, speed, finish-time, and point targets; dense, sparse, and
+smooth modifier presets; 6 workers and auto-promote, compared on paired
+seeds) changed that picture. One branched segment with `keep` beat basic
+bruteforce in 48 of 56 paired runs and the default ten-segment tree lost to
+basic in most of them. Adding five-second islands beat plain `keep` in 32 of
+46 paired runs and reached the faster velocity basin in all 16 runs, where
+basic bruteforce never did (0 of 11) and islands on basic bruteforce did not
+help. With sparse or smooth presets, which already change little, basic
+bruteforce did as well. These results set the current defaults.
 
 ### Winner retention and final sampling
 
@@ -688,9 +744,11 @@ No search-loop or controller branch should be added for the target.
 - `basic-brute-force`: baseline plus independent deterministic iterations,
   continuing until Stop is requested.
 - `tree-search`: CPU-only trees of candidates that share simulated prefixes;
-  every leaf is one attempt. Optional settings branch a random subset of the
-  segments, keep the other segments unchanged, or run some multi-threaded
-  workers as basic bruteforce.
+  every leaf is one attempt. It defaults to the winning local search: one of
+  four segments changes per attempt, the others keep the current best, and
+  multi-threaded workers run five-second islands.
+- `adaptive-escalation`: CPU-only local search that widens from one changed
+  segment to all of them while it stalls and resets on improvement.
 
 ### Modifiers
 

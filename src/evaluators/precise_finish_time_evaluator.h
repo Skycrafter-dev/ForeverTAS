@@ -27,6 +27,8 @@ public:
             const override;
     bool IsBetter(const EvaluationSample &iteration,
                   const EvaluationSample &incumbent) const override;
+    std::optional<double> LatestImprovingTimeMs(
+            const EvaluationSample &incumbent) const override;
 };
 
 }  // namespace forevertas

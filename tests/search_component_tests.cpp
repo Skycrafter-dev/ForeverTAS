@@ -1702,8 +1702,16 @@ bool TestRegistries() {
     }
     okay &= Check(forevertas::ModifierRegistry().size() == 5u,
                   "not all required modifiers are registered");
-    okay &= Check(forevertas::SearchAlgorithmRegistry().size() == 2u,
+    okay &= Check(forevertas::SearchAlgorithmRegistry().size() == 3u,
                   "not all search algorithms are registered");
+    const auto *const escalationSearch = forevertas::FindSearchAlgorithm(
+            forevertas::kAdaptiveEscalationSearchId);
+    okay &= Check(escalationSearch != nullptr &&
+                          !escalationSearch->supportsGpuBackends &&
+                          escalationSearch->supportsMultiThreadedCpu &&
+                          escalationSearch->settingsComponent ==
+                                  "AdaptiveEscalationSearchSettings.qml",
+                  "adaptive escalation registration is incomplete");
     const auto *const basic =
             forevertas::FindSearchAlgorithm(forevertas::kBasicBruteForceSearchId);
     const auto *const tree =
@@ -2846,7 +2854,7 @@ bool TestTreeSearchConfiguration() {
     bool okay = Check(!forevertas::ValidateTreeSearchOptionSettings(
                               defaults, 10u),
                       "tree search defaults are invalid");
-    okay &= Check(defaults.at("segmentCount") == "10" &&
+    okay &= Check(defaults.at("segmentCount") == "4" &&
                           defaults.at("autoPromoteBest") == "false",
                   "unexpected tree search defaults");
     for (const char *invalid : {"0", "21", "", "ten", "-1"}) {
@@ -2866,12 +2874,23 @@ bool TestTreeSearchConfiguration() {
     okay &= Check(forevertas::ValidateTreeSearchOptionSettings(
                           extra, 10u).has_value(),
                   "an unknown tree search key was accepted");
+    // The defaults are the winning local search with islands.
     okay &= Check(defaults.at("leafCount") == "0" &&
-                          defaults.at("branchedSegmentCount") == "0" &&
+                          defaults.at("branchedSegmentCount") == "1" &&
                           defaults.at("flatWorkerCount") == "0" &&
-                          defaults.at("unbranchedSegments") == "draw" &&
-                          defaults.at("varyBranchedSegmentCount") == "false",
-                  "tree shape defaults changed the original tree");
+                          defaults.at("unbranchedSegments") == "keep" &&
+                          defaults.at("varyBranchedSegmentCount") == "false" &&
+                          defaults.at("migrationSeconds") == "5" &&
+                          defaults.count("pruneHopeless") == 0u &&
+                          defaults.count("escalateAfterTrees") == 0u,
+                  "tree search defaults are not the local search");
+    const auto parsedDefaults = forevertas::ParseTreeSearchSettings(defaults);
+    okay &= Check(parsedDefaults && parsedDefaults->segmentCount == 4u &&
+                          parsedDefaults->branchedSegmentCount == 1u &&
+                          parsedDefaults->keepUnbranchedSegments &&
+                          parsedDefaults->migrationSeconds == 5u &&
+                          parsedDefaults->escalateAfterTrees == 0u,
+                  "tree search defaults did not parse as the local search");
     const std::vector<std::pair<const char *, const char *>> invalidShapes{
             {"leafCount", "1048577"},
             {"leafCount", "-1"},
@@ -2881,7 +2900,12 @@ bool TestTreeSearchConfiguration() {
             {"flatWorkerCount", "257"},
             {"unbranchedSegments", "drop"},
             {"varyBranchedSegmentCount", "sometimes"},
-            {"flatWorkerCount", "x"}};
+            {"flatWorkerCount", "x"},
+            {"branchedSegmentDistribution", "normal"},
+            {"itemKeepPercent", "0"},
+            {"itemKeepPercent", "101"},
+            {"segmentChoice", "first"},
+            {"migrationSeconds", "soon"}};
     for (const auto &[key, invalid] : invalidShapes) {
         OptionSettings settings = defaults;
         settings[key] = invalid;
@@ -2907,6 +2931,99 @@ bool TestTreeSearchConfiguration() {
                           parsedShape->flatWorkerCount == 3u &&
                           !parsedShape->autoPromoteBest,
                   "a valid tree shape was not parsed");
+    okay &= Check(defaults.at("branchedSegmentDistribution") == "uniform" &&
+                          defaults.at("itemKeepPercent") == "100" &&
+                          defaults.at("segmentChoice") == "random" &&
+                          defaults.at("repeatImprovedSegments") == "0",
+                  "tree strategy defaults changed");
+    OptionSettings strategy = defaults;
+    strategy["branchedSegmentDistribution"] = "geometric";
+    strategy["itemKeepPercent"] = "40";
+    strategy["segmentChoice"] = "bandit";
+    strategy["migrationSeconds"] = "15";
+    strategy["repeatImprovedSegments"] = "8";
+    const auto parsedStrategy = forevertas::ParseTreeSearchSettings(strategy);
+    okay &= Check(!forevertas::ValidateTreeSearchOptionSettings(strategy,
+                                                                10u) &&
+                          parsedStrategy &&
+                          parsedStrategy->geometricBranchedSegmentCount &&
+                          parsedStrategy->itemKeepPercent == 40u &&
+                          parsedStrategy->segmentChoice ==
+                                  forevertas::TreeSegmentChoice::Bandit &&
+                          parsedStrategy->migrationSeconds == 15u &&
+                          parsedStrategy->repeatImprovedSegments == 8u,
+                  "valid tree strategy settings were not parsed");
+
+    // Adaptive escalation reuses the tree engine with kept segments.
+    const OptionSettings escalation =
+            forevertas::DefaultAdaptiveEscalationOptionSettings();
+    const auto parsedEscalation =
+            forevertas::ParseAdaptiveEscalationSettings(escalation);
+    okay &= Check(!forevertas::ValidateAdaptiveEscalationOptionSettings(
+                          escalation, 10u) &&
+                          parsedEscalation &&
+                          parsedEscalation->segmentCount == 8u &&
+                          parsedEscalation->escalateAfterTrees == 8u &&
+                          parsedEscalation->keepUnbranchedSegments &&
+                          parsedEscalation->migrationSeconds == 0u &&
+                          !parsedEscalation->autoPromoteBest &&
+                          forevertas::CreateAdaptiveEscalationSearch(
+                                  escalation, 10u) != nullptr,
+                  "adaptive escalation defaults are wrong");
+    const std::vector<std::pair<const char *, const char *>>
+            invalidEscalations{{"segmentCount", "21"},
+                               {"segmentCount", "0"},
+                               {"escalateAfterTrees", "0"},
+                               {"escalateAfterTrees", "1000001"},
+                               {"escalateAfterTrees", "often"},
+                               {"migrationSeconds", "-1"},
+                               {"autoPromoteBest", "sometimes"},
+                               {"unbranchedSegments", "keep"}};
+    for (const auto &[key, invalid] : invalidEscalations) {
+        OptionSettings settings = escalation;
+        settings[key] = invalid;
+        okay &= Check(forevertas::ValidateAdaptiveEscalationOptionSettings(
+                              settings, 10u).has_value() &&
+                              !forevertas::ParseAdaptiveEscalationSettings(
+                                      settings),
+                      "an invalid adaptive escalation setting was accepted");
+    }
+
+    // Targets whose samples only get worse with time expose the latest
+    // improving time; the engine stops attempts after it.
+    const EvaluationSample incumbent{1.0, 5731.25, "incumbent"};
+    for (const char *id : {forevertas::kPreciseFinishTimeEvaluationId,
+                           forevertas::kVolumeEntryEvaluationId,
+                           forevertas::kCustomVolumeEntryEvaluationId,
+                           forevertas::kCheckpointTimeEvaluationId,
+                           forevertas::kTimeEvaluationId}) {
+        const auto evaluator = Evaluator(id);
+        okay &= Check(evaluator &&
+                              evaluator->LatestImprovingTimeMs(incumbent) ==
+                                      std::optional<double>(5731.25),
+                      "a time target did not expose its latest improving "
+                      "time");
+    }
+    for (const char *id : {forevertas::kVelocityEvaluationId,
+                           forevertas::kPointTargetEvaluationId,
+                           forevertas::kPoseTargetEvaluationId,
+                           forevertas::kStuntPointsEvaluationId,
+                           forevertas::kScriptedTargetEvaluationId}) {
+        const auto evaluator = Evaluator(id);
+        okay &= Check(evaluator &&
+                              !evaluator->LatestImprovingTimeMs(incumbent),
+                      "a target without a time bound exposed one");
+    }
+    {
+        OptionSettings latest = forevertas::FindEvaluationTarget(
+                forevertas::kTimeEvaluationId)->defaultSettings;
+        latest["goal"] = "latest";
+        const auto evaluator =
+                Evaluator(forevertas::kTimeEvaluationId, &latest);
+        okay &= Check(evaluator &&
+                              !evaluator->LatestImprovingTimeMs(incumbent),
+                      "the latest time goal exposed a time bound");
+    }
 
     const auto ranges = forevertas::TreeSegmentRanges(1010, 5990, 10u, 10u);
     okay &= Check(ranges.size() == 10u &&

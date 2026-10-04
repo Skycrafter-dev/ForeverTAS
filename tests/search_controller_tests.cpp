@@ -1396,7 +1396,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                   "CUDA calibration was unexpectedly enabled by default");
     okay &= Check(controller.cudaSessionSpecializationEnabled(),
                   "CUDA fast mode was not enabled by default");
-    okay &= Check(controller.searchAlgorithmOptions().size() == 2,
+    okay &= Check(controller.searchAlgorithmOptions().size() == 3,
                   "unexpected search algorithm count");
     okay &= Check(
             controller.searchAlgorithmSettings()

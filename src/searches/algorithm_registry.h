@@ -15,6 +15,7 @@ namespace forevertas {
 
 inline constexpr char kBasicBruteForceSearchId[] = "basic-brute-force";
 inline constexpr char kTreeSearchId[] = "tree-search";
+inline constexpr char kAdaptiveEscalationSearchId[] = "adaptive-escalation";
 inline constexpr char kRandomSteeringModifierId[] = "random-steering";
 inline constexpr char kExistingEventPerturbationModifierId[] =
         "existing-event-perturbation";

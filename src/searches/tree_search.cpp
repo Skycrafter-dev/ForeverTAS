@@ -211,23 +211,46 @@ std::optional<TreeSearchSettings> ParseTreeSettings(
     const auto varyBranchedSegmentCount =
             ParseBoolean(settings.at("varyBranchedSegmentCount"));
     const auto autoPromoteBest = ParseBoolean(settings.at("autoPromoteBest"));
+    const std::string &distribution =
+            settings.at("branchedSegmentDistribution");
+    const auto itemKeepPercent =
+            ParseUnsignedDecimal32(settings.at("itemKeepPercent"));
+    const std::string &choice = settings.at("segmentChoice");
+    const auto migrationSeconds =
+            ParseUnsignedDecimal32(settings.at("migrationSeconds"));
+    const auto repeatImprovedSegments =
+            ParseUnsignedDecimal32(settings.at("repeatImprovedSegments"));
     if (!segmentCount || !leafCount || !branchedSegmentCount ||
         !varyBranchedSegmentCount || !flatWorkerCount || !autoPromoteBest ||
+        !itemKeepPercent || !migrationSeconds || !repeatImprovedSegments ||
         (unbranched != "draw" && unbranched != "keep") ||
+        (distribution != "uniform" && distribution != "geometric") ||
+        (choice != "random" && choice != "bandit" && choice != "late") ||
         *segmentCount < kMinimumTreeSegmentCount ||
         *segmentCount > kMaximumTreeSegmentCount ||
         *leafCount > kMaximumTreeLeafCount ||
         *branchedSegmentCount > *segmentCount ||
-        *flatWorkerCount > kMaximumTreeFlatWorkerCount) {
+        *flatWorkerCount > kMaximumTreeFlatWorkerCount ||
+        *itemKeepPercent == 0u || *itemKeepPercent > 100u) {
         return std::nullopt;
     }
-    return TreeSearchSettings{*segmentCount,
-                              *leafCount,
-                              *branchedSegmentCount,
-                              *varyBranchedSegmentCount,
-                              unbranched == "keep",
-                              *flatWorkerCount,
-                              *autoPromoteBest};
+    TreeSearchSettings parsed;
+    parsed.segmentCount = *segmentCount;
+    parsed.leafCount = *leafCount;
+    parsed.branchedSegmentCount = *branchedSegmentCount;
+    parsed.varyBranchedSegmentCount = *varyBranchedSegmentCount;
+    parsed.keepUnbranchedSegments = unbranched == "keep";
+    parsed.flatWorkerCount = *flatWorkerCount;
+    parsed.autoPromoteBest = *autoPromoteBest;
+    parsed.geometricBranchedSegmentCount = distribution == "geometric";
+    parsed.itemKeepPercent = *itemKeepPercent;
+    parsed.segmentChoice = choice == "bandit"
+            ? TreeSegmentChoice::Bandit
+            : choice == "late" ? TreeSegmentChoice::Late
+                               : TreeSegmentChoice::Random;
+    parsed.migrationSeconds = *migrationSeconds;
+    parsed.repeatImprovedSegments = *repeatImprovedSegments;
+    return parsed;
 }
 
 std::uint64_t MixBits(std::uint64_t value) {
@@ -295,6 +318,10 @@ private:
     void FinishAttempt(Branch &branch);
     void FinishLeaf(Branch &branch);
     bool RunTree();
+    void SelectBranchedSegments(std::vector<std::size_t> &active,
+                                std::size_t count,
+                                std::uint64_t random) const;
+    void RecordTreeOutcome(bool improved);
     void Expand(std::size_t segmentIndex, Branch &branch);
     std::optional<MutationWindowPatch> DrawSegment(
             std::size_t segmentIndex,
@@ -351,6 +378,16 @@ private:
     std::uint64_t drawOffset_ = 0u;
     std::uint64_t generation_ = 0u;
     bool pruneRedundantAnalogInsertions_ = false;
+
+    // Strategy state carried across trees.
+    std::uint32_t escalationLevel_ = 1u;
+    std::uint32_t stalledTrees_ = 0u;
+    std::vector<std::size_t> branchedThisTree_;
+    std::vector<std::uint64_t> segmentTrees_;
+    std::vector<std::uint64_t> segmentWins_;
+    std::uint64_t banditTrees_ = 0u;
+    std::uint32_t repeatTrees_ = 0u;
+    std::vector<std::size_t> improvedSegments_;
 };
 
 std::uint64_t TreeSearchRun::NextDrawIndex() {
@@ -465,6 +502,18 @@ void TreeSearchRun::ObserveTick(Branch &branch) {
     // A complete session has consumed every sample this attempt can give.
     if (branch.state.raceCompleted || branch.session->IsComplete()) {
         branch.completed = true;
+    }
+    if (source_ == SearchWinnerSource::Mutation && best_.evaluation) {
+        // Later samples cannot beat the incumbent on this target, so the
+        // attempt ends exactly as it would have without improving.
+        if (const std::optional<double> latest =
+                    context_.evaluator.LatestImprovingTimeMs(
+                            *best_.evaluation)) {
+            const double ticks = std::ceil(*latest / tick_);
+            if (static_cast<double>(branch.state.timeMs) >= ticks * tick_) {
+                branch.completed = true;
+            }
+        }
     }
 }
 
@@ -739,6 +788,83 @@ void TreeSearchRun::Expand(std::size_t segmentIndex, Branch &branch) {
     }
 }
 
+// Moves the chosen segments to the front of active.
+void TreeSearchRun::SelectBranchedSegments(std::vector<std::size_t> &active,
+                                           std::size_t count,
+                                           std::uint64_t random) const {
+    if (settings_.segmentChoice == TreeSegmentChoice::Bandit) {
+        // Upper confidence bound on each segment's improvement rate.
+        const double logTrees = std::log(static_cast<double>(banditTrees_) +
+                                         2.0);
+        std::vector<std::pair<double, std::size_t>> scored;
+        for (const std::size_t segment : active) {
+            const double trees = segment < segmentTrees_.size()
+                    ? static_cast<double>(segmentTrees_[segment]) : 0.0;
+            const double wins = segment < segmentWins_.size()
+                    ? static_cast<double>(segmentWins_[segment]) : 0.0;
+            random = MixBits(random);
+            scored.emplace_back(
+                    (wins + 1.0) / (trees + 2.0) +
+                            std::sqrt(2.0 * logTrees / (trees + 1.0)) +
+                            static_cast<double>(random % 1024u) * 1e-9,
+                    segment);
+        }
+        std::sort(scored.begin(), scored.end(),
+                  [](const auto &left, const auto &right) {
+                      return left.first > right.first;
+                  });
+        for (std::size_t index = 0u; index < active.size(); ++index) {
+            active[index] = scored[index].second;
+        }
+        return;
+    }
+    for (std::size_t index = 0u; index < count; ++index) {
+        random = MixBits(random);
+        std::size_t pick = index + random % (active.size() - index);
+        if (settings_.segmentChoice == TreeSegmentChoice::Late) {
+            // Weight each remaining segment by its position in the window.
+            std::uint64_t total = 0u;
+            for (std::size_t other = index; other < active.size(); ++other) {
+                total += active[other] + 1u;
+            }
+            std::uint64_t ticket = random % total;
+            for (pick = index; pick + 1u < active.size(); ++pick) {
+                if (ticket < active[pick] + 1u) break;
+                ticket -= active[pick] + 1u;
+            }
+        }
+        std::swap(active[index], active[pick]);
+    }
+}
+
+void TreeSearchRun::RecordTreeOutcome(bool improved) {
+    if (improved && settings_.repeatImprovedSegments != 0u) {
+        repeatTrees_ = settings_.repeatImprovedSegments;
+        improvedSegments_ = branchedThisTree_;
+    }
+    if (settings_.escalateAfterTrees != 0u) {
+        if (improved) {
+            escalationLevel_ = 1u;
+            stalledTrees_ = 0u;
+        } else if (++stalledTrees_ >= settings_.escalateAfterTrees) {
+            escalationLevel_ = std::min(escalationLevel_ * 2u,
+                                        settings_.segmentCount);
+            stalledTrees_ = 0u;
+        }
+    }
+    if (settings_.segmentChoice == TreeSegmentChoice::Bandit) {
+        if (segmentTrees_.size() < segments_.size()) {
+            segmentTrees_.resize(segments_.size(), 0u);
+            segmentWins_.resize(segments_.size(), 0u);
+        }
+        for (const std::size_t segment : branchedThisTree_) {
+            ++segmentTrees_[segment];
+            segmentWins_[segment] += improved ? 1u : 0u;
+        }
+        ++banditTrees_;
+    }
+}
+
 bool TreeSearchRun::RunTree() {
     treeBaseInputs_ = mutationBaselineInputs_;
     abandonTree_ = false;
@@ -758,6 +884,22 @@ bool TreeSearchRun::RunTree() {
              pruneRedundantAnalogInsertions_,
              &anchors,
              nullptr}));
+    if (settings_.itemKeepPercent < 100u && !anchors.empty()) {
+        // Smaller candidates: keep each drawn item with a fixed chance.
+        std::uint64_t random = MixBits(drawCount_ * 0x2545f4914f6cdd1dull ^
+                                       drawOffset_);
+        std::vector<MutationAnchor> kept;
+        for (const MutationAnchor &anchor : anchors) {
+            random = MixBits(random);
+            if (random % 100u < settings_.itemKeepPercent) {
+                kept.push_back(anchor);
+            }
+        }
+        if (kept.empty()) {
+            kept.push_back(anchors[MixBits(random) % anchors.size()]);
+        }
+        anchors = std::move(kept);
+    }
     allocations_.assign(segments_.size(), {});
     for (const MutationAnchor &anchor : anchors) {
         // Items after the last observed tick cannot change any attempt.
@@ -793,8 +935,31 @@ bool TreeSearchRun::RunTree() {
             ? branchedSegments.size()
             : std::min<std::size_t>(branchedSegments.size(),
                                     settings_.branchedSegmentCount);
-    if (branchedCount < branchedSegments.size() ||
-        settings_.varyBranchedSegmentCount) {
+    const bool escalating = settings_.escalateAfterTrees != 0u;
+    if (escalating) {
+        branchedCount = std::min<std::size_t>(branchedSegments.size(),
+                                              escalationLevel_);
+    }
+    std::vector<std::size_t> repeated;
+    if (repeatTrees_ != 0u) {
+        --repeatTrees_;
+        for (const std::size_t segment : improvedSegments_) {
+            if (!allocations_[segment].empty()) repeated.push_back(segment);
+        }
+    }
+    if (!repeated.empty()) {
+        // Refine the segments of the last improvement again.
+        if (settings_.keepUnbranchedSegments) {
+            for (const std::size_t segment : branchedSegments) {
+                if (std::find(repeated.begin(), repeated.end(), segment) ==
+                    repeated.end()) {
+                    allocations_[segment].clear();
+                }
+            }
+        }
+        branchedSegments = repeated;
+    } else if (branchedCount < branchedSegments.size() ||
+               (settings_.varyBranchedSegmentCount && !escalating)) {
         // A random subset of the active segments branches; the others
         // apply one shared draw or keep the base inputs. The anchors seed
         // the choice, so it follows the modifier seeds.
@@ -805,17 +970,22 @@ bool TreeSearchRun::RunTree() {
                              (std::uint64_t{anchor.passIndex} << 32u) ^
                              (std::uint64_t{anchor.slot} << 48u));
         }
-        if (settings_.varyBranchedSegmentCount) {
+        if (settings_.varyBranchedSegmentCount && !escalating) {
             random = MixBits(random);
-            branchedCount = 1u + random % branchedCount;
+            if (settings_.geometricBranchedSegmentCount) {
+                // Each extra segment halves the odds.
+                std::size_t count = 1u;
+                while (count < branchedCount && (random & 1u) != 0u) {
+                    ++count;
+                    random = MixBits(random);
+                }
+                branchedCount = count;
+            } else {
+                branchedCount = 1u + random % branchedCount;
+            }
         }
-        for (std::size_t index = 0u; index < branchedCount; ++index) {
-            random = MixBits(random);
-            std::swap(branchedSegments[index],
-                      branchedSegments[index +
-                                       random % (branchedSegments.size() -
-                                                 index)]);
-        }
+        SelectBranchedSegments(branchedSegments, branchedCount,
+                               MixBits(random));
         if (settings_.keepUnbranchedSegments) {
             for (std::size_t index = branchedCount;
                  index < branchedSegments.size(); ++index) {
@@ -825,6 +995,7 @@ bool TreeSearchRun::RunTree() {
         branchedSegments.resize(branchedCount);
         std::sort(branchedSegments.begin(), branchedSegments.end());
     }
+    branchedThisTree_ = branchedSegments;
     const std::vector<std::uint64_t> activeBranchCounts =
             TreeBranchCounts(branchedSegments.size(), targetLeafCount_);
     branchCounts_.assign(segments_.size(), 1u);
@@ -946,7 +1117,12 @@ SearchResult TreeSearchRun::Execute() {
     while (!StopRequested(control) &&
            !IterationLimitReached(control, iterations_)) {
         BeginIteration(control);
-        static_cast<void>(RunTree());
+        const std::vector<PhysicsSandboxInputEvent> previousBase =
+                mutationBaselineInputs_;
+        if (!RunTree()) continue;
+        RecordTreeOutcome(settings_.autoPromoteBest
+                ? !SameInputs(previousBase, mutationBaselineInputs_)
+                : improvedInTree_);
     }
 
     CheckCancellation(control);
@@ -990,14 +1166,23 @@ SearchResult TreeSearchRun::Execute() {
 
 }  // namespace
 
+// The defaults are the local search that won the strategy experiments: one
+// of four segments changes per attempt and the others keep the current best,
+// while multi-threaded workers keep separate lineages for five seconds
+// between adoptions of the shared best.
 OptionSettings DefaultTreeSearchOptionSettings() {
-    return {{"segmentCount", "10"},
+    return {{"segmentCount", "4"},
             {"leafCount", "0"},
-            {"branchedSegmentCount", "0"},
+            {"branchedSegmentCount", "1"},
             {"varyBranchedSegmentCount", "false"},
-            {"unbranchedSegments", "draw"},
+            {"unbranchedSegments", "keep"},
             {"flatWorkerCount", "0"},
-            {"autoPromoteBest", "false"}};
+            {"autoPromoteBest", "false"},
+            {"branchedSegmentDistribution", "uniform"},
+            {"itemKeepPercent", "100"},
+            {"segmentChoice", "random"},
+            {"migrationSeconds", "5"},
+            {"repeatImprovedSegments", "0"}};
 }
 
 std::optional<TreeSearchSettings> ParseTreeSearchSettings(
@@ -1052,6 +1237,11 @@ std::optional<std::string> ValidateTreeSearchOptionSettings(
         return "flat workers must be a whole number up to " +
                 std::to_string(kMaximumTreeFlatWorkerCount);
     }
+    if (!ParseTreeSettings(settings)) {
+        return "tree strategy settings are invalid: distribution must be "
+               "uniform or geometric, segment choice random, bandit, or "
+               "late, item share 1-100 percent, and counts whole numbers";
+    }
     if (tickDurationMs == 0u) {
         return "tick duration must be greater than zero";
     }
@@ -1066,6 +1256,90 @@ std::unique_ptr<SearchAlgorithm> CreateTreeSearch(
         throw std::invalid_argument(*error);
     }
     return std::make_unique<TreeSearch>(*ParseTreeSettings(settings));
+}
+
+OptionSettings DefaultAdaptiveEscalationOptionSettings() {
+    return {{"segmentCount", "8"},
+            {"escalateAfterTrees", "8"},
+            {"migrationSeconds", "0"},
+            {"autoPromoteBest", "false"}};
+}
+
+std::optional<TreeSearchSettings> ParseAdaptiveEscalationSettings(
+        const OptionSettings &settings) {
+    if (ValidateOptionSettingKeys(settings,
+                                  DefaultAdaptiveEscalationOptionSettings())) {
+        return std::nullopt;
+    }
+    const auto segmentCount =
+            ParseUnsignedDecimal32(settings.at("segmentCount"));
+    const auto escalateAfterTrees =
+            ParseUnsignedDecimal32(settings.at("escalateAfterTrees"));
+    const auto migrationSeconds =
+            ParseUnsignedDecimal32(settings.at("migrationSeconds"));
+    const auto autoPromoteBest = ParseBoolean(settings.at("autoPromoteBest"));
+    if (!segmentCount || !escalateAfterTrees || !migrationSeconds ||
+        !autoPromoteBest ||
+        *segmentCount < kMinimumTreeSegmentCount ||
+        *segmentCount > kMaximumTreeSegmentCount ||
+        *escalateAfterTrees == 0u ||
+        *escalateAfterTrees > kMaximumEscalateAfterTrees) {
+        return std::nullopt;
+    }
+    // Every escalation level keeps the unchanged segments at the current
+    // best, so the search widens from one segment to all of them.
+    TreeSearchSettings parsed;
+    parsed.segmentCount = *segmentCount;
+    parsed.keepUnbranchedSegments = true;
+    parsed.escalateAfterTrees = *escalateAfterTrees;
+    parsed.migrationSeconds = *migrationSeconds;
+    parsed.autoPromoteBest = *autoPromoteBest;
+    return parsed;
+}
+
+std::optional<std::string> ValidateAdaptiveEscalationOptionSettings(
+        const OptionSettings &settings,
+        std::uint32_t tickDurationMs) {
+    if (const auto keyError = ValidateOptionSettingKeys(
+                settings, DefaultAdaptiveEscalationOptionSettings())) {
+        return keyError;
+    }
+    if (!ParseBoolean(settings.at("autoPromoteBest"))) {
+        return "auto-promote best must be true or false";
+    }
+    const auto segmentCount =
+            ParseUnsignedDecimal32(settings.at("segmentCount"));
+    if (!segmentCount || *segmentCount < kMinimumTreeSegmentCount ||
+        *segmentCount > kMaximumTreeSegmentCount) {
+        return "segment count must be a whole number between " +
+                std::to_string(kMinimumTreeSegmentCount) + " and " +
+                std::to_string(kMaximumTreeSegmentCount);
+    }
+    const auto escalateAfterTrees =
+            ParseUnsignedDecimal32(settings.at("escalateAfterTrees"));
+    if (!escalateAfterTrees || *escalateAfterTrees == 0u ||
+        *escalateAfterTrees > kMaximumEscalateAfterTrees) {
+        return "trees before escalating must be a whole number between 1 "
+               "and " + std::to_string(kMaximumEscalateAfterTrees);
+    }
+    if (!ParseUnsignedDecimal32(settings.at("migrationSeconds"))) {
+        return "island migration must be a whole number of seconds";
+    }
+    if (tickDurationMs == 0u) {
+        return "tick duration must be greater than zero";
+    }
+    return std::nullopt;
+}
+
+std::unique_ptr<SearchAlgorithm> CreateAdaptiveEscalationSearch(
+        const OptionSettings &settings,
+        std::uint32_t tickDurationMs) {
+    if (const auto error = ValidateAdaptiveEscalationOptionSettings(
+                settings, tickDurationMs)) {
+        throw std::invalid_argument(*error);
+    }
+    return std::make_unique<TreeSearch>(
+            *ParseAdaptiveEscalationSettings(settings));
 }
 
 std::vector<MutationTimeRange> TreeSegmentRanges(

@@ -65,6 +65,13 @@ public:
                                 : iteration.score < incumbent.score;
     }
 
+    // Only the earliest goal loses with time; the latest goal never ends early.
+    std::optional<double> LatestImprovingTimeMs(
+            const EvaluationSample &incumbent) const override {
+        if (settings_.latest) return std::nullopt;
+        return incumbent.timeMs;
+    }
+
 private:
     TimeSettings settings_;
 };

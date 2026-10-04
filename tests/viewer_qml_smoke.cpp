@@ -3585,7 +3585,7 @@ int main(int argc, char **argv) {
                             !evaluationTargetCombo->property("visible")
                                      .toBool() &&
                             searchAlgorithmCombo->property("count").toInt() ==
-                                    2 &&
+                                    3 &&
                             modifierComposition
                                             ->property("firstPassOptionCount")
                                             .toInt() == 5 &&
@@ -3645,12 +3645,30 @@ int main(int argc, char **argv) {
                     QObject *const treeUnbranchedSegmentsCombo =
                             root->findChild<QObject *>(QStringLiteral(
                                     "treeUnbranchedSegmentsCombo"));
-                    const bool treeSearchSettingsValid =
+                    QObject *const treeBranchedSegmentCountField =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "treeBranchedSegmentCountField"));
+                    QObject *const treeMigrationSecondsField =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "treeMigrationSecondsField"));
+                    QQuickItem *const treeAdvancedOptions =
+                            qobject_cast<QQuickItem *>(
+                                    root->findChild<QObject *>(QStringLiteral(
+                                            "treeAdvancedOptions")));
+                    bool treeSearchSettingsValid =
                             treeSearchSettings != nullptr &&
                             treeSegmentCountField != nullptr &&
                             treeSegmentCountField->property("value")
                                             .toString() ==
-                                    QStringLiteral("10") &&
+                                    QStringLiteral("4") &&
+                            treeBranchedSegmentCountField != nullptr &&
+                            treeBranchedSegmentCountField->property("value")
+                                            .toString() ==
+                                    QStringLiteral("1") &&
+                            treeMigrationSecondsField != nullptr &&
+                            treeMigrationSecondsField->property("value")
+                                            .toString() ==
+                                    QStringLiteral("5") &&
                             treeLeafCountField != nullptr &&
                             treeLeafCountField->property("value")
                                             .toString() ==
@@ -3659,14 +3677,52 @@ int main(int argc, char **argv) {
                             treeUnbranchedSegmentsCombo
                                             ->property("currentValue")
                                             .toString() ==
-                                    QStringLiteral("draw") &&
+                                    QStringLiteral("keep") &&
                             treeSearchSummary != nullptr &&
                             treeSearchSummary->property("text")
                                     .toString()
+                                    .contains(QStringLiteral(
+                                            "Local search")) &&
+                            treeSearchSummary->property("text")
+                                    .toString()
                                     .contains(QStringLiteral("CPU")) &&
+                            treeAdvancedOptions != nullptr &&
+                            !treeAdvancedOptions->isVisible() &&
                             searchAlgorithmCombo->property("currentValue")
                                             .toString() ==
                                     QStringLiteral("tree-search");
+                    if (treeSearchSettings != nullptr &&
+                        treeAdvancedOptions != nullptr) {
+                        treeSearchSettings->setProperty("showAdvanced", true);
+                        QCoreApplication::processEvents();
+                        treeSearchSettingsValid &=
+                                treeAdvancedOptions->isVisible();
+                    }
+                    controller.setSearchAlgorithmId(
+                            QStringLiteral("adaptive-escalation"));
+                    QCoreApplication::processEvents();
+                    QObject *const escalationSettings =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "adaptiveEscalationSearchSettings"));
+                    QObject *const escalationTreesField =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "escalationTreesField"));
+                    QObject *const escalationSummary =
+                            root->findChild<QObject *>(QStringLiteral(
+                                    "escalationSummary"));
+                    const bool escalationSettingsValid =
+                            escalationSettings != nullptr &&
+                            escalationTreesField != nullptr &&
+                            escalationTreesField->property("value")
+                                            .toString() ==
+                                    QStringLiteral("8") &&
+                            escalationSummary != nullptr &&
+                            escalationSummary->property("text")
+                                    .toString()
+                                    .contains(QStringLiteral("doubles")) &&
+                            searchAlgorithmCombo->property("currentValue")
+                                            .toString() ==
+                                    QStringLiteral("adaptive-escalation");
                     controller.setSearchAlgorithmId(
                             QStringLiteral("basic-brute-force"));
                     QCoreApplication::processEvents();
@@ -5696,6 +5752,7 @@ int main(int argc, char **argv) {
                             algorithmSelectorsValid &&
                             autoPromoteBestValid &&
                             treeSearchSettingsValid &&
+                            escalationSettingsValid &&
                             everyOwnedPanelLoaded && checkpointSettingsValid && stuntPointsFieldValid &&
                             targetLayoutUpdatesImmediately &&
                             configurationSectionsValid &&
@@ -5816,6 +5873,7 @@ int main(int argc, char **argv) {
                                 << ", descriptions=" << removedSectionDescriptions
                                 << ", promote=" << autoPromoteBestValid
                                 << ", tree=" << treeSearchSettingsValid
+                                << ", escalation=" << escalationSettingsValid
                                 << ", timeline=" << timeline->isEnabled()
                                 << "/" << (timeline->viewer() == &viewer)
                                 << "/" << (timelinePanel->x() < viewport->x())

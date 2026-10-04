@@ -526,6 +526,7 @@ qt_add_qml_module(forevertas_qml
         qml/ThemedToolButton.qml
         qml/WhiteboardOverlay.qml
         qml/WhiteboardPlanes.qml
+        qml/settings/AdaptiveEscalationSearchSettings.qml
         qml/settings/AlgorithmSelector.qml
         qml/settings/BasicBruteForceSearchSettings.qml
         qml/settings/TreeSearchSettings.qml
@@ -946,6 +947,14 @@ if(BUILD_TESTING)
         forevertas_gui)
     if(FOREVERTAS_WARNING_OPTIONS)
         target_compile_options(forevertas-node-cost-benchmark PRIVATE
+            ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_executable(forevertas-search-lab
+        tests/search_lab.cpp)
+    target_link_libraries(forevertas-search-lab PRIVATE
+        forevertas_gui)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-search-lab PRIVATE
             ${FOREVERTAS_WARNING_OPTIONS})
     endif()
     add_executable(forevertas-search-strategy-comparison

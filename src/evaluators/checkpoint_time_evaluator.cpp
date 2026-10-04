@@ -71,6 +71,10 @@ public:
     bool IsBetter(const EvaluationSample &candidate, const EvaluationSample &incumbent) const override {
         return candidate.score < incumbent.score;
     }
+    // Checkpoint samples report their own event time, so later attempts lose.
+    std::optional<double> LatestImprovingTimeMs(const EvaluationSample &incumbent) const override {
+        return incumbent.timeMs;
+    }
 private:
     Settings settings_;
 };

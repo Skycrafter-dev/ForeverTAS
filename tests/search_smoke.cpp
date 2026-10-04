@@ -1845,7 +1845,15 @@ bool CheckTreeSearchMatchesIndependentReplays(const char *packsDirectory,
             {4u, 0u, 0u, false, false, 0u, false},
             {6u, 12u, 2u, false, false, 0u, false},
             {6u, 12u, 1u, false, true, 0u, false},
-            {6u, 8u, 0u, true, true, 0u, false}};
+            {6u, 8u, 0u, true, true, 0u, false},
+            // Geometric sizes, escalation, thinning with bandit choice, and
+            // late choice.
+            {8u, 0u, 0u, true, true, 0u, false, true},
+            {8u, 0u, 0u, false, true, 0u, false, false, 2u},
+            {6u, 0u, 1u, false, true, 0u, false, false, 0u, 50u,
+             forevertas::TreeSegmentChoice::Bandit},
+            {6u, 0u, 1u, false, true, 0u, false, false, 0u, 100u,
+             forevertas::TreeSegmentChoice::Late}};
     for (const forevertas::TreeSearchSettings &shape : shapes)
     for (const bool autoPromoteBest : {false, true}) {
         PhysicsSandbox sandbox =
@@ -1976,6 +1984,24 @@ bool CheckTreeSearchBackends(const char *packsDirectory,
         std::cerr << "tree search portfolio did not run 30 attempts: "
                   << portfolio.iterations << '\n';
         return false;
+    }
+    // Adaptive escalation runs the same engine as its own search option,
+    // with islands that migrate immediately and after a pause.
+    for (const char *migration : {"0", "1"}) {
+        forevertas::SearchRequest escalation = request;
+        escalation.searchAlgorithm = {
+                forevertas::kAdaptiveEscalationSearchId,
+                forevertas::DefaultAdaptiveEscalationOptionSettings()};
+        escalation.searchAlgorithm.settings["escalateAfterTrees"] = "2";
+        escalation.searchAlgorithm.settings["autoPromoteBest"] = "true";
+        escalation.searchAlgorithm.settings["migrationSeconds"] = migration;
+        const forevertas::SearchResult escalated =
+                forevertas::RunSearch(escalation, &control);
+        if (escalated.iterations != 30u || escalated.bestInputs.empty()) {
+            std::cerr << "adaptive escalation did not run 30 attempts: "
+                      << escalated.iterations << '\n';
+            return false;
+        }
     }
 #if FOREVERVALIDATOR_HAS_CUDA
     request.backend = forevertas::PhysicsBackend::Cuda;

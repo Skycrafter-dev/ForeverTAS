@@ -928,10 +928,18 @@ SearchResult RunMultiThreadedCpuSearch(
     const SearchAlgorithmRegistration *const flatRegistration =
             FindSearchAlgorithm(kBasicBruteForceSearchId);
     std::uint32_t flatWorkerCount = 0u;
-    if (request.searchAlgorithm.id == kTreeSearchId) {
-        const std::optional<TreeSearchSettings> treeSettings =
-                ParseTreeSearchSettings(request.searchAlgorithm.settings);
-        flatWorkerCount = treeSettings ? treeSettings->flatWorkerCount : 0u;
+    std::uint32_t migrationSeconds = 0u;
+    // Tree-based searches also choose portfolio and island policies.
+    const std::optional<TreeSearchSettings> treeSettings =
+            request.searchAlgorithm.id == kTreeSearchId
+            ? ParseTreeSearchSettings(request.searchAlgorithm.settings)
+            : request.searchAlgorithm.id == kAdaptiveEscalationSearchId
+            ? ParseAdaptiveEscalationSettings(
+                      request.searchAlgorithm.settings)
+            : std::nullopt;
+    if (treeSettings) {
+        flatWorkerCount = treeSettings->flatWorkerCount;
+        migrationSeconds = treeSettings->migrationSeconds;
     }
     std::optional<EvaluationSample> promotedEvaluation;
     std::vector<SandboxInputEvent> promotedInputs;
@@ -1066,10 +1074,24 @@ SearchResult RunMultiThreadedCpuSearch(
                                 };
                     }
                     workerControl.promotedBaselineInputs =
-                            [&]() -> std::optional<
+                            [&, lastAdoption = std::chrono::steady_clock::
+                                        now()]() mutable
+                            -> std::optional<
                                     std::vector<SandboxInputEvent>> {
                                 if (!autoPromoteBest) {
                                     return std::nullopt;
+                                }
+                                // Islands: between migrations a worker
+                                // follows its own improvements.
+                                if (migrationSeconds != 0u) {
+                                    const auto now =
+                                            std::chrono::steady_clock::now();
+                                    if (now - lastAdoption <
+                                        std::chrono::seconds(
+                                                migrationSeconds)) {
+                                        return std::nullopt;
+                                    }
+                                    lastAdoption = now;
                                 }
                                 std::lock_guard<std::mutex> guard(
                                         stateMutex);

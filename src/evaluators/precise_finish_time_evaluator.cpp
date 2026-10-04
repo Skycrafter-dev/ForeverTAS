@@ -88,4 +88,10 @@ bool PreciseFinishTimeEvaluator::IsBetter(
     return iteration.score < incumbent.score;
 }
 
+// A finish reported at a later tick has a later upper bound.
+std::optional<double> PreciseFinishTimeEvaluator::LatestImprovingTimeMs(
+        const EvaluationSample &incumbent) const {
+    return incumbent.timeMs;
+}
+
 }  // namespace forevertas

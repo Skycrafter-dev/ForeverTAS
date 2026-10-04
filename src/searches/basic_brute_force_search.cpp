@@ -1347,6 +1347,21 @@ SearchResult BasicBruteForceSearch::Run(
         PhysicsSandboxStateView cumulativeView;
         for (std::uint64_t tick = 0u;
              tick < evaluationTicks && !session->IsComplete(); ++tick) {
+            // Targets whose samples only get worse with time cannot improve
+            // past the incumbent's sample tick, so the attempt ends there
+            // with exactly the result a full evaluation would give.
+            if (source == SearchWinnerSource::Mutation && best.evaluation) {
+                if (const std::optional<double> latest =
+                            context.evaluator.LatestImprovingTimeMs(
+                                    *best.evaluation)) {
+                    const double ticks =
+                            std::ceil(*latest / context.tickDurationMs);
+                    if (static_cast<double>(state.timeMs) >=
+                        ticks * context.tickDurationMs) {
+                        break;
+                    }
+                }
+            }
             CheckCancellation(context.control);
             state = Require(context.sandbox.AdvanceTicks(1u),
                             "advancing evaluation tick");

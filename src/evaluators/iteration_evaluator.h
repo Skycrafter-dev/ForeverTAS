@@ -70,6 +70,13 @@ public:
         return iteration.score == incumbent.score;
     }
     virtual bool CompareAtEndOnly() const { return false; }
+    // Targets whose samples only get worse with time (finish and entry
+    // times) return the latest sample time that could still beat the
+    // incumbent, letting searches stop hopeless attempts early.
+    virtual std::optional<double> LatestImprovingTimeMs(
+            const EvaluationSample &) const {
+        return std::nullopt;
+    }
 };
 
 inline bool ImprovesSearchResult(

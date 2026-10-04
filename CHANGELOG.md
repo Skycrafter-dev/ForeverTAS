@@ -4,8 +4,9 @@
 
 ### New and improved
 
-- **Tree search (CPU):** a new search algorithm that splits the mutation window into segments and branches candidates so they share every simulated prefix. Each tree draws your pass counts once, then every branch redraws only its own segment; every leaf counts as one attempt. Expect several times more attempts per second than basic bruteforce on CPU backends. Branches share their early segments, so compare improvements over time rather than attempts per second. GPU backends are not supported yet.
-- **Tree search shapes:** set leaves per tree, branch only a few random segments per tree, keep the other segments unchanged for a local search that changes fewer inputs per attempt, or run some multi-threaded CPU workers as basic bruteforce alongside the trees. Branching one of four segments and keeping the rest found about five times more improvements per minute than basic bruteforce in our pose-target runs.
+- **Tree search (CPU):** a new search that improves your run with small, local changes. By default each attempt changes one of four segments of the mutation window and keeps the rest at the current best, and every CPU worker follows its own improvements for five seconds before adopting the shared best ("islands"). In our tests it beat basic bruteforce in 48 of 56 paired runs, and with islands it escaped a slower outcome every time where basic bruteforce never did. Change the segments per attempt, what the other segments do, and the island migration time in the search settings; advanced options cover leaves per tree and mixing in basic bruteforce workers. GPU backends are not supported yet.
+- **Adaptive escalation (CPU):** a new search that starts with one changed segment per attempt and doubles the number of changed segments each time it stalls, returning to one after any improvement.
+- **Faster finish and entry searches:** attempts that can no longer beat the current best finish or volume-entry time now stop early on CPU backends, with identical results.
 
 ## 0.2.4
 
