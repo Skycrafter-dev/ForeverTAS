@@ -64,7 +64,7 @@ std::optional<ScriptedSettings> ParseSettings(
     while (std::getline(lines, line)) {
         ++lineNumber;
         std::string_view source = line;
-        source = Trim(source.substr(0, source.find('#')));
+        source = Trim(StripScriptComment(source));
         if (source.empty()) continue;
         const std::size_t commandEnd = source.find_first_of(" \t");
         const std::string command(source.substr(0, commandEnd));

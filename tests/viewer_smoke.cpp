@@ -1845,8 +1845,13 @@ int main(int argc, char **argv) {
                     const QVariantMap unsupportedCondition =
                             viewer.conditionPreview(QStringLiteral(
                                     "car.rpm >= 0"));
+                    const QVariantMap booleanCondition = viewer.conditionPreview(
+                            QStringLiteral("# retained\n(time.ms >= 0 OR car.laps != 0) AND car.x >= -10000000 // valid"));
                     const bool overlayDataValid =
                             !overlaySamples.isEmpty() &&
+                            viewer.conditionPreview(QStringLiteral("# disabled\n// disabled")).isEmpty() &&
+                            booleanCondition.value(QStringLiteral("available")).toBool() &&
+                            booleanCondition.value(QStringLiteral("passed")).toBool() &&
                             overlaySamples.front().toMap().contains(
                                     QStringLiteral("position")) &&
                             overlaySamples.front().toMap().contains(

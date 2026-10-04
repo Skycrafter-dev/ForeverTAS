@@ -10,7 +10,9 @@ Start remains disabled while the validation message identifies invalid paths, sc
 
 ## Syntax
 
-Conditions use one comparison per line; all lines must hold. Comparisons are `> < >= <= =`. Arithmetic is `+ - * /` with parentheses. Names are case-insensitive. Vectors are accepted by `distance`; vector literals contain three numbers, e.g. `(0, 0, 0)`. Boolean fields are numeric 0 or 1. Invalid expressions produce a line/column diagnostic.
+Conditions use one boolean expression per line; all non-comment lines must hold. Comparisons are `> < >= <= = == !=` (`=` and `==` are equivalent). Combine comparisons with `AND`/`&&` and `OR`/`||`; AND binds more tightly than OR, and parentheses override precedence. Arithmetic is `+ - * /` with parentheses and binds more tightly than comparisons. Names are case-insensitive. Vectors are accepted by `distance`; vector literals contain three numbers, e.g. `(0, 0, 0)`. Boolean fields are numeric 0 or 1. Invalid expressions produce a line/column diagnostic.
+
+`#` and `//` start comments outside double-quoted external variable names, including inline comments. Quoted names may escape quotes and backslashes with a backslash. Comment-only conditions impose no constraint. Each condition script or individual custom-target expression is limited to 16,384 source bytes, 64 nesting levels, 256 instructions, and 32 stacked values. Arithmetic and comparisons require scalars; use `distance` for vectors.
 
 Custom targets use `min EXPRESSION`, `max EXPRESSION`, or `target VALUE EXPRESSION`, one per line. Search-clock values are not car-state objectives and are rejected there. Previous values refer to the previous simulation observation, not another candidate. Conditions filter eligible observations; they do not stop the simulation.
 

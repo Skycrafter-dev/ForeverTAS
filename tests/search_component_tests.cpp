@@ -2420,6 +2420,80 @@ bool TestConditionLanguageParity() {
     return okay;
 }
 
+bool TestBooleanConditions() {
+    using namespace forevertas;
+    const auto plain = CompileConditionScript("car.x == 1 OR car.y = 1 AND car.z != 0");
+    const auto grouped = CompileConditionScript("(car.x == 1 || car.y == 1) && (car.z != 0)");
+    bool okay = Check(plain.program && grouped.program, "boolean grammar did not compile");
+    if (!okay) return false;
+    PhysicsSandboxStateView state;
+    for (int a = 0; a <= 1; ++a) {
+        for (int b = 0; b <= 1; ++b) {
+            for (int c = 0; c <= 1; ++c) {
+                state.car.position = {static_cast<float>(a), static_cast<float>(b), static_cast<float>(c)};
+                okay &= Check(plain.program->Evaluate(state, state, {}) == (a || (b && c)),
+                              "AND/OR precedence changed the truth table");
+                okay &= Check(grouped.program->Evaluate(state, state, {}) == ((a || b) && c),
+                              "boolean parentheses changed the truth table");
+            }
+        }
+    }
+    const ConditionVariables names{{"a#b//c", {1, 0, 0, false}},
+                                   {"quote\"#slash\\", {2, 0, 0, false}}};
+    const auto commented = CompileConditionScript(
+            "# retained condition\n// another disabled line\n"
+            "var(\"a#b//c\") == 1 # inline\n"
+            "var(\"quote\\\"#slash\\\\\") != 0 // trailing\n"
+            "((1 + 2) * 3) = 9 aNd distance((0,0,0),(1,0,0)) == 1\n", names);
+    okay &= Check(commented.program && commented.program->Evaluate(state, state, {}),
+                  "quoted comment markers, escapes, vectors, or arithmetic groups failed");
+    const auto empty = CompileConditionScript(" \n# disabled\n// disabled\n");
+    okay &= Check(!empty.program && !empty.error, "comment-only conditions were not empty");
+    for (const std::string source : {
+                 "1 == 1\n0 == 1 OR 1 == 1 AND 0 == 1",
+                 "(1 == 1 OR 0 == 1) AND 0 == 1"}) {
+        const auto result = CompileConditionScript(source);
+        okay &= Check(result.program && !result.program->Evaluate(state, state, {}),
+                      "line conjunction or boolean grouping accepted a false condition");
+    }
+    for (const std::string source : {
+                 "1 === 1", "1 !== 0", "1 = 1 OR", "(1 = 1", "1 = 1 & 1 = 1",
+                 "1 = 1 ANDOR 1 = 1", "1 = 1 ORANGE", "1 = 1 1 = 1",
+                 "var(\"unterminated) = 1", "distance(1,(0,0,0)) = 0",
+                 "var(\"v\") == 1"}) {
+        const auto result = CompileConditionScript("# first line\n" + source,
+                {{"v", {0, 0, 0, true}}});
+        okay &= Check(!result.program && result.error && result.error->find("line 2") != std::string::npos,
+                      "invalid boolean condition lost its source line");
+    }
+    std::string nested(1000, '(');
+    nested += "1 = 1" + std::string(1000, ')');
+    const auto tooDeep = CompileConditionScript(nested);
+    okay &= Check(tooDeep.error && tooDeep.error->find("nesting") != std::string::npos,
+                  "deep boolean input bypassed its nesting limit");
+    std::string tooMany = "1";
+    for (int i = 0; i < 128; ++i) tooMany += "+1";
+    const auto instructions = CompileConditionScript(tooMany + "=129");
+    okay &= Check(instructions.error && instructions.error->find("256-instruction") != std::string::npos,
+                  "boolean input bypassed its instruction limit");
+    std::string stacked;
+    for (int i = 0; i < 34; ++i) stacked += "1+(";
+    stacked += "1" + std::string(34, ')') + "=35";
+    const auto stack = CompileConditionScript(stacked);
+    okay &= Check(stack.error && stack.error->find("32-value") != std::string::npos,
+                  "deep operands bypassed the shared GPU stack limit");
+    okay &= Check(CompileConditionScript(std::string(16385, ' ')).error.has_value(),
+                  "oversized source bypassed its limit");
+    auto target = DefaultScriptedTargetOptionSettings();
+    target["script"] = "// retained target\nmin time.ms // simulation time";
+    okay &= Check(!ValidateScriptedTargetOptionSettings(target, 10),
+                  "custom targets did not share comment syntax");
+    const auto scalar = CompileScalarExpression("var(\"a#b//c\") // trailing", names);
+    okay &= Check(scalar.program && scalar.program->Evaluate(state, state, {}) == 1.0,
+                  "scalar comments damaged quoted external variable names");
+    return okay;
+}
+
 bool TestScriptedTarget() {
     OptionSettings settings = forevertas::DefaultScriptedTargetOptionSettings();
     settings["script"] =
@@ -2557,6 +2631,7 @@ int main() {
             TestCudaCalibrationSafety() &&
             TestCudaConfigurationCoverage() &&
             TestConditionLanguageParity() &&
+            TestBooleanConditions() &&
             TestScriptedTarget() &&
             TestReplayPathRobustness();
     return okay ? 0 : 1;

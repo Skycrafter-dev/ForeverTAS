@@ -11,9 +11,33 @@
 #include <vector>
 
 namespace forevertas {
+
+std::string_view StripScriptComment(std::string_view line) {
+    bool quoted = false;
+    bool escaped = false;
+    for (std::size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (escaped) { escaped = false; continue; }
+        if (quoted && c == '\\') { escaped = true; continue; }
+        if (c == '"') { quoted = !quoted; continue; }
+        if (!quoted && (c == '#' || (c == '/' && i + 1 < line.size() && line[i + 1] == '/')))
+            return line.substr(0, i);
+    }
+    return line;
+}
+
 namespace {
 
 using namespace forevervalidator::experimental;
+
+constexpr std::size_t kMaximumSourceBytes = 16384u;
+constexpr std::size_t kMaximumNesting = 64u;
+
+struct ParseDepth {
+    explicit ParseDepth(std::size_t &value) : depth(value) { ++depth; }
+    ~ParseDepth() { --depth; }
+    std::size_t &depth;
+};
 
 struct Value {
     double x = 0.0;
@@ -36,21 +60,10 @@ public:
         : source_(source), variables_(variables), output_(output) {}
 
     bool ParseComparison(std::string *error) {
+        if (!ParseOr(error)) return false;
         SkipSpaces();
-        if (!ParseScalar(error)) return false;
-        SkipSpaces();
-        PhysicsSandboxCudaConditionOpcode opcode;
-        if (Consume(">=")) opcode = PhysicsSandboxCudaConditionOpcode::GreaterOrEqual;
-        else if (Consume("<=")) opcode = PhysicsSandboxCudaConditionOpcode::LessOrEqual;
-        else if (Consume(">")) opcode = PhysicsSandboxCudaConditionOpcode::Greater;
-        else if (Consume("<")) opcode = PhysicsSandboxCudaConditionOpcode::Less;
-        else if (Consume("=")) opcode = PhysicsSandboxCudaConditionOpcode::Equal;
-        else return Fail(error, "expected comparison operator");
-        if (!ParseScalar(error)) return false;
-        SkipSpaces();
-        if (position_ != source_.size()) return Fail(error, "unexpected text after comparison");
-        Emit(opcode);
-        return true;
+        return position_ == source_.size() ||
+                Fail(error, "unexpected text after condition");
     }
 
     bool ParseExpression(std::string *error) {
@@ -62,6 +75,60 @@ public:
     }
 
 private:
+    bool ParseOr(std::string *error) {
+        if (!ParseAnd(error)) return false;
+        while (true) {
+            SkipSpaces();
+            if (!Consume("||") && !ConsumeKeyword("or")) return true;
+            if (!ParseAnd(error)) return false;
+            Emit(PhysicsSandboxCudaConditionOpcode::LogicalOr);
+        }
+    }
+
+    bool ParseAnd(std::string *error) {
+        if (!ParseBooleanAtom(error)) return false;
+        while (true) {
+            SkipSpaces();
+            if (!Consume("&&") && !ConsumeKeyword("and")) return true;
+            if (!ParseBooleanAtom(error)) return false;
+            Emit(PhysicsSandboxCudaConditionOpcode::LogicalAnd);
+        }
+    }
+
+    bool ParseBooleanAtom(std::string *error) {
+        ParseDepth nesting(depth_);
+        if (depth_ > kMaximumNesting) return Fail(error, "expression nesting exceeds 64 levels");
+        SkipSpaces();
+        const std::size_t start = position_;
+        const std::size_t instructionCount = output_->size();
+        std::string comparisonError;
+        // A leading parenthesis may group arithmetic or boolean expressions.
+        // Try a scalar comparison first, rolling back both cursor and bytecode.
+        if (ParseRelation(&comparisonError)) return true;
+        position_ = start;
+        output_->resize(instructionCount);
+        if (!Consume("(")) { *error = std::move(comparisonError); return false; }
+        if (!ParseOr(error)) return false;
+        SkipSpaces();
+        return Consume(")") || Fail(error, "expected ')' after condition");
+    }
+
+    bool ParseRelation(std::string *error) {
+        if (!ParseScalar(error)) return false;
+        SkipSpaces();
+        PhysicsSandboxCudaConditionOpcode opcode;
+        if (Consume(">=")) opcode = PhysicsSandboxCudaConditionOpcode::GreaterOrEqual;
+        else if (Consume("<=")) opcode = PhysicsSandboxCudaConditionOpcode::LessOrEqual;
+        else if (Consume("==")) opcode = PhysicsSandboxCudaConditionOpcode::Equal;
+        else if (Consume("!=")) opcode = PhysicsSandboxCudaConditionOpcode::NotEqual;
+        else if (Consume(">")) opcode = PhysicsSandboxCudaConditionOpcode::Greater;
+        else if (Consume("<")) opcode = PhysicsSandboxCudaConditionOpcode::Less;
+        else if (Consume("=")) opcode = PhysicsSandboxCudaConditionOpcode::Equal;
+        else return Fail(error, "expected comparison operator");
+        if (!ParseScalar(error)) return false;
+        Emit(opcode);
+        return true;
+    }
     bool ParseScalar(std::string *error) {
         if (!ParseTerm(error)) return false;
         while (true) {
@@ -93,6 +160,8 @@ private:
     }
 
     bool ParseFactor(std::string *error) {
+        ParseDepth nesting(depth_);
+        if (depth_ > kMaximumNesting) return Fail(error, "expression nesting exceeds 64 levels");
         SkipSpaces();
         if (Consume("(")) {
             const std::size_t saved = position_;
@@ -154,7 +223,12 @@ private:
             std::string variable;
             while (position_ < source_.size() &&
                    (quoted ? source_[position_] != '"' : source_[position_] != ')')) {
-                variable.push_back(source_[position_++]);
+                char c = source_[position_++];
+                if (quoted && c == '\\' && position_ < source_.size() &&
+                    (source_[position_] == '"' || source_[position_] == '\\')) {
+                    c = source_[position_++];
+                }
+                variable.push_back(c);
             }
             if (quoted && !Consume("\"")) return Fail(error, "unterminated variable name");
             SkipSpaces();
@@ -242,6 +316,19 @@ private:
     }
 
     bool ConsumeComma() { SkipSpaces(); return Consume(","); }
+    bool ConsumeKeyword(std::string_view keyword) {
+        const auto identifier = [](char c) {
+            return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.';
+        };
+        if ((position_ != 0 && identifier(source_[position_ - 1])) ||
+            position_ + keyword.size() > source_.size()) return false;
+        for (std::size_t i = 0; i < keyword.size(); ++i)
+            if (std::tolower(static_cast<unsigned char>(source_[position_ + i])) != keyword[i]) return false;
+        const std::size_t end = position_ + keyword.size();
+        if (end < source_.size() && identifier(source_[end])) return false;
+        position_ = end;
+        return true;
+    }
     bool Consume(std::string_view token) {
         if (source_.substr(position_, token.size()) != token) return false;
         position_ += token.size(); return true;
@@ -258,7 +345,34 @@ private:
     const ConditionVariables &variables_;
     std::vector<PhysicsSandboxCudaConditionInstruction> *output_;
     std::size_t position_ = 0u;
+    std::size_t depth_ = 0u;
 };
+
+std::optional<std::string> ValidateInstructionTypes(
+        const std::vector<PhysicsSandboxCudaConditionInstruction> &instructions) {
+    using Opcode = PhysicsSandboxCudaConditionOpcode;
+    std::vector<bool> vectors;
+    for (const auto &instruction : instructions) {
+        const auto opcode = instruction.opcode;
+        if (opcode == Opcode::Constant || opcode == Opcode::Scalar ||
+            opcode == Opcode::ConstantVector || opcode == Opcode::Vector) {
+            vectors.push_back(opcode == Opcode::ConstantVector || opcode == Opcode::Vector);
+        } else if (opcode == Opcode::KilometersPerHour || opcode == Opcode::Degrees) {
+            if (vectors.empty() || vectors.back()) return "function requires a finite scalar argument";
+        } else {
+            if (vectors.size() < 2u) return "operator is missing an operand";
+            const bool right = vectors.back();
+            vectors.pop_back();
+            const bool needsVectors = opcode == Opcode::Distance;
+            if (vectors.back() != needsVectors || right != needsVectors)
+                return needsVectors ? "distance requires two vectors" : "operator requires scalar operands";
+            vectors.back() = false;
+        }
+        if (vectors.size() > 32u) return "expression exceeds the 32-value stack limit";
+    }
+    if (vectors.size() != 1u || vectors.front()) return "expression must produce a finite scalar";
+    return std::nullopt;
+}
 
 Value Angles(float x, float y, float z, float w) {
     const double sinPitch = 2.0 * (w * x - y * z);
@@ -362,7 +476,9 @@ std::optional<Value> EvaluateInstructions(
             case PhysicsSandboxCudaConditionOpcode::GreaterOrEqual: left={left.x>=right.x?1.0:0.0}; break;
             case PhysicsSandboxCudaConditionOpcode::LessOrEqual: left={left.x<=right.x?1.0:0.0}; break;
             case PhysicsSandboxCudaConditionOpcode::Equal: left={left.x==right.x?1.0:0.0}; break;
+            case PhysicsSandboxCudaConditionOpcode::NotEqual: left={left.x!=right.x?1.0:0.0}; break;
             case PhysicsSandboxCudaConditionOpcode::LogicalAnd: left={left.x!=0.0&&right.x!=0.0?1.0:0.0}; break;
+            case PhysicsSandboxCudaConditionOpcode::LogicalOr: left={left.x!=0.0||right.x!=0.0?1.0:0.0}; break;
             default: return std::nullopt;
             }
         }
@@ -396,13 +512,15 @@ std::optional<double> ScalarExpressionProgram::Evaluate(
 ScalarExpressionCompileResult CompileScalarExpression(
         const std::string &source,
         const ConditionVariables &variables) {
+    if (source.size() > kMaximumSourceBytes) return {{}, "expression exceeds the 16384-byte source limit"};
     ScalarExpressionProgram program;
     std::string error;
-    Parser parser(source, variables, &program.instructions);
+    Parser parser(StripScriptComment(source), variables, &program.instructions);
     if (!parser.ParseExpression(&error)) return {{}, error};
     if (program.instructions.size() > 256u) {
         return {{}, "expression exceeds the 256-instruction limit"};
     }
+    if (const auto typeError = ValidateInstructionTypes(program.instructions)) return {{}, typeError};
     const PhysicsSandboxStateView emptyState;
     if (!program.Evaluate(emptyState, emptyState, {})) {
         return {{}, "expression must produce a finite scalar"};
@@ -413,6 +531,7 @@ ScalarExpressionCompileResult CompileScalarExpression(
 ConditionCompileResult CompileConditionScript(
         const std::string &source,
         const ConditionVariables &variables) {
+    if (source.size() > kMaximumSourceBytes) return {{}, "Condition script exceeds the 16384-byte source limit"};
     ConditionProgram result;
     std::istringstream lines(source);
     std::string line;
@@ -420,12 +539,15 @@ ConditionCompileResult CompileConditionScript(
     std::size_t count = 0u;
     while (std::getline(lines, line)) {
         ++lineNumber;
-        if (std::all_of(line.begin(), line.end(), [](unsigned char c) { return std::isspace(c); })) continue;
+        const std::string_view expression = StripScriptComment(line);
+        if (std::all_of(expression.begin(), expression.end(), [](unsigned char c) { return std::isspace(c); })) continue;
         std::string error;
-        Parser parser(line, variables, &result.cuda.instructions);
+        Parser parser(expression, variables, &result.cuda.instructions);
         if (!parser.ParseComparison(&error)) return {{}, "Condition line " + std::to_string(lineNumber) + ": " + error};
         if (count++ != 0u) result.cuda.instructions.push_back({PhysicsSandboxCudaConditionOpcode::LogicalAnd});
         if (result.cuda.instructions.size() > 256u) return {{}, "Condition script exceeds the 256-instruction limit"};
+        if (const auto typeError = ValidateInstructionTypes(result.cuda.instructions))
+            return {{}, "Condition line " + std::to_string(lineNumber) + ": " + *typeError};
     }
     if (count == 0u) return {std::nullopt, std::nullopt};
     return {std::move(result), std::nullopt};

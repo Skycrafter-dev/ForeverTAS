@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -19,6 +20,9 @@ struct ConditionVariable {
 };
 
 using ConditionVariables = std::unordered_map<std::string, ConditionVariable>;
+
+// Returns a view of one line, retaining comment markers inside quoted names.
+std::string_view StripScriptComment(std::string_view line);
 
 struct ConditionExecutionContext {
     std::uint64_t iterations = 0u;

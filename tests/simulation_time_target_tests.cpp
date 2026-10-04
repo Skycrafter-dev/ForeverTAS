@@ -40,7 +40,11 @@ int main(int argc, char **argv) {
         {"min time.ms", "time.ms >= 30\niterations > 0", "10", "100", {30}, true},
         {"min time.ms", "time.ms >= 30\ntime_since(last_restart.time) >= 0", "10", "100", {30}, false},
         {"max car.completed_laps", "car.laps = 0", "10", "100", {0}, false},
-        {"min time.ms", "car.completed_laps >= 1", "10", "100", {}, false}
+        {"min time.ms", "car.completed_laps >= 1", "10", "100", {}, false},
+        {"min time.ms", "# disabled\n(time.ms == 30 || time.ms >= 80) AND car.cps != 1 // entry", "10", "100", {30}, false},
+        {"min time.ms", "time.ms == 30 OR time.ms = 50 AND car.cps != 0", "10", "100", {30}, false},
+        {"min time.ms", "(time.ms == 30 OR time.ms = 50) AND car.cps != 0", "10", "100", {}, false},
+        {"max time.ms", "time.ms != 100 && (time.ms <= 50 OR time.ms >= 80)", "10", "100", {90}, false}
     };
     try {
         for (const auto backend : backends) {
