@@ -2429,7 +2429,12 @@ bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath
     const auto ordinary = RunSearch(request, &control);
     request.modifiers = {{"invalid-disabled-pass", {}}};
     request.searchAlgorithm.id = "not-a-search";
+    // Base evaluation ignores the search backend; pick one it cannot use.
+#if FOREVERVALIDATOR_HAS_VULKAN
     request.backend = PhysicsBackend::Vulkan;
+#else
+    request.backend = PhysicsBackend::MultiThreadedCpu;
+#endif
     const auto base = EvaluateBaseline(request);
     bool okay = Check(base && base->bestScore == 30.0 && base->iterations == 0 && base->mutationImprovementCount == 0 &&
                       base->winnerSource == SearchWinnerSource::Baseline && base->bestTimeline.empty() &&

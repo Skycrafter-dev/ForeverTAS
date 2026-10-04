@@ -1791,7 +1791,9 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     const SearchComponentConfiguration &configuration =
             *configurationValidation.configuration;
     if (!baselineOnly && IsGpuBackend(simulationBackend_) &&
+#if FOREVERVALIDATOR_HAS_CUDA
         simulationBackend_ != PhysicsBackend::Cuda &&
+#endif
         configuration.evaluationTarget.id == kCheckpointTimeEvaluationId) {
         return {{}, QStringLiteral(
                 "Checkpoint time runs on the CPU or on CUDA. Choose Optimized CPU "
