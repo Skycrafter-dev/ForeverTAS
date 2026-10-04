@@ -310,12 +310,17 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
                           "regular CUDA will be used.")
                           .arg(device, capability);
     } else {
-        cudaStatusText_ = QStringLiteral("CUDA unavailable: %1")
+        cudaStatusText_ = QStringLiteral(
+                "CUDA cannot run on this computer. It needs an NVIDIA "
+                "graphics card with an up-to-date driver. Choose Optimized "
+                "CPU, or update the driver and restart ForeverTAS. "
+                "(Driver message: %1)")
                                   .arg(QString::fromStdString(cuda.diagnostic));
     }
 #else
-    cudaStatusText_ =
-            QStringLiteral("CUDA support is not compiled into this build.");
+    cudaStatusText_ = QStringLiteral(
+            "This build of ForeverTAS does not include CUDA. Choose "
+            "Optimized CPU.");
 #endif
 #if FOREVERVALIDATOR_HAS_HIP
     const auto hip = forevervalidator::QueryHipBackendDiagnostics();
@@ -323,11 +328,16 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     hipStatusText_ = hipAvailable_
             ? QStringLiteral("HIP ready: %1")
                       .arg(QString::fromStdString(hip.deviceName))
-            : QStringLiteral("HIP unavailable: %1")
+            : QStringLiteral(
+                      "HIP cannot run on this computer. It needs a "
+                      "compatible graphics card with an up-to-date driver. "
+                      "Choose Optimized CPU, or update the driver and "
+                      "restart ForeverTAS. (Driver message: %1)")
                       .arg(QString::fromStdString(hip.diagnostic));
 #else
-    hipStatusText_ =
-            QStringLiteral("HIP support is not compiled into this build.");
+    hipStatusText_ = QStringLiteral(
+            "This build of ForeverTAS does not include HIP. Choose "
+            "Optimized CPU.");
 #endif
     vulkanParallelSampleCount_ = StoredValue(
             kVulkanParallelSampleCountKey,
@@ -341,11 +351,16 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
                                     .arg(QString::fromStdString(vulkan.deviceName));
     } else if (vulkan.IsReady()) {
         vulkanStatusText_ = QStringLiteral(
-                "Vulkan search unavailable: %1 lacks exact FP32 controls "
-                "(VK_KHR_shader_float_controls2).")
+                "Vulkan search cannot run on %1. Its driver lacks the exact "
+                "math controls the search needs "
+                "(VK_KHR_shader_float_controls2). Choose Optimized CPU, or "
+                "update the graphics driver.")
                                     .arg(QString::fromStdString(vulkan.deviceName));
     } else {
-        vulkanStatusText_ = QStringLiteral("Vulkan unavailable: %1")
+        vulkanStatusText_ = QStringLiteral(
+                "Vulkan cannot run on this computer. Choose Optimized CPU, "
+                "or update the graphics driver and restart ForeverTAS. "
+                "(Driver message: %1)")
                                     .arg(QString::fromStdString(vulkan.diagnostic));
     }
     QSettings settings;
@@ -736,14 +751,27 @@ void SearchController::evaluateBase() {
                              QString::number(result->bestScore, 'g', 17),
                              QString::number(result->bestEvaluationTimeMs, 'g', 17));
             } else {
-                text = QStringLiteral("Base evaluation\nNo eligible observation: the target or conditions were not satisfied.");
+                text = QStringLiteral("Base evaluation\nThe base inputs do not reach the target, or its conditions are never met.");
             }
         } catch (const SearchCancelled &) {
             text = QStringLiteral("Base evaluation cancelled.");
             data.insert(QStringLiteral("cancelled"), true);
         } catch (const std::exception &error) {
-            text = QStringLiteral("Base evaluation failed: %1").arg(QString::fromUtf8(error.what()));
+            const auto failure = SearchDiagnostic(QStringLiteral("Evaluating base inputs"),
+                                                  QString::fromUtf8(error.what()));
+            text = QStringLiteral("Base evaluation failed\n%1\n%2")
+                    .arg(failure.value(QStringLiteral("reason")).toString(),
+                         failure.value(QStringLiteral("guidance")).toString());
             data.insert(QStringLiteral("error"), QString::fromUtf8(error.what()));
+            data.insert(QStringLiteral("failure"), failure);
+        } catch (...) {
+            const auto failure = SearchDiagnostic(QStringLiteral("Evaluating base inputs"),
+                                                  QStringLiteral("Unexpected base evaluation failure"));
+            text = QStringLiteral("Base evaluation failed\n%1\n%2")
+                    .arg(failure.value(QStringLiteral("reason")).toString(),
+                         failure.value(QStringLiteral("guidance")).toString());
+            data.insert(QStringLiteral("error"), failure.value(QStringLiteral("details")));
+            data.insert(QStringLiteral("failure"), failure);
         }
         QMetaObject::invokeMethod(this, [this, generation, data = std::move(data), text = std::move(text)] {
             if (generation != baselineEvaluationGeneration_) {
@@ -1444,10 +1472,16 @@ void SearchController::extractReplayInputs() {
                                         "Replay selection changed; extracted "
                                         "inputs were discarded."));
                             } else if (!result.error.isEmpty()) {
+                                const QVariantMap failure = SearchDiagnostic(
+                                        QStringLiteral("Extracting replay inputs"),
+                                        result.error);
                                 setReplayInputStatusText(
                                         QStringLiteral(
                                                 "Input extraction failed: %1")
-                                                .arg(result.error));
+                                                .arg(failure.value(QStringLiteral("reason"))
+                                                             .toString()));
+                                replayInputFailure_ = failure;
+                                emit replayInputStateChanged();
                             } else {
                                 setBaseInputScript(result.script);
                                 setReplayInputStatusText(
@@ -2058,10 +2092,11 @@ void SearchController::setExtractingReplayInputs(bool value) {
 }
 
 void SearchController::setReplayInputStatusText(const QString &value) {
-    if (replayInputStatusText_ == value) {
+    if (replayInputStatusText_ == value && replayInputFailure_.isEmpty()) {
         return;
     }
     replayInputStatusText_ = value;
+    replayInputFailure_.clear();
     emit replayInputStateChanged();
 }
 

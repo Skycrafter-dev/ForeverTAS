@@ -60,18 +60,65 @@ bool TestSearchDiagnostics() {
         {"Invalid simulation horizon", "configuration"},
         {"Could not save /results/cycle.json: permission denied", "storage"},
         {"restore failed: sandbox state is incompatible: backend", "state-compatibility"},
-        {"mystery error 123 /private/unsupported replay.Gbx", "internal"}};
+        {"mystery error 123 /private/unsupported replay.Gbx", "internal"},
+        // Real messages as the app receives them, wrapped in step prefixes.
+        {"no iteration satisfied the selected evaluation target", "no-result"},
+        {"Search aborted; could not save the retained best: Could not save /r/a.json: disk full", "storage"},
+        {"GPU/optimized CPU parity error: winner finish time disagrees", "gpu-parity"},
+        {"Manual GPU safety probe rejected: CUDA batch is too close to the kernel watchdog limit; choose one parallel sample or Optimized CPU", "gpu-time-limit"},
+        {"GPU submission exceeded the 250 ms display-device budget; reduce parallel samples, shorten the horizon, or use Optimized CPU", "gpu-time-limit"},
+        {"executing GPU search batch failed: CUDA search batch failed: synchronizing CUDA search batch failed: cudaErrorLaunchTimeout (the launch timed out and was terminated)", "gpu-time-limit"},
+        {"creating resident GPU search session failed: CUDA resident search allocation rejected by memory headroom or allocator limits; reduce input density or use Optimized CPU", "gpu-memory"},
+        {"GPU search rejected before probe: insufficient memory headroom; reduce GPU memory use or choose Optimized CPU", "gpu-memory"},
+        {"executing GPU search batch failed: CUDA search batch failed: Vulkan memory allocation failed with VkResult -2", "gpu-memory"},
+        {"creating resident GPU search session failed: CUDA search host allocation failed", "memory"},
+        {"std::bad_alloc", "memory"},
+        {"executing GPU search batch failed: CUDA search batch failed: CUDA search batch status: unsupported_physics_transition", "gpu-physics"},
+        {"executing GPU search batch failed: CUDA search batch failed: CUDA search batch status: capacity_exceeded", "gpu-capacity"},
+        {"creating resident GPU search session failed: The optional fast CUDA kernel could not be built", "gpu-fast-kernel"},
+        {"creating resident GPU search session failed: Fast CUDA requires compute capability 7.5 or newer; regular CUDA remains available", "gpu-fast-kernel"},
+        {"loading scenario into cached sandbox failed: CUDA simulation scope is unsupported", "gpu-map"},
+        {"loading scenario into cached sandbox failed: sandbox simulation could not start", "gpu-unavailable"},
+        {"creating resident GPU search session failed: CUDA search prerequisites are not ready", "gpu-unavailable"},
+        {"executing GPU search batch failed: CUDA search batch failed: launching CUDA simulation kernel failed: cudaErrorIllegalAddress (an illegal memory access was encountered)", "gpu-error"},
+        {"executing GPU search batch failed: CUDA search batch failed: Vulkan queue submission failed with VkResult -4", "gpu-error"},
+        {"executing GPU search batch failed: CUDA search batch failed: Vulkan queue submission failed with VkResult -1000069000", "gpu-error"},
+        {"creating resident GPU search session failed: checkpoint events are not available on Vulkan", "capability"},
+        {"CUDA does not support evaluator: custom-volume-entry", "capability"},
+        {"creating resident GPU search session failed: Search input pipeline exceeds the 1048576-event limit; reduce input density, insertion counts or deformation radius/count", "limits"},
+        {"Line 7: input script exceeds the 1048576-command limit; reduce input density.", "limits"},
+        {"Line 12: input time 1:00:00.000 cannot be represented on the simulation timeline.", "script"},
+        {"evaluation plan [100, 90000] ms does not fit the Simulation horizon of 30000 ms", "time-window"},
+        {"creating resident GPU search session failed: CUDA modifier window does not intersect the mutable suffix", "time-window"},
+        {"opening Packs directory for session: installed pack directory could not be resolved safely", "assets"},
+        {"loading scenario into cached sandbox failed: sandbox assets could not be prepared", "assets"},
+        {"loading replay failed: sandbox scenario route is unsupported", "unsupported-map"},
+        {"loading scenario failed: sandbox map could not be loaded", "map"},
+        {"reading replay for session: could not open replay file", "input"},
+        {"loading replay for session: sandbox scenario could not be decoded", "input"},
+        {"unknown evaluation target: removed-target", "configuration"}};
     for (const auto &[raw, category] : cases) {
         const auto diagnostic = forevertas::app::SearchDiagnostic("Loading scene", raw);
         const auto formatted = forevertas::app::FormatSearchDiagnostic(diagnostic);
         if (!Check(diagnostic.value("category") == category &&
                    diagnostic.value("stage") == "Loading scene" &&
                    diagnostic.value("details") == raw &&
+                   !diagnostic.value("reason").toString().isEmpty() &&
                    !diagnostic.value("guidance").toString().isEmpty() &&
+                   diagnostic.value("text") == formatted &&
+                   formatted.startsWith(diagnostic.value("reason").toString()) &&
                    formatted.endsWith(QString::fromUtf8(raw)),
-                   "search diagnostic lost context, exact details, or relevant guidance")) return false;
+                   "search diagnostic lost context, exact details, or relevant guidance")) {
+            std::cerr << raw << " -> " << diagnostic.value("category").toString().toStdString() << '\n';
+            return false;
+        }
     }
-    return true;
+    // A script mistake names the line in plain words.
+    const auto script = forevertas::app::SearchDiagnostic(
+            "Searching...", "applying base input script failed: Line 3: switch must be up, down, left, right, or enter.");
+    return Check(script.value("guidance").toString() ==
+                         "Line 3: switch must be up, down, left, right, or enter. Fix that line, then try again.",
+                 "script diagnostic did not name the line to fix");
 }
 
 bool TestStateCompatibilityDiagnostics(const QString &packs, const QString &replay) {
@@ -1826,12 +1873,29 @@ bool TestExtractionFailurePreservesDraft(const QString &packsDirectory,
                 return !controller.extractingReplayInputs();
             },
             5000);
-    return Check(
+    const QVariantMap failure = controller.replayInputFailure();
+    bool okay = Check(
             finished &&
                     controller.baseInputScript() == draft &&
                     controller.replayInputStatusText().startsWith(
                             QStringLiteral("Input extraction failed:")),
             "failed extraction replaced the existing base script");
+    // The unreadable fixture is explained in plain words, with the exact
+    // validator message kept as details.
+    okay &= Check(failure.value("category") == QStringLiteral("input") &&
+                          controller.replayInputStatusText() ==
+                                  QStringLiteral("Input extraction failed: ") +
+                                          failure.value("reason").toString() &&
+                          failure.value("details").toString().contains(
+                                  QStringLiteral("could not be decoded")),
+                  "failed extraction was not explained in plain words");
+    controller.extractReplayInputs();
+    okay &= Check(controller.replayInputFailure().isEmpty(),
+                  "a new extraction kept the old failure");
+    okay &= Check(WaitUntil([&controller]() { return !controller.extractingReplayInputs(); }, 5000) &&
+                          !controller.replayInputFailure().isEmpty(),
+                  "the repeated extraction failure was not explained");
+    return okay;
 }
 
 bool TestExtractionWorkerShutdown(const QString &packsDirectory,

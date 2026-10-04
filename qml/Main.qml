@@ -4568,11 +4568,23 @@ ApplicationWindow {
                             visible: !window.viewer.loading
                                      && window.viewer.statusText
                                         !== qsTr("No map loaded")
+                                     && !mapFailure.visible
                             horizontalAlignment: Text.AlignHCenter
                             text: window.viewer.statusText
                             color: AppTheme.dark ? "#f0a19e" : "#e19b9b"
                             wrapMode: Text.WordWrap
                             font.pixelSize: 12
+                        }
+
+                        FailureNotice {
+                            id: mapFailure
+                            objectName: "viewerFailure"
+                            width: parent.width
+                            visible: !window.viewer.loading
+                                     && reason.length > 0
+                            failure: window.viewer.statusFailure
+                            textColor: AppTheme.viewerOverlayText
+                            detailsColor: AppTheme.viewerOverlayMuted
                         }
 
                     }
@@ -4890,10 +4902,18 @@ ApplicationWindow {
                             }
                         }
 
+                        FailureNotice {
+                            objectName: "replayInputFailure"
+                            Layout.fillWidth: true
+                            title: qsTr("Input extraction failed")
+                            failure: window.controller.replayInputFailure
+                        }
+
                         Label {
                             objectName: "replayInputStatusLabel"
                             Layout.fillWidth: true
                             visible: text.length > 0
+                                     && !(window.controller.replayInputFailure.reason)
                             text: window.controller.replayInputStatusText
                             color: text.indexOf(qsTr("failed")) >= 0
                                    || text.indexOf(qsTr("discarded")) >= 0
@@ -5625,12 +5645,23 @@ ApplicationWindow {
                             onClicked: window.controller.cancelBaseEvaluation()
                         }
                     }
+                    FailureNotice {
+                        objectName: "baseEvaluationFailure"
+                        Layout.fillWidth: true
+                        Layout.leftMargin: 20
+                        Layout.rightMargin: 20
+                        title: qsTr("Base evaluation failed")
+                        failure: window.controller.baseEvaluationResult.failure
+                                 ?? ({})
+                    }
+
                     TextArea {
                         objectName: "baseEvaluationResult"
                         Layout.fillWidth: true
                         Layout.leftMargin: 20
                         Layout.rightMargin: 20
                         visible: text.length > 0
+                                 && !window.controller.baseEvaluationResult.failure
                         readOnly: true
                         selectByMouse: true
                         wrapMode: TextEdit.Wrap
@@ -5822,33 +5853,25 @@ ApplicationWindow {
                         }
 
                         TextArea {
-                            id: searchFailureDetails
-                            objectName: "searchFailureDetails"
+                            objectName: "searchResultText"
                             Layout.fillWidth: true
                             visible: text.length > 0 &&
-                                     (window.controller.running ||
-                                      window.controller.statusText ===
-                                          qsTr("Search failed"))
+                                     window.controller.running
                             text: window.controller.resultText
                             readOnly: true
                             selectByMouse: true
                             wrapMode: Text.WordWrap
-                            color: window.controller.statusText
-                                           === qsTr("Search failed")
-                                   ? AppTheme.error
-                                   : AppTheme.text
+                            color: AppTheme.text
                             background: null
                         }
-                        ThemedButton {
-                            objectName: "copySearchFailureDetails"
-                            visible: searchFailureDetails.visible &&
-                                     window.controller.statusText === qsTr("Search failed")
-                            text: qsTr("Copy details")
-                            onClicked: {
-                                searchFailureDetails.selectAll()
-                                searchFailureDetails.copy()
-                                searchFailureDetails.deselect()
-                            }
+
+                        FailureNotice {
+                            objectName: "searchFailure"
+                            Layout.fillWidth: true
+                            failure: window.controller.statusText
+                                             === qsTr("Search failed")
+                                     ? window.controller.failureDiagnostic
+                                     : ({})
                         }
 
                         SearchInputs {

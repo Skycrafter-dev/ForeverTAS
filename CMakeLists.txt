@@ -322,6 +322,8 @@ add_library(forevertas_gui STATIC
     src/app/input_preview_binding.h
     src/app/search_controller.cpp
     src/app/search_controller.h
+    src/app/search_diagnostic.cpp
+    src/app/search_diagnostic.h
     src/app/packs_directory_finder.cpp
     src/app/packs_directory_finder.h
     src/app/panel_wheel_redirector.cpp
@@ -503,6 +505,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/DurationField.qml
         qml/EvaluationOverlay.qml
         qml/EditHistory.qml
+        qml/FailureNotice.qml
         qml/GraphicsInspector.qml
         qml/Main.qml
         qml/SearchSessionHistory.qml
@@ -1177,6 +1180,15 @@ if(BUILD_TESTING)
         add_test(NAME forevertas-car-presence COMMAND forevertas-car-presence-tests
                  "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-car-presence PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 300)
+        add_executable(forevertas-viewer-failure-tests tests/viewer_failure_tests.cpp)
+        target_link_libraries(forevertas-viewer-failure-tests PRIVATE forevertas_gui Qt6::Gui)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-viewer-failure-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-viewer-failure COMMAND forevertas-viewer-failure-tests
+                 "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-viewer-failure PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 300)
         add_executable(forevertas-gamepad-tests tests/gamepad_tests.cpp)
         target_link_libraries(forevertas-gamepad-tests PRIVATE forevertas_gui Qt6::Gui)

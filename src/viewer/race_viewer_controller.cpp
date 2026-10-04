@@ -1,6 +1,7 @@
 #include "viewer/race_viewer_controller.h"
 
 #include "app/search_completion.h"
+#include "app/search_diagnostic.h"
 #include "conditions/condition_program.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/input_event_utils.h"
@@ -3096,7 +3097,9 @@ void RaceViewerController::requestRayTracingScene() {
         if (generation != rayTracingGeneration_) return;
         rayTracingCancelled_.reset();
         if (!result.second.isEmpty()) {
-            setStatusText(tr("Ray-tracing scene failed: %1").arg(result.second));
+            setStatusFailure(QStringLiteral("Building the ray-tracing scene"),
+                             result.second,
+                             tr("Ray-tracing scene failed: %1").arg(result.second));
             return;
         }
         rayTracingScene_ = result.first;
@@ -4817,7 +4820,8 @@ void RaceViewerController::applyInputPreviewResult(
         return;
     }
     if (!result.error.isEmpty()) {
-        setStatusText(result.error);
+        setStatusFailure(QStringLiteral("Building the input preview"),
+                         result.error, result.error);
         clearInputPreview();
         emit stateChanged();
         return;
@@ -5005,13 +5009,15 @@ void RaceViewerController::startStoredRunRebuilds() {
                             continue;
                         }
                         if (!result.error.isEmpty() || result.frames.empty()) {
-                            setStatusText(
+                            const QString details =
+                                    result.error.isEmpty()
+                                            ? QStringLiteral("no frames were produced")
+                                            : result.error;
+                            setStatusFailure(
+                                    QStringLiteral("Rebuilding %1").arg(name),
+                                    details,
                                     QStringLiteral("Rebuilding %1 failed: %2")
-                                            .arg(name,
-                                                 result.error.isEmpty()
-                                                         ? QStringLiteral(
-                                                                   "no frames were produced")
-                                                         : result.error));
+                                            .arg(name, details));
                             continue;
                         }
                         upsertRun(std::move(id),
@@ -5247,7 +5253,8 @@ void RaceViewerController::applyLoadResult(
     if (!result.error.isEmpty()) {
         pendingRun_.reset();
         pendingImprovements_.clear();
-        setStatusText(result.error);
+        setStatusFailure(QStringLiteral("Loading the map"), result.error,
+                         result.error);
         if (!queuedMapLoad_) setLoading(false);
         if (loaded_ && !queuedMapLoad_) {
             scheduleInputPreviewRebuild();
@@ -5471,10 +5478,19 @@ void RaceViewerController::setLoading(bool value) {
 }
 
 void RaceViewerController::setStatusText(const QString &value) {
-    if (statusText_ == value) {
+    if (statusText_ == value && statusFailure_.isEmpty()) {
         return;
     }
     statusText_ = value;
+    statusFailure_.clear();
+    emit stateChanged();
+}
+
+void RaceViewerController::setStatusFailure(const QString &stage,
+                                            const QString &details,
+                                            const QString &statusText) {
+    statusText_ = statusText;
+    statusFailure_ = forevertas::app::SearchDiagnostic(stage, details);
     emit stateChanged();
 }
 

@@ -1,5 +1,6 @@
 #include "app/input_preview_binding.h"
 #include "app/search_controller.h"
+#include "app/search_diagnostic.h"
 #include "app/system_file_dialog.h"
 #include "searches/option_settings_utils.h"
 #include "viewer/race_timeline_item.h"
@@ -1515,6 +1516,54 @@ int main(int argc, char **argv) {
     globalSettingsVisibleAcrossTabs &= inputsProbe->property("script") == "current-new" &&
             QApplication::clipboard()->text() == "current-new" &&
             inputsController->property("selectedInputsText") == "history-new";
+    // A failure leads with plain words; the exact message is one click away
+    // and the copied report holds everything.
+    QQmlComponent failureProbeComponent(&engine);
+    // Hosted in a window: an item without a parent never counts as visible.
+    failureProbeComponent.setData(R"QML(
+        import QtQuick
+        import "."
+        Window {
+            width: 320
+            height: 240
+            FailureNotice { objectName: "probeFailure"; width: 320 }
+        }
+    )QML", QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_SOURCE_DIR "/qml/FailureProbe.qml")));
+    std::unique_ptr<QObject> failureWindow(failureProbeComponent.create());
+    QObject *const failureProbe =
+            failureWindow ? failureWindow->findChild<QObject *>(QStringLiteral("probeFailure")) : nullptr;
+    if (!failureProbe) return 1;
+    const QVariantMap failure = forevertas::app::SearchDiagnostic(
+            QStringLiteral("Loading the map"),
+            QStringLiteral("opening Packs directory failed: installed pack directory could not be resolved safely"));
+    const auto failurePart = [&](const char *suffix) {
+        return failureProbe->findChild<QObject *>(QStringLiteral("probeFailure") + QLatin1String(suffix));
+    };
+    bool failureExplained = !failureProbe->property("visible").toBool();
+    failureProbe->setProperty("failure", failure);
+    QObject *const failureDetails = failurePart("Details");
+    failureExplained &= failureProbe->property("visible").toBool() && failureDetails != nullptr &&
+            failurePart("Reason")->property("text") == failure.value("reason") &&
+            failurePart("Guidance")->property("text") == failure.value("guidance") &&
+            !failurePart("Title")->property("visible").toBool() &&
+            !failureDetails->property("visible").toBool();
+    QMetaObject::invokeMethod(failurePart("DetailsToggle"), "clicked");
+    failureExplained &= failureDetails->property("visible").toBool() &&
+            failureDetails->property("text") ==
+                    QStringLiteral("Stage: Loading the map\nopening Packs directory failed: "
+                                   "installed pack directory could not be resolved safely");
+    QMetaObject::invokeMethod(failurePart("Copy"), "clicked");
+    failureExplained &= QApplication::clipboard()->text() == failure.value("text").toString() &&
+            QApplication::clipboard()->text().startsWith(failure.value("reason").toString());
+    failureProbe->setProperty("title", QStringLiteral("Input extraction failed"));
+    failureExplained &= failurePart("Title")->property("visible").toBool();
+    failureProbe->setProperty("failure", QVariantMap{});
+    failureExplained &= !failureProbe->property("visible").toBool() &&
+            !failureProbe->property("detailsShown").toBool();
+    if (!failureExplained) {
+        std::cerr << "a failure notice did not show plain words with copyable details\n";
+        return 1;
+    }
     globalSettingsVisibleAcrossTabs &=
             initialGlobalScript != nullptr &&
             initialReplaySection != nullptr &&

@@ -229,6 +229,8 @@ class RaceViewerController final : public QObject {
                        stateChanged)
     Q_PROPERTY(bool loading READ loading NOTIFY stateChanged)
     Q_PROPERTY(QString statusText READ statusText NOTIFY stateChanged)
+    // Plain explanation of the failure in statusText; empty otherwise.
+    Q_PROPERTY(QVariantMap statusFailure READ statusFailure NOTIFY stateChanged)
     Q_PROPERTY(qint64 triangleCount READ triangleCount NOTIFY sceneChanged)
     Q_PROPERTY(qint64 visualTriangleCount READ visualTriangleCount NOTIFY
                        sceneChanged)
@@ -333,6 +335,7 @@ public:
     QString loadedPacksDirectory() const { return loadedPacksDirectory_; }
     bool loading() const;
     QString statusText() const;
+    QVariantMap statusFailure() const { return statusFailure_; }
     qint64 triangleCount() const;
     qint64 visualTriangleCount() const;
     qint64 visualMeshCount() const;
@@ -521,6 +524,8 @@ private:
     void refreshSelectedRun();
     void setLoading(bool value);
     void setStatusText(const QString &value);
+    void setStatusFailure(const QString &stage, const QString &details,
+                          const QString &statusText);
     void waitForWorker();
     void updatePose();
     void updateCarCamera();
@@ -622,6 +627,7 @@ private:
     bool carCameraAvailable_ = false;
     QString telemetryScript_;
     QString statusText_ = QStringLiteral("No map loaded");
+    QVariantMap statusFailure_;
     QString selectedRunId_;
     QString loadedPacksDirectory_;
     QString loadedReplayPath_;

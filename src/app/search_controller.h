@@ -44,6 +44,9 @@ class SearchController final : public QObject {
                        replayInputStateChanged)
     Q_PROPERTY(QString replayInputStatusText READ replayInputStatusText NOTIFY
                        replayInputStateChanged)
+    // Plain explanation of the last extraction failure; empty otherwise.
+    Q_PROPERTY(QVariantMap replayInputFailure READ replayInputFailure NOTIFY
+                       replayInputStateChanged)
     Q_PROPERTY(QVariantList simulationBackendOptions READ
                        simulationBackendOptions CONSTANT)
     Q_PROPERTY(QString simulationBackendId READ simulationBackendId WRITE
@@ -181,6 +184,7 @@ public:
     bool extractingReplayInputs() const;
     bool canExtractReplayInputs() const;
     QString replayInputStatusText() const;
+    QVariantMap replayInputFailure() const { return replayInputFailure_; }
     QVariantList simulationBackendOptions() const;
     QString simulationBackendId() const;
     QString simulationHorizonMs() const;
@@ -419,6 +423,7 @@ private:
     QString baseInputScriptError_;
     std::vector<QString> baseInputScriptUndoHistory_;
     QString replayInputStatusText_;
+    QVariantMap replayInputFailure_;
     std::vector<ParsedInputCommand> parsedBaseInputCommands_;
     PhysicsBackend simulationBackend_ = PhysicsBackend::Reference;
     QString simulationHorizonMs_ = QString::number(
