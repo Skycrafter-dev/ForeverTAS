@@ -88,6 +88,27 @@ QString FormatResult(const SearchResult &result) {
     return FormatLive(ToLiveUpdate(result), QStringLiteral("Best"));
 }
 
+SearchLiveUpdate RetainedResult(const SearchLiveUpdate &live) {
+    SearchLiveUpdate result;
+    result.winnerSource = live.winnerSource;
+    result.winningIterationIndex = live.winningIterationIndex;
+    result.winningMutationCount = live.winningMutationCount;
+    result.bestScore = live.bestScore;
+    result.bestEvaluationTimeMs = live.bestEvaluationTimeMs;
+    result.bestEvaluationDescription = live.bestEvaluationDescription;
+    result.bestState = live.bestState;
+    result.bestInputs = live.bestInputs;
+    result.iterations = live.iterations;
+    result.evaluatorCalls = live.evaluatorCalls;
+    result.mutationImprovementCount = live.mutationImprovementCount;
+    result.totalMutationCount = live.totalMutationCount;
+    result.elapsed = live.elapsed;
+    result.lastImprovementElapsed = live.lastImprovementElapsed;
+    result.objectiveScores = live.objectiveScores;
+    result.metricValues = live.metricValues;
+    return result;
+}
+
 QString FilePathFromUtf8(const std::string &path) {
     return QString::fromUtf8(
             path.data(), static_cast<qsizetype>(path.size()));
@@ -306,20 +327,25 @@ void SearchWorker::run() {
                 improvement->timeline = live.bestTimeline;
                 emit improvementFound(std::move(improvement));
             };
-    control.liveChanged = [this,
+    std::optional<SearchLiveUpdate> retainedResult;
+    control.liveChanged = [this, &retainedResult,
                            latestInputsText = QString(),
                            latestSource = SearchWinnerSource::Baseline,
                            latestIteration =
                                    std::optional<std::uint64_t>{},
                            publishImprovement](
                                   const SearchLiveUpdate &live) mutable {
-        if (latestInputsText.isEmpty() ||
+        if (!retainedResult || latestInputsText.isEmpty() ||
             latestSource != live.winnerSource ||
             latestIteration != live.winningIterationIndex) {
             latestInputsText = QString::fromStdString(
                     FormatInputScript(live.bestInputs));
             latestSource = live.winnerSource;
             latestIteration = live.winningIterationIndex;
+            retainedResult = RetainedResult(live);
+        } else {
+            retainedResult->iterations = live.iterations;
+            retainedResult->elapsed = live.elapsed;
         }
         publishImprovement(
                 live, PhysicsBackendId(kAuxiliarySimulationBackend));
@@ -338,21 +364,25 @@ void SearchWorker::run() {
     }
 #endif
 
+    std::optional<SearchSessionLocation> activeSession;
+    std::uint64_t restartNumber = 0;
+    bool cyclePersisted = false;
     try {
         if (cancellationRequested_->load(std::memory_order_relaxed)) {
             throw SearchCancelled();
         }
-        const SearchSessionLocation session =
-                SearchSessionStore::Create(request_);
+        activeSession = SearchSessionStore::Create(request_);
+        const SearchSessionLocation &session = *activeSession;
         emit sessionCreated(session.mapKey, session.directory);
         if (cancellationRequested_->load(std::memory_order_relaxed)) {
             throw SearchCancelled();
         }
         std::optional<SearchResult> result;
-        std::uint64_t restartNumber = 0;
         // Each RunSearch call restores the original baseline and owns a fresh
         // best result; only modifier seeds may change between cycles.
         for (;;) {
+            retainedResult.reset();
+            cyclePersisted = false;
             const auto attemptStartedNs =
                     std::make_shared<std::atomic<std::int64_t>>(0);
             control.beginIteration = [phase = iterationPhase_,
@@ -399,6 +429,7 @@ void SearchWorker::run() {
             result.emplace(RunSearch(request_, &control));
             SearchSessionStore::SaveCycle(
                     session, request_, restartNumber, *result);
+            cyclePersisted = true;
             emit cycleSaved(session.mapKey, session.directory,
                             restartNumber);
             if (restartPolicy_.mode == AutoRestartPolicy::Mode::Off ||
@@ -424,6 +455,21 @@ void SearchWorker::run() {
         completion->bestTimeline = std::move(result->bestTimeline);
         emit succeeded(std::move(completion));
     } catch (const SearchCancelled &) {
+        // Only completed, published evaluations are durable. Never promote a
+        // partially simulated candidate or trigger another final sampling run.
+        if (activeSession && retainedResult && !cyclePersisted) {
+            try {
+                SearchSessionStore::SaveAbortedCycle(
+                        *activeSession, request_, restartNumber, *retainedResult);
+                emit this->cycleSaved(activeSession->mapKey, activeSession->directory,
+                                      restartNumber);
+            } catch (const std::exception &error) {
+                emit failed(QStringLiteral("Search aborted; could not save the retained best: %1")
+                                    .arg(QString::fromUtf8(error.what())));
+                emit finished();
+                return;
+            }
+        }
         emit cancelled();
     } catch (const std::exception &error) {
         emit failed(QString::fromUtf8(error.what()));

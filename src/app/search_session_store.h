@@ -28,6 +28,10 @@ public:
                           const SearchRequest &request,
                           std::uint64_t restartNumber,
                           const SearchResult &result);
+    static void SaveAbortedCycle(const SearchSessionLocation &session,
+                                 const SearchRequest &request,
+                                 std::uint64_t restartNumber,
+                                 const SearchLiveUpdate &result);
     static QString Root(const QString &overrideRoot = {});
 };
 

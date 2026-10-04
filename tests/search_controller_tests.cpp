@@ -2178,6 +2178,45 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
     return okay;
 }
 
+bool TestAbortRetainsBest(const QString &packsDirectory, const QString &replayPath) {
+    QSettings().clear();
+    SearchController controller;
+    SetValidPaths(controller, packsDirectory, replayPath);
+    controller.setSimulationBackendId("optimized-cpu");
+    controller.setBaseInputScript("0.00 press up");
+    controller.setModifierPassSetting(0, "minTimeMs", "0");
+    controller.setModifierPassSetting(0, "maxTimeMs", "20");
+    controller.setEvaluationTargetSetting("minTimeMs", "0");
+    controller.setEvaluationTargetSetting("maxTimeMs", "6000");
+    QSignalSpy completed(&controller, &SearchController::searchCompleted);
+    controller.startSearch();
+    bool okay = Check(WaitUntil([&]() {
+        return controller.iterationCountRawText().toULongLong() > 0 &&
+                !controller.bestInputsText().isEmpty();
+    }, 30000), "abort test did not reach a completed candidate");
+    controller.stopSearch();
+    controller.abortSearch();
+    okay &= Check(controller.stopping() && controller.aborting(),
+                  "Stop could not escalate to Abort");
+    controller.abortSearch();
+    okay &= Check(WaitUntil([&]() { return !controller.running(); }, 10000),
+                  "active abort did not finish cooperatively");
+    okay &= Check(controller.statusText() == "Search aborted" && completed.isEmpty() &&
+                          controller.baseInputScript() == "0.00 press up" &&
+                          !controller.bestInputsText().isEmpty(),
+                  "abort promoted a partial result or discarded the retained best");
+    const auto rows = controller.cycleRows();
+    okay &= Check(rows.size() == 1 && rows.front().toMap().value("aborted").toBool(),
+                  "aborted cycle's completed best was not saved");
+    if (!rows.isEmpty()) {
+        const auto inputs = forevertas::app::SearchSessionStore::Inputs(
+                controller.selectedSessionDirectory(), rows.front().toMap().value("inputFile").toString());
+        okay &= Check(inputs == controller.bestInputsText(),
+                      "aborted best inputs changed between UI and durable history");
+    }
+    return okay;
+}
+
 bool TestAutorestartHistory(const QString &packsDirectory,
                             const QString &replayPath) {
     QSettings().clear();
@@ -2544,7 +2583,8 @@ int main(int argc, char **argv) {
         QString::fromLocal8Bit(argv[1]) == QStringLiteral("--lifecycle")) {
         const QString packs = QString::fromLocal8Bit(argv[2]);
         const QString replay = QString::fromLocal8Bit(argv[3]);
-        okay = TestAutorestartHistory(packs, replay) &&
+        okay = TestAbortRetainsBest(packs, replay) &&
+                TestAutorestartHistory(packs, replay) &&
                 TestDurationAutorestartAndSaveFailure(packs, replay) &&
                 TestMetricsWhenConditionExcludesBaseline(packs, replay) &&
                 TestIndefiniteSearchLifecycle(packs, replay);

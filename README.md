@@ -113,6 +113,9 @@ finishes the current
 iteration, restores the global best, then performs one fresh canonical
 simulation and records one viewer sample per physics tick. The completed Best
 run is added to the Race Viewer only after that Stop-triggered sampling pass.
+While stopping, Abort cancels at the next simulation checkpoint and saves the
+last completed best evaluation without final sampling. It cannot preempt a hung
+GPU driver call; interrupted candidates are never promoted into saved results.
 GPU searches verify changed winners on optimized CPU before publishing them;
 backend metric disagreement is an error. Winner reconstruction, live and final
 trajectories, input previews, and stored-run rebuilds always use optimized CPU,

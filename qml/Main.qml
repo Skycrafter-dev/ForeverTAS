@@ -5385,6 +5385,14 @@ ApplicationWindow {
                                      && !window.controller.stopping
                             onClicked: window.controller.stopSearch()
                         }
+
+                        ThemedButton {
+                            objectName: "abortSearchButton"
+                            visible: window.controller.running && window.controller.stopping
+                            text: window.controller.aborting ? qsTr("Aborting...") : qsTr("Abort")
+                            enabled: !window.controller.aborting
+                            onClicked: window.controller.abortSearch()
+                        }
                     }
 
                     Rectangle {

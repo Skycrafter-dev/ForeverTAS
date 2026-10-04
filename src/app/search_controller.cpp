@@ -674,6 +674,10 @@ bool SearchController::stopping() const {
     return stopping_;
 }
 
+bool SearchController::aborting() const {
+    return cancellationRequested_ && cancellationRequested_->load(std::memory_order_relaxed);
+}
+
 bool SearchController::progressIndeterminate() const {
     return progressIndeterminate_;
 }
@@ -1515,11 +1519,21 @@ void SearchController::stopSearch() {
         TryCancelBeforeSearchIteration(iterationPhase_) &&
         cancellationRequested_ != nullptr) {
         cancellationRequested_->store(true, std::memory_order_relaxed);
+        emit stoppingChanged();
         setStatusText(QStringLiteral("Aborting search startup..."));
         return;
     }
     stopRequested_->store(true, std::memory_order_relaxed);
     setStatusText(QStringLiteral("Stopping after current iteration..."));
+}
+
+void SearchController::abortSearch() {
+    if (!running_ || !cancellationRequested_ || aborting()) return;
+    if (stopRequested_) stopRequested_->store(true, std::memory_order_relaxed);
+    cancellationRequested_->store(true, std::memory_order_relaxed);
+    setStopping(true);
+    emit stoppingChanged();
+    setStatusText(QStringLiteral("Aborting at the next simulation checkpoint..."));
 }
 
 SearchController::ValidationResult SearchController::validate() const {

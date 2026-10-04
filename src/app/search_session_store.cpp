@@ -66,8 +66,9 @@ QJsonObject ReadObject(const QString &path) {
             ? document.object() : QJsonObject{};
 }
 
+template<typename Result>
 QJsonArray Metrics(const SearchRequest &request,
-                   const SearchResult &result) {
+                   const Result &result) {
     QJsonArray metrics;
     const std::string &targetId = request.evaluationTarget.id;
     if (targetId == kScriptedTargetEvaluationId) {
@@ -83,7 +84,8 @@ QJsonArray Metrics(const SearchRequest &request,
     return metrics;
 }
 
-QJsonArray ObjectiveScores(const SearchResult &result) {
+template<typename Result>
+QJsonArray ObjectiveScores(const Result &result) {
     QJsonArray scores;
     for (double score : result.objectiveScores) scores.append(score);
     return scores;
@@ -217,11 +219,15 @@ SearchSessionLocation SearchSessionStore::Identify(
     return {mapKey, mapName, {}};
 }
 
-void SearchSessionStore::SaveCycle(
+namespace {
+
+template<typename Result>
+void SaveCycleResult(
         const SearchSessionLocation &session,
         const SearchRequest &request,
         std::uint64_t restartNumber,
-        const SearchResult &result) {
+        const Result &result,
+        bool aborted) {
     const QString stem = QStringLiteral("restart-%1")
                                  .arg(static_cast<qulonglong>(restartNumber),
                                       6, 10, QLatin1Char('0'));
@@ -237,6 +243,7 @@ void SearchSessionStore::SaveCycle(
                                       static_cast<qsizetype>(inputScript.size())));
     QJsonObject metadata{
             {"format", 1},
+            {"aborted", aborted},
             {"restart", static_cast<qint64>(restartNumber)},
             {"attempts", static_cast<qint64>(result.iterations)},
             {"attemptsExact", QString::number(static_cast<qulonglong>(result.iterations))},
@@ -255,6 +262,22 @@ void SearchSessionStore::SaveCycle(
             {"objectiveScores", ObjectiveScores(result)},
             {"metricLabels", MetricLabels(request)}};
     AtomicWrite(metadataPath, QJsonDocument(metadata).toJson());
+}
+
+}  // namespace
+
+void SearchSessionStore::SaveCycle(const SearchSessionLocation &session,
+                                   const SearchRequest &request,
+                                   std::uint64_t restartNumber,
+                                   const SearchResult &result) {
+    SaveCycleResult(session, request, restartNumber, result, false);
+}
+
+void SearchSessionStore::SaveAbortedCycle(const SearchSessionLocation &session,
+                                          const SearchRequest &request,
+                                          std::uint64_t restartNumber,
+                                          const SearchLiveUpdate &result) {
+    SaveCycleResult(session, request, restartNumber, result, true);
 }
 
 QVariantList SearchSessionStore::SessionsForMap(
