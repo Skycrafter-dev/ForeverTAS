@@ -385,6 +385,8 @@ public:
             std::uint64_t searchId,
             std::uint64_t improvementNumber,
             std::chrono::steady_clock::time_point generatedAt = std::chrono::steady_clock::now());
+    // Not exposed to QML: previews are only cleared with the search results.
+    void clearPreviewTrajectories();
 
 public slots:
     void setTimeMs(qint64 value);
@@ -417,7 +419,6 @@ public slots:
     Q_INVOKABLE void setTrajectoryVisibleForRun(const QString &runId,
                                                 bool visible);
     Q_INVOKABLE bool hasPreviewTrajectories() const;
-    Q_INVOKABLE void clearPreviewTrajectories();
     void clearSearchResults();
     Q_INVOKABLE void refreshInputPreview();
     Q_INVOKABLE void focusInputPreview();

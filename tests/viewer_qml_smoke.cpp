@@ -5937,7 +5937,7 @@ int main(int argc, char **argv) {
                                             .value(QStringLiteral("name"))
                                             .toString() ==
                                     QStringLiteral("Inputs") &&
-                            clearPreviewTrajectoriesButton != nullptr &&
+                            clearPreviewTrajectoriesButton == nullptr &&
                             trajectoryModels.size() == 1 &&
                             rayTracingTrajectoryModels.size() == 1 &&
                             rayTracingTrajectoryOverlay != nullptr &&
@@ -6271,13 +6271,15 @@ int main(int argc, char **argv) {
                                     .toMap()
                                     .value(QStringLiteral("geometry"))
                                     .value<QObject *>();
+                    // Previews cannot be cleared from the UI; only a new
+                    // search session clears them internally.
                     const bool clearButtonReady =
-                            clearPreviewTrajectoriesButton != nullptr &&
-                            clearPreviewTrajectoriesButton->isEnabled() &&
+                            clearPreviewTrajectoriesButton == nullptr &&
+                            viewer.metaObject()->indexOfMethod("clearPreviewTrajectories()") < 0 &&
                             viewer.hasPreviewTrajectories();
                     const auto beforeClear = std::chrono::steady_clock::now();
-                    const bool firstClearInvoked = clearButtonReady &&
-                            QMetaObject::invokeMethod(clearPreviewTrajectoriesButton, "clicked");
+                    const bool firstClearInvoked = clearButtonReady;
+                    viewer.clearPreviewTrajectories();
                     QCoreApplication::processEvents();
                     QCoreApplication::sendPostedEvents(
                             nullptr, QEvent::DeferredDelete);
@@ -6315,8 +6317,7 @@ int main(int argc, char **argv) {
                             QString::fromLocal8Bit(argv[1]),
                             QString::fromLocal8Bit(argv[2]), firstImprovement,
                             QStringLiteral("optimized-cpu"), 9u, 100u, beforeClear);
-                    const bool latePreviewIgnored = !viewer.hasPreviewTrajectories() &&
-                            !clearPreviewTrajectoriesButton->isEnabled();
+                    const bool latePreviewIgnored = !viewer.hasPreviewTrajectories();
                     viewer.addSearchImprovement(
                             QString::fromLocal8Bit(argv[1]),
                             QString::fromLocal8Bit(argv[2]),
