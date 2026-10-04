@@ -1169,6 +1169,15 @@ if(BUILD_TESTING)
             tests/viewer_reload_smoke.cpp)
         add_executable(forevertas-lazy-ray-tracing-smoke tests/lazy_ray_tracing_smoke.cpp)
         add_executable(forevertas-search-preview-tests tests/search_preview_tests.cpp)
+        add_executable(forevertas-car-presence-tests tests/car_presence_tests.cpp)
+        target_link_libraries(forevertas-car-presence-tests PRIVATE forevertas_gui Qt6::Gui)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-car-presence-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-car-presence COMMAND forevertas-car-presence-tests
+                 "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-car-presence PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 300)
         add_executable(forevertas-gamepad-tests tests/gamepad_tests.cpp)
         target_link_libraries(forevertas-gamepad-tests PRIVATE forevertas_gui Qt6::Gui)
         add_test(NAME forevertas-gamepad COMMAND forevertas-gamepad-tests

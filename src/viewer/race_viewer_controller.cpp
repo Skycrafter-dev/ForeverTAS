@@ -14,6 +14,7 @@
 #include <forevervalidator/native.h>
 
 #include <QCryptographicHash>
+#include <QDir>
 #include <QFileInfo>
 #include <QFutureWatcher>
 #include <QMetaObject>
@@ -2046,9 +2047,9 @@ std::vector<RaceViewerSplit> BuildCheckpointSplits(
 }
 
 void UpdateRunPose(RaceViewerRun &run, qint64 timeMs) {
+    // A run waiting for its first frame keeps its last pose; the world origin
+    // is usually far outside the map.
     if (run.frames.empty()) {
-        run.position = {};
-        run.rotation = {};
         return;
     }
     const auto upper = std::lower_bound(
@@ -2079,6 +2080,13 @@ void UpdateRunPose(RaceViewerRun &run, qint64 timeMs) {
             after.position * blend;
     run.rotation = QQuaternion::slerp(
             before.rotation, after.rotation, blend);
+}
+
+// The same map can be named in several ways (relative, "..", Windows
+// backslashes). Comparing these raw strings made every search result look
+// like it belonged to another map and reloaded it, wiping the cars.
+QString CanonicalMapPath(const QString &path) {
+    return path.isEmpty() ? path : QDir::cleanPath(QFileInfo(path).absoluteFilePath());
 }
 
 // One color per restart, stable for the whole search.
@@ -3193,11 +3201,13 @@ void RaceViewerController::addSearchRun(
 }
 
 void RaceViewerController::applySearchRun(
-        const QString &packsDirectory, const QString &replayPath,
+        const QString &rawPacksDirectory, const QString &rawReplayPath,
         const std::vector<SearchTimelineFrame> &frames,
         const std::vector<SandboxInputEvent> &inputs, const QString &backendId,
         bool select, bool loadIfNeeded) {
     if (shuttingDown_) return;
+    const QString packsDirectory = CanonicalMapPath(rawPacksDirectory);
+    const QString replayPath = CanonicalMapPath(rawReplayPath);
     if (select) stopManualDrive();
     if (frames.empty()) {
         setStatusText(QStringLiteral("Best run produced no viewable frames."));
@@ -3234,8 +3244,8 @@ void RaceViewerController::applySearchRun(
 }
 
 void RaceViewerController::addSearchImprovement(
-        const QString &packsDirectory,
-        const QString &replayPath,
+        const QString &rawPacksDirectory,
+        const QString &rawReplayPath,
         const std::vector<SearchTimelineFrame> &frames,
         const QString &backendId,
         std::uint64_t searchId,
@@ -3243,6 +3253,8 @@ void RaceViewerController::addSearchImprovement(
         std::uint64_t restartNumber,
         std::chrono::steady_clock::time_point generatedAt) {
     if (shuttingDown_ || generatedAt <= previewClearedAt_) return;
+    const QString packsDirectory = CanonicalMapPath(rawPacksDirectory);
+    const QString replayPath = CanonicalMapPath(rawReplayPath);
     if (ImprovementPreviewBytes(frames.size()) > kMaximumLiveTrajectoryBytes) {
         setStatusText(QStringLiteral("Live trajectory exceeds the 64 MiB preview budget; saved results are unchanged."));
         return;
@@ -3961,17 +3973,50 @@ bool RaceViewerController::startSimulationDebugger() {
             loadedReplayPath_,
             simulationHorizonMs_,
             previewInputScript_);
+    if (!started) discardEmptyDebugRun();
     setStatusText(simulationDebugger_.statusText());
     return started;
 }
 
+void RaceViewerController::discardEmptyDebugRun() {
+    const auto debugRun = std::find_if(
+            runs_.begin(), runs_.end(), [](const RaceViewerRun &run) {
+                return run.id == QStringLiteral("debug");
+            });
+    if (debugRun == runs_.end() || !debugRun->frames.empty()) return;
+    const bool selected = selectedRunId_ == QStringLiteral("debug");
+    runs_.erase(debugRun);
+    emit runsChanged();
+    if (selected) {
+        const auto preview = std::find_if(
+                runs_.begin(), runs_.end(), [](const RaceViewerRun &run) {
+                    return run.id == QStringLiteral("preview");
+                });
+        selectedRunId_ = preview != runs_.end() ? preview->id
+                : runs_.empty() ? QString{} : runs_.front().id;
+        emit selectedRunChanged();
+    }
+    refreshSelectedRun();
+    emit timelineChanged();
+    emit timeChanged();
+}
+
 void RaceViewerController::stopSimulationDebugger() {
     if (!simulationDebugger_.active()) {
+        discardEmptyDebugRun();
         return;
     }
     pause();
     simulationDebugger_.stopSession();
+    discardEmptyDebugRun();
     setStatusText(QStringLiteral("Native source debugging stopped"));
+}
+
+bool RaceViewerController::isMapLoaded(const QString &packsDirectory,
+                                       const QString &replayPath) const {
+    return loaded_ && !loading_ &&
+            loadedPacksDirectory_ == CanonicalMapPath(packsDirectory) &&
+            loadedReplayPath_ == CanonicalMapPath(replayPath);
 }
 
 void RaceViewerController::setManualInput(const QString &input,
@@ -4704,8 +4749,10 @@ void RaceViewerController::scheduleInputPreviewRebuild() {
 
 void RaceViewerController::startInputPreviewBuild() {
     if (shuttingDown_) return;
+    // While a map loads, the loaded runtime and paths still belong to the old
+    // map; a build started now could hand that runtime to the new map.
     if (!inputPreviewBuildPending_ || inputPreviewThread_ != nullptr ||
-        !loaded_ || manualRuntime_ == nullptr || manualDriving_) {
+        !loaded_ || loading_ || manualRuntime_ == nullptr || manualDriving_) {
         return;
     }
     inputPreviewBuildPending_ = false;
@@ -4880,7 +4927,7 @@ void RaceViewerController::scheduleStoredRunRebuilds() {
 void RaceViewerController::startStoredRunRebuilds() {
     if (shuttingDown_) return;
     if (!storedRunBuildPending_ || storedRunThread_ != nullptr ||
-        !loaded_ || manualDriving_) {
+        !loaded_ || loading_ || manualDriving_) {
         return;
     }
     struct Job {
@@ -5048,10 +5095,12 @@ void RaceViewerController::loadMap(const QString &packsDirectory,
             QStringLiteral("optimized-cpu"));
 }
 
-void RaceViewerController::loadMap(const QString &packsDirectory,
-                                   const QString &replayPath,
+void RaceViewerController::loadMap(const QString &rawPacksDirectory,
+                                   const QString &rawReplayPath,
                                    const QString &backendId) {
     if (shuttingDown_) return;
+    const QString packsDirectory = CanonicalMapPath(rawPacksDirectory);
+    const QString replayPath = CanonicalMapPath(rawReplayPath);
     stopSimulationDebugger();
     stopManualDrive();
     const std::optional<PhysicsBackend> backend =
@@ -5060,8 +5109,19 @@ void RaceViewerController::loadMap(const QString &packsDirectory,
         setStatusText(QStringLiteral("Select a valid physics backend."));
         return;
     }
-    pendingRun_.reset();
-    pendingImprovements_.clear();
+    // Results waiting for this very map survive; results for another map
+    // would otherwise pull the viewer back to that map after this load.
+    if (pendingRun_ && (pendingRun_->packsDirectory != packsDirectory ||
+                        pendingRun_->replayPath != replayPath)) {
+        pendingRun_.reset();
+    }
+    pendingImprovements_.erase(
+            std::remove_if(pendingImprovements_.begin(), pendingImprovements_.end(),
+                           [&](const PendingImprovement &pending) {
+                               return pending.packsDirectory != packsDirectory ||
+                                       pending.replayPath != replayPath;
+                           }),
+            pendingImprovements_.end());
     if (workerThread_ != nullptr) {
         queuedMapLoad_ =
                 MapLoadRequest{packsDirectory, replayPath,
@@ -5074,10 +5134,12 @@ void RaceViewerController::loadMap(const QString &packsDirectory,
                  kAuxiliarySimulationBackend);
 }
 
-void RaceViewerController::beginMapLoad(const QString &packsDirectory,
-                                        const QString &replayPath,
+void RaceViewerController::beginMapLoad(const QString &rawPacksDirectory,
+                                        const QString &rawReplayPath,
                                         PhysicsBackend backend) {
     if (shuttingDown_) return;
+    const QString packsDirectory = CanonicalMapPath(rawPacksDirectory);
+    const QString replayPath = CanonicalMapPath(rawReplayPath);
     if (workerThread_ != nullptr) {
         queuedMapLoad_ =
                 MapLoadRequest{packsDirectory, replayPath, backend};
@@ -5186,12 +5248,16 @@ void RaceViewerController::applyLoadResult(
         pendingRun_.reset();
         pendingImprovements_.clear();
         setStatusText(result.error);
+        if (!queuedMapLoad_) setLoading(false);
         if (loaded_ && !queuedMapLoad_) {
             scheduleInputPreviewRebuild();
+            startStoredRunRebuilds();
         }
-        if (!queuedMapLoad_) setLoading(false);
         return;
     }
+    const bool sameMap = loaded_ &&
+            loadedPacksDirectory_ == result.packsDirectory &&
+            loadedReplayPath_ == result.replayPath;
     stopManualDrive();
 
     cancelRayTracingBuild();
@@ -5274,15 +5340,37 @@ void RaceViewerController::applyLoadResult(
     resetManualTakeoverState();
     simulationDebugger_.configure(QStringLiteral("Reference"));
     loaded_ = true;
-    runs_.clear();
-    selectedRunId_.clear();
+    // Reloading the same map keeps search results: runs with inputs are
+    // simulated again below, and improvement previews stay. Another map
+    // starts clean.
+    std::vector<RaceViewerRun> keptRuns;
+    if (sameMap) {
+        for (RaceViewerRun &run : runs_) {
+            if (run.id == QStringLiteral("preview") ||
+                run.id == QStringLiteral("debug") || run.inputs.empty()) {
+                continue;
+            }
+            run.runtime.reset();
+            keptRuns.push_back(std::move(run));
+        }
+    } else {
+        improvementPreviews_.clear();
+    }
+    const bool keptSelection = std::any_of(
+            keptRuns.begin(), keptRuns.end(),
+            [this](const RaceViewerRun &run) { return run.id == selectedRunId_; });
+    runs_ = std::move(keptRuns);
+    if (!keptSelection) selectedRunId_.clear();
     trajectoryPaths_.clear();
     inputPreviewGeometry_.clearMesh();
     bestTrajectoryGeometry_.clearMesh();
     inputPreviewVisible_ = false;
-    improvementPreviews_.clear();
     latestImprovementGeometry_.clearMesh();
     earlierImprovementGeometry_.clearMesh();
+    for (const RaceViewerRun &run : runs_) {
+        if (run.id == QStringLiteral("best")) updateBestTrajectory(run.name, run.frames);
+    }
+    if (!improvementPreviews_.empty()) rebuildImprovementTrajectories(true);
     durationMs_ = 0;
     const bool addingPendingRun =
             pendingRun_ &&
@@ -5300,6 +5388,7 @@ void RaceViewerController::applyLoadResult(
                     });
     applyPendingRunIfReady();
     scheduleInputPreviewRebuild();
+    if (!runs_.empty()) scheduleStoredRunRebuilds();
     const bool pendingImprovementsAdded =
             applyPendingImprovementsIfReady();
     if (!addingPendingImprovements ||
@@ -5317,7 +5406,12 @@ void RaceViewerController::applyLoadResult(
     emit trajectoriesChanged();
     emit timelineChanged();
     emit timeChanged();
-    if (!queuedMapLoad_) setLoading(false);
+    if (!queuedMapLoad_) {
+        setLoading(false);
+        // Builds requested during the load waited for it.
+        startInputPreviewBuild();
+        startStoredRunRebuilds();
+    }
     emit sceneChanged();
     emit stateChanged();
 }

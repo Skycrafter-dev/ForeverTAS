@@ -420,6 +420,9 @@ public slots:
     Q_INVOKABLE void setTrajectoryVisibleForRun(const QString &runId,
                                                 bool visible);
     Q_INVOKABLE bool hasPreviewTrajectories() const;
+    // True when this map is fully loaded, however its paths are spelled.
+    Q_INVOKABLE bool isMapLoaded(const QString &packsDirectory,
+                                 const QString &replayPath) const;
     void clearSearchResults();
     Q_INVOKABLE void refreshInputPreview();
     Q_INVOKABLE void focusInputPreview();
@@ -482,6 +485,7 @@ private:
             std::vector<RaceViewerFrame> frames);
     void rebuildImprovementTrajectories(bool earlierChanged);
     void updateImprovementCars();
+    void discardEmptyDebugRun();
     void updateBestTrajectory(
             const QString &name,
             const std::vector<RaceViewerFrame> &frames);

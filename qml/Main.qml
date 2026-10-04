@@ -3367,13 +3367,16 @@ ApplicationWindow {
                             }
                         }
 
+                        // Keyed by count, like the raster cars: a pose list
+                        // model would rebuild every car on each pose update.
                         Repeater3D {
-                            model: window.viewer.runPoses
+                            model: window.viewer.runCount
 
                             delegate: Node {
                                 id: throughCar
-                                required property var modelData
                                 required property int index
+                                readonly property var modelData:
+                                    window.viewer.runPoses[index]
                                 readonly property var layerStyle:
                                     window.visualStyle("car:" + modelData.id,
                                                        { color: window.runColor(index),

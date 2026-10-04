@@ -6376,8 +6376,17 @@ int main(int argc, char **argv) {
                             near(carAt(0), baselinePosition + QVector3D(7, 0, 4) + ellipsoidOffset) &&
                             viewer.improvementCars()->instanceColor(0).alphaF() < 0.5 &&
                             viewer.improvementCars()->instanceColor(ellipsoidCount).alphaF() > 0.99;
+                    // See-through cars must survive pose updates instead of
+                    // being rebuilt (and briefly dropped) on every tick.
+                    const QList<QObject *> throughCarsBefore =
+                            root->findChildren<QObject *>(QStringLiteral("throughRunCarRoot"));
                     viewer.setTimeMs(0);
                     QCoreApplication::processEvents();
+                    const QList<QObject *> throughCarsAfter =
+                            root->findChildren<QObject *>(QStringLiteral("throughRunCarRoot"));
+                    const bool throughCarsStable = !throughCarsBefore.isEmpty() &&
+                            throughCarsBefore == throughCarsAfter &&
+                            throughCarsAfter.size() >= viewer.runCount();
                     const QList<QObject *> carModels = root->findChildren<QObject *>(
                             QStringLiteral("improvementCarsFilledModel"));
                     const bool instancedCarsBound =
@@ -6393,17 +6402,18 @@ int main(int argc, char **argv) {
                                 return model->property("visible").toBool();
                             });
                     if (!(singleRestartValid && restartsValid && staleImprovementIgnored &&
-                          carsFollowPlayback && instancedCarsBound))
+                          carsFollowPlayback && instancedCarsBound && throughCarsStable))
                         std::cerr << "improvement previews: single=" << singleRestartValid
                                   << " restarts=" << restartsValid << " stale=" << staleImprovementIgnored
-                                  << " cars=" << carsFollowPlayback << " bound=" << instancedCarsBound << '\n';
+                                  << " cars=" << carsFollowPlayback << " bound=" << instancedCarsBound
+                                  << " throughCars=" << throughCarsStable << '\n';
                     const bool improvementTrajectoryUiValid =
                             bestToggleInitiallyVisible &&
                             bestToggleHidesOnlyBest &&
                             trajectoryVisibilityToggle == nullptr &&
                             singleRestartValid && restartsValid &&
                             staleImprovementIgnored && carsFollowPlayback &&
-                            instancedCarsBound &&
+                            instancedCarsBound && throughCarsStable &&
                             pathValue(improvementPaths, 1, "name").toString() ==
                                     QStringLiteral("Best") &&
                             pathValue(improvementPaths, 1, "runId").toString() ==

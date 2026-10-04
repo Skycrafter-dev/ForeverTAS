@@ -35,9 +35,8 @@ QMetaObject::Connection BindInputPreview(
         viewer.setPreviewInputScript(controller.baseInputScript());
         const bool hasPaths = !controller.packsDirectory().isEmpty() &&
                               !controller.replayPath().isEmpty();
-        if (hasPaths && (!viewer.loaded() || viewer.loading() ||
-                        viewer.loadedReplayPath() != controller.replayPath() ||
-                        viewer.loadedPacksDirectory() != controller.packsDirectory())) {
+        if (hasPaths && !viewer.isMapLoaded(controller.packsDirectory(),
+                                            controller.replayPath())) {
             viewer.loadMap(controller.packsDirectory(), controller.replayPath());
         } else {
             viewer.refreshInputPreview();

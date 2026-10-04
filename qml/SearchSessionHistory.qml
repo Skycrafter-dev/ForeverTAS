@@ -70,8 +70,7 @@ ColumnLayout {
         const replay = session && session.replayPath
             ? session.replayPath : controller.replayPath
         const needsMap = packs.length > 0 && replay.length > 0 &&
-            (!viewer.loaded || viewer.loading || viewer.loadedReplayPath !== replay ||
-             viewer.loadedPacksDirectory !== packs)
+            !viewer.isMapLoaded(packs, replay)
         if (needsMap)
             viewer.loadMap(packs, replay)
         else if (alreadySelected && viewer.loaded &&

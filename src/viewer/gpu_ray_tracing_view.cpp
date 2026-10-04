@@ -592,6 +592,9 @@ void GpuRayTracingView::setViewer(QObject *viewer) {
     if (viewer_) {
         connect(viewer_, &RaceViewerController::rayTracingSceneChanged,
                 this, [this]() { update(); });
+        // The traced selected car follows playback even with a still camera.
+        connect(viewer_, &RaceViewerController::poseChanged,
+                this, [this]() { if (active_) update(); });
         connect(viewer_, &RaceViewerController::sceneChanged, this, [this]() {
             if (active_ && supported()) viewer_->requestRayTracingScene();
             update();

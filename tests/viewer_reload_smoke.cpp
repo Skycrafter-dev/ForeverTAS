@@ -18,6 +18,9 @@ int main(int argc, char **argv) {
             QString::fromLocal8Bit(argv[3]),
             QString::fromLocal8Bit(argv[2])};
     int completedLoads = 0;
+    // Reloading the same map keeps search results, so the improvement
+    // preview survives until a different map is loaded.
+    bool improvementKept = true;
     bool loadInProgress = false;
     bool preservedSceneDuringReload = true;
     QObject *previousVisualGeometry = nullptr;
@@ -59,8 +62,8 @@ int main(int argc, char **argv) {
                         viewer.tickCount() > 1 &&
                         viewer.durationMs() > 0 &&
                         viewer.selectedRunId() == QStringLiteral("preview") &&
-                        viewer.trajectoryCount() ==
-                                (completedLoads == 0 ? 2 : 1) &&
+                        viewer.trajectoryCount() == (improvementKept ? 2 : 1) &&
+                        viewer.improvementCarCount() == (improvementKept ? 1 : 0) &&
                         viewer.visualTriangleCount() > 0 &&
                         viewer.visualMeshCount() > 0 &&
                         !viewer.visualMaterials().isEmpty() &&
@@ -85,6 +88,7 @@ int main(int argc, char **argv) {
 
                 ++completedLoads;
                 if (completedLoads < 3) {
+                    improvementKept &= replays[completedLoads] == replays[completedLoads - 1];
                     viewer.loadMap(packs, replays[completedLoads]);
                     const QObject *const publishedAfterRequest =
                             viewer.visualBatches()
