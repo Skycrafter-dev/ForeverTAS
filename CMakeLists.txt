@@ -228,6 +228,7 @@ add_library(forevertas_core STATIC
     src/searches/cuda_search_configuration.cpp
     src/searches/cuda_search_configuration.h
     src/searches/search_runner.cpp
+    src/searches/result_input_script.h
     src/time_format.h
     src/searches/search_runner.h)
 target_include_directories(forevertas_core PUBLIC
@@ -1002,6 +1003,10 @@ if(BUILD_TESTING)
         add_test(NAME forevertas-search-smoke
                  COMMAND forevertas-search-smoke
                      ${FOREVERTAS_SEARCH_SMOKE_ARGUMENTS})
+        add_test(NAME forevertas-finish-export
+                 COMMAND forevertas-search-smoke --finish-export-only
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-finish-export PROPERTIES TIMEOUT 120)
         if(FOREVERTAS_ENABLE_HIP)
             add_executable(forevertas-hip-search-parity
                 tests/hip_search_parity_tests.cpp)

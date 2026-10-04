@@ -5,6 +5,7 @@
 #include "searches/basic_brute_force_search.h"
 #include "searches/algorithm_registry.h"
 #include "searches/search_runner.h"
+#include "searches/result_input_script.h"
 
 #include <forevervalidator/native.h>
 #if FOREVERVALIDATOR_HAS_CUDA
@@ -1365,6 +1366,39 @@ bool CheckResizableCanonicalHorizon(const char *packsDirectory,
     return true;
 }
 
+bool CheckFinishExport(const char *packsDirectory, const char *replayPath) {
+    const auto base = forevertas::ExtractReplayInputScript(packsDirectory, replayPath);
+    const auto parsed = forevertas::ParseInputScript(base + "\n100.00 rel up");
+    if (!parsed) throw std::runtime_error(*parsed.error);
+    forevertas::SearchRequest request{packsDirectory, replayPath};
+    request.backend = forevertas::PhysicsBackend::OptimizedCpu;
+    request.simulationHorizonMs = 60000;
+    request.baseInputCommands = parsed.commands;
+    request.evaluationTarget = {forevertas::kPreciseFinishTimeEvaluationId, {}};
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 0;
+    control.sampleBestTimeline = false;
+    const auto result = forevertas::RunSearch(request, &control);
+    if (!result.bestState.raceCompleted) {
+        std::cerr << "finish export fixture did not complete\n";
+        return false;
+    }
+    const auto trimmed = forevertas::FormatResultInputScript(
+            result.bestInputs, request.evaluationTarget.id, result.bestState);
+    if (trimmed.find("100.00") != std::string::npos ||
+        request.baseInputCommands.size() != parsed.commands.size()) return false;
+    const auto trimmedCommands = forevertas::ParseInputScript(trimmed);
+    if (!trimmedCommands) throw std::runtime_error(*trimmedCommands.error);
+    request.baseInputCommands = trimmedCommands.commands;
+    const auto replayed = forevertas::RunSearch(request, &control);
+    if (result.bestState.finishTime != replayed.bestState.finishTime ||
+        result.bestEvaluationTimeMs != replayed.bestEvaluationTimeMs) {
+        std::cerr << "trimmed exported inputs changed the achieved finish\n";
+        return false;
+    }
+    return true;
+}
+
 bool CheckInputAfterHorizonAccepted(const char *packsDirectory,
                                     const char *replayPath) {
     forevertas::SearchRequest request{packsDirectory, replayPath};
@@ -1667,10 +1701,11 @@ bool CheckStandaloneChallengeFixture(
 }  // namespace
 
 int main(int argc, char **argv) {
+    const bool finishExportOnly = argc == 4 && std::string_view(argv[1]) == "--finish-export-only";
     const bool inputAfterHorizonOnly =
             argc == 4 &&
             std::string_view(argv[1]) == "--input-after-horizon-only";
-    if ((!inputAfterHorizonOnly && argc != 3 && argc != 5) ||
+    if ((!inputAfterHorizonOnly && !finishExportOnly && argc != 3 && argc != 5) ||
         (inputAfterHorizonOnly && argc != 4)) {
         std::cerr << "expected Packs directory, replay path, and optional "
                      "paired replay/challenge paths\n";
@@ -1678,6 +1713,7 @@ int main(int argc, char **argv) {
     }
 
     try {
+        if (finishExportOnly) return CheckFinishExport(argv[2], argv[3]) ? 0 : 1;
         if (inputAfterHorizonOnly) {
             return CheckInputAfterHorizonAccepted(argv[2], argv[3])
                     ? 0

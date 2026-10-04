@@ -5,6 +5,7 @@
 #include "physics_backend.h"
 #include "replay_file_io.h"
 #include "searches/algorithm_registry.h"
+#include "searches/result_input_script.h"
 #include "viewer/map_identity.h"
 
 #include <forevervalidator/experimental/physics_sandbox.h>
@@ -238,7 +239,8 @@ void SaveCycleResult(
     if (QFileInfo::exists(metadataPath) || QFileInfo::exists(inputPath)) {
         throw std::runtime_error("Restart result already exists; refusing to overwrite it");
     }
-    const std::string inputScript = FormatInputScript(result.bestInputs);
+    const std::string inputScript = FormatResultInputScript(
+            result.bestInputs, request.evaluationTarget.id, result.bestState);
     AtomicWrite(inputPath, QByteArray(inputScript.data(),
                                       static_cast<qsizetype>(inputScript.size())));
     QJsonObject metadata{

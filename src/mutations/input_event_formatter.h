@@ -45,7 +45,8 @@ InputScriptBaselineResult BuildInputScriptBaseline(
         std::uint32_t tickDurationMs);
 
 std::string FormatInputScript(
-        const std::vector<SandboxInputEvent> &events);
+        const std::vector<SandboxInputEvent> &events,
+        std::optional<std::uint64_t> lastSimulationInputTimeMs = std::nullopt);
 
 }  // namespace forevertas
 

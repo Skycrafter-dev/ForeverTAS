@@ -4,6 +4,7 @@
 #include "app/rolling_throughput.h"
 #include "app/search_session_store.h"
 #include "mutations/input_event_formatter.h"
+#include "searches/result_input_script.h"
 #include "time_format.h"
 
 #include <chrono>
@@ -339,7 +340,8 @@ void SearchWorker::run() {
             latestSource != live.winnerSource ||
             latestIteration != live.winningIterationIndex) {
             latestInputsText = QString::fromStdString(
-                    FormatInputScript(live.bestInputs));
+                    FormatResultInputScript(live.bestInputs, request_.evaluationTarget.id,
+                                            live.bestState));
             latestSource = live.winnerSource;
             latestIteration = live.winningIterationIndex;
             retainedResult = RetainedResult(live);
@@ -443,7 +445,8 @@ void SearchWorker::run() {
         auto completion = std::make_shared<SearchCompletion>();
         completion->summary = FormatResult(*result);
         completion->inputsText = QString::fromStdString(
-                FormatInputScript(result->bestInputs));
+                FormatResultInputScript(result->bestInputs, request_.evaluationTarget.id,
+                                        result->bestState));
         completion->packsDirectory =
                 FilePathFromUtf8(request_.packDirectory);
         completion->replayPath = FilePathFromUtf8(request_.replayPath);

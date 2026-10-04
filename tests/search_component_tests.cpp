@@ -14,6 +14,7 @@
 #include "searches/cuda_search_configuration.h"
 #include "searches/option_settings_utils.h"
 #include "searches/search_runner.h"
+#include "searches/result_input_script.h"
 #include "time_format.h"
 #include "speed_format.h"
 
@@ -1351,6 +1352,34 @@ bool TestInputScriptFormatting() {
             "input script formatting was incorrect or locale-sensitive");
 }
 
+bool TestFinishedResultInputExport() {
+    const std::vector<SandboxInputEvent> inputs{
+        Switch(100, SandboxInputAction::RaceRunning, true),
+        Switch(110, SandboxInputAction::Accelerate, true),
+        Steering(130, 32768), Switch(140, SandboxInputAction::Accelerate, false)};
+    PhysicsSandboxStateView state;
+    state.raceCompleted = true;
+    state.timeMs = 130;
+    state.finishTime = forevervalidator::FinishTimeEstimate{123456788, 123456789, 123456789};
+    const std::string expected = "0.00 press up\n0.02 steer 32768";
+    bool okay = Check(forevertas::FormatResultInputScript(
+            inputs, forevertas::kPreciseFinishTimeEvaluationId, state) == expected,
+            "finish export lost the triggering tick or retained late controls");
+    auto marked = inputs;
+    marked.insert(marked.begin() + 2, Switch(120, SandboxInputAction::FinishLine, true));
+    okay &= Check(forevertas::FormatResultInputScript(
+            marked, forevertas::kPreciseFinishTimeEvaluationId, state) == expected,
+            "stale structural finish marker truncated the achieved finish");
+    okay &= Check(forevertas::FormatResultInputScript(
+            inputs, forevertas::kVelocityEvaluationId, state) ==
+                    forevertas::FormatInputScript(inputs), "non-finish result was trimmed");
+    state.raceCompleted = false;
+    okay &= Check(forevertas::FormatResultInputScript(
+            inputs, forevertas::kPreciseFinishTimeEvaluationId, state) ==
+                    forevertas::FormatInputScript(inputs), "unfinished result was trimmed");
+    return okay;
+}
+
 bool TestInputScriptParsingAndBaseline() {
     const forevertas::InputScriptParseResult parsed =
             forevertas::ParseInputScript(
@@ -2446,6 +2475,7 @@ int main() {
             TestNonCanonicalModifierWindowFallback() &&
             TestModifierWindowBaselineGeneration() &&
             TestInputScriptFormatting() &&
+            TestFinishedResultInputExport() &&
             TestInputScriptParsingAndBaseline() &&
             TestAnalogInputRepresentation() &&
             TestKeyboardSteeringConversion() &&

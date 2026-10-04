@@ -393,7 +393,8 @@ InputScriptBaselineResult BuildInputScriptBaseline(
 }
 
 std::string FormatInputScript(
-        const std::vector<SandboxInputEvent> &events) {
+        const std::vector<SandboxInputEvent> &events,
+        std::optional<std::uint64_t> lastSimulationInputTimeMs) {
     std::vector<const SandboxInputEvent *> sortedEvents;
     sortedEvents.reserve(events.size());
     for (const SandboxInputEvent &event : events) {
@@ -423,8 +424,11 @@ std::string FormatInputScript(
         if (event.timeMs < startTimeMs) {
             continue;
         }
+        if (lastSimulationInputTimeMs &&
+            static_cast<std::uint64_t>(event.timeMs) > *lastSimulationInputTimeMs) break;
         if (event.action == SandboxInputAction::FinishLine) {
-            break;
+            if (!lastSimulationInputTimeMs) break;
+            continue;
         }
         std::string command;
         if ((event.action == SandboxInputAction::Steer ||
