@@ -1253,6 +1253,37 @@ int main(int argc, char **argv) {
     bool globalSettingsVisibleAcrossTabs =
             true;
     QQmlComponent inputsProbeComponent(&engine);
+    QQmlComponent timeWindowProbeComponent(&engine);
+    timeWindowProbeComponent.setData(R"QML(
+        import QtQuick
+        import "settings"
+        TimeWindowSettings {
+            width: 400
+            settings: ({ minTimeMs: "0", maxTimeMs: "1230", maxTimeMode: "fixed" })
+            updateSetting: function(key, value) {
+                const updated = Object.assign({}, settings)
+                updated[key] = value
+                settings = updated
+            }
+            readonly property string selectedMode: settings.maxTimeMode
+            readonly property string retainedMaximum: settings.maxTimeMs
+        }
+    )QML", QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_SOURCE_DIR "/qml/TimeWindowProbe.qml")));
+    std::unique_ptr<QObject> timeWindowProbe(timeWindowProbeComponent.create());
+    if (!timeWindowProbe) return 1;
+    auto *endMode = timeWindowProbe->findChild<QObject *>("timeWindowEndMode");
+    auto *maximumTime = timeWindowProbe->findChild<QObject *>("maximumTimeField");
+    if (!endMode || !maximumTime) return 1;
+    for (const int selection : {1, 0}) {
+        QQmlExpression choose(QQmlEngine::contextForObject(endMode), endMode,
+                QStringLiteral("currentIndex = %1; activated(%1)").arg(selection));
+        choose.evaluate();
+        QCoreApplication::processEvents();
+        globalSettingsVisibleAcrossTabs &= !choose.hasError() &&
+                timeWindowProbe->property("selectedMode") == (selection == 1 ? "horizon" : "fixed") &&
+                timeWindowProbe->property("retainedMaximum") == "1230" &&
+                maximumTime->property("visible").toBool() == (selection == 0);
+    }
     QQmlComponent unitsProbeComponent(&engine);
     unitsProbeComponent.setData(R"QML(
         import QtQuick

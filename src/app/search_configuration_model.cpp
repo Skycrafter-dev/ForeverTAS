@@ -67,7 +67,13 @@ QVariantMap ToVariantMap(const OptionSettings &settings) {
         values.insert(QString::fromStdString(key),
                       QString::fromStdString(value));
     }
+    if (settings.count("maxTimeMs")) values.insert(QStringLiteral("maxTimeMode"), QStringLiteral("fixed"));
     return values;
+}
+
+bool AcceptsOptionKey(const OptionSettings &defaults, const QString &key) {
+    return defaults.count(key.toStdString()) != 0 ||
+            (key == QLatin1String("maxTimeMode") && defaults.count("maxTimeMs") != 0);
 }
 
 QVariantMap ModifierPassValue(const ModifierRegistration &registration,
@@ -118,6 +124,11 @@ QVariantMap LoadOptionSettings(const QString &category,
             }
         }
         values.insert(qKey, value);
+    }
+    if (registration.defaultSettings.count("maxTimeMs")) {
+        values.insert(QStringLiteral("maxTimeMode"), storage.value(OptionSettingPath(
+                category, QString::fromStdString(registration.id), QStringLiteral("maxTimeMode")),
+                QStringLiteral("fixed")).toString());
     }
     return values;
 }
@@ -272,8 +283,7 @@ bool SearchConfigurationModel::setEvaluationTargetSetting(
     const EvaluationTargetRegistration *const registration =
             FindEvaluationTarget(evaluationTargetId_.toStdString());
     if (registration == nullptr ||
-        registration->defaultSettings.find(key.toStdString()) ==
-                registration->defaultSettings.end() ||
+        !AcceptsOptionKey(registration->defaultSettings, key) ||
         evaluationTargetSettings_.value(key).toString() == value) {
         return false;
     }
@@ -351,8 +361,7 @@ bool SearchConfigurationModel::setModifierPassSetting(
     const ModifierRegistration *const registration = FindModifier(
             pass.value(QStringLiteral("id")).toString().toStdString());
     if (registration == nullptr ||
-        registration->defaultSettings.find(key.toStdString()) ==
-                registration->defaultSettings.end()) {
+        !AcceptsOptionKey(registration->defaultSettings, key)) {
         return false;
     }
     QVariantMap settings =
@@ -408,8 +417,10 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
 
     const OptionSettings searchSettings =
             ToOptionSettings(searchAlgorithmSettings_);
-    const OptionSettings evaluationSettings =
-            ToOptionSettings(evaluationTargetSettings_);
+    const auto resolvedEvaluation = ResolveHorizonWindowSettings(
+            ToOptionSettings(evaluationTargetSettings_), tickDurationMs, simulationHorizonMs, false);
+    if (!resolvedEvaluation) return {{}, QStringLiteral("Select a valid evaluation end mode.")};
+    const OptionSettings &evaluationSettings = *resolvedEvaluation;
     if (const auto error = searchRegistration->validateSettings(
                 searchSettings, tickDurationMs)) {
         return {{}, QString::fromStdString(*error)};
@@ -436,8 +447,11 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
             return {{}, QStringLiteral("Modifier pass %1 has an invalid type.")
                                 .arg(index + 1)};
         }
-        const OptionSettings settings = ToOptionSettings(
-                pass.value(QStringLiteral("settings")).toMap());
+        const auto resolved = ResolveHorizonWindowSettings(ToOptionSettings(
+                pass.value(QStringLiteral("settings")).toMap()),
+                tickDurationMs, simulationHorizonMs, true);
+        if (!resolved) return {{}, QStringLiteral("Modifier pass %1: select a valid end mode.").arg(index + 1)};
+        const OptionSettings &settings = *resolved;
         if (const auto error = registration->validateSettings(
                     settings, tickDurationMs)) {
             return {{}, QStringLiteral("Modifier pass %1: %2")
@@ -521,9 +535,7 @@ void SearchConfigurationModel::loadModifierPasses() {
             for (auto iterator = storedSettings.constBegin();
                  iterator != storedSettings.constEnd();
                  ++iterator) {
-                if (registration->defaultSettings.find(
-                            iterator.key().toStdString()) ==
-                    registration->defaultSettings.end()) {
+                if (!AcceptsOptionKey(registration->defaultSettings, iterator.key())) {
                     continue;
                 }
                 settings.insert(iterator.key(), iterator.value().toString());

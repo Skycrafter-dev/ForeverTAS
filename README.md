@@ -130,6 +130,11 @@ structural events in that event limit; GPU pipelines also account for events
 added by every modifier. Exceeding a limit reports an error rather than truncating
 controls. Reduce input density or insertion/deformation settings to continue.
 
+Time windows offer an explicit Until horizon
+end mode that follows the configured search end. At time preserves literal
+zero and retains the last fixed end when switching modes. Modifier windows use
+the last input tick that can affect that horizon.
+
 The optional Conditions script filters which simulated ticks are eligible for
 the selected evaluation target. Each non-empty line is an ANDed comparison;
 it supports the BfV2 car, previous-car, wheel, and search-state variables,

@@ -28,7 +28,7 @@ Rectangle {
     property string poseRowSignature: ""
     readonly property var rowInputs: !viewer || !controller ? [] : [
         viewer.runOptions, viewer.trajectoryPaths, viewer.selectedRunId,
-        controller.evaluationTargetId, controller.modifierPasses,
+        controller.evaluationTargetId, controller.modifierPasses, controller.simulationHorizonMs,
         controller.drawTargetsThroughBlocks
     ]
     readonly property var visibleRows: {
@@ -166,7 +166,9 @@ Rectangle {
             result.push(makeLayer("evaluation:window", qsTr("Evaluation window"),
                               "window", "#80e0b4", 4, true,
                               Number(evaluation.minTimeMs),
-                              Number(evaluation.maxTimeMs), selectedRun))
+                              evaluation.maxTimeMode === "horizon"
+                                  ? Number(controller.simulationHorizonMs)
+                                  : Number(evaluation.maxTimeMs), selectedRun))
             const targetId = controller.evaluationTargetId
             const eventId = targetId === "precise-finish-time"
                 ? "target:finish"
@@ -190,7 +192,9 @@ Rectangle {
                                   qsTr("Pass %1").arg(index + 1), "window",
                                   colors[index % colors.length], 2, true,
                                   Number(pass.settings.minTimeMs),
-                                  Number(pass.settings.maxTimeMs), selectedRun))
+                                  pass.settings.maxTimeMode === "horizon"
+                                      ? Math.max(0, Number(controller.simulationHorizonMs) - viewer.tickDurationMs)
+                                      : Number(pass.settings.maxTimeMs), selectedRun))
             }
             result.push(makeGroup(qsTr("Simulation")))
             result.push(makeLayer("simulation:horizon",

@@ -502,6 +502,8 @@ qint64 SearchController::requiredSimulationHorizonMs() const {
     bool representable = true;
     const auto include = [&](const QVariantMap &settings, bool inputTime) {
         for (const char *key : {"minTimeMs", "maxTimeMs", "targetTimeMs"}) {
+            if (QLatin1String(key) == QLatin1String("maxTimeMs") &&
+                settings.value("maxTimeMode").toString() == QLatin1String("horizon")) continue;
             bool valid = false;
             qint64 time = settings.value(QString::fromLatin1(key)).toLongLong(&valid);
             if (!valid || time < 0) continue;

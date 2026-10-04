@@ -225,6 +225,54 @@ bool TestTargetVisibilityPersistence() {
                  "draw-through target rendering was not persisted");
 }
 
+bool TestUntilHorizonMode() {
+    QSettings().clear();
+    forevertas::app::SearchConfigurationModel configuration;
+    configuration.setModifierPassSetting(0, "minTimeMs", "0");
+    configuration.setModifierPassSetting(0, "maxTimeMs", "invalid retained draft");
+    configuration.setModifierPassSetting(0, "maxTimeMode", "horizon");
+    bool okay = true;
+    for (const auto &target : forevertas::EvaluationTargetRegistry()) {
+        if (!target.defaultSettings.count("maxTimeMs")) continue;
+        configuration.setEvaluationTargetId(QString::fromStdString(target.id));
+        configuration.setEvaluationTargetSetting("minTimeMs", "0");
+        configuration.setEvaluationTargetSetting("maxTimeMs", "0");
+        configuration.setEvaluationTargetSetting("maxTimeMode", "horizon");
+        for (const auto horizon : {2000u, 3000u}) {
+            const auto checked = configuration.validate(10, horizon);
+            if (!Check(checked.configuration.has_value(), "until-horizon target did not validate"))
+                return false;
+            okay &= Check(checked.configuration->evaluationTarget.settings.at("maxTimeMs") ==
+                                  std::to_string(horizon) &&
+                          checked.configuration->modifiers.front().settings.at("maxTimeMs") ==
+                                  std::to_string(horizon - 10) &&
+                          !checked.configuration->evaluationTarget.settings.count("maxTimeMode"),
+                          "horizon mode did not resolve at the request boundary");
+        }
+    }
+    configuration.setEvaluationTargetId("velocity");
+    for (const auto &modifier : forevertas::ModifierRegistry()) {
+        configuration.setModifierPassId(0, QString::fromStdString(modifier.id));
+        configuration.setModifierPassSetting(0, "minTimeMs", "0");
+        configuration.setModifierPassSetting(0, "maxTimeMs", "0");
+        configuration.setModifierPassSetting(0, "maxTimeMode", "horizon");
+        const auto checked = configuration.validate(10, 2000);
+        okay &= Check(checked.configuration &&
+                              checked.configuration->modifiers.front().settings.at("maxTimeMs") == "1990",
+                      "modifier horizon mode was not bounded in user input time");
+    }
+    forevertas::app::SearchConfigurationModel restored;
+    okay &= Check(restored.modifierPasses() == configuration.modifierPasses() &&
+                          restored.evaluationTargetSettings() == configuration.evaluationTargetSettings(),
+                  "horizon mode did not persist");
+    restored.setEvaluationTargetSetting("minTimeMs", "1000");
+    restored.setEvaluationTargetSetting("maxTimeMode", "fixed");
+    okay &= Check(!restored.validate(10, 2000).configuration &&
+                          restored.evaluationTargetSettings().value("maxTimeMs").toString() == "0",
+                  "literal zero was reinterpreted as a horizon sentinel");
+    return okay;
+}
+
 bool TestDisabledModifierPasses() {
     QSettings().clear();
     forevertas::app::SearchConfigurationModel configuration;
@@ -2561,6 +2609,7 @@ int main(int argc, char **argv) {
     bool okay = TestCompactNumberFormatting() &&
             TestAutomaticSeedRandomization() &&
             TestTargetVisibilityPersistence() &&
+            TestUntilHorizonMode() &&
             TestDisabledModifierPasses() &&
             TestExplicitHorizonExtension() &&
             TestAbsoluteTargetPlacement() &&

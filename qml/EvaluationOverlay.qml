@@ -12,6 +12,9 @@ Item {
     property bool suppressed: false
     readonly property string targetId: controller.evaluationTargetId
     readonly property var settings: controller.evaluationTargetSettings
+    readonly property real evaluationMaximum: settings.maxTimeMode === "horizon"
+        ? Number(controller.simulationHorizonMs) : Number(settings.maxTimeMs)
+    onEvaluationMaximumChanged: Qt.callLater(refreshSummary)
     readonly property var samples: {
         const selected = viewer.selectedRunId
         const runs = viewer.runOptions
@@ -213,7 +216,7 @@ Item {
 
     function insideWindow(time) {
         return time >= Number(settings.minTimeMs)
-               && time <= Number(settings.maxTimeMs)
+               && time <= evaluationMaximum
     }
 
     function sampleAt(time) {
@@ -697,7 +700,10 @@ Item {
             : controller.modifierPasses[index]?.settings
         return settingsForRange
             ? [Number(settingsForRange.minTimeMs),
-               Number(settingsForRange.maxTimeMs)] : [-1, -1]
+               settingsForRange.maxTimeMode === "horizon"
+                   ? Math.max(0, Number(controller.simulationHorizonMs)
+                              - (kind === "modifier" ? viewer.tickDurationMs : 0))
+                   : Number(settingsForRange.maxTimeMs)] : [-1, -1]
     }
 
     function horizonTime() {
@@ -899,6 +905,12 @@ Item {
                    Number(controller.modifierPasses[hit.index]
                           .settings.maxTimeMs)]
             const set = (key, value) => {
+                if (key === "maxTimeMs") {
+                    if (hit.kind === "evaluation")
+                        controller.setEvaluationTargetSetting("maxTimeMode", "fixed")
+                    else
+                        controller.setModifierPassSetting(hit.index, "maxTimeMode", "fixed")
+                }
                 if (hit.kind === "evaluation")
                     controller.setEvaluationTargetSetting(key, String(value))
                 else

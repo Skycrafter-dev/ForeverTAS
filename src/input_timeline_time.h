@@ -74,6 +74,25 @@ inline std::optional<OptionSettings> SimulationInputSettingsFromUserTimeline(
     return simulationSettings;
 }
 
+inline std::optional<OptionSettings> ResolveHorizonWindowSettings(
+        const OptionSettings &settings, std::uint32_t tickDurationMs,
+        std::int64_t simulationHorizonMs, bool inputTime) {
+    OptionSettings resolved = settings;
+    const auto mode = resolved.find("maxTimeMode");
+    if (mode == resolved.end()) return resolved;
+    if (mode->second != "fixed" && mode->second != "horizon") return std::nullopt;
+    if (mode->second == "horizon") {
+        const auto maximum = resolved.find("maxTimeMs");
+        if (maximum == resolved.end() || tickDurationMs == 0u ||
+            simulationHorizonMs < tickDurationMs) return std::nullopt;
+        maximum->second = std::to_string(inputTime
+                ? UserTimelineTimeFromSimulationTime(simulationHorizonMs, tickDurationMs)
+                : simulationHorizonMs);
+    }
+    resolved.erase(mode);
+    return resolved;
+}
+
 inline OptionSettings ClampInputWindowToSimulationHorizon(
         const OptionSettings &userSettings,
         std::uint32_t tickDurationMs,

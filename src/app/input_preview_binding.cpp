@@ -28,6 +28,8 @@ QMetaObject::Connection BindInputPreview(
             for (const QString &key : {QStringLiteral("minTimeMs"),
                                        QStringLiteral("maxTimeMs"),
                                        QStringLiteral("targetTimeMs")}) {
+                if (key == QLatin1String("maxTimeMs") &&
+                    settings.value("maxTimeMode").toString() == QLatin1String("horizon")) continue;
                 bool valid = false;
                 const qint64 time = settings.value(key).toLongLong(&valid);
                 if (valid && time >= 0 && time <= kMaximumSimulationHorizonMs)

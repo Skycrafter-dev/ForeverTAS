@@ -18,6 +18,16 @@ ColumnLayout {
     Layout.fillWidth: true
     spacing: 6
 
+    SettingCombo {
+        comboObjectName: "timeWindowEndMode"
+        label: qsTr("End")
+        options: [ { label: qsTr("At time"), value: "fixed" },
+                   { label: qsTr("Until horizon"), value: "horizon" } ]
+        value: root.settings.maxTimeMode ?? "fixed"
+        running: root.running
+        onSelected: value => root.updateSetting("maxTimeMode", value)
+    }
+
     SettingTextField {
         fieldObjectName: "minimumTimeField"
         label: root.minimumLabel
@@ -36,6 +46,7 @@ ColumnLayout {
 
     SettingTextField {
         fieldObjectName: "maximumTimeField"
+        visible: (root.settings.maxTimeMode ?? "fixed") === "fixed"
         label: root.maximumLabel
         value: root.settings[root.maximumKey] ?? ""
         running: root.running
@@ -59,6 +70,7 @@ ColumnLayout {
             text: qsTr("Full run")
             enabled: !root.running && root.viewer && root.viewer.loaded
             onClicked: {
+                root.updateSetting("maxTimeMode", "fixed")
                 root.updateSetting(root.minimumKey, "0")
                 root.updateSetting(root.maximumKey,
                                    String(Math.floor(
@@ -72,6 +84,7 @@ ColumnLayout {
             text: qsTr("Now to end")
             enabled: !root.running && root.viewer && root.viewer.loaded
             onClicked: {
+                root.updateSetting("maxTimeMode", "fixed")
                 root.updateSetting(root.minimumKey,
                                    String(root.viewer.currentTick
                                           * root.viewer.tickDurationMs))
