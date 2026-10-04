@@ -372,25 +372,22 @@ int main(int argc, char **argv) {
     forevertas::app::SearchController controller;
     forevertas::viewer::RaceViewerController viewer;
     forevertas::app::BindInputPreview(controller, viewer);
+    // The preview extent is its own setting: search end edits never move it,
+    // and an invalid extent keeps the last valid one.
     const QString savedPreviewHorizon = controller.simulationHorizonMs();
-    const QVariantMap savedPreviewPass = controller.modifierPasses().front()
-            .toMap().value(QStringLiteral("settings")).toMap();
-    controller.setModifierPassSetting(0, "minTimeMs", "20");
-    controller.setModifierPassSetting(0, "maxTimeMs", "40");
+    const QString savedPreviewExtent = controller.previewExtentMs();
+    controller.setPreviewExtentMs("4000");
     controller.setSimulationHorizonMs("10");
-    const bool invalidHorizonRemainsEditable =
-            controller.simulationHorizonMs() == "10" &&
-            viewer.simulationHorizonMs() >= 40;
-    controller.setModifierPassSetting(0, "maxTimeMs", "60");
-    if (!invalidHorizonRemainsEditable || viewer.simulationHorizonMs() < 60 ||
-        controller.simulationHorizonMs() != "10") {
-        std::cerr << "Invalid search horizon hid editable preview ranges\n";
+    const bool previewIndependent = savedPreviewExtent == savedPreviewHorizon &&
+            viewer.simulationHorizonMs() == 4000 && controller.simulationHorizonMs() == "10";
+    controller.setPreviewExtentMs("4005");
+    const bool invalidExtentKept = viewer.simulationHorizonMs() == 4000;
+    controller.setPreviewExtentMs("2500");
+    if (!previewIndependent || !invalidExtentKept || viewer.simulationHorizonMs() != 2500) {
+        std::cerr << "Preview extent did not follow its own setting independently of Search end\n";
         return 1;
     }
-    controller.setModifierPassSetting(0, "minTimeMs",
-            savedPreviewPass.value("minTimeMs").toString());
-    controller.setModifierPassSetting(0, "maxTimeMs",
-            savedPreviewPass.value("maxTimeMs").toString());
+    controller.setPreviewExtentMs(savedPreviewExtent);
     controller.setSimulationHorizonMs(savedPreviewHorizon);
 #if defined(Q_OS_LINUX)
     const bool nativeBrowseDialogsValid =
@@ -1355,7 +1352,7 @@ int main(int argc, char **argv) {
                                   Q_ARG(QVariant, true));
         passiveHistoryValid &= v->property("previewInputScript") == "winner0" &&
                 v->property("previewingHistory").toBool() &&
-                v->property("simulationHorizonMs").toInt() == 4000;
+                v->property("simulationHorizonMs").toInt() == 1000;
         QMetaObject::invokeMethod(c, "addCycle");
         QCoreApplication::processEvents();
         passiveHistoryValid &= v->property("previewInputScript") == "winner0" &&

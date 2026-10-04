@@ -62,8 +62,6 @@ ColumnLayout {
                 break
             }
         }
-        if (session && Number(session.horizonMs) > 0)
-            viewer.simulationHorizonMs = Number(session.horizonMs)
         const inputScript = controller.selectedInputsText
         const alreadySelected = viewer.previewInputScript === inputScript
         viewer.previewInputScript = inputScript

@@ -81,8 +81,9 @@ The application persists paths, the script draft, selections, pass
 order, the user-owned **Search end** (simulation horizon), and every option-owned
 configuration with the platform-native Qt settings store. That horizon bounds
 search and CPU/GPU execution; commands after it remain editable but unexecuted.
-The editing preview can expand to show configured target/pass windows, without
-changing the search bound. **Extend search** explicitly raises the bound to
+The viewer's **Preview extent** is a separate saved value that starts at the
+search end and only changes when you edit it; it bounds base, history and best
+previews, never the search. **Extend search** explicitly raises the bound to
 include the configured endpoints, including the input-to-simulation tick offset.
 It never shortens a manually chosen horizon. Modifier time windows that extend
 past the search bound are otherwise limited to the last executable input tick.
@@ -127,7 +128,7 @@ trajectories, input previews, and stored-run rebuilds always use optimized CPU,
 regardless of the selected backend for bulk search attempts. The separate
 reference-engine Code debugger is diagnostic, not a search preview. Viewable
 input-backed runs keep physics snapshots at one-second
-intervals, so edits and Simulation-horizon changes resume from the latest valid
+intervals, so edits and Preview extent changes resume from the latest valid
 snapshot rather than replaying the whole run from zero.
 
 Input scripts are limited to 1,048,576 commands and 128 MiB. Baselines include

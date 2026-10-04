@@ -123,6 +123,7 @@ bool TestBasePreviewReturn(const QString &packs, const QString &replay) {
     controller.setPacksDirectory(packs);
     controller.setReplayPath(replay);
     controller.setSimulationHorizonMs("1000");
+    controller.setPreviewExtentMs("1000");
     controller.setModifierPassSetting(0, "minTimeMs", "0");
     controller.setModifierPassSetting(0, "maxTimeMs", "990");
     controller.setEvaluationTargetSetting("minTimeMs", "0");

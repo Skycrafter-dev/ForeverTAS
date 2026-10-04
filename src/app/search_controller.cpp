@@ -41,6 +41,7 @@ constexpr char kReplayPathKey[] = "paths/replayPath";
 constexpr char kBaseInputScriptKey[] = "inputs/baseScript";
 constexpr char kSimulationBackendKey[] = "selection/simulationBackend";
 constexpr char kSimulationHorizonKey[] = "search/simulationHorizonMs";
+constexpr char kPreviewExtentKey[] = "viewer/previewExtentMs";
 constexpr char kConditionScriptKey[] = "search/conditionScript";
 constexpr char kCpuWorkerCountKey[] = "backends/cpu/workerCount";
 constexpr char kCudaParallelSampleCountKey[] =
@@ -263,6 +264,12 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
         QSettings().setValue(
                 QLatin1String(kSimulationHorizonKey),
                 simulationHorizonMs_);
+    }
+    // The preview extent starts at the search end once, then only changes
+    // when the user edits it.
+    previewExtentMs_ = StoredValue(kPreviewExtentKey, simulationHorizonMs_);
+    if (!QSettings().contains(QLatin1String(kPreviewExtentKey))) {
+        QSettings().setValue(QLatin1String(kPreviewExtentKey), previewExtentMs_);
     }
     cpuWorkerCount_ = StoredValue(
             kCpuWorkerCountKey,
@@ -977,6 +984,13 @@ void SearchController::setSimulationHorizonMs(const QString &value) {
     persist(kSimulationHorizonKey, value);
     emit simulationHorizonMsChanged();
     refreshValidation();
+}
+
+void SearchController::setPreviewExtentMs(const QString &value) {
+    if (previewExtentMs_ == value) return;
+    previewExtentMs_ = value;
+    persist(kPreviewExtentKey, value);
+    emit previewExtentMsChanged();
 }
 
 void SearchController::setConditionScript(const QString &value) {

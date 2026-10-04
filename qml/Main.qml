@@ -5130,12 +5130,21 @@ ApplicationWindow {
                                 window.controller.simulationHorizonMs = value
                         }
 
-                        Label {
-                            Layout.fillWidth: true
-                            text: qsTr("Preview extent: %1").arg(
-                                      DurationDisplay.text(window.viewer.simulationHorizonMs))
-                            color: AppTheme.textMuted
-                            wrapMode: Text.WordWrap
+                        DurationField {
+                            objectName: "previewExtentSettings"
+                            fieldObjectName: "previewExtentField"
+                            label: qsTr("Preview extent")
+                            info: qsTr("How far the viewer simulates your inputs, "
+                                       + "including history and best runs. It does "
+                                       + "not change how far the search simulates "
+                                       + "(Search end).")
+                            value: window.controller.previewExtentMs
+                            minimum: 10
+                            maximum: 2147481040
+                            dragStep: 1000
+                            liveScrub: false
+                            onEdited: value =>
+                                window.controller.previewExtentMs = value
                         }
                         ThemedButton {
                             objectName: "extendSearchHorizonButton"

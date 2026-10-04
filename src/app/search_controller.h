@@ -50,6 +50,8 @@ class SearchController final : public QObject {
                        setSimulationBackendId NOTIFY simulationBackendIdChanged)
     Q_PROPERTY(QString simulationHorizonMs READ simulationHorizonMs WRITE
                        setSimulationHorizonMs NOTIFY simulationHorizonMsChanged)
+    Q_PROPERTY(QString previewExtentMs READ previewExtentMs WRITE
+                       setPreviewExtentMs NOTIFY previewExtentMsChanged)
     Q_PROPERTY(qint64 requiredSimulationHorizonMs READ requiredSimulationHorizonMs
                        NOTIFY requiredSimulationHorizonMsChanged)
     Q_PROPERTY(QString conditionScript READ conditionScript WRITE
@@ -182,6 +184,7 @@ public:
     QVariantList simulationBackendOptions() const;
     QString simulationBackendId() const;
     QString simulationHorizonMs() const;
+    QString previewExtentMs() const { return previewExtentMs_; }
     qint64 requiredSimulationHorizonMs() const;
     QString conditionScript() const;
     QString cpuWorkerCount() const;
@@ -259,6 +262,7 @@ public slots:
     void setBaseInputScript(const QString &value);
     void setSimulationBackendId(const QString &value);
     void setSimulationHorizonMs(const QString &value);
+    void setPreviewExtentMs(const QString &value);
     void setConditionScript(const QString &value);
     void setCpuWorkerCount(const QString &value);
     void setCudaParallelSampleCount(const QString &value);
@@ -324,6 +328,7 @@ signals:
     void replayInputStateChanged();
     void simulationBackendIdChanged();
     void simulationHorizonMsChanged();
+    void previewExtentMsChanged();
     void conditionScriptChanged();
     void requiredSimulationHorizonMsChanged();
     void cpuWorkerCountChanged();
@@ -418,6 +423,8 @@ private:
     PhysicsBackend simulationBackend_ = PhysicsBackend::Reference;
     QString simulationHorizonMs_ = QString::number(
             kDefaultSimulationHorizonMs);
+    // How far the viewer previews inputs; independent of the search end.
+    QString previewExtentMs_;
     QString conditionScript_;
     QString cpuWorkerCount_ = QString::number(DefaultCpuWorkerCount());
     QString cudaParallelSampleCount_ = QString::number(

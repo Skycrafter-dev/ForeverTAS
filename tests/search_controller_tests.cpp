@@ -1209,6 +1209,16 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     okay &= Check(controller.simulationHorizonMs() ==
                           QStringLiteral("6000"),
                   "Simulation horizon did not default to 6000 ms");
+    okay &= Check(controller.previewExtentMs() == QStringLiteral("6000"),
+                  "Preview extent did not start at the search end");
+    controller.setPreviewExtentMs(QStringLiteral("2500"));
+    {
+        SearchController restored;
+        okay &= Check(restored.previewExtentMs() == QStringLiteral("2500") &&
+                              restored.simulationHorizonMs() == QStringLiteral("6000"),
+                      "Preview extent was not saved independently of the search end");
+    }
+    controller.setPreviewExtentMs(QStringLiteral("6000"));
     controller.setSimulationHorizonMs(QStringLiteral("5999"));
     okay &= Check(!controller.canStart() &&
                           controller.validationMessage().contains(
