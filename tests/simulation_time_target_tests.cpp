@@ -1,8 +1,12 @@
 #include "conditions/condition_program.h"
 #include "evaluators/scripted_target_evaluator.h"
 #include "mutations/random_steering_mutator.h"
+#include "mutations/input_insertion_mutator.h"
 #include "mutations/replay_input_script.h"
 #include "searches/search_runner.h"
+#include "replay_file_io.h"
+#include "mutations/modifier_utils.h"
+#include <forevervalidator/native.h>
 
 #include <iostream>
 #include <stdexcept>
@@ -90,7 +94,72 @@ int main(int argc, char **argv) {
                 }
             }
             std::cout << PhysicsBackendId(backend) << ": " << cases.size() << " simulation-time/lap target cases passed\n";
+            {
+                SearchRequest insertion(argv[1], argv[2]);
+                insertion.backend = backend;
+                insertion.parallelSampleCount = IsGpuBackend(backend) ? 4u : 1u;
+                insertion.simulationHorizonMs = 200;
+                insertion.baseInputCommands = ParseInputScript("0.00 steer 0\n0.00 press up").commands;
+                auto modifier = DefaultInputInsertionSettings();
+                modifier["minTimeMs"] = modifier["maxTimeMs"] = "100";
+                modifier["steerMode"] = "absolute";
+                modifier["steerAbsoluteMin"] = modifier["steerAbsoluteMax"] = "0";
+                modifier["steerMinCount"] = modifier["steerMaxCount"] = "1";
+                modifier["steerMaxHoldMs"] = "0";
+                insertion.modifiers = {{kInputInsertionModifierId, modifier}};
+                auto objective = DefaultScriptedTargetOptionSettings();
+                objective["script"] = "max time.ms";
+                objective["maxTimeMs"] = "200";
+                insertion.evaluationTarget = {kScriptedTargetEvaluationId, objective};
+                SearchRunControl control;
+                control.iterationLimit = 4;
+                control.sampleBestTimeline = false;
+                const auto result = RunSearch(insertion, &control);
+                if (result.totalMutationCount != 0 || result.iterations != 4)
+                    throw std::runtime_error(std::string(PhysicsBackendId(backend)) + ": redundant insertions were counted as mutations");
+            }
             if (IsGpuBackend(backend)) {
+                using namespace forevervalidator;
+                using namespace forevervalidator::experimental;
+                const auto require = [](auto result) {
+                    if (!result) throw std::runtime_error("GPU insertion fixture setup failed: " + result.Error().diagnostic);
+                    return std::move(result).Value();
+                };
+                ReplayIdentity identity{argv[2]};
+                const auto bytes = require(ReadReplayFileUtf8(argv[2], identity));
+                PhysicsSandboxOptions options;
+                options.backend = ToForeverValidatorBackend(backend);
+                options.timelineMode = PhysicsSandboxTimelineMode::Canonical;
+                options.simulationHorizonMs = 200;
+                auto sandbox = require(CreatePhysicsSandbox(require(OpenInstalledPackDirectory(argv[1])), options));
+                require(sandbox.LoadReplay({bytes.data(), bytes.size()}, identity));
+                const auto fixed = require(sandbox.ReadInputs());
+                PhysicsSandboxCudaInputInsertionModifier insertion;
+                insertion.window.minimumTimeMs = insertion.window.maximumTimeMs = 100;
+                insertion.steering = {true, 1, 1, 0};
+                insertion.steeringAbsoluteMinimum = insertion.steeringAbsoluteMaximum = 0;
+                PhysicsSandboxCudaSearchConfiguration configuration;
+                configuration.maximumBatchSize = 4;
+                configuration.earliestMutationTimeMs = 10;
+                configuration.evaluationStartTimeMs = 10;
+                configuration.evaluationEndTimeMs = 200;
+                configuration.modifiers = {insertion};
+                configuration.evaluator = PhysicsSandboxCudaVelocityEvaluator{};
+                for (const bool legacy : {false, true}) {
+                    configuration.useLegacyMutationPipelineForTesting = legacy;
+                    for (int variant = 0; variant < 4; ++variant) {
+                        auto inputs = fixed;
+                        inputs.push_back(AnalogEvent(0, SandboxInputAction::Steer, variant == 1 ? 65536 : 0));
+                        if (variant >= 2) inputs.push_back(SwitchEvent(variant == 2 ? 0 : 300,
+                                SandboxInputAction::SteerRight, false));
+                        require(sandbox.ReplaceInputs(inputs));
+                        auto session = require(CreatePhysicsSandboxCudaSearchSession(sandbox, configuration));
+                        require(session.EvaluateBaseline());
+                        const auto batch = require(session.RunBatch(0, 4));
+                        if ((batch.totalMutationCount == 0) != (variant == 0))
+                            throw std::runtime_error("sparse/materialized insertion pruning lost a release or ignored digital steering");
+                    }
+                }
                 SearchRequest safety(argv[1], argv[2]);
                 safety.backend = backend;
                 safety.parallelSampleCount = UINT32_MAX;

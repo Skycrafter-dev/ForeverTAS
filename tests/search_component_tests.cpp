@@ -1093,7 +1093,8 @@ std::vector<SandboxInputEvent> ModifierParityBaseline() {
 bool CheckCompositeWindowParity(
         const std::vector<ModifierParitySpec> &specs,
         std::uint64_t iterationCount,
-        const char *diagnostic) {
+        const char *diagnostic,
+        bool pruneRedundantAnalogInsertions = false) {
     const std::vector<SandboxInputEvent> baseline =
             ModifierParityBaseline();
     std::unique_ptr<forevertas::CompositeInputMutator> legacy =
@@ -1111,7 +1112,8 @@ bool CheckCompositeWindowParity(
                  10u,
                  mutableFromTimeMs,
                  false,
-                 0u});
+                 0u,
+                 pruneRedundantAnalogInsertions});
         const MutationResult window = optimized->Mutate(
                 {baseline,
                  iteration,
@@ -1119,7 +1121,8 @@ bool CheckCompositeWindowParity(
                  10u,
                  mutableFromTimeMs,
                  true,
-                 0u});
+                 0u,
+                 pruneRedundantAnalogInsertions});
         if (!window.windowPatch) {
             std::cerr << diagnostic << " did not return a window patch\n";
             return false;
@@ -2599,12 +2602,69 @@ bool TestScriptedTarget() {
     return okay;
 }
 
+bool TestRedundantSteeringInsertion() {
+    const auto *registration = forevertas::FindModifier(forevertas::kInputInsertionModifierId);
+    auto settings = registration->defaultSettings;
+    settings["minTimeMs"] = settings["maxTimeMs"] = "100";
+    settings["steerMode"] = "absolute";
+    settings["steerAbsoluteMin"] = settings["steerAbsoluteMax"] = "0";
+    settings["steerMinCount"] = settings["steerMaxCount"] = "1";
+    settings["steerMaxHoldMs"] = "0";
+    auto mutator = registration->create(settings, 10);
+    const std::vector<SandboxInputEvent> zero{Steering(0, 0)};
+    MutationRequest request{zero};
+    const auto legacy = mutator->Mutate(request);
+    request.pruneRedundantAnalogInsertions = true;
+    const auto pruned = mutator->Mutate(request);
+    bool okay = Check(legacy.inputs.size() == 2 && SameEvents(pruned.inputs, zero) &&
+                      pruned.mutationCount == 0, "zero-to-zero insertion was not conservatively pruned");
+    const std::vector<SandboxInputEvent> nonzero{Steering(0, 65536)};
+    okay &= Check(mutator->Mutate({nonzero, 0, 0, 10, 0, false, 0, true}).inputs.size() == 2,
+                  "nonzero-to-zero release was pruned");
+    const std::vector<SandboxInputEvent> originalZero{Steering(0, 0), Steering(100, 0)};
+    okay &= Check(SameEvents(mutator->Mutate({originalZero, 0, 0, 10, 0, false, 0, true}).inputs,
+                            originalZero), "original redundant event was deleted");
+    settings["maxTimeMs"] = "300";
+    settings["steerMinCount"] = settings["steerMaxCount"] = "3";
+    settings["steerMaxHoldMs"] = "200";
+    settings["accelerateEnabled"] = settings["brakeEnabled"] = "true";
+    settings["accelerateMinCount"] = settings["brakeMinCount"] = "2";
+    settings["accelerateMaxCount"] = settings["brakeMaxCount"] = "2";
+    mutator = registration->create(settings, 10);
+    const std::vector<SandboxInputEvent> original{
+        Steering(0, 0), Switch(0, SandboxInputAction::Accelerate, true),
+        Steering(120, 32768), Switch(170, SandboxInputAction::Respawn, true),
+        Steering(190, 0), Steering(250, -65536), Steering(310, 0)};
+    for (std::uint64_t seed = 0; seed < 128; ++seed) {
+        const auto unpruned = mutator->Mutate({original, seed});
+        const auto retained = mutator->Mutate({original, seed, 0, 10, 0, false, 0, true});
+        for (int time = 0; time <= 400; time += 10) {
+            okay &= Check(forevertas::SteeringStateAt(unpruned.inputs, time) ==
+                          forevertas::SteeringStateAt(retained.inputs, time),
+                          "pruning changed an overwritten interval or restoration");
+        }
+        const auto nonSteering = [](auto events) {
+            events.erase(std::remove_if(events.begin(), events.end(),
+                    [](const auto &event) { return event.action == SandboxInputAction::Steer; }), events.end());
+            return events;
+        };
+        okay &= Check(SameEvents(nonSteering(unpruned.inputs), nonSteering(retained.inputs)),
+                      "pruning changed structural events or subsequent RNG draws");
+        okay &= Check(retained.mutationCount == forevertas::EffectiveInputChangeCount(original, retained.inputs),
+                      "pruned mutation count describes discarded events");
+    }
+    okay &= CheckCompositeWindowParity({{forevertas::kInputInsertionModifierId, settings}},
+                                       128, "pruned insertion window", true);
+    return okay;
+}
+
 }  // namespace
 
 int main() {
     const bool okay = TestInputOnlyTimelineTimeOrigin() &&
             TestHumanDurationFormatting() &&
             TestDenseNormalization() &&
+            TestRedundantSteeringInsertion() &&
             TestMutableSuffixNormalization() &&
             TestEvaluationTargets() &&
             TestModifierComposition() &&

@@ -21,6 +21,8 @@ struct MutationRequest {
             std::numeric_limits<std::int64_t>::min();
     bool preferWindowPatch = false;
     std::uint64_t baselineGeneration = 0u;
+    // Only the search can establish that analog timestamps are unobservable.
+    bool pruneRedundantAnalogInsertions = false;
 };
 
 struct MutationTimeRange {

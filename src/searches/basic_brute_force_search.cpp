@@ -34,6 +34,7 @@ using forevervalidator::Vector3;
 using forevervalidator::experimental::PhysicsSandbox;
 using forevervalidator::experimental::PhysicsSandboxCarState;
 using forevervalidator::experimental::PhysicsSandboxInputEvent;
+using forevervalidator::experimental::PhysicsSandboxInputAction;
 using forevervalidator::experimental::PhysicsSandboxState;
 using forevervalidator::experimental::PhysicsSandboxStateView;
 
@@ -1270,6 +1271,11 @@ SearchResult BasicBruteForceSearch::Run(
 
     const std::vector<PhysicsSandboxInputEvent> baselineInputs = Require(
             context.sandbox.ReadInputs(), "reading baseline inputs");
+    const bool pruneRedundantAnalogInsertions = !current.stuntsScore &&
+            std::none_of(baselineInputs.begin(), baselineInputs.end(), [](const auto &event) {
+                return event.action == PhysicsSandboxInputAction::SteerLeft ||
+                        event.action == PhysicsSandboxInputAction::SteerRight;
+            });
     const PhysicsSandboxState branch = Require(
             context.sandbox.CaptureState(), "capturing branch state");
 
@@ -1506,7 +1512,8 @@ SearchResult BasicBruteForceSearch::Run(
                  context.tickDurationMs,
                  earliestMutationTimeMs,
                  true,
-                 mutationBaselineGeneration});
+                 mutationBaselineGeneration,
+                 pruneRedundantAnalogInsertions});
         CheckCancellation(context.control);
         ++iterations;
         bool improved = false;

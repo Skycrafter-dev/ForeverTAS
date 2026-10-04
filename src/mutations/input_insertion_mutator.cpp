@@ -178,6 +178,27 @@ public:
                                     request.baselineInputs,
                                     request.tickDurationMs,
                                     request.mutableFromTimeMs);
+        if (request.pruneRedundantAnalogInsertions &&
+            InputEventsAreCanonical(original, request.tickDurationMs)) {
+            AnalogInputState held = 0;
+            std::size_t source = 0u;
+            std::size_t retained = 0u;
+            for (const auto &event : inputs) {
+                while (source < original.size() && original[source].timeMs < event.timeMs) ++source;
+                bool originalEvent = false;
+                for (auto match = source; match < original.size() &&
+                     original[match].timeMs == event.timeMs; ++match) {
+                    originalEvent |= SameInputEvent(original[match], event);
+                }
+                if (event.action == SandboxInputAction::Steer &&
+                    event.value.kind == forevervalidator::experimental::PhysicsSandboxInputValueKind::Analog) {
+                    if (!originalEvent && event.value.analog == held) continue;
+                    held = event.value.analog;
+                }
+                inputs[retained++] = event;
+            }
+            inputs.resize(retained);
+        }
         return {inputs, EffectiveInputChangeCount(original, inputs)};
     }
 

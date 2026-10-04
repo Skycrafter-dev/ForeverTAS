@@ -51,7 +51,8 @@ MutationResult CompositeInputMutator::Mutate(
                 request.tickDurationMs,
                 request.mutableFromTimeMs,
                 false,
-                request.baselineGeneration});
+                request.baselineGeneration,
+                request.pruneRedundantAnalogInsertions});
         current = pass.windowPatch
                 ? ApplyInputWindowPatch(current, *pass.windowPatch)
                 : std::move(pass.inputs);
@@ -91,7 +92,8 @@ MutationResult CompositeInputMutator::MutateFull(
                 request.tickDurationMs,
                 request.mutableFromTimeMs,
                 false,
-                request.baselineGeneration});
+                request.baselineGeneration,
+                request.pruneRedundantAnalogInsertions});
         current = pass.windowPatch
                 ? ApplyInputWindowPatch(current, *pass.windowPatch)
                 : std::move(pass.inputs);
