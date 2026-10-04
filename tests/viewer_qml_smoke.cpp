@@ -1038,6 +1038,19 @@ int main(int argc, char **argv) {
                 conditionEditor->setProperty("text", QString{});
                 filter->setProperty("text", QString{});
                 controller.setEvaluationTargetId(originalTarget);
+                auto *const inspector = root->findChild<QObject *>(QStringLiteral("graphicsInspector"));
+                auto *const targetLock = qobject_cast<QQuickItem *>(
+                        root->findChild<QObject *>(QStringLiteral("targetMouseEditingLock")));
+                bool lockOnlyOnTargets = inspector != nullptr && targetLock != nullptr;
+                const QVariant originalTab = inspector ? inspector->property("currentTab") : QVariant{};
+                for (int tab = 0; lockOnlyOnTargets && tab < 3; ++tab) {
+                    inspector->setProperty("currentTab", tab);
+                    settle();
+                    lockOnlyOnTargets &= targetLock->isVisible() == (tab == 2);
+                }
+                if (inspector) inspector->setProperty("currentTab", originalTab);
+                if (!lockOnlyOnTargets) std::cerr << "target drag lock is not limited to the Targets tab\n";
+                passManagementValid &= lockOnlyOnTargets;
             } else {
                 passManagementValid = false;
             }

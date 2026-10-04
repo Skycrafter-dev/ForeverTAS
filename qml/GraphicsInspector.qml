@@ -333,16 +333,6 @@ Rectangle {
             }
         }
 
-        ThemedCheckBox {
-            objectName: "targetMouseEditingLock"
-            Layout.fillWidth: true
-            Layout.leftMargin: 12
-            Layout.rightMargin: 12
-            text: qsTr("Lock target dragging")
-            checked: root.controller && root.controller.targetMouseEditingLocked
-            onToggled: root.controller.targetMouseEditingLocked = checked
-        }
-
         TabBar {
             Layout.fillWidth: true
             Layout.leftMargin: 10
@@ -354,6 +344,18 @@ Rectangle {
             ThemedTabButton { text: qsTr("Runs") }
             ThemedTabButton { text: qsTr("Overlays") }
             ThemedTabButton { text: qsTr("Targets") }
+        }
+
+        ThemedCheckBox {
+            objectName: "targetMouseEditingLock"
+            visible: root.currentTab === 2
+            Layout.fillWidth: true
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            Layout.bottomMargin: 4
+            text: qsTr("Lock target dragging")
+            checked: root.controller && root.controller.targetMouseEditingLocked
+            onToggled: root.controller.targetMouseEditingLocked = checked
         }
 
         RowLayout {
