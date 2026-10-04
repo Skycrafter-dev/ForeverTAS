@@ -35,17 +35,36 @@ QtObject {
         return { valid: true, milliseconds: String(milliseconds), error: "" }
     }
 
+    // Editable text for a stored whole-tick millisecond value.
     function format(milliseconds) {
         const raw = String(milliseconds)
         if (!/^\d+$/.test(raw)) return raw
         const value = Number(raw)
         if (!Number.isSafeInteger(value) || value % 10 !== 0) return raw
-        if (unit === "ms") return raw
+        if (unit === "ms") return raw + " ms"
         const seconds = Math.floor(value / 1000)
         const fraction = String(value % 1000 / 10).padStart(2, "0")
         return unit === "clock"
             ? String(Math.floor(seconds / 60)).padStart(2, "0") + ":"
               + String(seconds % 60).padStart(2, "0") + "." + fraction
             : String(seconds) + "." + fraction + " s"
+    }
+
+    // Read-only text for any simulation time, including sub-tick estimates.
+    function text(milliseconds) {
+        const value = Number(milliseconds)
+        if (!Number.isFinite(value)) return String(milliseconds)
+        if (Number.isSafeInteger(value) && value >= 0 && value % 10 === 0)
+            return format(String(value))
+        const trimmed = number => String(Number(number.toFixed(6)))
+        if (unit === "ms") return trimmed(value) + " ms"
+        if (unit === "seconds") return trimmed(value / 1000) + " s"
+        const sign = value < 0 ? "-" : ""
+        const absolute = Math.abs(value) / 1000
+        const minutes = Math.floor(absolute / 60)
+        const seconds = absolute - minutes * 60
+        const secondsText = trimmed(seconds)
+        return sign + String(minutes).padStart(2, "0") + ":"
+            + (seconds < 10 ? "0" : "") + secondsText
     }
 }

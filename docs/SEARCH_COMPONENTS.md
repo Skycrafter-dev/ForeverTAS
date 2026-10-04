@@ -23,15 +23,21 @@ Base-input timestamps accept decimal seconds, `mm:ss.mmm`, and `hh:mm:ss.mmm`
 must align to the 10 ms input tick. Non-leading clock components are in
 `0..59`. Export remains decimal seconds for compatibility.
 
-Volume entry times use six fractional second digits in results, stored result
-descriptions and preview overlays. These are interpolated crossing estimates,
+Volume entry times use six fractional second digits in results and stored
+result descriptions; preview overlays keep the same precision in the chosen
+time unit. These are interpolated crossing estimates,
 not six-digit physical accuracy. Numeric scores retain their original double
 precision; formatting does not affect comparison or ranking.
 
-Steering settings can display normalized values or native integer units
-`[-65536, 65536]`, matching exported scripts. Switching units does not rewrite
-settings. Native edits are stored as exact normalized fractions; native display
-uses the same half-away-from-zero quantization as the simulator.
+Units are global preferences, chosen once under Preferences on the Base tab.
+**Steering units** switches every steering field between normalized values and
+native integer units `[-65536, 65536]`, matching exported scripts. **Time
+units** switches every simulation-time field (windows, search end, hold times,
+shifts, radius, deadlines) and time overlay between milliseconds, seconds and
+clock time; each field accepts any of these forms. Switching units does not
+rewrite settings: times are stored as whole-tick milliseconds, and native
+steering edits as exact normalized fractions, with native display using the
+same half-away-from-zero quantization as the simulator.
 
 Velocity results and target overlays show km/h with the underlying m/s value
 alongside it. Scores, `car.speed`, velocity vectors and saved settings remain

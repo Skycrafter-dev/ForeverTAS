@@ -484,6 +484,8 @@ set_source_files_properties(qml/AppTheme.qml PROPERTIES
     QT_QML_SINGLETON_TYPE TRUE)
 set_source_files_properties(qml/DurationDisplay.qml PROPERTIES
     QT_QML_SINGLETON_TYPE TRUE)
+set_source_files_properties(qml/SteeringDisplay.qml PROPERTIES
+    QT_QML_SINGLETON_TYPE TRUE)
 if(NOT FOREVERTAS_QML_MODULE_EXTERNAL)
 qt_add_qml_module(forevertas_qml
     PLUGIN_TARGET forevertas_qml
@@ -503,6 +505,7 @@ qt_add_qml_module(forevertas_qml
         qml/SearchInputs.qml
         qml/SimulationDebuggerPanel.qml
         qml/SliderValueField.qml
+        qml/SteeringDisplay.qml
         qml/ThemedButton.qml
         qml/ThemedCheckBox.qml
         qml/ThemedIconButton.qml
@@ -538,6 +541,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/SmoothSteeringSettings.qml
         qml/settings/StuntPointsEvaluationSettings.qml
         qml/settings/StyledComboBox.qml
+        qml/settings/TimeUnits.qml
         qml/settings/TimeWindowSettings.qml
         qml/settings/Vector3Settings.qml
         qml/settings/VelocityEvaluationSettings.qml

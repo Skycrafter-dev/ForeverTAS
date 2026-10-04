@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import ".." as ThemeControls
 
 ColumnLayout {
     id: root
@@ -13,11 +14,6 @@ ColumnLayout {
 
     Layout.fillWidth: true
     spacing: 6
-
-    SteeringUnits {
-        id: steeringUnits
-        running: root.running
-    }
 
     TimeWindowSettings {
         viewer: root.viewer
@@ -66,8 +62,8 @@ ColumnLayout {
         minimum: 0
         onEdited: value => root.updateSetting("steerMaxCount", value)
     }
-    SettingTextField {
-        label: qsTr("Maximum steering hold (ms)")
+    DurationField {
+        label: qsTr("Maximum steering hold")
         value: root.settings["steerMaxHoldMs"] ?? ""
         running: root.running
         dragStep: 10
@@ -77,46 +73,46 @@ ColumnLayout {
     SettingSlider {
         sliderObjectName: "insertionAbsoluteMinimumSlider"
         label: qsTr("Absolute steering minimum")
-        value: steeringUnits.displayValue(root.settings["steerAbsoluteMin"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["steerAbsoluteMin"] ?? "")
         running: root.running
-        from: steeringUnits.nativeUnits ? -65536 : -1
-        to: steeringUnits.nativeUnits ? 65536 : 1
-        stepSize: steeringUnits.nativeUnits ? 1 : 0.01
-        decimals: steeringUnits.nativeUnits ? 0 : 2
-        onEdited: value => root.updateSetting("steerAbsoluteMin", steeringUnits.storedValue(value))
+        from: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        to: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        stepSize: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 2
+        onEdited: value => root.updateSetting("steerAbsoluteMin", ThemeControls.SteeringDisplay.storedValue(value))
     }
     SettingSlider {
         sliderObjectName: "insertionAbsoluteMaximumSlider"
         label: qsTr("Absolute steering maximum")
-        value: steeringUnits.displayValue(root.settings["steerAbsoluteMax"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["steerAbsoluteMax"] ?? "")
         running: root.running
-        from: steeringUnits.nativeUnits ? -65536 : -1
-        to: steeringUnits.nativeUnits ? 65536 : 1
-        stepSize: steeringUnits.nativeUnits ? 1 : 0.01
-        decimals: steeringUnits.nativeUnits ? 0 : 2
-        onEdited: value => root.updateSetting("steerAbsoluteMax", steeringUnits.storedValue(value))
+        from: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        to: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        stepSize: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 2
+        onEdited: value => root.updateSetting("steerAbsoluteMax", ThemeControls.SteeringDisplay.storedValue(value))
     }
     SettingTextField {
         label: qsTr("Steering offset minimum")
-        value: steeringUnits.displayValue(root.settings["steerOffsetMin"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["steerOffsetMin"] ?? "")
         running: root.running
-        integer: steeringUnits.nativeUnits
-        decimals: steeringUnits.nativeUnits ? 0 : 3
-        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
-        minimum: steeringUnits.nativeUnits ? -65536 : -1
-        maximum: steeringUnits.nativeUnits ? 65536 : 1
-        onEdited: value => root.updateSetting("steerOffsetMin", steeringUnits.storedValue(value))
+        integer: ThemeControls.SteeringDisplay.nativeUnits
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 3
+        dragStep: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        minimum: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        maximum: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("steerOffsetMin", ThemeControls.SteeringDisplay.storedValue(value))
     }
     SettingTextField {
         label: qsTr("Steering offset maximum")
-        value: steeringUnits.displayValue(root.settings["steerOffsetMax"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["steerOffsetMax"] ?? "")
         running: root.running
-        integer: steeringUnits.nativeUnits
-        decimals: steeringUnits.nativeUnits ? 0 : 3
-        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
-        minimum: steeringUnits.nativeUnits ? -65536 : -1
-        maximum: steeringUnits.nativeUnits ? 65536 : 1
-        onEdited: value => root.updateSetting("steerOffsetMax", steeringUnits.storedValue(value))
+        integer: ThemeControls.SteeringDisplay.nativeUnits
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 3
+        dragStep: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        minimum: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        maximum: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("steerOffsetMax", ThemeControls.SteeringDisplay.storedValue(value))
     }
 
     Label { text: qsTr("Accelerate"); font.weight: Font.Medium }
@@ -141,8 +137,8 @@ ColumnLayout {
         minimum: 0
         onEdited: value => root.updateSetting("accelerateMaxCount", value)
     }
-    SettingTextField {
-        label: qsTr("Maximum accelerate hold (ms)")
+    DurationField {
+        label: qsTr("Maximum accelerate hold")
         value: root.settings["accelerateMaxHoldMs"] ?? ""
         running: root.running
         dragStep: 10
@@ -172,8 +168,8 @@ ColumnLayout {
         minimum: 0
         onEdited: value => root.updateSetting("brakeMaxCount", value)
     }
-    SettingTextField {
-        label: qsTr("Maximum brake hold (ms)")
+    DurationField {
+        label: qsTr("Maximum brake hold")
         value: root.settings["brakeMaxHoldMs"] ?? ""
         running: root.running
         dragStep: 10

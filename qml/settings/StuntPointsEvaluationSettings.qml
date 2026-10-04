@@ -10,9 +10,9 @@ ColumnLayout {
     Layout.fillWidth: true
     spacing: 8
 
-    SettingTextField {
+    DurationField {
         fieldObjectName: "stuntPointsTimeField"
-        label: qsTr("Target time (ms)")
+        label: qsTr("Target time")
         value: parent.settings["targetTimeMs"] ?? ""
         running: controller.running
         dragStep: 10

@@ -1396,10 +1396,6 @@ QString SearchController::formatCompactNumber(double value) const {
     return FormatCompactNumber(value);
 }
 
-QString SearchController::formatInterpolatedTime(double milliseconds) const {
-    return QString::fromStdString(FormatInterpolatedTimeMilliseconds(milliseconds));
-}
-
 QString SearchController::formatSpeed(double metersPerSecond) const {
     return QString::fromStdString(FormatDisplaySpeed(metersPerSecond));
 }

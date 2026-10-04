@@ -285,7 +285,6 @@ public slots:
     Q_INVOKABLE QString formatCompactNumber(double value) const;
     Q_INVOKABLE bool extendSimulationHorizon();
     Q_INVOKABLE void previewBaseInputs();
-    Q_INVOKABLE QString formatInterpolatedTime(double milliseconds) const;
     Q_INVOKABLE QString formatSpeed(double metersPerSecond) const;
     Q_INVOKABLE void extractReplayInputs();
     Q_INVOKABLE bool undoBaseInputScript();

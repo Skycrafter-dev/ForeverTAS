@@ -16,6 +16,9 @@ ColumnLayout {
     property alias captureToolTip: editor.captureToolTip
     property alias dragStep: editor.dragStep
     property alias minimum: editor.minimum
+    property alias maximum: editor.maximum
+    property alias liveScrub: editor.liveScrub
+    property alias info: editor.info
     readonly property var parsed: ThemeControls.DurationDisplay.parse(value)
     readonly property string errorText: /^\d+$/.test(value) && parsed.valid
         ? "" : parsed.error || qsTr("Invalid millisecond value.")

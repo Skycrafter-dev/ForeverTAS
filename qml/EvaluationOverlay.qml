@@ -424,8 +424,8 @@ Item {
             const valueText = id === "velocity" ? controller.formatSpeed(score)
                 : score.toFixed(2) + (id === "point-target" ? " m" : "")
             return {
-                label: qsTr("Best: %1 at %2 ms")
-                    .arg(valueText).arg(best.timeMs),
+                label: qsTr("Best: %1 at %2")
+                    .arg(valueText).arg(DurationDisplay.text(best.timeMs)),
                 event: best,
                 score: score
             }
@@ -434,8 +434,8 @@ Item {
             const at = sampleAt(Number(config.targetTimeMs))
             return {
                 label: at && at.stuntsScore !== undefined
-                    ? qsTr("Deadline: %1 points at %2 ms")
-                        .arg(at.stuntsScore).arg(config.targetTimeMs)
+                    ? qsTr("Deadline: %1 points at %2")
+                        .arg(at.stuntsScore).arg(DurationDisplay.text(config.targetTimeMs))
                     : qsTr("Stunt score unavailable for this run"),
                 event: at
             }
@@ -444,7 +444,7 @@ Item {
             for (const frame of frames) {
                 if (frame.raceCompleted || frame.finishTimeMs !== undefined) {
                     const time = frame.finishTimeMs ?? frame.timeMs
-                    return { label: qsTr("Finish: %1 ms").arg(time),
+                    return { label: qsTr("Finish: %1").arg(DurationDisplay.text(time)),
                              event: sampleAt(time) }
                 }
             }
@@ -459,7 +459,7 @@ Item {
                 ? customContains(position, shape)
                 : cuboidEntry(position, position, shape) >= 0
             if (contains(frames[0].position))
-                return { label: qsTr("Entry: %1").arg(controller.formatInterpolatedTime(frames[0].timeMs)),
+                return { label: qsTr("Entry: %1").arg(DurationDisplay.text(frames[0].timeMs)),
                          event: frames[0] }
             for (let index = 1; index < frames.length; ++index) {
                 const before = frames[index - 1]
@@ -473,7 +473,7 @@ Item {
                     const time = before.timeMs
                         + fraction * (after.timeMs - before.timeMs)
                     return { label: qsTr("Entry: %1")
-                                        .arg(controller.formatInterpolatedTime(time)),
+                                        .arg(DurationDisplay.text(time)),
                              event: sampleAt(time) }
                 }
             }
@@ -932,14 +932,15 @@ Item {
         if (!hit || !dragPreview)
             return ""
         if (hit.kind === "horizon")
-            return qsTr("Simulation horizon: %1 ms").arg(dragPreview.time)
+            return qsTr("Simulation horizon: %1").arg(DurationDisplay.text(dragPreview.time))
         if (hit.kind === "stunt")
-            return qsTr("Stunt deadline: %1 ms").arg(dragPreview.time)
+            return qsTr("Stunt deadline: %1").arg(DurationDisplay.text(dragPreview.time))
         const title = hit.kind === "evaluation"
             ? qsTr("Evaluation window")
             : qsTr("Pass %1").arg(hit.index + 1)
-        return qsTr("%1: %2 - %3 ms")
-            .arg(title).arg(dragPreview.minimum).arg(dragPreview.maximum)
+        return qsTr("%1: %2 - %3")
+            .arg(title).arg(DurationDisplay.text(dragPreview.minimum))
+            .arg(DurationDisplay.text(dragPreview.maximum))
     }
 
     function dragHint(hit) {

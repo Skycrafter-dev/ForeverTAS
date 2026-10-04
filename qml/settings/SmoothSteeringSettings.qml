@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import ".." as ThemeControls
 
 ColumnLayout {
     id: root
@@ -12,11 +13,6 @@ ColumnLayout {
 
     Layout.fillWidth: true
     spacing: 6
-
-    SteeringUnits {
-        id: steeringUnits
-        running: root.running
-    }
 
     TimeWindowSettings {
         viewer: root.viewer
@@ -38,8 +34,8 @@ ColumnLayout {
         minimum: 1
         onEdited: value => root.updateSetting("deformationCount", value)
     }
-    SettingTextField {
-        label: qsTr("Radius (ms)")
+    DurationField {
+        label: qsTr("Radius")
         value: root.settings["radiusMs"] ?? ""
         running: root.running
         dragStep: 10
@@ -48,24 +44,24 @@ ColumnLayout {
     }
     SettingTextField {
         label: qsTr("Amplitude minimum")
-        value: steeringUnits.displayValue(root.settings["amplitudeMin"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["amplitudeMin"] ?? "")
         running: root.running
-        integer: steeringUnits.nativeUnits
-        decimals: steeringUnits.nativeUnits ? 0 : 3
-        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
-        minimum: steeringUnits.nativeUnits ? -65536 : -1
-        maximum: steeringUnits.nativeUnits ? 65536 : 1
-        onEdited: value => root.updateSetting("amplitudeMin", steeringUnits.storedValue(value))
+        integer: ThemeControls.SteeringDisplay.nativeUnits
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 3
+        dragStep: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        minimum: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        maximum: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("amplitudeMin", ThemeControls.SteeringDisplay.storedValue(value))
     }
     SettingTextField {
         label: qsTr("Amplitude maximum")
-        value: steeringUnits.displayValue(root.settings["amplitudeMax"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["amplitudeMax"] ?? "")
         running: root.running
-        integer: steeringUnits.nativeUnits
-        decimals: steeringUnits.nativeUnits ? 0 : 3
-        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
-        minimum: steeringUnits.nativeUnits ? -65536 : -1
-        maximum: steeringUnits.nativeUnits ? 65536 : 1
-        onEdited: value => root.updateSetting("amplitudeMax", steeringUnits.storedValue(value))
+        integer: ThemeControls.SteeringDisplay.nativeUnits
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 3
+        dragStep: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        minimum: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        maximum: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("amplitudeMax", ThemeControls.SteeringDisplay.storedValue(value))
     }
 }

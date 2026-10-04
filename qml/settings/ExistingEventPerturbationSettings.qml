@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Layouts
+import ".." as ThemeControls
 
 ColumnLayout {
     id: root
@@ -12,11 +13,6 @@ ColumnLayout {
 
     Layout.fillWidth: true
     spacing: 6
-
-    SteeringUnits {
-        id: steeringUnits
-        running: root.running
-    }
 
     TimeWindowSettings {
         viewer: root.viewer
@@ -46,8 +42,8 @@ ColumnLayout {
         minimum: 0
         onEdited: value => root.updateSetting("maxCount", value)
     }
-    SettingTextField {
-        label: qsTr("Maximum timing shift (ms)")
+    DurationField {
+        label: qsTr("Maximum timing shift")
         value: root.settings["maxTimeShiftMs"] ?? ""
         running: root.running
         dragStep: 10
@@ -67,47 +63,47 @@ ColumnLayout {
     }
     SettingTextField {
         label: qsTr("Steering delta minimum")
-        value: steeringUnits.displayValue(root.settings["steerDeltaMin"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["steerDeltaMin"] ?? "")
         running: root.running
-        integer: steeringUnits.nativeUnits
-        decimals: steeringUnits.nativeUnits ? 0 : 3
-        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
-        minimum: steeringUnits.nativeUnits ? -65536 : -1
-        maximum: steeringUnits.nativeUnits ? 65536 : 1
-        onEdited: value => root.updateSetting("steerDeltaMin", steeringUnits.storedValue(value))
+        integer: ThemeControls.SteeringDisplay.nativeUnits
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 3
+        dragStep: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        minimum: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        maximum: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("steerDeltaMin", ThemeControls.SteeringDisplay.storedValue(value))
     }
     SettingTextField {
         label: qsTr("Steering delta maximum")
-        value: steeringUnits.displayValue(root.settings["steerDeltaMax"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["steerDeltaMax"] ?? "")
         running: root.running
-        integer: steeringUnits.nativeUnits
-        decimals: steeringUnits.nativeUnits ? 0 : 3
-        dragStep: steeringUnits.nativeUnits ? 1 : 0.01
-        minimum: steeringUnits.nativeUnits ? -65536 : -1
-        maximum: steeringUnits.nativeUnits ? 65536 : 1
-        onEdited: value => root.updateSetting("steerDeltaMax", steeringUnits.storedValue(value))
+        integer: ThemeControls.SteeringDisplay.nativeUnits
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 3
+        dragStep: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        minimum: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        maximum: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        onEdited: value => root.updateSetting("steerDeltaMax", ThemeControls.SteeringDisplay.storedValue(value))
     }
     SettingSlider {
         sliderObjectName: "perturbationAbsoluteMinimumSlider"
         label: qsTr("Steering absolute minimum")
-        value: steeringUnits.displayValue(root.settings["steerAbsoluteMin"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["steerAbsoluteMin"] ?? "")
         running: root.running
-        from: steeringUnits.nativeUnits ? -65536 : -1
-        to: steeringUnits.nativeUnits ? 65536 : 1
-        stepSize: steeringUnits.nativeUnits ? 1 : 0.01
-        decimals: steeringUnits.nativeUnits ? 0 : 2
-        onEdited: value => root.updateSetting("steerAbsoluteMin", steeringUnits.storedValue(value))
+        from: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        to: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        stepSize: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 2
+        onEdited: value => root.updateSetting("steerAbsoluteMin", ThemeControls.SteeringDisplay.storedValue(value))
     }
     SettingSlider {
         sliderObjectName: "perturbationAbsoluteMaximumSlider"
         label: qsTr("Steering absolute maximum")
-        value: steeringUnits.displayValue(root.settings["steerAbsoluteMax"] ?? "")
+        value: ThemeControls.SteeringDisplay.displayValue(root.settings["steerAbsoluteMax"] ?? "")
         running: root.running
-        from: steeringUnits.nativeUnits ? -65536 : -1
-        to: steeringUnits.nativeUnits ? 65536 : 1
-        stepSize: steeringUnits.nativeUnits ? 1 : 0.01
-        decimals: steeringUnits.nativeUnits ? 0 : 2
-        onEdited: value => root.updateSetting("steerAbsoluteMax", steeringUnits.storedValue(value))
+        from: ThemeControls.SteeringDisplay.nativeUnits ? -65536 : -1
+        to: ThemeControls.SteeringDisplay.nativeUnits ? 65536 : 1
+        stepSize: ThemeControls.SteeringDisplay.nativeUnits ? 1 : 0.01
+        decimals: ThemeControls.SteeringDisplay.nativeUnits ? 0 : 2
+        onEdited: value => root.updateSetting("steerAbsoluteMax", ThemeControls.SteeringDisplay.storedValue(value))
     }
     SettingSwitch {
         label: qsTr("Toggle accelerate events")

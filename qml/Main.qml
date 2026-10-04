@@ -4933,7 +4933,7 @@ ApplicationWindow {
                         }
                     }
 
-                    RowLayout {
+                    ColumnLayout {
                         id: appearanceControls
 
                         objectName: "appearanceControls"
@@ -4944,36 +4944,44 @@ ApplicationWindow {
                         Layout.rightMargin: 20
                         spacing: 8
 
-                        Label {
+                        RowLayout {
                             Layout.fillWidth: true
-                            text: qsTr("Preferences")
-                            color: AppTheme.textMuted
-                            font.pixelSize: 11
+                            spacing: 8
+
+                            Label {
+                                Layout.fillWidth: true
+                                text: qsTr("Preferences")
+                                color: AppTheme.textMuted
+                                font.pixelSize: 11
+                            }
+
+                            ThemedButton {
+                                objectName: "gamepadSettingsButton"
+                                Layout.preferredWidth: 32
+                                Layout.preferredHeight: 32
+                                icon.source: "qrc:/icons/gamepad-2.svg"
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("Gamepad settings")
+                                Accessible.name: qsTr("Gamepad settings")
+                                onClicked: gamepadDialog.open()
+                            }
+                            ThemedSwitch {
+                                id: darkModeToggle
+                                objectName: "darkModeToggle"
+                                text: qsTr("Dark mode")
+                                checked: window.controller.darkMode
+                                onToggled:
+                                    window.controller.darkMode = checked
+                                Accessible.name: qsTr("Dark mode")
+                                ToolTip.visible: hovered
+                                ToolTip.text: checked
+                                              ? qsTr("Use the default light theme")
+                                              : qsTr("Use the dark theme")
+                            }
                         }
 
-                        ThemedButton {
-                            objectName: "gamepadSettingsButton"
-                            Layout.preferredWidth: 32
-                            Layout.preferredHeight: 32
-                            icon.source: "qrc:/icons/gamepad-2.svg"
-                            ToolTip.visible: hovered
-                            ToolTip.text: qsTr("Gamepad settings")
-                            Accessible.name: qsTr("Gamepad settings")
-                            onClicked: gamepadDialog.open()
-                        }
-                        ThemedSwitch {
-                            id: darkModeToggle
-                            objectName: "darkModeToggle"
-                            text: qsTr("Dark mode")
-                            checked: window.controller.darkMode
-                            onToggled:
-                                window.controller.darkMode = checked
-                            Accessible.name: qsTr("Dark mode")
-                            ToolTip.visible: hovered
-                            ToolTip.text: checked
-                                          ? qsTr("Use the default light theme")
-                                          : qsTr("Use the dark theme")
-                        }
+                        SteeringUnits {}
+                        TimeUnits {}
                     }
 
                     ColumnLayout {
@@ -5101,10 +5109,10 @@ ApplicationWindow {
                             font.pixelSize: 11
                         }
 
-                        SettingTextField {
+                        DurationField {
                             objectName: "simulationHorizonSettings"
                             fieldObjectName: "simulationHorizonField"
-                            label: qsTr("Search end (ms)")
+                            label: qsTr("Search end")
                             value: window.controller.simulationHorizonMs
                             running: window.controller.running
                             minimum: 10
@@ -5124,7 +5132,8 @@ ApplicationWindow {
 
                         Label {
                             Layout.fillWidth: true
-                            text: qsTr("Preview extent: %1 ms").arg(window.viewer.simulationHorizonMs)
+                            text: qsTr("Preview extent: %1").arg(
+                                      DurationDisplay.text(window.viewer.simulationHorizonMs))
                             color: AppTheme.textMuted
                             wrapMode: Text.WordWrap
                         }
@@ -5134,7 +5143,8 @@ ApplicationWindow {
                             visible: window.controller.requiredSimulationHorizonMs >
                                      Number(window.controller.simulationHorizonMs)
                             enabled: !window.controller.running
-                            text: qsTr("Extend search to %1 ms").arg(window.controller.requiredSimulationHorizonMs)
+                            text: qsTr("Extend search to %1").arg(
+                                      DurationDisplay.text(window.controller.requiredSimulationHorizonMs))
                             onClicked: window.controller.extendSimulationHorizon()
                         }
 

@@ -1460,8 +1460,13 @@ int main(int argc, char **argv) {
     QQmlComponent unitsProbeComponent(&engine);
     unitsProbeComponent.setData(R"QML(
         import QtQuick
-        import "settings"
-        SteeringUnits { nativeUnits: true }
+        import "."
+        QtObject {
+            Component.onCompleted: SteeringDisplay.unit = "native"
+            Component.onDestruction: SteeringDisplay.unit = "normalized"
+            function storedValue(value) { return SteeringDisplay.storedValue(value) }
+            function displayValue(value) { return SteeringDisplay.displayValue(value) }
+        }
     )QML", QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_SOURCE_DIR "/qml/UnitsProbe.qml")));
     std::unique_ptr<QObject> unitsProbe(unitsProbeComponent.create());
     if (!unitsProbe) return 1;
@@ -1480,6 +1485,10 @@ int main(int argc, char **argv) {
     QMetaObject::invokeMethod(unitsProbe.get(), "displayValue", Q_RETURN_ARG(QVariant, negativeHalf),
                              Q_ARG(QVariant, QStringLiteral("-0.00000762939453125")));
     globalSettingsVisibleAcrossTabs &= negativeHalf.toString() == QStringLiteral("-1");
+    QVariant emptyNative;
+    QMetaObject::invokeMethod(unitsProbe.get(), "displayValue", Q_RETURN_ARG(QVariant, emptyNative),
+                             Q_ARG(QVariant, QString{}));
+    globalSettingsVisibleAcrossTabs &= emptyNative.toString().isEmpty();
     inputsProbeComponent.setData(R"QML(
         import QtQuick
         import "."
@@ -4032,6 +4041,48 @@ int main(int argc, char **argv) {
                                     perturbationMaximumField
                                             ->property("exactValueEditor")
                                             .toBool();
+                            // One global preference converts every steering
+                            // and time field at once.
+                            QObject *const steeringPreference = root->findChild<QObject *>(
+                                    QStringLiteral("steeringUnitsPreference"));
+                            QObject *const timePreference = root->findChild<QObject *>(
+                                    QStringLiteral("timeUnitsPreference"));
+                            QObject *const horizonEditor = root->findChild<QObject *>(
+                                    QStringLiteral("simulationHorizonField"));
+                            bool globalUnitsValid = steeringPreference != nullptr &&
+                                    timePreference != nullptr && horizonEditor != nullptr &&
+                                    perturbationMinimumField != nullptr &&
+                                    root->findChildren<QObject *>(QStringLiteral("steeringUnitsPreference")).size() == 1 &&
+                                    root->findChildren<QObject *>(QStringLiteral("timeUnitsPreference")).size() == 1 &&
+                                    root->findChildren<QObject *>(QStringLiteral("timeDisplayUnit")).isEmpty();
+                            if (globalUnitsValid) {
+                                const double normalized = controller.modifierPasses().front().toMap()
+                                        .value(QStringLiteral("settings")).toMap()
+                                        .value(QStringLiteral("steerAbsoluteMin")).toString().toDouble();
+                                const qint64 horizon = controller.simulationHorizonMs().toLongLong();
+                                const QString nativeText = QString::number(static_cast<qint64>(
+                                        std::copysign(std::round(std::abs(normalized) * 65536.0), normalized)));
+                                const QString secondsText = QStringLiteral("%1.%2 s")
+                                        .arg(horizon / 1000).arg(horizon % 1000 / 10, 2, 10, QLatin1Char('0'));
+                                QMetaObject::invokeMethod(steeringPreference, "activated", Q_ARG(int, 1));
+                                QMetaObject::invokeMethod(timePreference, "activated", Q_ARG(int, 1));
+                                QCoreApplication::processEvents();
+                                QCoreApplication::processEvents();
+                                globalUnitsValid &= perturbationMinimumField->property("text").toString() == nativeText &&
+                                        horizonEditor->property("text").toString() == secondsText;
+                                if (!globalUnitsValid)
+                                    std::cerr << "global units: steering " << perturbationMinimumField->property("text")
+                                                       .toString().toStdString() << " != " << nativeText.toStdString()
+                                              << ", time " << horizonEditor->property("text").toString().toStdString()
+                                              << " != " << secondsText.toStdString() << '\n';
+                                QMetaObject::invokeMethod(steeringPreference, "activated", Q_ARG(int, 0));
+                                QMetaObject::invokeMethod(timePreference, "activated", Q_ARG(int, 0));
+                                QCoreApplication::processEvents();
+                                QCoreApplication::processEvents();
+                                globalUnitsValid &= horizonEditor->property("text").toString() ==
+                                        QString::number(horizon) + QStringLiteral(" ms");
+                            }
+                            perturbationSliderEditorsValid &= globalUnitsValid;
                             wheelScrollingValid &=
                                     absoluteMinimumSlider != nullptr;
                             if (wheelScrollingValid) {
@@ -4471,7 +4522,7 @@ int main(int argc, char **argv) {
                     const bool stuntPointsFieldValid =
                             stuntPointsTimeField != nullptr &&
                             stuntPointsTimeField->property("text").toString() ==
-                                    QStringLiteral("6000") &&
+                                    QStringLiteral("6000 ms") &&
                             stuntPointsTimeField->property("minimum").toReal() ==
                                     0.0;
                     const std::array<std::pair<const char *, const char *>, 5>

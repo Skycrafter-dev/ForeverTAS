@@ -1,2 +1,3 @@
 singleton AppTheme 1.0 AppTheme.qml
 singleton DurationDisplay 1.0 DurationDisplay.qml
+singleton SteeringDisplay 1.0 SteeringDisplay.qml

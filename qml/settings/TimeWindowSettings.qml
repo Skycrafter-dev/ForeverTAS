@@ -28,16 +28,6 @@ ColumnLayout {
         onSelected: value => root.updateSetting("maxTimeMode", value)
     }
 
-    SettingCombo {
-        comboObjectName: "timeDisplayUnit"
-        label: qsTr("Time units")
-        options: [ { label: qsTr("Milliseconds"), value: "ms" },
-                   { label: qsTr("Seconds"), value: "seconds" },
-                   { label: qsTr("Clock"), value: "clock" } ]
-        value: ThemeControls.DurationDisplay.unit
-        onSelected: value => ThemeControls.DurationDisplay.unit = value
-    }
-
     DurationField {
         fieldObjectName: "minimumTimeField"
         label: root.minimumLabel
