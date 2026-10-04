@@ -25,6 +25,19 @@ The bridge remains necessary for interactive pause/Ctrl-C; a plain pipe is not
 treated as a working terminal. Package/OS permissions can still prevent an
 inferior process from launching even after a successful capability probe.
 
+## Watches
+
+The Watches tab pins up to 32 variable paths with stable IDs across app sessions.
+Examples: `controls.steering`, `this->member`, and `array[0].value`.
+Calls, assignments, arithmetic, and arbitrary C++ expressions are rejected.
+LLDB's `frame variable` command reads debug information and memory directly,
+with dynamic target execution and custom formatting disabled. Watches do not
+use the expression/JIT path used for intentional source edits.
+
+Values are refreshed in a stopped source frame and cleared on resume, step,
+and stop. Out-of-scope or unreadable paths remain pinned, without displaying an
+old value as current. Runtime values are not persisted.
+
 References: [LLDB command-line options](https://lldb.llvm.org/man/lldb.html),
 [winpty runtime and adapter](https://github.com/rprichard/winpty),
 [winpty adapter options](https://github.com/rprichard/winpty/blob/master/src/unix-adapter/main.cc).

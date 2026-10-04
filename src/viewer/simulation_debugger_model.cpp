@@ -127,6 +127,7 @@ bool IsEditableSourceLine(const QString &text) {
 SimulationDebuggerModel::SimulationDebuggerModel(QObject *parent)
     : QObject(parent) {
     InitializeSimulationDebugResources();
+    loadWatches();
     expandedFolders_.insert(QStringLiteral("src"));
     expandedFolders_.insert(QStringLiteral("src/simulation"));
     expandedFolders_.insert(QStringLiteral("src/simulation/runtime"));
@@ -188,6 +189,111 @@ SimulationDebuggerModel::~SimulationDebuggerModel() {
         debugger_.kill();
     }
     QFile::remove(inputScriptPath_);
+}
+
+bool SimulationDebuggerModel::validWatchPath(const QString &path) {
+    static const QRegularExpression pattern(QStringLiteral(
+            "^[A-Za-z_][A-Za-z_0-9]*(?:(?:\\.|->)[A-Za-z_][A-Za-z_0-9]*|\\[[0-9]{1,10}\\])*$"));
+    return !path.isEmpty() && path.size() <= 256 && pattern.match(path).hasMatch();
+}
+
+QString SimulationDebuggerModel::pinWatch(const QString &expression) {
+    const auto path = expression.trimmed();
+    if (!validWatchPath(path)) {
+        watchError_ = QStringLiteral("Use a variable, member, or numeric array index; calls and assignments are not allowed.");
+        emit watchesChanged();
+        return {};
+    }
+    for (const auto &watch : watches_) {
+        if (watch.toMap().value(QStringLiteral("expression")) != path) continue;
+        watchError_.clear();
+        emit watchesChanged();
+        return watch.toMap().value(QStringLiteral("id")).toString();
+    }
+    if (watches_.size() >= 32) {
+        watchError_ = QStringLiteral("The watch limit is 32.");
+        emit watchesChanged();
+        return {};
+    }
+    const auto id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    watches_.append(QVariantMap{{"id", id}, {"expression", path}, {"value", QString{}},
+                               {"type", QString{}}, {"status", QStringLiteral("Stopped")}});
+    watchError_.clear();
+    saveWatches();
+    refreshWatches();
+    return id;
+}
+
+void SimulationDebuggerModel::unpinWatch(const QString &id) {
+    watches_.erase(std::remove_if(watches_.begin(), watches_.end(), [&id](const QVariant &watch) {
+        return watch.toMap().value(QStringLiteral("id")) == id;
+    }), watches_.end());
+    watchError_.clear();
+    saveWatches();
+    refreshWatches();
+}
+
+void SimulationDebuggerModel::saveWatches() {
+    QJsonArray persisted;
+    for (const auto &watch : watches_) {
+        const auto row = watch.toMap();
+        persisted.append(QJsonObject{{"id", row.value("id").toString()}, {"expression", row.value("expression").toString()}});
+    }
+    QSettings().setValue(QStringLiteral("simulationDebugger/watchesV1"), QJsonDocument(persisted).toJson(QJsonDocument::Compact));
+}
+
+void SimulationDebuggerModel::loadWatches() {
+    const auto persisted = QJsonDocument::fromJson(QSettings().value(QStringLiteral("simulationDebugger/watchesV1")).toByteArray()).array();
+    QSet<QString> ids, paths;
+    for (const auto &value : persisted) {
+        const auto row = value.toObject();
+        const auto path = row.value("expression").toString();
+        const auto id = row.value("id").toString();
+        if (watches_.size() >= 32) break;
+        if (!validWatchPath(path) || QUuid(id).isNull() || ids.contains(id) || paths.contains(path)) continue;
+        ids.insert(id);
+        paths.insert(path);
+        watches_.append(QVariantMap{{"id", id}, {"expression", path}, {"value", QString{}},
+                                   {"type", QString{}}, {"status", QStringLiteral("Stopped")}});
+    }
+}
+
+void SimulationDebuggerModel::invalidateWatches(const QString &status) {
+    ++watchGeneration_;
+    commandQueue_.erase(std::remove_if(commandQueue_.begin(), commandQueue_.end(), [](const DebuggerCommand &command) {
+        return command.kind == CommandKind::Watch;
+    }), commandQueue_.end());
+    for (auto &watch : watches_) {
+        auto row = watch.toMap();
+        row.insert(QStringLiteral("value"), QString{});
+        row.insert(QStringLiteral("type"), QString{});
+        row.insert(QStringLiteral("status"), status);
+        row.remove(QStringLiteral("location"));
+        watch = row;
+    }
+    emit watchesChanged();
+}
+
+void SimulationDebuggerModel::refreshWatches() {
+    const bool pausedFrame = active_ && !running_ && !stepping_ && !compiling_ &&
+                             !pauseRequested_ && activeSourceLine_ > 0 && !activeFilePath_.isEmpty();
+    invalidateWatches(pausedFrame ? QStringLiteral("Evaluating") :
+                      active_ ? QStringLiteral("Waiting for pause") : QStringLiteral("Stopped"));
+    if (!pausedFrame) return;
+    for (const auto &watch : watches_) {
+        const auto row = watch.toMap();
+        DebuggerCommand command;
+        command.kind = CommandKind::Watch;
+        // frame variable reads debug information/memory; it does not evaluate C++ or call the inferior.
+        command.text = QStringLiteral("frame variable --show-types --raw-output --dynamic-type no-dynamic-values --depth 0 --ptr-depth 0 -- %1")
+                .arg(row.value(QStringLiteral("expression")).toString());
+        command.watchId = row.value(QStringLiteral("id")).toString();
+        command.watchGeneration = watchGeneration_;
+        command.sourcePath = activeFilePath_;
+        command.sourceLine = activeSourceLine_;
+        commandQueue_.enqueue(std::move(command));
+    }
+    sendNextCommand();
 }
 
 bool SimulationDebuggerModel::available() const {
@@ -1784,7 +1890,7 @@ void SimulationDebuggerModel::queueCommand(CommandKind kind,
         return;
     }
     commandQueue_.enqueue(DebuggerCommand{
-            kind, text, sourcePath, printToken, lineId, line, sourceLine});
+            kind, text, sourcePath, printToken, lineId, line, sourceLine, {}, 0});
     sendNextCommand();
 }
 
@@ -1867,7 +1973,8 @@ void SimulationDebuggerModel::consumeDebuggerPrompts() {
 
 void SimulationDebuggerModel::processCommandOutputAsync(
         const DebuggerCommand &command, const QString &output) {
-    const bool parseVariables = command.kind == CommandKind::Variables;
+    const bool cacheVariables = command.kind == CommandKind::Variables;
+    const bool parseVariables = cacheVariables || command.kind == CommandKind::Watch;
     const bool parseStopLocation =
             command.kind == CommandKind::Run ||
             command.kind == CommandKind::Continue ||
@@ -1876,7 +1983,7 @@ void SimulationDebuggerModel::processCommandOutputAsync(
             command.kind == CommandKind::RefreshLocation;
     const QString printToken = command.printToken;
     QHash<QString, QStringList> sourceLines;
-    if (parseVariables) {
+    if (cacheVariables) {
         sourceLines.reserve(static_cast<qsizetype>(sources_.size()));
         for (const SourceFile &source : sources_) {
             sourceLines.insert(source.path, source.currentLines);
@@ -1907,12 +2014,12 @@ void SimulationDebuggerModel::processCommandOutputAsync(
                 consumeDebuggerPrompts();
             });
     watcher->setFuture(QtConcurrent::run(
-            [output, parseVariables, parseStopLocation, printToken,
+            [output, parseVariables, cacheVariables, parseStopLocation, printToken,
              sourceRevision, sourceLines = std::move(sourceLines)]() {
                 ProcessedDebuggerOutput processed = processDebuggerOutput(
                         output, parseVariables, parseStopLocation,
                         printToken);
-                if (parseVariables) {
+                if (cacheVariables) {
                     processed.sourceRevision = sourceRevision;
                     processed.inlineValuesBySource = buildInlineValueCache(
                             processed.parsedVariables, sourceLines);
@@ -1964,6 +2071,24 @@ void SimulationDebuggerModel::handleCommandResult(
         if (running_) {
             scheduleAdvance();
         }
+        break;
+    case CommandKind::Watch:
+        if (command.watchGeneration == watchGeneration_ && active_ && !running_ && !stepping_ &&
+            command.sourcePath == activeFilePath_ && command.sourceLine == activeSourceLine_) {
+            for (auto &watch : watches_) {
+                auto row = watch.toMap();
+                if (row.value(QStringLiteral("id")) != command.watchId) continue;
+                const bool readable = !output.commandFailed && !output.parsedVariables.isEmpty();
+                const auto variable = readable ? output.parsedVariables.front().toMap() : QVariantMap{};
+                row.insert(QStringLiteral("status"), readable ? QStringLiteral("Ready") : QStringLiteral("Out of scope or unreadable"));
+                row.insert(QStringLiteral("value"), variable.value(QStringLiteral("value")).toString().left(4096));
+                row.insert(QStringLiteral("type"), variable.value(QStringLiteral("type")));
+                row.insert(QStringLiteral("location"), fileName(activeFilePath_) + ':' + QString::number(activeSourceLine_));
+                watch = row;
+            }
+            emit watchesChanged();
+        }
+        if (running_) scheduleAdvance();
         break;
     case CommandKind::EvaluateEdit: {
         appendDebugOutput(command, output.printedLines);
@@ -2329,6 +2454,7 @@ void SimulationDebuggerModel::handleDebuggerStop(
         return;
     }
     if (output.tickBoundary) {
+        invalidateWatches(QStringLiteral("Paused frame unavailable"));
         if (!currentLineKey_.isEmpty()) {
             executedLinesThisTick_.insert(currentLineKey_);
         }
@@ -2517,6 +2643,7 @@ void SimulationDebuggerModel::applyParsedVariables(
     } else {
         refreshInlineValueCacheAsync(output.parsedVariables);
     }
+    refreshWatches();
     emit linesChanged();
 }
 
@@ -2591,6 +2718,7 @@ void SimulationDebuggerModel::refreshInlineValueCacheAsync(
 }
 
 void SimulationDebuggerModel::clearVariables() {
+    invalidateWatches(QStringLiteral("Waiting for pause"));
     ++inlineCacheGeneration_;
     variables_.clear();
     for (SourceFile &source : sources_) {
@@ -2644,6 +2772,7 @@ bool SimulationDebuggerModel::beginStep(StepMode mode) {
     editError_.clear();
     stepMode_ = mode;
     stepping_ = true;
+    invalidateWatches(QStringLiteral("Stepping"));
     emit stateChanged();
     emit executionChanged();
 
@@ -2686,6 +2815,7 @@ void SimulationDebuggerModel::finishStep(const QString &status) {
         return;
     }
     stepping_ = false;
+    invalidateWatches(QStringLiteral("Waiting for paused frame"));
     stepMode_ = StepMode::None;
     if (!status.isEmpty()) {
         setStatus(status);
@@ -2885,6 +3015,7 @@ void SimulationDebuggerModel::jumpPastCurrentStatement() {
 }
 
 void SimulationDebuggerModel::clearExecutionLocation() {
+    invalidateWatches(QStringLiteral("Stopped"));
     activeLine_ = -1;
     activeSourceLine_ = -1;
     activeFilePath_.clear();
@@ -2933,6 +3064,7 @@ void SimulationDebuggerModel::setRunning(bool value) {
         return;
     }
     running_ = value;
+    if (value) invalidateWatches(QStringLiteral("Running"));
     emit stateChanged();
 }
 

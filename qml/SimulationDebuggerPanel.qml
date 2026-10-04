@@ -12,6 +12,7 @@ Item {
     readonly property var debuggerModel: viewer.simulationDebugger
     property var editingLine: null
     property bool hasDraftEdit: false
+    property int inspectionTab: 0
     readonly property bool waitingForPause: root.debuggerModel.running
     signal expansionRequested(bool expanded)
 
@@ -800,16 +801,17 @@ Item {
             Layout.fillWidth: true
             spacing: 6
 
-            Label {
+            TabBar {
                 Layout.fillWidth: true
-                text: qsTr("Debug output")
-                font.weight: Font.DemiBold
-                font.pixelSize: 11
-                color: AppTheme.textMuted
+                currentIndex: root.inspectionTab
+                onCurrentIndexChanged: root.inspectionTab = currentIndex
+                ThemedTabButton { text: qsTr("Debug output") }
+                ThemedTabButton { text: qsTr("Watches") }
             }
 
             ThemedButton {
                 objectName: "clearSimulationDebugOutputButton"
+                visible: root.inspectionTab === 0
                 text: qsTr("Clear")
                 enabled: root.debuggerModel.debugOutput.length > 0
                 onClicked: root.debuggerModel.clearDebugOutput()
@@ -821,6 +823,7 @@ Item {
         Rectangle {
             Layout.fillWidth: true
             Layout.preferredHeight: root.expanded ? 100 : 132
+            visible: root.inspectionTab === 0
             color: AppTheme.surface
             border.width: 1
             border.color: AppTheme.border
@@ -903,6 +906,101 @@ Item {
                     text: qsTr("No printed output for this run.")
                     color: AppTheme.textFaint
                     font.pixelSize: 10
+                }
+            }
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: root.expanded ? 100 : 132
+            visible: root.inspectionTab === 1
+            color: AppTheme.surface
+            border.width: 1
+            border.color: AppTheme.border
+            radius: 6
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 4
+                spacing: 3
+                RowLayout {
+                    Layout.fillWidth: true
+                    TextField {
+                        id: watchPath
+                        objectName: "debuggerWatchPath"
+                        Layout.fillWidth: true
+                        placeholderText: qsTr("Variable path")
+                        selectByMouse: true
+                        function pin() {
+                            if (root.debuggerModel.pinWatch(text).length > 0) text = ""
+                        }
+                        onAccepted: pin()
+                    }
+                    ThemedIconButton {
+                        objectName: "addDebuggerWatch"
+                        Layout.preferredWidth: 30
+                        Layout.preferredHeight: 30
+                        icon.source: "qrc:/icons/plus.svg"
+                        Accessible.name: qsTr("Pin watch")
+                        ToolTip.visible: hovered
+                        ToolTip.text: qsTr("Pin watch")
+                        onClicked: watchPath.pin()
+                    }
+                }
+                Label {
+                    Layout.fillWidth: true
+                    visible: text.length > 0
+                    text: root.debuggerModel.watchError
+                    color: AppTheme.error
+                    font.pixelSize: 10
+                    wrapMode: Text.WordWrap
+                }
+                ListView {
+                    id: watchList
+                    objectName: "debuggerWatchList"
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    model: root.debuggerModel.watches
+                    ScrollBar.vertical: ScrollBar {}
+                    delegate: RowLayout {
+                        id: watchRow
+                        required property var modelData
+                        width: watchList.width
+                        height: 38
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+                            Label {
+                                Layout.fillWidth: true
+                                text: watchRow.modelData.expression
+                                color: AppTheme.text
+                                font.family: "monospace"
+                                font.pixelSize: 10
+                                elide: Text.ElideRight
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: watchRow.modelData.status === "Ready"
+                                    ? watchRow.modelData.value : watchRow.modelData.status
+                                color: watchRow.modelData.status === "Ready" ? AppTheme.info : AppTheme.textMuted
+                                font.family: "monospace"
+                                font.pixelSize: 10
+                                elide: Text.ElideRight
+                                ToolTip.visible: watchHover.hovered
+                                ToolTip.text: watchRow.modelData.type + " " + text
+                                HoverHandler { id: watchHover }
+                            }
+                        }
+                        ThemedIconButton {
+                            Layout.preferredWidth: 28
+                            Layout.preferredHeight: 28
+                            icon.source: "qrc:/icons/trash-2.svg"
+                            Accessible.name: qsTr("Remove watch")
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Remove watch")
+                            onClicked: root.debuggerModel.unpinWatch(watchRow.modelData.id)
+                        }
+                    }
                 }
             }
         }

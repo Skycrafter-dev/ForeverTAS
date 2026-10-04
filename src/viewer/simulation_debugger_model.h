@@ -18,6 +18,8 @@ class SimulationDebuggerModel final : public QObject {
     Q_OBJECT
 
     Q_PROPERTY(bool available READ available NOTIFY stateChanged)
+    Q_PROPERTY(QVariantList watches READ watches NOTIFY watchesChanged)
+    Q_PROPERTY(QString watchError READ watchError NOTIFY watchesChanged)
     Q_PROPERTY(QString configuredLldbPath READ configuredLldbPath NOTIFY stateChanged)
     Q_PROPERTY(QString configuredTerminalPath READ configuredTerminalPath NOTIFY stateChanged)
     Q_PROPERTY(bool preparing READ preparing NOTIFY stateChanged)
@@ -50,6 +52,10 @@ class SimulationDebuggerModel final : public QObject {
     ~SimulationDebuggerModel() override;
 
     bool available() const;
+    QVariantList watches() const { return watches_; }
+    QString watchError() const { return watchError_; }
+    Q_INVOKABLE QString pinWatch(const QString &expression);
+    Q_INVOKABLE void unpinWatch(const QString &id);
     QString configuredLldbPath() const;
     QString configuredTerminalPath() const;
     Q_INVOKABLE void configureTools(const QString &lldb, const QString &terminal);
@@ -100,6 +106,7 @@ class SimulationDebuggerModel final : public QObject {
     void pause();
 
   signals:
+    void watchesChanged();
     void stateChanged();
     void filesChanged();
     void selectionChanged();
@@ -154,6 +161,7 @@ class SimulationDebuggerModel final : public QObject {
         SourceLineStep,
         RefreshLocation,
         Variables,
+        Watch,
         EvaluateEdit,
         JumpAfterEdit,
         Quit,
@@ -167,6 +175,8 @@ class SimulationDebuggerModel final : public QObject {
         quint64 lineId = 0;
         int line = 0;
         int sourceLine = 0;
+        QString watchId;
+        quint64 watchGeneration = 0;
     };
 
     struct ProcessedDebuggerOutput {
@@ -203,6 +213,11 @@ class SimulationDebuggerModel final : public QObject {
     static QString workerExecutablePath();
     static QString sourceRootPath();
     static QString quoteDebuggerArgument(const QString &value);
+    static bool validWatchPath(const QString &path);
+    void loadWatches();
+    void saveWatches();
+    void invalidateWatches(const QString &status);
+    void refreshWatches();
 
     int sourceIndex(const QString &path) const;
     SourceFile *selectedSource();
@@ -288,6 +303,9 @@ class SimulationDebuggerModel final : public QObject {
     QString selectedFilePath_;
     QString backendName_ = QStringLiteral("Reference");
     QString statusText_;
+    QVariantList watches_;
+    QString watchError_;
+    quint64 watchGeneration_ = 0;
     QString runtimeLldbPath_;
     QString runtimeTerminalPath_;
     QString editError_;

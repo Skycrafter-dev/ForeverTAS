@@ -140,6 +140,12 @@ bool HasInlineValue(forevertas::viewer::SimulationDebuggerModel &model) {
     });
 }
 
+QVariantMap Watch(forevertas::viewer::SimulationDebuggerModel &model, const QString &id) {
+    for (const auto &entry : model.watches())
+        if (entry.toMap().value("id") == id) return entry.toMap();
+    return {};
+}
+
 bool WaitForPreparation(forevertas::viewer::SimulationDebuggerModel &model,
                         int *pulseCount = nullptr) {
     QEventLoop loop;
@@ -223,6 +229,17 @@ int main(int argc, char **argv) {
                           SourceLine(*model, QString::fromLatin1(kVehicleSource), kApplyControlsLine) == editedToolCheckLine,
                   "PATH runtime discovery failed or overwrote source edits");
     model->resetEdits();
+    for (const auto &invalid : {"controls.steering = 1", "controls.steering++", "foo()", "foo; quit", "foo\nquit", "foo[1+2]"})
+        okay &= Check(model->pinWatch(QString::fromLatin1(invalid)).isEmpty(), "watch accepted executable syntax");
+    const auto steeringWatch = model->pinWatch(QStringLiteral("controls.steering"));
+    const auto missingWatch = model->pinWatch(QStringLiteral("missing_watch_variable"));
+    okay &= Check(!steeringWatch.isEmpty() && !missingWatch.isEmpty() &&
+                          model->pinWatch("controls.steering") == steeringWatch && model->watches().size() == 2,
+                  "watch IDs or duplicate handling failed");
+    QStringList extraWatches;
+    for (int i = 0; i < 30; ++i) extraWatches.append(model->pinWatch(QStringLiteral("array[%1]").arg(i)));
+    okay &= Check(model->watches().size() == 32 && model->pinWatch("overflow").isEmpty(), "watch limit failed");
+    for (const auto &id : extraWatches) model->unpinWatch(id);
     okay &= Check(model->toggleBreakpoint(QString::fromLatin1(kVehicleSource),
                                           kApplyControlsLine),
                   "persistent breakpoint setup failed");
@@ -235,6 +252,9 @@ int main(int argc, char **argv) {
                                            &restoredPreparationPulses) &&
                         restoredPreparationPulses > 0,
                 "reconstructed source model did not prepare asynchronously");
+        okay &= Check(restored.watches().size() == 2 && Watch(restored, steeringWatch).value("expression") == "controls.steering" &&
+                              Watch(restored, steeringWatch).value("value").toString().isEmpty(),
+                      "watch persistence lost IDs or restored stale values");
         const QVariantMap restoredEntry =
                 FileEntry(restored, QString::fromLatin1(kVehicleSource));
         okay &= Check(
@@ -545,7 +565,12 @@ int main(int argc, char **argv) {
             viewer.play();
         } else if (phase == Phase::WaitingApplyControls && !model->running() &&
             model->activeFilePath() == QString::fromLatin1(kVehicleSource) &&
-            model->activeLine() == kApplyControlsLine) {
+            model->activeLine() == kApplyControlsLine &&
+            Watch(*model, steeringWatch).value("status") == "Ready" &&
+            Watch(*model, missingWatch).value("status") == "Out of scope or unreadable") {
+            okay &= Check(!Watch(*model, steeringWatch).value("value").toString().isEmpty() &&
+                                  !Watch(*model, steeringWatch).value("type").toString().isEmpty(),
+                          "paused frame watch has no typed value");
             okay &= Check(
                     !heldInspectionFile.isEmpty() &&
                             heldInspectionFile != model->activeFilePath() &&
@@ -575,6 +600,8 @@ int main(int argc, char **argv) {
                             model->stepSourceLine(),
                     "source-line step could not execute the pending edited "
                     "line");
+            okay &= Check(Watch(*model, steeringWatch).value("value").toString().isEmpty(),
+                          "stepping retained a stale watch value");
             phase = Phase::WaitingEditedSourceStep;
         } else if (phase == Phase::WaitingEditedSourceStep &&
                    !model->stepping() && model->activeLine() > 0) {
