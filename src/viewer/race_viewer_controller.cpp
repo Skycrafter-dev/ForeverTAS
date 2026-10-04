@@ -3243,6 +3243,10 @@ void RaceViewerController::addSearchImprovement(
         std::uint64_t improvementNumber,
         std::chrono::steady_clock::time_point generatedAt) {
     if (generatedAt <= previewClearedAt_) return;
+    if (frames.size() > kMaximumLiveTrajectoryBytes / sizeof(RaceViewerFrame)) {
+        setStatusText(QStringLiteral("Live trajectory exceeds the 64 MiB preview budget; saved results are unchanged."));
+        return;
+    }
     if (searchId == 0u || improvementNumber == 0u ||
         frames.empty()) {
         setStatusText(QStringLiteral(
@@ -3299,6 +3303,12 @@ void RaceViewerController::addSearchImprovement(
                     pending.frames);
             return;
         }
+        while (!pendingImprovements_.empty() &&
+               (pendingImprovements_.size() >= kMaximumLiveTrajectories ||
+                pendingImprovementBytes() + pending.frames.size() * sizeof(RaceViewerFrame) >
+                        kMaximumLiveTrajectoryBytes)) {
+            pendingImprovements_.erase(pendingImprovements_.begin());
+        }
         pendingImprovements_.push_back(std::move(pending));
         if (workerThread_ == nullptr) {
             beginMapLoad(packsDirectory, replayPath,
@@ -3313,6 +3323,31 @@ void RaceViewerController::addSearchImprovement(
         setStatusText(QStringLiteral(
                 "Adding search improvement trajectory failed unexpectedly."));
     }
+}
+
+quint64 RaceViewerController::retainedImprovementBytes() const {
+    quint64 bytes = 0;
+    for (const auto &geometry : trajectoryGeometries_) bytes += geometry->vertexData().size();
+    return bytes;
+}
+
+quint64 RaceViewerController::pendingImprovementBytes() const {
+    quint64 bytes = 0;
+    for (const auto &pending : pendingImprovements_) bytes += pending.frames.size() * sizeof(RaceViewerFrame);
+    return bytes;
+}
+
+void RaceViewerController::evictOldestImprovement() {
+    if (trajectoryKeys_.empty()) return;
+    const auto key = trajectoryKeys_.front();
+    trajectoryPaths_.erase(std::remove_if(trajectoryPaths_.begin(), trajectoryPaths_.end(),
+            [&key](const QVariant &entry) {
+                return entry.toMap().value(QStringLiteral("visualId")).toString() == key;
+            }), trajectoryPaths_.end());
+    auto geometry = std::move(trajectoryGeometries_.front());
+    trajectoryGeometries_.erase(trajectoryGeometries_.begin());
+    trajectoryKeys_.erase(trajectoryKeys_.begin());
+    emit trajectoriesChanged();
 }
 
 bool RaceViewerController::appendImprovementTrajectory(
@@ -3330,6 +3365,12 @@ bool RaceViewerController::appendImprovementTrajectory(
     }
 
     try {
+        const auto maximumVertices = std::max<std::size_t>(6, frames.empty() ? 0 : (frames.size() - 1) * 2);
+        if (maximumVertices > kMaximumLiveTrajectoryBytes / sizeof(WireVertex)) return false;
+        while (!trajectoryKeys_.empty() &&
+               (trajectoryKeys_.size() >= kMaximumLiveTrajectories ||
+                retainedImprovementBytes() + maximumVertices * sizeof(WireVertex) >
+                        kMaximumLiveTrajectoryBytes)) evictOldestImprovement();
         const float radius = static_cast<float>(
                 std::clamp(sceneRadius_ * 0.0004, 0.015, 0.15));
         RaceViewerMeshBuffers mesh =

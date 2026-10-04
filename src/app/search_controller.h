@@ -153,6 +153,9 @@ class SearchController final : public QObject {
     Q_PROPERTY(QString selectedSessionDirectory READ
                        selectedSessionDirectory NOTIFY historyChanged)
     Q_PROPERTY(QVariantList cycleRows READ cycleRows NOTIFY historyChanged)
+    Q_PROPERTY(bool historyHasOlder READ historyHasOlder NOTIFY historyChanged)
+    Q_PROPERTY(bool historyHasNewer READ historyHasNewer NOTIFY historyChanged)
+    Q_PROPERTY(qint64 selectedCycleRestart READ selectedCycleRestart NOTIFY historyChanged)
     Q_PROPERTY(QString selectedInputsText READ selectedInputsText NOTIFY
                        historyChanged)
 
@@ -232,6 +235,9 @@ public:
     QVariantList sessionOptions() const;
     QString selectedSessionDirectory() const;
     QVariantList cycleRows() const;
+    bool historyHasOlder() const { return historyHasOlder_; }
+    bool historyHasNewer() const { return historyHasNewer_; }
+    qint64 selectedCycleRestart() const { return selectedCycleRestart_; }
     QString selectedInputsText() const;
 
 public slots:
@@ -293,6 +299,7 @@ public slots:
     Q_INVOKABLE void abortSearch();
     Q_INVOKABLE void selectSession(int index);
     Q_INVOKABLE void selectCycle(int index);
+    Q_INVOKABLE void changeCyclePage(bool older);
 
 signals:
     void packsDirectoryChanged();
@@ -437,6 +444,10 @@ private:
     QString autoRestartAttempts_ = QStringLiteral("1000");
     QVariantList sessionOptions_;
     QVariantList cycleRows_;
+    bool historyHasOlder_ = false;
+    bool historyHasNewer_ = false;
+    bool historySelectionExplicit_ = false;
+    qint64 selectedCycleRestart_ = -1;
     QString selectedSessionDirectory_;
     QString selectedInputsText_;
     bool valid_ = false;

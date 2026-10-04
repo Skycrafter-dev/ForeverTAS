@@ -13,6 +13,7 @@
 
 #include <QDateTime>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -23,6 +24,8 @@
 #include <QUuid>
 
 #include <stdexcept>
+#include <map>
+#include <limits>
 #include <utility>
 
 namespace forevertas::app {
@@ -295,39 +298,67 @@ QVariantList SearchSessionStore::SessionsForMap(
             const QJsonObject metadata = ReadObject(
                     entry.absoluteFilePath() + QStringLiteral("/session.json"));
             if (metadata.value("mapKey").toString() != mapKey ||
-                QDir(entry.absoluteFilePath())
-                        .entryList({QStringLiteral("restart-*.json")},
-                                   QDir::Files).isEmpty()) continue;
-            sessions.append(QVariantMap{
-                    {"directory", entry.absoluteFilePath()},
-                    {"label", metadata.value("createdUtc").toString()},
-                    {"packsDirectory", metadata.value("packsDirectory")
-                                                 .toString()},
-                    {"replayPath", metadata.value("replayPath").toString()},
-                    {"horizonMs", metadata.value("horizonMs").toInt()},
-                    {"targetId", metadata.value("targetId").toString()}});
+                !QDirIterator(entry.absoluteFilePath(), {QStringLiteral("restart-*.json")},
+                              QDir::Files).hasNext()) continue;
+            sessions.append(Session(entry.absoluteFilePath()));
         }
     }
     return sessions;
 }
 
 QVariantList SearchSessionStore::Cycles(const QString &directory) {
-    QVariantList cycles;
-    const QDir session(directory);
-    for (const QFileInfo &entry : session.entryInfoList(
-                 {QStringLiteral("restart-*.json")}, QDir::Files,
-                 QDir::Name)) {
-        const QJsonObject metadata = ReadObject(entry.absoluteFilePath());
-        if (!metadata.isEmpty()) {
-            QVariantMap row = metadata.toVariantMap();
-            const auto count = row.value(QStringLiteral("attemptsExact"),
-                                         row.value(QStringLiteral("attempts"))).toULongLong();
-            row.insert(QStringLiteral("attemptsExact"), QString::number(count));
-            row.insert(QStringLiteral("attemptsText"), FormatExactCount(count));
-            cycles.append(row);
-        }
+    return ReadCyclePage(directory).rows;
+}
+
+QVariantMap SearchSessionStore::Session(const QString &directory) {
+    const auto metadata = ReadObject(directory + QStringLiteral("/session.json"));
+    return {{"directory", directory}, {"label", metadata.value("createdUtc").toString()},
+            {"packsDirectory", metadata.value("packsDirectory").toString()},
+            {"replayPath", metadata.value("replayPath").toString()},
+            {"horizonMs", metadata.value("horizonMs").toInt()},
+            {"targetId", metadata.value("targetId").toString()}};
+}
+
+QVariantMap SearchSessionStore::Cycle(const QString &directory, std::uint64_t restart) {
+    const auto metadata = ReadObject(directory + QStringLiteral("/restart-%1.json")
+            .arg(static_cast<qulonglong>(restart), 6, 10, QLatin1Char('0')));
+    if (metadata.isEmpty()) return {};
+    auto row = metadata.toVariantMap();
+    const auto count = row.value(QStringLiteral("attemptsExact"), row.value(QStringLiteral("attempts"))).toULongLong();
+    row.insert(QStringLiteral("attemptsExact"), QString::number(count));
+    row.insert(QStringLiteral("attemptsText"), FormatExactCount(count));
+    return row;
+}
+
+SearchSessionStore::CyclePage SearchSessionStore::ReadCyclePage(
+        const QString &directory, std::optional<std::uint64_t> anchor, bool older) {
+    std::map<std::uint64_t, bool> numbers;
+    std::uint64_t minimum = std::numeric_limits<std::uint64_t>::max(), maximum = 0;
+    QDirIterator files(directory, {QStringLiteral("restart-*.json")}, QDir::Files);
+    // Scan names only, retaining one page. Read JSON only for that page.
+    while (files.hasNext()) {
+        files.next();
+        const auto name = files.fileName();
+        bool valid = false;
+        const auto number = name.mid(8, name.size() - 13).toULongLong(&valid);
+        if (!valid) continue;
+        minimum = std::min(minimum, static_cast<std::uint64_t>(number));
+        maximum = std::max(maximum, static_cast<std::uint64_t>(number));
+        if (anchor && (older ? number >= *anchor : number <= *anchor)) continue;
+        numbers.emplace(number, true);
+        if (numbers.size() > kCyclePageSize)
+            numbers.erase(older ? numbers.begin() : std::prev(numbers.end()));
     }
-    return cycles;
+    CyclePage page;
+    for (const auto &[number, unused] : numbers) {
+        const auto row = Cycle(directory, number);
+        if (!row.isEmpty()) page.rows.append(row);
+    }
+    if (!numbers.empty()) {
+        page.hasOlder = minimum < numbers.begin()->first;
+        page.hasNewer = maximum > numbers.rbegin()->first;
+    }
+    return page;
 }
 
 QString SearchSessionStore::Inputs(const QString &directory,

@@ -5,6 +5,8 @@
 
 #include <QString>
 #include <QVariantList>
+#include <QVariantMap>
+#include <optional>
 
 namespace forevertas::app {
 
@@ -16,6 +18,16 @@ struct SearchSessionLocation {
 
 class SearchSessionStore {
 public:
+    static constexpr std::size_t kCyclePageSize = 256;
+    struct CyclePage {
+        QVariantList rows;
+        bool hasOlder = false;
+        bool hasNewer = false;
+    };
+    static QVariantMap Session(const QString &directory);
+    static QVariantMap Cycle(const QString &directory, std::uint64_t restart);
+    static CyclePage ReadCyclePage(const QString &directory,
+                                  std::optional<std::uint64_t> anchor = {}, bool older = true);
     static SearchSessionLocation Create(const SearchRequest &request,
                                         const QString &root = {});
     static SearchSessionLocation Identify(const SearchRequest &request);

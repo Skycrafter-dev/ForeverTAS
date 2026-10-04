@@ -1490,19 +1490,34 @@ void SearchController::startSearch() {
                 emit searchImprovement(std::move(improvement));
             });
     connect(worker, &SearchWorker::sessionCreated, this,
-            [this](const QString &mapKey, const QString &directory) {
-                sessionOptions_ = SearchSessionStore::SessionsForMap(mapKey);
+            [this](const QString &, const QString &directory) {
+                sessionOptions_.append(SearchSessionStore::Session(directory));
                 selectedSessionDirectory_ = directory;
+                cycleRows_.clear();
+                selectedInputsText_.clear();
+                selectedCycleRestart_ = -1;
+                historySelectionExplicit_ = false;
+                historyHasOlder_ = historyHasNewer_ = false;
                 emit historyChanged();
             });
     connect(worker, &SearchWorker::cycleSaved, this,
-            [this](const QString &mapKey, const QString &directory,
-                   std::uint64_t) {
-                sessionOptions_ = SearchSessionStore::SessionsForMap(mapKey);
-                selectedSessionDirectory_ = directory;
-                cycleRows_ = SearchSessionStore::Cycles(directory);
-                emit historyChanged();
-                selectCycle(static_cast<int>(cycleRows_.size()) - 1);
+            [this](const QString &, const QString &directory, std::uint64_t restart) {
+                if (directory != selectedSessionDirectory_) return;
+                if (historyHasNewer_) {
+                    emit historyChanged();
+                    return;
+                }
+                const auto row = SearchSessionStore::Cycle(directory, restart);
+                if (row.isEmpty()) return;
+                cycleRows_.append(row);
+                if (cycleRows_.size() > static_cast<qsizetype>(SearchSessionStore::kCyclePageSize)) {
+                    cycleRows_.removeFirst();
+                    historyHasOlder_ = true;
+                }
+                if (!historySelectionExplicit_) {
+                    selectCycle(static_cast<int>(cycleRows_.size()) - 1);
+                    historySelectionExplicit_ = false;
+                } else emit historyChanged();
             });
     connect(worker,
             &SearchWorker::succeeded,
@@ -1796,6 +1811,9 @@ SearchController::ValidationResult SearchController::validate() const {
 }
 
 void SearchController::refreshSessions() {
+    historyHasOlder_ = historyHasNewer_ = false;
+    historySelectionExplicit_ = false;
+    selectedCycleRestart_ = -1;
     emit searchSessionReset();
     if (!QFileInfo(packsDirectory_).isDir() ||
         !QFileInfo(replayPath_).isFile()) {
@@ -1836,20 +1854,41 @@ void SearchController::selectSession(int index) {
                                         .toString();
     if (directory != selectedSessionDirectory_) emit searchSessionReset();
     selectedSessionDirectory_ = directory;
-    cycleRows_ = SearchSessionStore::Cycles(selectedSessionDirectory_);
+    auto page = SearchSessionStore::ReadCyclePage(selectedSessionDirectory_);
+    cycleRows_ = std::move(page.rows);
+    historyHasOlder_ = page.hasOlder;
+    historyHasNewer_ = page.hasNewer;
+    historySelectionExplicit_ = false;
+    selectedCycleRestart_ = -1;
     selectedInputsText_.clear();
     emit historyChanged();
     if (!cycleRows_.isEmpty()) selectCycle(
             static_cast<int>(cycleRows_.size()) - 1);
+    historySelectionExplicit_ = false;
 }
 
 void SearchController::selectCycle(int index) {
     if (index < 0 || index >= cycleRows_.size()) return;
+    historySelectionExplicit_ = true;
+    selectedCycleRestart_ = cycleRows_[index].toMap().value(QStringLiteral("restart")).toLongLong();
     const QString fileName = cycleRows_[index].toMap()
                                      .value(QStringLiteral("inputFile"))
                                      .toString();
     selectedInputsText_ = SearchSessionStore::Inputs(
             selectedSessionDirectory_, fileName);
+    emit historyChanged();
+}
+
+void SearchController::changeCyclePage(bool older) {
+    if (cycleRows_.isEmpty() || (older ? !historyHasOlder_ : !historyHasNewer_)) return;
+    const auto anchor = (older ? cycleRows_.front() : cycleRows_.back()).toMap()
+                                .value(QStringLiteral("restart")).toULongLong();
+    auto page = SearchSessionStore::ReadCyclePage(selectedSessionDirectory_, anchor, older);
+    if (page.rows.isEmpty()) return;
+    cycleRows_ = std::move(page.rows);
+    historyHasOlder_ = page.hasOlder;
+    historyHasNewer_ = page.hasNewer;
+    historySelectionExplicit_ = true;
     emit historyChanged();
 }
 

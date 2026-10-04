@@ -2302,6 +2302,13 @@ bool TestAutorestartHistory(const QString &packsDirectory,
     bool okay = Check(WaitUntil(
             [&controller]() { return controller.cycleRows().size() >= 2; },
             30000), "autorestart did not save threshold-completed cycles");
+    controller.selectCycle(0);
+    const auto selectedHistory = controller.selectedInputsText();
+    const auto selectedRestart = controller.selectedCycleRestart();
+    okay &= Check(WaitUntil([&controller]() { return controller.cycleRows().size() >= 5; }, 30000) &&
+                          controller.selectedInputsText() == selectedHistory &&
+                          controller.selectedCycleRestart() == selectedRestart,
+                  "background cycle updates replaced an explicit history selection");
     controller.stopSearch();
     okay &= Check(WaitUntil([&controller]() {
                       return !controller.running();

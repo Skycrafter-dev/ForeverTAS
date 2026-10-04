@@ -344,6 +344,10 @@ public:
     void requestRayTracingScene();
     RaceViewerInputSample inputSample(qint64 tick) const noexcept;
     bool liveBestUpdates() const { return liveBestUpdates_; }
+    static constexpr std::size_t kMaximumLiveTrajectories = 64;
+    static constexpr std::size_t kMaximumLiveTrajectoryBytes = 64u * 1024u * 1024u;
+    Q_INVOKABLE quint64 retainedImprovementBytes() const;
+    Q_INVOKABLE quint64 pendingImprovementBytes() const;
     void setLiveBestUpdates(bool value);
     void beginSearchPreview(std::uint64_t searchId);
     void queueLiveBest(std::shared_ptr<const app::SearchImprovement> improvement);
@@ -452,6 +456,7 @@ signals:
     void telemetryScriptChanged();
 
 private:
+    void evictOldestImprovement();
     void applyLiveBest();
     void applySearchRun(const QString &packsDirectory, const QString &replayPath,
                         const std::vector<SearchTimelineFrame> &frames,

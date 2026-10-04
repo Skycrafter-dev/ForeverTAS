@@ -10,9 +10,7 @@ ColumnLayout {
     signal inputsSelected()
     property int sortColumn: 0
     property bool sortAscending: true
-    property int selectedRestart: -1
-    property int observedRowCount: 0
-    property string observedDirectory: ""
+    readonly property double selectedRestart: controller.selectedCycleRestart
     readonly property var metricLabels:
         controller.cycleRows.length > 0
         ? controller.cycleRows[0].metricLabels : []
@@ -52,7 +50,6 @@ ColumnLayout {
         if (index < 0 || index >= controller.cycleRows.length)
             return
         controller.selectCycle(index)
-        selectedRestart = Number(controller.cycleRows[index].restart)
         if (!preview)
             return
         inputsSelected()
@@ -82,34 +79,6 @@ ColumnLayout {
         else if (alreadySelected && viewer.loaded &&
                  packs.length > 0 && replay.length > 0)
             viewer.refreshInputPreview()
-    }
-
-    Connections {
-        target: root.controller
-        function onHistoryChanged() {
-            const directory = root.controller.selectedSessionDirectory
-            const count = root.controller.cycleRows.length
-            if (directory !== root.observedDirectory ||
-                count !== root.observedRowCount) {
-                root.observedDirectory = directory
-                root.observedRowCount = count
-                if (count > 0)
-                    Qt.callLater(() => {
-                        if (root.controller.selectedSessionDirectory ===
-                                directory)
-                            root.chooseRow(count - 1, false)
-                    })
-                else
-                    root.selectedRestart = -1
-            }
-        }
-    }
-
-    Component.onCompleted: {
-        observedDirectory = controller.selectedSessionDirectory
-        observedRowCount = controller.cycleRows.length
-        if (observedRowCount > 0)
-            Qt.callLater(() => chooseRow(observedRowCount - 1, false))
     }
 
     ThemedButton {
@@ -145,7 +114,6 @@ ColumnLayout {
             Component.onCompleted: synchronizeSelection()
             onModelChanged: Qt.callLater(synchronizeSelection)
             onActivated: index => {
-                root.selectedRestart = -1
                 root.controller.selectSession(index)
                 root.chooseRow(root.controller.cycleRows.length - 1)
             }
@@ -155,6 +123,33 @@ ColumnLayout {
                     sessionSelector.synchronizeSelection()
                 }
             }
+        }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        visible: root.controller.historyHasOlder || root.controller.historyHasNewer
+        ThemedButton {
+            objectName: "olderCyclePage"
+            text: qsTr("Older")
+            icon.source: "qrc:/icons/arrow-up.svg"
+            enabled: root.controller.historyHasOlder
+            onClicked: root.controller.changeCyclePage(true)
+        }
+        Label {
+            Layout.fillWidth: true
+            horizontalAlignment: Text.AlignHCenter
+            text: root.controller.cycleRows.length > 0
+                ? qsTr("%1 - %2").arg(root.controller.cycleRows[0].restart)
+                    .arg(root.controller.cycleRows[root.controller.cycleRows.length - 1].restart)
+                : ""
+        }
+        ThemedButton {
+            objectName: "newerCyclePage"
+            text: qsTr("Newer")
+            icon.source: "qrc:/icons/arrow-down.svg"
+            enabled: root.controller.historyHasNewer
+            onClicked: root.controller.changeCyclePage(false)
         }
     }
 
