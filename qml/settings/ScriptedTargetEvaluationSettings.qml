@@ -47,6 +47,7 @@ ColumnLayout {
         ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
         TextArea {
+            id: scriptArea
             objectName: "scriptedTargetTextArea"
             width: Math.max(scriptScroll.availableWidth,
                             contentWidth + leftPadding + rightPadding)
@@ -60,6 +61,12 @@ ColumnLayout {
             color: enabled ? ThemeControls.AppTheme.text
                            : ThemeControls.AppTheme.disabledText
             placeholderText: qsTr("max kmh(car.speed)")
+            Keys.onPressed: event => {
+                if (event.key === Qt.Key_Space && (event.modifiers & Qt.ControlModifier)) {
+                    reference.complete()
+                    event.accepted = true
+                }
+            }
             onTextChanged: {
                 if (root.settings["script"] !== text)
                     root.controller.setEvaluationTargetSetting("script", text)
@@ -74,6 +81,14 @@ ColumnLayout {
                 radius: 6
             }
         }
+    }
+
+    ThemeControls.ConditionReference {
+        id: reference
+        objectName: "customTargetReference"
+        controller: root.controller
+        editor: scriptArea
+        customTarget: true
     }
 
     Label {

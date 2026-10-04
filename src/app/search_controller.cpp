@@ -5,6 +5,7 @@
 #include "app/search_worker.h"
 #include "app/search_session_store.h"
 #include "app/system_file_dialog.h"
+#include "conditions/condition_catalog.h"
 #include "mutations/input_event_formatter.h"
 #include "mutations/replay_input_script.h"
 #include "searches/algorithm_registry.h"
@@ -701,6 +702,26 @@ double SearchController::progressValue() const {
 
 QString SearchController::validationMessage() const {
     return validationMessage_;
+}
+
+QVariantList SearchController::conditionReference() const {
+    QVariantList result;
+    const auto append = [&](const auto &entry, const QString &insertion, bool needsPointTarget) {
+        QStringList aliases;
+        for (const auto &alias : entry.aliases) aliases.push_back(QString::fromStdString(alias));
+        result.push_back(QVariantMap{
+            {QStringLiteral("name"), QString::fromStdString(entry.name)},
+            {QStringLiteral("aliases"), aliases},
+            {QStringLiteral("type"), QString::fromStdString(entry.type)},
+            {QStringLiteral("units"), QString::fromStdString(entry.units)},
+            {QStringLiteral("description"), QString::fromStdString(entry.description)},
+            {QStringLiteral("insertion"), insertion},
+            {QStringLiteral("conditionsOnly"), entry.conditionsOnly},
+            {QStringLiteral("needsPointTarget"), needsPointTarget}});
+    };
+    for (const auto &entry : ConditionSymbols()) append(entry, QString::fromStdString(entry.name), false);
+    for (const auto &entry : ConditionFunctions()) append(entry, QString::fromStdString(entry.example), entry.needsPointTarget);
+    return result;
 }
 
 QString SearchController::statusText() const {

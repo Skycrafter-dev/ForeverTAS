@@ -215,6 +215,8 @@ add_library(forevertas_core STATIC
     src/mutations/smooth_steering_mutator.h
     src/conditions/condition_program.cpp
     src/conditions/condition_program.h
+    src/conditions/condition_catalog.cpp
+    src/conditions/condition_catalog.h
     src/searches/algorithm_registry.cpp
     src/searches/algorithm_registry.h
     src/searches/option_configuration.h
@@ -474,6 +476,7 @@ qt_add_qml_module(forevertas_qml
     VERSION 1.0
     OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin/qml/ForeverTAS"
     QML_FILES
+        qml/ConditionReference.qml
         qml/AppTheme.qml
         qml/DurationDisplay.qml
         qml/settings/DurationField.qml
@@ -892,6 +895,14 @@ if(BUILD_TESTING)
     add_executable(forevertas-strategy-tests
         tests/search_component_tests.cpp)
     target_link_libraries(forevertas-strategy-tests PRIVATE forevertas_core)
+    add_executable(forevertas-condition-catalog-tests tests/condition_catalog_tests.cpp)
+    target_link_libraries(forevertas-condition-catalog-tests PRIVATE forevertas_core)
+    target_compile_definitions(forevertas-condition-catalog-tests PRIVATE
+        FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-condition-catalog-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-condition-catalog COMMAND forevertas-condition-catalog-tests)
 
     add_executable(forevertas-controller-tests
         tests/search_controller_tests.cpp)

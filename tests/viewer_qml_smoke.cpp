@@ -960,6 +960,37 @@ int main(int argc, char **argv) {
                                 QStringLiteral("No conditions");
             }
             controller.setDarkMode(false);
+            QObject *reference = root->findChild<QObject *>(QStringLiteral("conditionReference"));
+            if (reference) {
+                conditionEditor->setProperty("text", QStringLiteral("car.spe > 0"));
+                conditionEditor->setProperty("cursorPosition", 7);
+                QMetaObject::invokeMethod(reference, "complete");
+                QQmlExpression insert(QQmlEngine::contextForObject(reference), reference,
+                    QStringLiteral("entries.length === 1 && (insertEntry(entries[0]), true)"));
+                passManagementValid &= insert.evaluate().toBool() && !insert.hasError() &&
+                        controller.conditionScript() == QStringLiteral("car.speed > 0");
+                conditionEditor->setProperty("cursorPosition", 7);
+                QMetaObject::invokeMethod(reference, "complete");
+                passManagementValid &= insert.evaluate().toBool() && !insert.hasError() &&
+                        controller.conditionScript() == QStringLiteral("car.speed > 0");
+                const QString originalTarget = controller.evaluationTargetId();
+                controller.setEvaluationTargetId(QStringLiteral("point-target"));
+                auto *filter = reference->findChild<QObject *>(QStringLiteral("conditionReferenceFilter"));
+                if (filter) filter->setProperty("text", QString{});
+                QQmlExpression contexts(QQmlEngine::contextForObject(reference), reference,
+                    QStringLiteral("entries.some(e => e.name === 'iterations') && entries.some(e => e.name === 'variable')"));
+                passManagementValid &= filter && contexts.evaluate().toBool() && !contexts.hasError();
+                reference->setProperty("customTarget", true);
+                QQmlExpression customContext(QQmlEngine::contextForObject(reference), reference,
+                    QStringLiteral("!entries.some(e => e.conditionsOnly) && entries.some(e => e.name === 'car.speed')"));
+                passManagementValid &= customContext.evaluate().toBool() && !customContext.hasError();
+                reference->setProperty("customTarget", false);
+                reference->setProperty("expanded", false);
+                conditionEditor->setProperty("text", QString{});
+                controller.setEvaluationTargetId(originalTarget);
+            } else {
+                passManagementValid = false;
+            }
         } else {
             passManagementValid = false;
         }

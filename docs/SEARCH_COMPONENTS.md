@@ -329,6 +329,9 @@ while allowing repeated instances of the same modifier to remain independent.
 
 ### Conditions
 
+The complete [symbol and function reference](CONDITIONS.md) is generated from
+the parser catalog; the catalog test checks every spelling, context and example.
+
 `search/conditionScript` is an optional persisted tick-eligibility program.
 Every non-empty line is a comparison and all lines are ANDed. The language
 matches BfV2 condition scripts: scalar and vector current/previous car state,

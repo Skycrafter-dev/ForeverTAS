@@ -5175,6 +5175,12 @@ ApplicationWindow {
                                 color: enabled ? AppTheme.text
                                                : AppTheme.disabledText
                                 placeholderText: enabled ? qsTr("No conditions") : ""
+                                Keys.onPressed: event => {
+                                    if (event.key === Qt.Key_Space && (event.modifiers & Qt.ControlModifier)) {
+                                        conditionReference.complete()
+                                        event.accepted = true
+                                    }
+                                }
                                 onTextChanged: {
                                     if (window.controller.conditionScript !== text)
                                         window.controller.conditionScript = text
@@ -5196,6 +5202,12 @@ ApplicationWindow {
                                      && conditionScriptArea.text.trim().length === 0
                             text: qsTr("No conditions")
                             color: AppTheme.textMuted
+                        }
+                        ConditionReference {
+                            id: conditionReference
+                            objectName: "conditionReference"
+                            controller: window.controller
+                            editor: conditionScriptArea
                         }
                     }
 

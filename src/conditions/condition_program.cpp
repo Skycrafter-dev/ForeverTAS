@@ -1,4 +1,5 @@
 #include "conditions/condition_program.h"
+#include "conditions/condition_catalog.h"
 
 #include <algorithm>
 #include <cctype>
@@ -196,84 +197,25 @@ private:
                 Fail(error, "unknown vector variable '" + identifier + "'");
     }
 
-    bool EmitScalarVariable(const std::string &name) {
-        struct Entry { const char *name; PhysicsSandboxCudaConditionValue value; int component; };
-        static const Entry entries[] = {
-            {"car.x", PhysicsSandboxCudaConditionValue::Position, 1}, {"car.position.x", PhysicsSandboxCudaConditionValue::Position, 1},
-            {"car.y", PhysicsSandboxCudaConditionValue::Position, 2}, {"car.position.y", PhysicsSandboxCudaConditionValue::Position, 2},
-            {"car.z", PhysicsSandboxCudaConditionValue::Position, 3}, {"car.position.z", PhysicsSandboxCudaConditionValue::Position, 3},
-            {"car.prev.x", PhysicsSandboxCudaConditionValue::PreviousPosition, 1}, {"car.prev.position.x", PhysicsSandboxCudaConditionValue::PreviousPosition, 1},
-            {"car.prev.y", PhysicsSandboxCudaConditionValue::PreviousPosition, 2}, {"car.prev.position.y", PhysicsSandboxCudaConditionValue::PreviousPosition, 2},
-            {"car.prev.z", PhysicsSandboxCudaConditionValue::PreviousPosition, 3}, {"car.prev.position.z", PhysicsSandboxCudaConditionValue::PreviousPosition, 3},
-            {"car.vel.x", PhysicsSandboxCudaConditionValue::Velocity, 1}, {"car.velocity.x", PhysicsSandboxCudaConditionValue::Velocity, 1},
-            {"car.vel.y", PhysicsSandboxCudaConditionValue::Velocity, 2}, {"car.velocity.y", PhysicsSandboxCudaConditionValue::Velocity, 2},
-            {"car.vel.z", PhysicsSandboxCudaConditionValue::Velocity, 3}, {"car.velocity.z", PhysicsSandboxCudaConditionValue::Velocity, 3},
-            {"car.prev.vel.x", PhysicsSandboxCudaConditionValue::PreviousVelocity, 1}, {"car.prev.velocity.x", PhysicsSandboxCudaConditionValue::PreviousVelocity, 1},
-            {"car.prev.vel.y", PhysicsSandboxCudaConditionValue::PreviousVelocity, 2}, {"car.prev.velocity.y", PhysicsSandboxCudaConditionValue::PreviousVelocity, 2},
-            {"car.prev.vel.z", PhysicsSandboxCudaConditionValue::PreviousVelocity, 3}, {"car.prev.velocity.z", PhysicsSandboxCudaConditionValue::PreviousVelocity, 3},
-            {"car.vel.pitch", PhysicsSandboxCudaConditionValue::AngularVelocity, 1}, {"car.velocity.pitch", PhysicsSandboxCudaConditionValue::AngularVelocity, 1},
-            {"car.vel.yaw", PhysicsSandboxCudaConditionValue::AngularVelocity, 2}, {"car.velocity.yaw", PhysicsSandboxCudaConditionValue::AngularVelocity, 2},
-            {"car.vel.roll", PhysicsSandboxCudaConditionValue::AngularVelocity, 3}, {"car.velocity.roll", PhysicsSandboxCudaConditionValue::AngularVelocity, 3},
-            {"car.prev.vel.pitch", PhysicsSandboxCudaConditionValue::PreviousAngularVelocity, 1}, {"car.prev.velocity.pitch", PhysicsSandboxCudaConditionValue::PreviousAngularVelocity, 1},
-            {"car.prev.vel.yaw", PhysicsSandboxCudaConditionValue::PreviousAngularVelocity, 2}, {"car.prev.velocity.yaw", PhysicsSandboxCudaConditionValue::PreviousAngularVelocity, 2},
-            {"car.prev.vel.roll", PhysicsSandboxCudaConditionValue::PreviousAngularVelocity, 3}, {"car.prev.velocity.roll", PhysicsSandboxCudaConditionValue::PreviousAngularVelocity, 3},
-            {"car.localvel.x", PhysicsSandboxCudaConditionValue::LocalVelocity, 1}, {"car.localvelocity.x", PhysicsSandboxCudaConditionValue::LocalVelocity, 1},
-            {"car.localvel.y", PhysicsSandboxCudaConditionValue::LocalVelocity, 2}, {"car.localvelocity.y", PhysicsSandboxCudaConditionValue::LocalVelocity, 2},
-            {"car.localvel.z", PhysicsSandboxCudaConditionValue::LocalVelocity, 3}, {"car.localvelocity.z", PhysicsSandboxCudaConditionValue::LocalVelocity, 3},
-            {"car.prev.localvel.x", PhysicsSandboxCudaConditionValue::PreviousLocalVelocity, 1}, {"car.prev.localvelocity.x", PhysicsSandboxCudaConditionValue::PreviousLocalVelocity, 1},
-            {"car.prev.localvel.y", PhysicsSandboxCudaConditionValue::PreviousLocalVelocity, 2}, {"car.prev.localvelocity.y", PhysicsSandboxCudaConditionValue::PreviousLocalVelocity, 2},
-            {"car.prev.localvel.z", PhysicsSandboxCudaConditionValue::PreviousLocalVelocity, 3}, {"car.prev.localvelocity.z", PhysicsSandboxCudaConditionValue::PreviousLocalVelocity, 3},
-        };
-        for (const Entry &entry : entries) if (name == entry.name) {
-            EmitSource(PhysicsSandboxCudaConditionOpcode::Scalar, entry.value, entry.component);
+    bool EmitKnownVariable(const std::string &name, bool vector) {
+        for (const ConditionSymbol &entry : ConditionSymbols()) {
+            if ((entry.type == "vector") != vector) continue;
+            if (name != entry.name &&
+                std::find(entry.aliases.begin(), entry.aliases.end(), name) == entry.aliases.end()) continue;
+            EmitSource(vector ? PhysicsSandboxCudaConditionOpcode::Vector
+                              : PhysicsSandboxCudaConditionOpcode::Scalar,
+                       entry.value, entry.component);
             return true;
-        }
-        const auto scalar = [&](PhysicsSandboxCudaConditionValue value) {
-            EmitSource(PhysicsSandboxCudaConditionOpcode::Scalar, value); return true;
-        };
-        if (name == "car.speed") return scalar(PhysicsSandboxCudaConditionValue::Speed);
-        if (name == "car.prev.speed") return scalar(PhysicsSandboxCudaConditionValue::PreviousSpeed);
-        if (name == "car.localspeed") return scalar(PhysicsSandboxCudaConditionValue::LocalSpeed);
-        if (name == "car.prev.localspeed") return scalar(PhysicsSandboxCudaConditionValue::PreviousLocalSpeed);
-        if (name == "car.yaw" || name == "car.rotation.yaw") return scalar(PhysicsSandboxCudaConditionValue::Yaw);
-        if (name == "car.pitch" || name == "car.rotation.pitch") return scalar(PhysicsSandboxCudaConditionValue::Pitch);
-        if (name == "car.roll" || name == "car.rotation.roll") return scalar(PhysicsSandboxCudaConditionValue::Roll);
-        if (name == "car.prev.yaw" || name == "car.prev.rotation.yaw") return scalar(PhysicsSandboxCudaConditionValue::PreviousYaw);
-        if (name == "car.prev.pitch" || name == "car.prev.rotation.pitch") return scalar(PhysicsSandboxCudaConditionValue::PreviousPitch);
-        if (name == "car.prev.roll" || name == "car.prev.rotation.roll") return scalar(PhysicsSandboxCudaConditionValue::PreviousRoll);
-        if (name == "car.freewheel") return scalar(PhysicsSandboxCudaConditionValue::FreeWheeling);
-        if (name == "car.lateralcontact") return scalar(PhysicsSandboxCudaConditionValue::LateralContact);
-        if (name == "car.sliding" || name == "car.is_sliding" || name == "car.is") return scalar(PhysicsSandboxCudaConditionValue::Sliding);
-        if (name == "car.gear") return scalar(PhysicsSandboxCudaConditionValue::Gear);
-        if (name == "car.rpm") return scalar(PhysicsSandboxCudaConditionValue::Rpm);
-        if (name == "car.turning_rate" || name == "car.tr") return scalar(PhysicsSandboxCudaConditionValue::TurningRate);
-        if (name == "car.turbo_type" || name == "car.tt") return scalar(PhysicsSandboxCudaConditionValue::TurboType);
-        if (name == "car.turbo_boost_factor" || name == "car.tbf") return scalar(PhysicsSandboxCudaConditionValue::TurboBoostFactor);
-        if (name == "car.cps") return scalar(PhysicsSandboxCudaConditionValue::CheckpointCount);
-        if (name == "iterations") return scalar(PhysicsSandboxCudaConditionValue::Iterations);
-        if (name == "last_improvement.time") return scalar(PhysicsSandboxCudaConditionValue::LastImprovementTime);
-        if (name == "last_restart.time") return scalar(PhysicsSandboxCudaConditionValue::LastRestartTime);
-        static const char *wheelNames[] = {"frontleft", "frontright", "backleft", "backright"};
-        for (std::uint32_t i = 0u; i < 4u; ++i) {
-            const std::string prefix = "car.wheels." + std::string(wheelNames[i]);
-            if (name == prefix + ".groundcontact") return scalar(static_cast<PhysicsSandboxCudaConditionValue>(static_cast<std::uint32_t>(PhysicsSandboxCudaConditionValue::WheelGroundContact0) + i));
-            if (name == prefix + ".is_sliding" || name == prefix + ".is") return scalar(static_cast<PhysicsSandboxCudaConditionValue>(static_cast<std::uint32_t>(PhysicsSandboxCudaConditionValue::WheelSliding0) + i));
-            if (name == prefix + ".surface") return scalar(static_cast<PhysicsSandboxCudaConditionValue>(static_cast<std::uint32_t>(PhysicsSandboxCudaConditionValue::WheelSurface0) + i));
         }
         return false;
     }
 
+    bool EmitScalarVariable(const std::string &name) {
+        return EmitKnownVariable(name, false);
+    }
+
     bool EmitVectorVariable(const std::string &name) {
-        PhysicsSandboxCudaConditionValue value;
-        if (name == "car.pos" || name == "car.position") value = PhysicsSandboxCudaConditionValue::Position;
-        else if (name == "car.prev.pos" || name == "car.prev.position") value = PhysicsSandboxCudaConditionValue::PreviousPosition;
-        else if (name == "car.vel" || name == "car.velocity") value = PhysicsSandboxCudaConditionValue::Velocity;
-        else if (name == "car.prev.vel" || name == "car.prev.velocity") value = PhysicsSandboxCudaConditionValue::PreviousVelocity;
-        else if (name == "car.localvel" || name == "car.localvelocity") value = PhysicsSandboxCudaConditionValue::LocalVelocity;
-        else if (name == "car.prev.localvel" || name == "car.prev.localvelocity") value = PhysicsSandboxCudaConditionValue::PreviousLocalVelocity;
-        else return false;
-        EmitSource(PhysicsSandboxCudaConditionOpcode::Vector, value);
-        return true;
+        return EmitKnownVariable(name, true);
     }
 
     bool ParseIdentifier(std::string *value) {

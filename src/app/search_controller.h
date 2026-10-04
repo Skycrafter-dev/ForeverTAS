@@ -54,6 +54,7 @@ class SearchController final : public QObject {
                        NOTIFY requiredSimulationHorizonMsChanged)
     Q_PROPERTY(QString conditionScript READ conditionScript WRITE
                        setConditionScript NOTIFY conditionScriptChanged)
+    Q_PROPERTY(QVariantList conditionReference READ conditionReference CONSTANT)
     Q_PROPERTY(QString cpuWorkerCount READ cpuWorkerCount WRITE
                        setCpuWorkerCount NOTIFY cpuWorkerCountChanged)
     Q_PROPERTY(QString cudaParallelSampleCount READ cudaParallelSampleCount WRITE
@@ -215,6 +216,7 @@ public:
     bool progressIndeterminate() const;
     double progressValue() const;
     QString validationMessage() const;
+    QVariantList conditionReference() const;
     QString statusText() const;
     bool liveMetricsVisible() const;
     QString iterationCountText() const;
