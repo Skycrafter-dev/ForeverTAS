@@ -4,10 +4,14 @@
 
 ### Fixes
 
+- Session rows show finish times in seconds under "Finish time", including
+  previously saved sessions.
+- Autorestart continues after cycles where no iteration meets the conditions.
+  Stop and Abort still end the search; unsuccessful cycles do not save a fake result.
 - Fixed CUDA/HIP Tree search and Adaptive escalation sometimes stopping with
   "sandbox input timeline is invalid" after finding improvements. Inputs just
   beyond the simulation horizon now stay in the correct order when the best
-  result becomes the new baseline. CPU searches are unchanged.
+  result becomes the new baseline. CPU simulation and scoring are unchanged.
 
 ## 0.2.6
 

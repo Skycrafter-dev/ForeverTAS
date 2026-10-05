@@ -14,6 +14,9 @@ ColumnLayout {
     readonly property var metricLabels:
         controller.cycleRows.length > 0
         ? controller.cycleRows[0].metricLabels : []
+    readonly property int metricColumnWidth:
+        controller.cycleRows.length > 0 && controller.cycleRows[0].metricTexts
+        ? 170 : 110
     readonly property var sortedRows:
         sorted(controller.cycleRows, sortColumn, sortAscending)
 
@@ -152,11 +155,11 @@ ColumnLayout {
         ScrollBar.horizontal.policy: ScrollBar.AsNeeded
         ScrollBar.vertical.policy: ScrollBar.AsNeeded
         contentWidth: Math.max(availableWidth,
-                               310 + root.metricLabels.length * 110)
+                               310 + root.metricLabels.length * root.metricColumnWidth)
 
         ColumnLayout {
             width: Math.max(parent.width,
-                            310 + root.metricLabels.length * 110)
+                            310 + root.metricLabels.length * root.metricColumnWidth)
             spacing: 0
 
             RowLayout {
@@ -168,7 +171,7 @@ ColumnLayout {
                         required property int index
                         Layout.preferredWidth: index === 0 ? 55
                             : index === 1 ? 80
-                            : index === 2 ? 90 : 110
+                            : index === 2 ? 90 : root.metricColumnWidth
                         flat: true
                         text: index === 0 ? qsTr("#")
                             : index === 1 ? qsTr("Attempts")
@@ -201,7 +204,7 @@ ColumnLayout {
                             required property int index
                             Layout.preferredWidth: index === 0 ? 55
                                 : index === 1 ? 80
-                                : index === 2 ? 90 : 110
+                                : index === 2 ? 90 : root.metricColumnWidth
                             Layout.preferredHeight: 36
                             verticalAlignment: Text.AlignVCenter
                             horizontalAlignment: Text.AlignRight
@@ -213,8 +216,9 @@ ColumnLayout {
                                 : index === 2
                                   ? (Number(modelData.data.elapsedMs) / 1000)
                                       .toFixed(1) + " s"
-                                : Number(modelData.data.metrics[index - 3])
-                                      .toPrecision(6)
+                                : (modelData.data.metricTexts?.[index - 3]
+                                   ?? Number(modelData.data.metrics[index - 3])
+                                       .toPrecision(6))
                             background: Rectangle {
                                 color: root.selectedRestart ===
                                        Number(modelData.data.restart)

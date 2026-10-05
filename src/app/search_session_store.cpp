@@ -108,7 +108,7 @@ QJsonArray MetricLabels(const SearchRequest &request) {
         } else if (targetId == kStuntPointsEvaluationId) {
             labels.append(QStringLiteral("Stunt points"));
         } else if (targetId == kPreciseFinishTimeEvaluationId) {
-            labels.append(QStringLiteral("Finish upper bound (ns)"));
+            labels.append(QStringLiteral("Finish time"));
         } else if (targetId == kVolumeEntryEvaluationId ||
                    targetId == kCustomVolumeEntryEvaluationId) {
             labels.append(QStringLiteral("Entry time (ms)"));
@@ -324,6 +324,19 @@ QVariantMap SearchSessionStore::Cycle(const QString &directory, std::uint64_t re
             .arg(static_cast<qulonglong>(restart), 6, 10, QLatin1Char('0')));
     if (metadata.isEmpty()) return {};
     auto row = metadata.toVariantMap();
+    if (metadata.value("targetId").toString() ==
+            QString::fromLatin1(kPreciseFinishTimeEvaluationId)) {
+        // Persisted scores remain in nanoseconds, including older sessions.
+        auto metrics = row.value(QStringLiteral("metrics")).toList();
+        if (!metrics.isEmpty()) {
+            const double seconds = metrics.front().toDouble() / 1000000000.0;
+            metrics.front() = seconds;
+            row.insert(QStringLiteral("metrics"), metrics);
+            row.insert(QStringLiteral("metricLabels"), QVariantList{QStringLiteral("Finish time")});
+            row.insert(QStringLiteral("metricTexts"), QVariantList{
+                    QString::number(seconds, 'f', 9) + QStringLiteral(" s")});
+        }
+    }
     const auto count = row.value(QStringLiteral("attemptsExact"), row.value(QStringLiteral("attempts"))).toULongLong();
     row.insert(QStringLiteral("attemptsExact"), QString::number(count));
     row.insert(QStringLiteral("attemptsText"), FormatCompactNumber(static_cast<double>(count)));

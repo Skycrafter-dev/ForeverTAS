@@ -387,6 +387,7 @@ void SearchWorker::run() {
         // Each RunSearch call restores the original baseline and owns a fresh
         // best result; only modifier seeds may change between cycles.
         for (;;) {
+            result.reset();
             retainedResult.reset();
             cyclePersisted = false;
             const auto attemptStartedNs =
@@ -433,13 +434,21 @@ void SearchWorker::run() {
                 }
             }
             currentRestart->store(restartNumber, std::memory_order_relaxed);
-            result.emplace(RunSearch(request_, &control));
-            emit stageChanged(QStringLiteral("Saving search result..."), true);
-            SearchSessionStore::SaveCycle(
-                    session, request_, restartNumber, *result);
-            cyclePersisted = true;
-            emit cycleSaved(session.mapKey, session.directory,
-                            restartNumber);
+            try {
+                result.emplace(RunSearch(request_, &control));
+            } catch (const NoEligibleEvaluation &) {
+                if (cancellationRequested_->load(std::memory_order_relaxed))
+                    throw SearchCancelled();
+                if (restartPolicy_.mode == AutoRestartPolicy::Mode::Off) throw;
+            }
+            if (result) {
+                emit stageChanged(QStringLiteral("Saving search result..."), true);
+                SearchSessionStore::SaveCycle(
+                        session, request_, restartNumber, *result);
+                cyclePersisted = true;
+                emit cycleSaved(session.mapKey, session.directory,
+                                restartNumber);
+            }
             if (restartPolicy_.mode == AutoRestartPolicy::Mode::Off ||
                 stopRequested_->load(std::memory_order_relaxed)) break;
             ++restartNumber;
@@ -447,6 +456,12 @@ void SearchWorker::run() {
                     QStringLiteral("Starting restart %1...")
                             .arg(static_cast<qulonglong>(restartNumber)),
                     true);
+        }
+        if (!result) {
+            emit stageChanged(QStringLiteral(
+                    "Search stopped: no iteration satisfied the selected evaluation target"), false);
+            emit finished();
+            return;
         }
         auto completion = std::make_shared<SearchCompletion>();
         completion->searchId = searchId_;

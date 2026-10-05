@@ -2551,6 +2551,84 @@ bool TestAbortRetainsBest(const QString &packsDirectory, const QString &replayPa
     return okay;
 }
 
+bool TestFinishTimeHistoryDisplay() {
+    using forevertas::app::SearchSessionStore;
+    QTemporaryDir directory;
+    forevertas::SearchRequest request{"", ""};
+    request.evaluationTarget.id = forevertas::kPreciseFinishTimeEvaluationId;
+    forevertas::SearchLiveUpdate result;
+    result.bestScore = 24630000123.0;
+    result.bestEvaluationTimeMs = 24630.000123;
+    SearchSessionStore::SaveAbortedCycle({{}, {}, directory.path()}, request, 0, result);
+    QFile file(directory.filePath(QStringLiteral("restart-000000.json")));
+    if (!Check(file.open(QIODevice::ReadOnly), "finish history fixture was not saved")) return false;
+    auto metadata = QJsonDocument::fromJson(file.readAll()).object();
+    file.close();
+    bool okay = Check(metadata.value("score").toDouble() == result.bestScore &&
+                      metadata.value("metrics").toArray().first().toDouble() == result.bestScore,
+                      "finish history changed the stored score units");
+    for (bool legacy : {false, true}) {
+        if (legacy) {
+            metadata.insert("metricLabels", QJsonArray{QStringLiteral("Finish upper bound (ns)")});
+            if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+            file.write(QJsonDocument(metadata).toJson());
+            file.close();
+        }
+        const auto row = SearchSessionStore::Cycle(directory.path(), 0);
+        okay &= Check(row.value("metricLabels").toList() == QVariantList{QStringLiteral("Finish time")} &&
+                      row.value("metricTexts").toList() == QVariantList{QStringLiteral("24.630000123 s")} &&
+                      row.value("metrics").toList().first().toDouble() == result.bestScore / 1e9 &&
+                      row.value("score").toDouble() == result.bestScore,
+                      "finish session row did not display seconds with the plain label");
+        okay &= Check(SearchSessionStore::Cycle(directory.path(), 0) == row,
+                      "rereading history converted finish time twice");
+    }
+    return okay;
+}
+
+bool TestAutorestartWithoutEligibleResult(const QString &packsDirectory,
+                                         const QString &replayPath) {
+    bool okay = true;
+    for (const QString &mode : {QStringLiteral("attempts"), QStringLiteral("duration")}) {
+        for (bool abort : {false, true}) {
+            QSettings().clear();
+            SearchController controller;
+            SetValidPaths(controller, packsDirectory, replayPath);
+            controller.setBaseInputScript(QStringLiteral("0.00 press up"));
+            controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
+            controller.setModifierPassSetting(0, QStringLiteral("minTimeMs"), QStringLiteral("0"));
+            controller.setModifierPassSetting(0, QStringLiteral("maxTimeMs"), QStringLiteral("20"));
+            controller.setEvaluationTargetSetting(QStringLiteral("minTimeMs"), QStringLiteral("0"));
+            controller.setEvaluationTargetSetting(QStringLiteral("maxTimeMs"), QStringLiteral("20"));
+            controller.setConditionScript(QStringLiteral("iterations > 1000000000000"));
+            controller.setAutoRestartMode(mode);
+            controller.setAutoRestartAttempts(QStringLiteral("3"));
+            controller.setAutoRestartDuration(QStringLiteral("00:00:01"));
+            int restarts = 0;
+            QSignalSpy completions(&controller, &SearchController::searchCompleted);
+            QObject::connect(&controller, &SearchController::statusChanged, &controller, [&]() {
+                if (controller.statusText() == QStringLiteral("Starting restart 1...")) restarts = 1;
+                if (controller.statusText() == QStringLiteral("Starting restart 2...")) {
+                    restarts = 2;
+                    if (abort) controller.abortSearch();
+                    else controller.stopSearch();
+                }
+            });
+            if (!Check(controller.canStart(), "empty autorestart fixture was invalid")) return false;
+            controller.startSearch();
+            const bool stopped = WaitUntil([&]() { return !controller.running(); }, 30000);
+            if (!stopped) {
+                controller.abortSearch();
+                WaitUntil([&]() { return !controller.running(); }, 30000);
+            }
+            okay &= Check(stopped && restarts >= 2 && controller.cycleRows().isEmpty() &&
+                          completions.isEmpty() && controller.statusText() != QStringLiteral("Search failed"),
+                          "empty cycles failed to restart, ignored Stop/Abort, or saved a fake result");
+        }
+    }
+    return okay;
+}
+
 bool TestAutorestartHistory(const QString &packsDirectory,
                             const QString &replayPath) {
     QSettings().clear();
@@ -2887,6 +2965,17 @@ int main(int argc, char **argv) {
     qputenv("FOREVERTAS_AUTORESTARTS_ROOT",
             savedSessions.path().toUtf8());
 
+    if (argc == 4 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--session-fixes")) {
+        const QString packs = QString::fromLocal8Bit(argv[2]);
+        const QString replay = QString::fromLocal8Bit(argv[3]);
+        const bool okay = TestFinishTimeHistoryDisplay() &&
+                TestAutorestartWithoutEligibleResult(packs, replay) &&
+                TestAutorestartHistory(packs, replay) &&
+                TestDurationAutorestartAndSaveFailure(packs, replay);
+        QSettings().clear();
+        return okay ? 0 : 1;
+    }
+
     QTemporaryDir packsDirectory;
     if (!packsDirectory.isValid()) {
         std::cerr << "failed to create temporary Packs directory\n";
@@ -2902,7 +2991,7 @@ int main(int argc, char **argv) {
     replay.write("test");
     replay.close();
 
-    bool okay = TestSearchDiagnostics() && TestCompactNumberFormatting() &&
+    bool okay = TestFinishTimeHistoryDisplay() && TestSearchDiagnostics() && TestCompactNumberFormatting() &&
             TestAutomaticSeedRandomization() &&
             TestTargetVisibilityPersistence() &&
             TestUntilHorizonMode() &&
@@ -2939,6 +3028,7 @@ int main(int argc, char **argv) {
         okay = TestStateCompatibilityDiagnostics(packs, replay) && TestBaseEvaluation(packs, replay) &&
                 TestAbortRetainsBest(packs, replay) &&
                 TestAutorestartHistory(packs, replay) &&
+                TestAutorestartWithoutEligibleResult(packs, replay) &&
                 TestDurationAutorestartAndSaveFailure(packs, replay) &&
                 TestMetricsWhenConditionExcludesBaseline(packs, replay) &&
                 TestIndefiniteSearchLifecycle(packs, replay);
