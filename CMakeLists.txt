@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 project(ForeverTAS
-    VERSION 0.2.6
+    VERSION 0.2.7
     DESCRIPTION "Native TrackMania Nations Forever tool-assisted search tool"
     HOMEPAGE_URL "https://github.com/Skycrafter-dev/ForeverTAS"
     LANGUAGES CXX)
@@ -171,7 +171,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 04ac89bd06afa62c57907aaa0b0969e16f3bd193
+        GIT_TAG 6a51fdfb80872424d40abb3f57f55e1a13f635f1
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()

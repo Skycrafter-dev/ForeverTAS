@@ -2029,7 +2029,7 @@ bool CheckGpuSegmentSearch(const char *packs, const char *replay,
     const auto *modifier = forevertas::FindModifier(forevertas::kRandomSteeringModifierId);
     request.modifiers = {{modifier->id, modifier->defaultSettings}};
     request.modifiers.front().settings["minTimeMs"] = "0";
-    request.modifiers.front().settings["maxTimeMs"] = "790";
+    request.modifiers.front().settings["maxTimeMs"] = "990";
     request.evaluationTarget.settings["minTimeMs"] = "1000";
     request.evaluationTarget.settings["maxTimeMs"] = "1000";
     forevertas::SearchRunControl control;

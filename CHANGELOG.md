@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.7
+
+### Fixes
+
+- Fixed CUDA/HIP Tree search and Adaptive escalation sometimes stopping with
+  "sandbox input timeline is invalid" after finding improvements. Inputs just
+  beyond the simulation horizon now stay in the correct order when the best
+  result becomes the new baseline. CPU searches are unchanged.
+
 ## 0.2.6
 
 ### Fixes

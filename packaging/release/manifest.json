@@ -2,8 +2,8 @@
   "schema": 1,
   "release": {
     "product": "ForeverTAS",
-    "version": "0.2.6",
-    "tag": "v0.2.6",
+    "version": "0.2.7",
+    "tag": "v0.2.7",
     "repository": "Skycrafter-dev/ForeverTAS"
   },
   "sources": {
@@ -12,9 +12,9 @@
     },
     "forevervalidator": {
       "repository": "https://github.com/Skycrafter-dev/ForeverValidator.git",
-      "commit": "04ac89bd06afa62c57907aaa0b0969e16f3bd193",
-      "version": "0.2.4",
-      "tag": "v0.2.4"
+      "commit": "6a51fdfb80872424d40abb3f57f55e1a13f635f1",
+      "version": "0.2.5",
+      "tag": "v0.2.5"
     }
   },
   "cuda": {
@@ -26,7 +26,14 @@
     "split_compile_jobs": 4,
     "search_object_architecture_jobs": 2,
     "search_object_source_commit": "04ac89bd06afa62c57907aaa0b0969e16f3bd193",
-    "search_object_output_neutral_paths": []
+    "search_object_output_neutral_paths": [
+      "CHANGELOG.md",
+      "CMakeLists.txt",
+      "src/validation/api/validation_api.cpp",
+      "src/validation/planning/search_input_boundary.h",
+      "tests/cuda_search_segments_tests.cpp",
+      "vcpkg.json"
+    ]
   },
   "toolchains": {
     "linux": {
@@ -56,8 +63,8 @@
     "bootstrap_flavor": "universal"
   },
   "artifacts": {
-    "linux": "ForeverTAS-0.2.6-linux-cuda-vulkan-x86_64.AppImage",
-    "windows": "ForeverTAS-0.2.6-windows-x86_64.zip",
-    "windows_installer": "ForeverTAS-0.2.6-windows-cuda-vulkan-x86_64-Setup.exe"
+    "linux": "ForeverTAS-0.2.7-linux-cuda-vulkan-x86_64.AppImage",
+    "windows": "ForeverTAS-0.2.7-windows-x86_64.zip",
+    "windows_installer": "ForeverTAS-0.2.7-windows-cuda-vulkan-x86_64-Setup.exe"
   }
 }
