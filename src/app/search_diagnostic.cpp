@@ -61,8 +61,7 @@ Explanation Explain(const QString &details) {
                 QStringLiteral("The GPU and the CPU got different results for the same inputs."),
                 QStringLiteral("This is a bug in the GPU physics, so the result was not used. Choose Optimized CPU as the physics backend for this search, and please report the problem with the details.")};
     }
-    if (ContainsAny(details, {"kernel watchdog limit", "display-device budget",
-                              "cudaErrorLaunchTimeout", "hipErrorLaunchTimeOut",
+    if (ContainsAny(details, {"cudaErrorLaunchTimeout", "hipErrorLaunchTimeOut",
                               "launch timed out"})) {
         return {QStringLiteral("gpu-time-limit"),
                 QStringLiteral("The graphics card took too long on one step."),

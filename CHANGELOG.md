@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.6
+
+### Fixes
+
+- Removed ForeverTAS's GPU step time limit. Long GPU steps no longer stop a search or prevent a batch from running just because they take too long, in both manual and calibrated searches. Memory checks and the Stop button still work. System and graphics-driver timeouts are unchanged.
+
 ## 0.2.5
 
 ### New and improved

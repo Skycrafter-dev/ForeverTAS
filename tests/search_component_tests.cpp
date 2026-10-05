@@ -2115,10 +2115,9 @@ bool TestCudaCalibrationSafety() {
             "CUDA calibration approached the grid launch limit");
 
     CudaCalibrationDeviceLimits watchdog = limits;
-    watchdog.kernelExecutionTimeoutEnabled = true;
     okay &= Check(
-            !planner.Evaluate(300u, 2u, watchdog).safe,
-            "CUDA calibration approached the kernel watchdog limit");
+            planner.Evaluate(300u, 2u, watchdog).safe,
+            "CUDA calibration rejected a batch because of its predicted duration");
 
     CudaCalibrationDeviceLimits occupancyLimited = limits;
     occupancyLimited.registersPerMultiprocessor = 32768u;
@@ -2136,11 +2135,10 @@ bool TestCudaCalibrationSafety() {
     const auto measuredWatchdogDecision =
             measuredWatchdog.Evaluate(32u, 32u, watchdog);
     okay &= Check(
-            !measuredWatchdogDecision.safe &&
+            measuredWatchdogDecision.safe &&
                     measuredWatchdogDecision
                             .predictedKernelMilliseconds > 250.0,
-            "CUDA calibration accepted a measured kernel too close "
-            "to the watchdog limit");
+            "CUDA calibration rejected a slow measured kernel");
 
     CudaCalibrationBatchProfile slowerSameBatch = nearWatchdog;
     slowerSameBatch.batchCapacity = 64u;
@@ -2149,7 +2147,7 @@ bool TestCudaCalibrationSafety() {
     const auto duplicateBatchDecision =
             measuredWatchdog.Evaluate(64u, 64u, watchdog);
     okay &= Check(
-            !duplicateBatchDecision.safe &&
+            duplicateBatchDecision.safe &&
                     duplicateBatchDecision
                             .predictedKernelMilliseconds >= 550.0,
             "CUDA calibration ignored the slowest profile for a batch "
@@ -2168,7 +2166,7 @@ bool TestCudaCalibrationSafety() {
     const auto decreasingKernelDecision =
             decreasingKernel.Evaluate(3u, 4u, watchdog);
     okay &= Check(
-            !decreasingKernelDecision.safe &&
+            decreasingKernelDecision.safe &&
                     decreasingKernelDecision
                             .predictedKernelMilliseconds >= 262.5,
             "CUDA calibration underestimated a noisy decreasing kernel "

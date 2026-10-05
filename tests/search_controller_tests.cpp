@@ -65,8 +65,6 @@ bool TestSearchDiagnostics() {
         {"no iteration satisfied the selected evaluation target", "no-result"},
         {"Search aborted; could not save the retained best: Could not save /r/a.json: disk full", "storage"},
         {"GPU/optimized CPU parity error: winner finish time disagrees", "gpu-parity"},
-        {"Manual GPU safety probe rejected: CUDA batch is too close to the kernel watchdog limit; choose one parallel sample or Optimized CPU", "gpu-time-limit"},
-        {"GPU submission exceeded the 250 ms display-device budget; reduce parallel samples, shorten the horizon, or use Optimized CPU", "gpu-time-limit"},
         {"executing GPU search batch failed: CUDA search batch failed: synchronizing CUDA search batch failed: cudaErrorLaunchTimeout (the launch timed out and was terminated)", "gpu-time-limit"},
         {"creating resident GPU search session failed: CUDA resident search allocation rejected by memory headroom or allocator limits; reduce input density or use Optimized CPU", "gpu-memory"},
         {"GPU search rejected before probe: insufficient memory headroom; reduce GPU memory use or choose Optimized CPU", "gpu-memory"},

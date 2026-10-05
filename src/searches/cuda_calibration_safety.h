@@ -17,10 +17,8 @@ struct CudaCalibrationDeviceLimits {
     std::uint32_t maximumThreadsPerMultiprocessor = 0u;
     std::uint32_t maximumBlocksPerMultiprocessor = 0u;
     std::uint32_t multiprocessorCount = 0u;
-    bool kernelExecutionTimeoutEnabled = false;
     // Preserve strict CUDA validation; Vulkan supplies memory limits only.
     bool requireCudaExecutionLimits = true;
-    double kernelBudgetMilliseconds = 250.0;
 };
 
 struct CudaCalibrationBatchProfile {
@@ -42,7 +40,6 @@ struct CudaCalibrationSafetyDecision {
     std::uint64_t requiredTransientBytes = 0u;
     std::uint64_t reservedMemoryHeadroomBytes = 0u;
     double predictedKernelMilliseconds = 0.0;
-    bool watchdogLimited = false;
 };
 
 class CudaCalibrationSafetyPlanner final {

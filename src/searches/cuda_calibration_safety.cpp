@@ -191,22 +191,6 @@ CudaCalibrationSafetyDecision CudaCalibrationSafetyPlanner::Evaluate(
 
     result.predictedKernelMilliseconds =
             PredictKernelMilliseconds(candidateBatchSize);
-    if (limits.kernelExecutionTimeoutEnabled &&
-        (!std::isfinite(limits.kernelBudgetMilliseconds) ||
-         limits.kernelBudgetMilliseconds <= 0.0 ||
-         result.predictedKernelMilliseconds <= 0.0 ||
-         result.predictedKernelMilliseconds >
-                 limits.kernelBudgetMilliseconds)) {
-        CudaCalibrationSafetyDecision unsafe = Unsafe(
-                "CUDA batch is too close to the kernel watchdog limit");
-        unsafe.watchdogLimited = true;
-        unsafe.requiredTransientBytes = result.requiredTransientBytes;
-        unsafe.reservedMemoryHeadroomBytes =
-                result.reservedMemoryHeadroomBytes;
-        unsafe.predictedKernelMilliseconds =
-                result.predictedKernelMilliseconds;
-        return unsafe;
-    }
 
     result.safe = true;
     return result;

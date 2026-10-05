@@ -2,8 +2,8 @@
   "schema": 1,
   "release": {
     "product": "ForeverTAS",
-    "version": "0.2.5",
-    "tag": "v0.2.5",
+    "version": "0.2.6",
+    "tag": "v0.2.6",
     "repository": "Skycrafter-dev/ForeverTAS"
   },
   "sources": {
@@ -56,8 +56,8 @@
     "bootstrap_flavor": "universal"
   },
   "artifacts": {
-    "linux": "ForeverTAS-0.2.5-linux-cuda-vulkan-x86_64.AppImage",
-    "windows": "ForeverTAS-0.2.5-windows-x86_64.zip",
-    "windows_installer": "ForeverTAS-0.2.5-windows-cuda-vulkan-x86_64-Setup.exe"
+    "linux": "ForeverTAS-0.2.6-linux-cuda-vulkan-x86_64.AppImage",
+    "windows": "ForeverTAS-0.2.6-windows-x86_64.zip",
+    "windows_installer": "ForeverTAS-0.2.6-windows-cuda-vulkan-x86_64-Setup.exe"
   }
 }

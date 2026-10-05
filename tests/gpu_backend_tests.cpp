@@ -1,6 +1,5 @@
 #include "physics_backend.h"
 #include "searches/cuda_calibration_safety.h"
-#include "searches/gpu_submission_budget.h"
 
 #include <iostream>
 
@@ -78,27 +77,10 @@ int main() {
     check(cachedWorkspace.Evaluate(256, 1, limits).safe &&
           !cachedWorkspace.Evaluate(UINT32_MAX, 1, limits).safe,
           "cached Vulkan workspace yielded a zero slope or scaled fixed scene bytes");
-    limits.kernelExecutionTimeoutEnabled = true;
-    profile.kernelMilliseconds = 300;
+    profile.kernelMilliseconds = 60000;
     planner.Observe(profile);
-    check(!planner.Evaluate(1, 1, limits).safe, "long horizon ignored the display watchdog");
-    limits.kernelBudgetMilliseconds = 1000;
     check(planner.Evaluate(1, 1, limits).safe &&
-          planner.Evaluate(8, 1, limits).watchdogLimited,
-          "manual submission budget did not distinguish ordinary and oversized work");
-    GpuSubmissionBudget budget(true);
-    const auto start = GpuSubmissionBudget::Clock::time_point{};
-    check(!budget.Expired(start) && !budget.Expired(start + std::chrono::milliseconds(249)) &&
-          budget.Expired(start + std::chrono::milliseconds(250)) && budget.WasExceeded(),
-          "unprofiled display-device submission deadline failed");
-    budget.Reset();
-    check(!budget.Expired(start), "submission deadline did not reset");
-    GpuSubmissionBudget headless(false);
-    check(!headless.Expired(start) && !headless.Expired(start + std::chrono::hours(1)),
-          "headless device was assigned a display watchdog");
-    GpuSubmissionBudget manual(true, std::chrono::milliseconds(1000));
-    check(!manual.Expired(start) && !manual.Expired(start + std::chrono::milliseconds(999)) &&
-          manual.Expired(start + std::chrono::milliseconds(1000)),
-          "manual submission deadline did not enforce its budget");
+          planner.Evaluate(8, 1, limits).safe,
+          "slow GPU work was rejected by an application time limit");
     return okay ? 0 : 1;
 }

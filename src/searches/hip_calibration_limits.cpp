@@ -32,18 +32,12 @@ CudaCalibrationDeviceLimits QueryHipCalibrationDeviceLimits() {
     hipDeviceProp_t properties{};
     std::size_t freeMemory = 0u;
     std::size_t totalMemory = 0u;
-    int kernelExecutionTimeoutEnabled = 0;
     hipError_t error = hipGetDevice(&device);
     if (error == hipSuccess) {
         error = hipGetDeviceProperties(&properties, device);
     }
     if (error == hipSuccess) {
         error = hipMemGetInfo(&freeMemory, &totalMemory);
-    }
-    if (error == hipSuccess) {
-        error = hipDeviceGetAttribute(
-                &kernelExecutionTimeoutEnabled,
-                hipDeviceAttributeKernelExecTimeout, device);
     }
     if (error != hipSuccess) {
         throw std::runtime_error(
@@ -62,8 +56,6 @@ CudaCalibrationDeviceLimits QueryHipCalibrationDeviceLimits() {
     limits.maximumBlocksPerMultiprocessor =
             properties.maxBlocksPerMultiProcessor;
     limits.multiprocessorCount = properties.multiProcessorCount;
-    limits.kernelExecutionTimeoutEnabled =
-            kernelExecutionTimeoutEnabled != 0;
     return limits;
 }
 
