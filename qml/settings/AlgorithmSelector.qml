@@ -84,6 +84,7 @@ ColumnLayout {
                         "time": "timer",
                         "volume-entry-time": "box",
                         "custom-volume-entry-time": "pentagon",
+                        "gate-entry": "flag",
                         "point-target": "crosshair",
                         "pose-target": "axis-3d",
                         "scripted-target": "crosshair"
@@ -99,6 +100,7 @@ ColumnLayout {
                         "time": qsTr("Time"),
                         "volume-entry-time": qsTr("Box entry"),
                         "custom-volume-entry-time": qsTr("Poly entry"),
+                        "gate-entry": qsTr("Gates"),
                         "point-target": qsTr("Point"),
                         "pose-target": qsTr("Pose"),
                         "scripted-target": qsTr("Custom")

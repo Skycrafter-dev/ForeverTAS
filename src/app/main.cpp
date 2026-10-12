@@ -1,4 +1,5 @@
 #include "app/search_controller.h"
+#include "app/claude_bridge.h"
 #include "app/input_preview_binding.h"
 #include "app/update_controller.h"
 #include "app/shutdown_controller.h"
@@ -112,6 +113,12 @@ int main(int argc, char **argv) {
             Qt::QueuedConnection);
     engine.loadFromModule(QStringLiteral("ForeverTAS"),
                           QStringLiteral("Main"));
+
+    // Model Context Protocol endpoint used by forevertas-mcp (Claude).
+    forevertas::app::ClaudeBridge claudeBridge(controller, engine);
+    if (!application.arguments().contains(QStringLiteral("--no-mcp"))) {
+        claudeBridge.listen();
+    }
 
     if (application.arguments().contains(
                 QStringLiteral("--qml-smoke-test"))) {

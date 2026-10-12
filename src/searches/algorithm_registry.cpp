@@ -5,6 +5,7 @@
 #include "evaluators/checkpoint_time_evaluator.h"
 #include "evaluators/time_evaluator.h"
 #include "evaluators/custom_volume_entry_evaluator.h"
+#include "evaluators/gate_entry_evaluator.h"
 #include "evaluators/point_target_evaluator.h"
 #include "evaluators/pose_target_evaluator.h"
 #include "evaluators/scripted_target_evaluator.h"
@@ -291,6 +292,14 @@ const std::vector<EvaluationTargetRegistration> &EvaluationTargetRegistry() {
              {},
              &ValidateCustomVolumeEntryOptionSettings,
              &CreateCustomVolumeEntryEvaluator},
+            {kGateEntryEvaluationId,
+             {},
+             "Gate entry time",
+             "GateEntryEvaluationSettings.qml",
+             DefaultGateEntryOptionSettings(),
+             {},
+             &ValidateGateEntryOptionSettings,
+             &CreateGateEntryEvaluator},
             {kPointTargetEvaluationId,
              {},
              "Point target",

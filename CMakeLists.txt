@@ -193,6 +193,8 @@ add_library(forevertas_core STATIC
     src/evaluators/iteration_evaluator.h
     src/evaluators/custom_volume_entry_evaluator.cpp
     src/evaluators/custom_volume_entry_evaluator.h
+    src/evaluators/gate_entry_evaluator.cpp
+    src/evaluators/gate_entry_evaluator.h
     src/evaluators/evaluator_utils.h
     src/evaluators/precise_finish_time_evaluator.cpp
     src/evaluators/precise_finish_time_evaluator.h
@@ -454,6 +456,10 @@ endif()
 
 qt_add_executable(forevertas
     src/app/main.cpp
+    src/app/claude_bridge.cpp
+    src/app/claude_bridge.h
+    src/app/claude_tool_catalog.cpp
+    src/app/claude_tool_catalog.h
     src/app/update_controller.cpp
     src/app/update_controller.h
     src/app/update_hardware.cpp
@@ -469,6 +475,33 @@ set_source_files_properties("${forevertas_icon_svg}" PROPERTIES
 qt_add_resources(forevertas "forevertas_app_resources"
     PREFIX "/"
     FILES "${forevertas_icon_svg}")
+
+# Reference documentation served to MCP clients by the Claude bridge.
+file(GLOB forevertas_claude_docs CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/docs/*.md")
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/README.md" PROPERTIES
+    QT_RESOURCE_ALIAS "README.md")
+qt_add_resources(forevertas "forevertas_claude_docs"
+    PREFIX "/claude-docs"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/docs"
+    FILES ${forevertas_claude_docs})
+qt_add_resources(forevertas "forevertas_claude_readme"
+    PREFIX "/claude-docs"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+
+# Stdio MCP relay: lets Claude (or any MCP client) start and drive ForeverTAS.
+add_executable(forevertas-mcp
+    src/tools/forevertas_mcp_main.cpp
+    src/app/claude_tool_catalog.cpp
+    src/app/claude_tool_catalog.h)
+target_include_directories(forevertas-mcp PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_link_libraries(forevertas-mcp PRIVATE Qt6::Core Qt6::Network)
+target_compile_definitions(forevertas-mcp PRIVATE
+    FOREVERTAS_VERSION="${PROJECT_VERSION}")
+set_target_properties(forevertas-mcp PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
+add_dependencies(forevertas forevertas-mcp)
 
 if(WIN32)
     configure_file(
@@ -539,6 +572,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/InputInsertionSettings.qml
         qml/settings/ModifierComposition.qml
         qml/settings/ModifierPassControls.qml
+        qml/settings/GateEntryEvaluationSettings.qml
         qml/settings/PointTargetEvaluationSettings.qml
         qml/settings/PoseTargetEvaluationSettings.qml
         qml/settings/RandomSteeringMutationSettings.qml
@@ -609,6 +643,8 @@ if(WIN32 AND TARGET SDL3::SDL3-shared)
     install(FILES "$<TARGET_FILE:SDL3::SDL3-shared>" DESTINATION ".")
 endif()
 install(TARGETS forevertas-simulation-debug-worker
+    RUNTIME DESTINATION "${forevertas_runtime_destination}")
+install(TARGETS forevertas-mcp
     RUNTIME DESTINATION "${forevertas_runtime_destination}")
 if(NOT FOREVERTAS_QML_MODULE_EXTERNAL)
     install(TARGETS forevertas_qml

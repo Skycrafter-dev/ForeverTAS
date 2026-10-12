@@ -30,6 +30,7 @@ inline constexpr char kCheckpointTimeEvaluationId[] = "checkpoint-time";
 inline constexpr char kVolumeEntryEvaluationId[] = "volume-entry-time";
 inline constexpr char kCustomVolumeEntryEvaluationId[] =
         "custom-volume-entry-time";
+inline constexpr char kGateEntryEvaluationId[] = "gate-entry";
 inline constexpr char kPointTargetEvaluationId[] = "point-target";
 inline constexpr char kPoseTargetEvaluationId[] = "pose-target";
 inline constexpr char kScriptedTargetEvaluationId[] = "scripted-target";
