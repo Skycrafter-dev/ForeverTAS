@@ -28,7 +28,7 @@ Button {
     icon.color: enabled ? AppTheme.text : AppTheme.disabledText
 
     background: Rectangle {
-        radius: 5
+        radius: 5 * AppTheme.cornerScale
         color: control.effectiveBackgroundColor
         border.width: control.activeFocus ? 2 : 1
         border.color: control.effectiveBorderColor

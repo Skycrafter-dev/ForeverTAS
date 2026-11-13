@@ -227,8 +227,20 @@ bool PixelIsAnyRulerMark(const QImage &image, int x, int y) {
             pixel == QColor(QStringLiteral("#343b37"));
 }
 
+// The ruler's background: two dark washes over a transparent image, as the
+// timeline paints it on its glass panel.
+QColor RulerBackground() {
+    QImage image(1, 1, QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.fillRect(QRectF(0, 0, 1, 1), QColor(0, 0, 0, 56));
+    painter.fillRect(QRectF(0, 0, 1, 1), QColor(0, 0, 0, 46));
+    painter.end();
+    return image.pixelColor(0, 0);
+}
+
 int RulerMarkLengthNear(const QImage &image, int expectedY) {
-    const QColor rulerBackground(QStringLiteral("#0c100e"));
+    const QColor rulerBackground = RulerBackground();
     int longest = 0;
     for (int y = expectedY - 1; y <= expectedY + 1; ++y) {
         if (y < 0 || y >= image.height()) {
@@ -1502,20 +1514,15 @@ int main(int argc, char **argv) {
                     RaceTimelineItem timeline;
                     timeline.setWidth(252);
                     timeline.setHeight(600);
-                    const QImage lightTimelineImage =
-                            RenderTimeline(timeline);
-                    timeline.setDarkMode(true);
-                    const QImage darkTimelineImage =
+                    // The timeline sits on glass: its background is a
+                    // translucent dark wash, not an opaque fill.
+                    const QImage emptyTimelineImage =
                             RenderTimeline(timeline);
                     const bool timelineThemePalette =
-                            PixelIs(lightTimelineImage,
+                            PixelIs(emptyTimelineImage,
                                     0,
                                     0,
-                                    QColor(QStringLiteral("#f4f5f2"))) &&
-                            PixelIs(darkTimelineImage,
-                                    0,
-                                    0,
-                                    QColor(QStringLiteral("#101412")));
+                                    QColor(0, 0, 0, 56));
                     timeline.setViewer(&viewer);
                     const qint64 leftSteeringTick =
                             FindActivityTick(viewer, 'l');
@@ -1808,6 +1815,10 @@ int main(int argc, char **argv) {
                     }
                     const QVariantList overlaySamples =
                             viewer.selectedRunSamples();
+                    // The map's checkpoint and finish triggers reach the
+                    // race view (the Distance target labels them).
+                    const bool distanceTargetValid =
+                            !viewer.checkpointTriggers().isEmpty();
                     const QVariantMap supportedCondition =
                             viewer.conditionPreview(QStringLiteral(
                                     "car.x >= -10000000"));
@@ -1817,6 +1828,7 @@ int main(int argc, char **argv) {
                     const QVariantMap booleanCondition = viewer.conditionPreview(
                             QStringLiteral("# retained\n(car.speed >= 0 OR car.laps != 0) AND car.x >= -10000000 // valid"));
                     const bool overlayDataValid =
+                            distanceTargetValid &&
                             !overlaySamples.isEmpty() &&
                             viewer.conditionPreview(QStringLiteral("# disabled\n// disabled")).isEmpty() &&
                             booleanCondition.value(QStringLiteral("available")).toBool() &&

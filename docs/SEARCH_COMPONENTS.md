@@ -613,7 +613,7 @@ an intermediate empty run or ellipsoid model would detach nested Qt Quick 3D
 render nodes. QML mirrors ellipsoid transforms into a stable `ListModel`, updates
 roles in place, and retains inactive delegates when vehicle shape counts shrink.
 The controller and QML regressions perform three real first-second-first loads;
-the QML test invokes the actual **Load map** button for every load and checks
+the QML test runs the same map load as **File > Open map or replay** for every load and checks
 current shape transforms and map rendering on a capable graphics backend.
 
 The settings pane uses one window-level wheel redirector over its entire visible

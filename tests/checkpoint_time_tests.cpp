@@ -1,5 +1,6 @@
 #include "conditions/condition_program.h"
 #include "evaluators/checkpoint_time_evaluator.h"
+#include "evaluators/distance_target_evaluator.h"
 #include "mutations/random_steering_mutator.h"
 #include "mutations/replay_input_script.h"
 #include "replay_file_io.h"
@@ -10,6 +11,7 @@
 #include <forevervalidator/native.h>
 
 #include <algorithm>
+#include <chrono>
 #include <optional>
 #include <iostream>
 #include <stdexcept>
@@ -143,6 +145,105 @@ std::vector<PhysicsSandboxAcceptedCheckpointEvent> ReadAcceptedEvents(
     return events;
 }
 
+// The Distance target measures the car's collision shapes against each
+// trigger: where the race accepts a checkpoint or the finish, the car
+// touches that trigger; a second earlier it is clearly away from it.
+void TestDistanceToTriggers(const char *packs, const char *path) {
+    PhysicsSandboxOptions options;
+    options.backend = SimulationBackend::OptimizedCpu;
+    options.timelineMode = PhysicsSandboxTimelineMode::Canonical;
+    options.simulationHorizonMs = 600000;
+    auto sandbox = Require(CreatePhysicsSandbox(Require(OpenInstalledPackDirectory(packs)), options));
+    ReplayIdentity identity{path};
+    const auto bytes = Require(ReadReplayFileUtf8(path, identity));
+    Require(sandbox.LoadReplay({bytes.data(), bytes.size()}, identity));
+    const auto parsed = ParseInputScript(ExtractReplayInputScript(packs, path));
+    Check(!parsed.error, "distance replay script failed to parse");
+    const auto baseline = BuildInputScriptBaseline(Require(sandbox.ReadInputs()), parsed.commands, 10);
+    Check(!baseline.error, "distance replay input conversion failed");
+    Require(sandbox.ReplaceInputs(baseline.events));
+    const auto scene = Require(sandbox.ReadScene());
+    Check(!scene.checkpointTriggers.empty(), "the map's triggers were not read");
+    const auto distanceTo = [&](const PhysicsSandboxAcceptedCheckpointEvent &event,
+                                const PhysicsSandboxCarState &car) {
+        double best = 1e18;
+        for (const auto &trigger : scene.checkpointTriggers) {
+            const bool finishLine = trigger.role != PhysicsSandboxCheckpointTriggerRole::Checkpoint;
+            if (event.finish ? finishLine
+                             : !finishLine && trigger.checkpointSlot == event.checkpointSlot) {
+                best = std::min(best, CarDistanceToTriangles(scene.carEllipsoids, trigger.triangles, car));
+            }
+        }
+        return best;
+    };
+    // Selectors as the Checkpoint time target: the second checkpoint of lap
+    // 1, any slot, is reached exactly when the run takes its second one.
+    auto second = CreateDistanceTargetEvaluator(
+            {{"minTimeMs", "0"}, {"maxTimeMs", "600000"}, {"eventType", "checkpoint"},
+             {"checkpointIndex", "2"}, {"lap", "1"}, {"checkpointSlot", "-1"},
+             {"eventIndex", "0"}}, 10);
+    second->BindScene(sandbox);
+    auto secondSession = second->CreateSession();
+    std::optional<double> secondReachedMs;
+    std::uint64_t secondEventMs = 0u;
+    std::size_t checkpointEvents = 0u;
+    const auto initial = Require(sandbox.CaptureState());
+    for (int tick = 0; tick < 60000 && !secondReachedMs; ++tick) {
+        const auto view = Require(sandbox.AdvanceTicks(1));
+        for (const auto &event : view.acceptedCheckpointEvents) {
+            if (!event.finish && ++checkpointEvents == 2u) secondEventMs = event.timeMs;
+        }
+        if (const auto sample = secondSession->Observe(std::nullopt, view);
+            sample && sample->score < 1e12) {
+            secondReachedMs = sample->timeMs;
+        }
+        if (view.raceCompleted) break;
+    }
+    Check(secondReachedMs && secondEventMs != 0u &&
+                  *secondReachedMs == static_cast<double>(secondEventMs),
+          "the distance target did not reach the second checkpoint when the run took it");
+    Require(sandbox.RestoreState(initial));
+    std::vector<PhysicsSandboxCarState> history;
+    std::size_t checked = 0u;
+    for (int tick = 0; tick < 60000; ++tick) {
+        auto view = Require(sandbox.AdvanceTicks(1));
+        history.push_back(view.car);
+        for (const auto &event : view.acceptedCheckpointEvents) {
+            const double touching = distanceTo(event, view.car);
+            const double before = history.size() > 100u
+                    ? distanceTo(event, history[history.size() - 101u])
+                    : 1e18;
+            std::cerr << (event.finish ? "finish" : "checkpoint slot ")
+                      << (event.finish ? std::string() : std::to_string(event.checkpointSlot))
+                      << " at " << event.timeMs << " ms: " << touching
+                      << " m (1 s before: " << before << " m)\n";
+            Check(touching <= 0.05, "the car was away from the trigger it passed");
+            Check(before > 1.0, "the car was already at a trigger a second before passing it");
+            ++checked;
+        }
+        if (view.raceCompleted) break;
+    }
+    Check(checked != 0u, "the replay passed no trigger");
+    // What one tick of the Distance target costs, over the whole run.
+    auto evaluator = CreateDistanceTargetEvaluator(
+            {{"minTimeMs", "0"}, {"maxTimeMs", "600000"}, {"eventType", "finish"},
+             {"checkpointIndex", "1"}, {"lap", "1"}, {"checkpointSlot", "-1"},
+             {"eventIndex", "0"}}, 10);
+    evaluator->BindScene(sandbox);
+    auto session = evaluator->CreateSession();
+    PhysicsSandboxStateView state;
+    const auto start = std::chrono::steady_clock::now();
+    double sink = 0.0;
+    for (const auto &car : history) {
+        state.car = car;
+        if (const auto sample = session->Observe(std::nullopt, state)) sink += sample->score;
+    }
+    const double ns = std::chrono::duration<double, std::nano>(
+            std::chrono::steady_clock::now() - start).count();
+    std::cerr << "distance target: " << ns / static_cast<double>(history.size())
+              << " ns per tick over " << history.size() << " ticks (" << (sink > 0.0) << ")\n";
+}
+
 #if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP
 // The CUDA/HIP kernel names each accepted event from the race counters. Every
 // event of the run, selected several ways, must be reported at the CPU
@@ -165,12 +266,12 @@ void TestGpuEvents(SimulationBackend backend, const char *packs, const char *pat
     const auto baseline = BuildInputScriptBaseline(Require(sandbox.ReadInputs()), commands, 10);
     Check(!baseline.error, "CUDA checkpoint fixture input conversion failed");
     Require(sandbox.ReplaceInputs(baseline.events));
-    const auto start = Require(sandbox.CaptureState());
+    const auto initial = Require(sandbox.CaptureState());
     std::size_t compared = 0;
     for (const auto &event : reference) {
         // The GPU branch starts one tick after the sandbox's current time.
         const std::int64_t branch = (static_cast<std::int64_t>(event.timeMs) - 200) / 10 * 10;
-        Require(sandbox.RestoreState(start));
+        Require(sandbox.RestoreState(initial));
         Require(sandbox.AdvanceTicks(static_cast<std::uint32_t>((branch - 10) / 10)));
         for (int selector = 0; selector < 5; ++selector) {
             if (focused && selector != 0 && selector != 3 && selector != 4) continue;
@@ -304,6 +405,7 @@ int main(int argc, char **argv) {
             throw std::runtime_error("HIP target smoke requires a HIP build");
 #endif
         }
+        TestDistanceToTriggers(argv[1], argv[2]);
         TestReplayAndSearch(argv[1], argv[2]);
         return 0;
     } catch (const std::exception &error) {

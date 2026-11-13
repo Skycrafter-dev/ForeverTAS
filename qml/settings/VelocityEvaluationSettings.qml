@@ -8,12 +8,17 @@ ColumnLayout {
     objectName: "velocityEvaluationSettings"
     property var controller
     property var viewer
+    property var viewport
     readonly property var settings: controller.evaluationTargetSettings
+    readonly property bool towardsPoint:
+        (settings["directionMode"] ?? "fixed") === "point"
 
     Layout.fillWidth: true
     spacing: 8
 
     TimeWindowSettings {
+        chainController: root.controller
+        chainKey: "target"
         settings: parent.settings
         updateSetting: controller.setEvaluationTargetSetting
         running: controller.running
@@ -43,8 +48,60 @@ ColumnLayout {
                 "alignmentEnabled", checked ? "true" : "false")
     }
 
+    SettingCombo {
+        comboObjectName: "velocityDirectionModeCombo"
+        label: qsTr("Direction")
+        options: [
+            { label: qsTr("Fixed"), value: "fixed" },
+            { label: qsTr("Towards a point"), value: "point" }
+        ]
+        value: parent.settings["directionMode"] ?? "fixed"
+        running: controller.running
+        onSelected: value =>
+            controller.setEvaluationTargetSetting("directionMode", value)
+    }
+
     Vector3Settings {
-        title: qsTr("Direction")
+        objectName: "velocityPointSettings"
+        visible: root.towardsPoint
+        title: qsTr("Point")
+        settings: parent.settings
+        updateSetting: controller.setEvaluationTargetSetting
+        running: controller.running
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        visible: root.towardsPoint
+
+        Label { text: qsTr("Move to") }
+        ThemeControls.ThemedButton {
+            Layout.fillWidth: true
+            text: qsTr("Car")
+            enabled: !root.controller.running && root.viewer
+                     && root.viewer.loaded
+            onClicked: root.setPoint(root.viewer.carPosition)
+        }
+        ThemeControls.ThemedButton {
+            Layout.fillWidth: true
+            text: qsTr("Camera")
+            enabled: !root.controller.running && root.viewport
+            onClicked: root.setPoint(root.viewport.sceneCameraPosition)
+        }
+        ThemeControls.ThemedButton {
+            objectName: "velocityPointPickButton"
+            Layout.fillWidth: true
+            text: qsTr("Pick in race")
+            checkable: true
+            checked: root.viewport && root.viewport.pointPlacementActive
+            enabled: !root.controller.running && root.viewport
+            onClicked: root.viewport.pointPlacementActive = checked
+        }
+    }
+
+    Vector3Settings {
+        visible: !root.towardsPoint
+        title: qsTr("Direction vector")
         settings: parent.settings
         updateSetting: controller.setEvaluationTargetSetting
         running: controller.running
@@ -55,6 +112,7 @@ ColumnLayout {
 
     RowLayout {
         Layout.fillWidth: true
+        visible: !root.towardsPoint
         ThemeControls.ThemedButton {
             objectName: "velocityCopyTravelButton"
             Layout.fillWidth: true
@@ -75,6 +133,7 @@ ColumnLayout {
 
     RowLayout {
         Layout.fillWidth: true
+        visible: !root.towardsPoint
         Repeater {
             model: [
                 { label: qsTr("+X"), x: 1, y: 0, z: 0 },
@@ -91,6 +150,12 @@ ColumnLayout {
                     modelData.x, modelData.y, modelData.z))
             }
         }
+    }
+
+    function setPoint(position) {
+        controller.setEvaluationTargetSetting("x", String(position.x))
+        controller.setEvaluationTargetSetting("y", String(position.y))
+        controller.setEvaluationTargetSetting("z", String(position.z))
     }
 
     function setDirection(direction) {

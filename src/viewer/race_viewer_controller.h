@@ -109,6 +109,10 @@ struct RaceViewerLoadResult {
     QVector3D visualBoundsMin{};
     QVector3D visualBoundsMax{};
     QVariantList carEllipsoids;
+    std::vector<forevervalidator::experimental::PhysicsSandboxEllipsoid>
+            carShape;
+    std::vector<forevervalidator::experimental::PhysicsSandboxCheckpointTrigger>
+            checkpointTriggers;
     std::int64_t triangleCount = 0;
     std::int64_t visualTriangleCount = 0;
     std::int64_t sourceVisualObjectCount = 0;
@@ -146,6 +150,9 @@ class RaceViewerController final : public QObject {
     Q_PROPERTY(QQuick3DGeometry *ellipsoidWireGeometry READ
                        ellipsoidWireGeometry CONSTANT)
     Q_PROPERTY(QVariantList carEllipsoids READ carEllipsoids NOTIFY
+                       sceneChanged)
+    // Checkpoint and finish triggers: slot, finish, center, top.
+    Q_PROPERTY(QVariantList checkpointTriggers READ checkpointTriggers NOTIFY
                        sceneChanged)
     Q_PROPERTY(QVariantList visualInstances READ visualInstances NOTIFY
                        sceneChanged)
@@ -266,6 +273,14 @@ public:
     WhiteboardModel *whiteboard();
     SimulationDebuggerModel *simulationDebugger();
     QVariantList carEllipsoids() const;
+    QVariantList checkpointTriggers() const;
+    // The car's distance to the finish ("finish") or a checkpoint slot (any
+    // checkpoint when negative), as the Distance target measures it.
+    // The selected run's whole input timeline, in race time order.
+    std::vector<SandboxInputEvent> selectedRunInputs() const;
+    Q_INVOKABLE double distanceToTrigger(const QString &target, int slot,
+                                         const QVector3D &position,
+                                         const QQuaternion &rotation) const;
     QVariantList visualInstances() const;
     QVariantList visualBatches() const;
     QVariantList visualMaterials() const;
@@ -593,6 +608,10 @@ private:
     std::vector<PendingImprovement> pendingImprovements_;
     std::chrono::steady_clock::time_point previewClearedAt_{};
     QVariantList carEllipsoids_;
+    std::vector<forevervalidator::experimental::PhysicsSandboxEllipsoid>
+            carShape_;
+    std::vector<forevervalidator::experimental::PhysicsSandboxCheckpointTrigger>
+            checkpointTriggers_;
     QVariantList visualBatches_;
     QVariantList visualMaterials_;
     QVariantList trajectoryPaths_;

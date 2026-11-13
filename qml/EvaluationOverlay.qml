@@ -201,6 +201,60 @@ Item {
                            Number(settings.z))
     }
 
+    // The Velocity target can aim at a point instead of a fixed direction;
+    // the point shows like the Point target's.
+    readonly property bool velocityTowardsPoint: targetId === "velocity"
+        && (settings.directionMode ?? "fixed") === "point"
+    readonly property bool showsPoint: targetId === "point-target"
+                                       || velocityTowardsPoint
+
+    // The velocity direction seen from a car position.
+    function directionFrom(position) {
+        if (!velocityTowardsPoint)
+            return direction()
+        const point = pointTarget()
+        const x = point.x - position.x
+        const y = point.y - position.y
+        const z = point.z - position.z
+        const length = Math.hypot(x, y, z)
+        return length > 1e-9 ? Qt.vector3d(x / length, y / length, z / length)
+                             : Qt.vector3d(0, 0, 0)
+    }
+
+    // The pose target's error as the search scores it: distance and angle,
+    // each axis weighted (pose_target_evaluator.cpp).
+    function poseError(position, rotation) {
+        const target = selectedPose
+        const weight = key => {
+            const value = Number(settings[key])
+            return Number.isFinite(value) ? value / 100 : 1
+        }
+        const dx = position.x - target.position.x
+        const dy = position.y - target.position.y
+        const dz = position.z - target.position.z
+        const positionError = Math.sqrt(weight("weightX") * dx * dx
+                                        + weight("weightY") * dy * dy
+                                        + weight("weightZ") * dz * dz)
+        // conjugate(target) * car, as a rotation vector in the target's axes.
+        const t = target.rotation, c = rotation
+        const ax = -t.x, ay = -t.y, az = -t.z, aw = t.scalar
+        let x = aw * c.x + ax * c.scalar + ay * c.z - az * c.y
+        let y = aw * c.y - ax * c.z + ay * c.scalar + az * c.x
+        let z = aw * c.z + ax * c.y - ay * c.x + az * c.scalar
+        let w = aw * c.scalar - ax * c.x - ay * c.y - az * c.z
+        if (w < 0) { x = -x; y = -y; z = -z; w = -w }
+        const sine = Math.hypot(x, y, z)
+        const angle = sine > 1e-12 ? 2 * Math.atan2(sine, w) : 0
+        const scale = sine > 1e-12 ? angle / sine : 0
+        const rotationError = Math.sqrt(
+            weight("weightPitch") * (x * scale) ** 2
+            + weight("weightYaw") * (y * scale) ** 2
+            + weight("weightRoll") * (z * scale) ** 2)
+        const balance = Number(settings.rotationWeightPercent) / 100
+        return { score: (1 - balance) * positionError + balance * rotationError,
+                 position: positionError, rotation: rotationError }
+    }
+
     function direction() {
         const x = Number(settings.directionX)
         const y = Number(settings.directionY)
@@ -384,7 +438,6 @@ Item {
             const target = id === "point-target" ? pointTarget()
                          : selectedPose.position
             const axis = direction()
-            const weight = Number(config.rotationWeightPercent) / 100
             for (const frame of frames) {
                 if (!insideWindow(frame.timeMs))
                     continue
@@ -392,6 +445,7 @@ Item {
                 if (id === "point-target") {
                     value = distance(frame.position, target)
                 } else if (id === "velocity") {
+                    const axis = directionFrom(frame.position)
                     const speed = Math.hypot(frame.velocity.x,
                                              frame.velocity.y,
                                              frame.velocity.z)
@@ -405,14 +459,7 @@ Item {
                     value = config.mode === "projected"
                             ? dot(frame.velocity, axis) : speed
                 } else {
-                    const r = frame.rotation
-                    const t = selectedPose.rotation
-                    const quaternionDot = Math.abs(
-                        r.x * t.x + r.y * t.y + r.z * t.z
-                        + r.scalar * t.scalar)
-                    const radians = 2 * Math.acos(Math.min(1, quaternionDot))
-                    value = (1 - weight) * distance(frame.position, target)
-                            + weight * radians
+                    value = poseError(frame.position, frame.rotation).score
                 }
                 if (id === "velocity" ? value > score : value < score) {
                     score = value
@@ -450,6 +497,34 @@ Item {
             }
             return { label: qsTr("Finish not reached"), event: null }
         }
+        if (id === "distance-target") {
+            const finish = (config.eventType ?? "checkpoint") === "finish"
+            const slot = Number(config.checkpointSlot ?? -1)
+            let closest = null
+            let gap = Infinity
+            for (const frame of frames) {
+                if (!insideWindow(frame.timeMs))
+                    continue
+                const distance = viewer.distanceToTrigger(
+                    finish ? "finish" : "checkpoint", slot,
+                    frame.position, frame.rotation)
+                if (distance < gap) {
+                    gap = distance
+                    closest = frame
+                }
+                if (gap <= 0)
+                    break
+            }
+            if (!closest)
+                return { label: qsTr("No eligible sample"), event: null }
+            if (gap <= 0)
+                return { label: qsTr("Reached at %1")
+                                    .arg(DurationDisplay.text(closest.timeMs)),
+                         event: closest }
+            return { label: qsTr("Closest: %1 m at %2").arg(gap.toFixed(2))
+                                .arg(DurationDisplay.text(closest.timeMs)),
+                     event: closest, score: gap }
+        }
         if (id === "volume-entry-time"
             || id === "custom-volume-entry-time") {
             const custom = id === "custom-volume-entry-time"
@@ -458,7 +533,9 @@ Item {
             const contains = position => custom
                 ? customContains(position, shape)
                 : cuboidEntry(position, position, shape) >= 0
-            if (contains(frames[0].position))
+            // Fastest entry needs the car seen entering.
+            const bySpeed = (config.measure ?? "time") === "speed"
+            if (!bySpeed && contains(frames[0].position))
                 return { label: qsTr("Entry: %1").arg(DurationDisplay.text(frames[0].timeMs)),
                          event: frames[0] }
             for (let index = 1; index < frames.length; ++index) {
@@ -472,6 +549,16 @@ Item {
                 if (fraction >= 0) {
                     const time = before.timeMs
                         + fraction * (after.timeMs - before.timeMs)
+                    if (bySpeed) {
+                        const v = Qt.vector3d(
+                            before.velocity.x + (after.velocity.x - before.velocity.x) * fraction,
+                            before.velocity.y + (after.velocity.y - before.velocity.y) * fraction,
+                            before.velocity.z + (after.velocity.z - before.velocity.z) * fraction)
+                        return { label: qsTr("Entry: %1 at %2")
+                                            .arg(controller.formatSpeed(v.length()))
+                                            .arg(DurationDisplay.text(time)),
+                                 event: sampleAt(time) }
+                    }
                     return { label: qsTr("Entry: %1")
                                         .arg(DurationDisplay.text(time)),
                              event: sampleAt(time) }
@@ -490,7 +577,7 @@ Item {
         if (targetId === "velocity") {
             const velocity = viewer.carVelocity
             const speed = Math.hypot(velocity.x, velocity.y, velocity.z)
-            const projected = dot(velocity, direction())
+            const projected = dot(velocity, directionFrom(position))
             const alignment = speed > 1e-12
                 ? 100 * projected / speed : 0
             const active = (settings.mode === "projected"
@@ -502,19 +589,22 @@ Item {
                 .arg(projectedMode ? qsTr(" projected") : "").arg(alignment.toFixed(0))
                 .arg(active ? qsTr(" · below threshold") : "")
         }
+        if (targetId === "distance-target") {
+            const finish = (settings.eventType ?? "checkpoint") === "finish"
+            const distance = viewer.distanceToTrigger(
+                finish ? "finish" : "checkpoint",
+                Number(settings.checkpointSlot ?? -1),
+                position, viewer.carRotation)
+            return Number.isFinite(distance)
+                ? qsTr("Now: %1 m from the target").arg(distance.toFixed(2))
+                : qsTr("This map has no such target")
+        }
         if (targetId === "pose-target" && selectedPose.position) {
-            const positionError = distance(position, selectedPose.position)
-            const r = viewer.carRotation, t = selectedPose.rotation
-            const quaternionDot = Math.abs(
-                r.x * t.x + r.y * t.y + r.z * t.z
-                + r.scalar * t.scalar)
-            const angle = 2 * Math.acos(Math.min(1, quaternionDot))
-            const weight = Number(settings.rotationWeightPercent) / 100
-            const score = (1 - weight) * positionError + weight * angle
+            const error = poseError(position, viewer.carRotation)
             return qsTr("Now: %1 m · %2° · score %3")
-                .arg(positionError.toFixed(2))
-                .arg((angle * 180 / Math.PI).toFixed(1))
-                .arg(score.toFixed(2))
+                .arg(error.position.toFixed(2))
+                .arg((error.rotation * 180 / Math.PI).toFixed(1))
+                .arg(error.score.toFixed(2))
         }
         if (targetId === "stunt-points") {
             const at = sampleAt(viewer.timeMs)
@@ -605,7 +695,7 @@ Item {
         if (targetId !== "velocity")
             return result
         const start = viewer.carPosition
-        const axis = direction()
+        const axis = directionFrom(start)
         const length = Math.max(4, viewer.carVelocity.length())
         const end = Qt.vector3d(start.x + axis.x * length,
                                 start.y + axis.y * length,
@@ -1020,7 +1110,7 @@ Item {
             PathMultiline {
                 paths: root.pointStyle.visible
                     && root.pointStyle.throughBlocks
-                    && root.targetId === "point-target"
+                    && root.showsPoint
                     ? root.markerPaths(root.pointTarget(), 9, false) : []
             }
         }
@@ -1199,4 +1289,38 @@ Item {
             : root.dragHint(activeHit ?? hoveredHit)
     }
 
+
+    // Checkpoint map slots and the finish, over their triggers, while the
+    // Distance target is picked; the targeted one stands out.
+    Repeater {
+        model: root.targetId === "distance-target" && !root.suppressed
+               ? root.viewer.checkpointTriggers : []
+        Label {
+            required property var modelData
+            readonly property var point: {
+                root.projectionFrame
+                return root.projected(modelData.top)
+            }
+            readonly property bool targeted: modelData.finish
+                ? root.settings.eventType === "finish"
+                : root.settings.eventType !== "finish"
+                  && Number(root.settings.checkpointSlot) === modelData.slot
+            visible: point !== null
+            x: (point ? point.x : 0) - width / 2
+            y: (point ? point.y : 0) - height - 4
+            text: modelData.finish ? qsTr("Finish") : String(modelData.slot)
+            color: targeted ? AppTheme.textOnAccent : AppTheme.text
+            font.pixelSize: 12
+            font.weight: Font.DemiBold
+            padding: 4
+            leftPadding: 7
+            rightPadding: 7
+            background: Rectangle {
+                radius: 6
+                color: parent.targeted ? AppTheme.accent : Qt.rgba(0, 0, 0, 0.55)
+                border.width: 1
+                border.color: Qt.rgba(1, 1, 1, 0.25)
+            }
+        }
+    }
 }

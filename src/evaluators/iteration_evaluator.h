@@ -58,6 +58,10 @@ public:
 class IterationEvaluator {
 public:
     virtual ~IterationEvaluator() = default;
+    // Targets that need the loaded map (its triggers, the car's shape)
+    // read it here, once, before any session.
+    virtual void BindScene(
+            const forevervalidator::experimental::PhysicsSandbox &) {}
     virtual EvaluationPlan Plan(std::int64_t simulationHorizonMs,
                                 std::int64_t earliestMutationTimeMs,
                                 std::uint32_t tickDurationMs) const = 0;

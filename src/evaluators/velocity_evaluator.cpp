@@ -15,6 +15,9 @@ struct VelocitySettings {
     bool alignmentEnabled = false;
     EvaluationVector3 direction;
     double minimumAlignment = -1.0;
+    // The direction is from the car towards this point, every tick.
+    bool towardsPoint = false;
+    EvaluationVector3 point;
 };
 
 class VelocitySession final : public IterationEvaluationSession {
@@ -35,14 +38,17 @@ public:
         static_cast<void>(previous);
         const EvaluationVector3 velocity = VelocityOf(current);
         const double speed = Length(velocity);
+        const EvaluationVector3 direction = settings_.towardsPoint
+                ? Normalize(Difference(settings_.point, PositionOf(current)))
+                : settings_.direction;
         double alignment = 1.0;
         if (settings_.projected || settings_.alignmentEnabled) {
             if (speed <= 1e-12) alignment = 0.0;
-            else alignment = Dot(Normalize(velocity), settings_.direction);
+            else alignment = Dot(Normalize(velocity), direction);
             if (alignment < settings_.minimumAlignment) return std::nullopt;
         }
         const double objective = settings_.projected
-                ? Dot(velocity, settings_.direction)
+                ? Dot(velocity, direction)
                 : speed;
         return EvaluationSample{
                 objective,
@@ -97,14 +103,20 @@ std::optional<VelocitySettings> ParseSettings(
     const auto alignment = ReadDoubleSetting(settings, "minAlignmentPercent");
     const auto alignmentEnabled = ParseBoolean(settings.at("alignmentEnabled"));
     const std::string &mode = settings.at("mode");
+    const std::string &directionMode = settings.at("directionMode");
+    const auto point = ReadVector3Settings(settings, "x", "y", "z");
     if (!minimum || !maximum || !direction || !alignment ||
-        !alignmentEnabled || (mode != "total" && mode != "projected")) {
+        !alignmentEnabled || !point ||
+        (mode != "total" && mode != "projected") ||
+        (directionMode != "fixed" && directionMode != "point")) {
         if (error) *error = "velocity settings contain invalid values";
         return std::nullopt;
     }
     const bool projected = mode == "projected";
+    const bool towardsPoint = directionMode == "point";
     const EvaluationVector3 normalized = Normalize(*direction);
-    if ((projected || *alignmentEnabled) && Length(normalized) <= 1e-12) {
+    if (!towardsPoint && (projected || *alignmentEnabled) &&
+        Length(normalized) <= 1e-12) {
         if (error) *error = "velocity direction must be non-zero";
         return std::nullopt;
     }
@@ -117,7 +129,9 @@ std::optional<VelocitySettings> ParseSettings(
                             projected,
                             *alignmentEnabled,
                             normalized,
-                            *alignment / 100.0};
+                            *alignment / 100.0,
+                            towardsPoint,
+                            *point};
 }
 
 }  // namespace
@@ -130,7 +144,11 @@ OptionSettings DefaultVelocityOptionSettings() {
             {"directionX", "1"},
             {"directionY", "0"},
             {"directionZ", "0"},
-            {"minAlignmentPercent", "-100"}};
+            {"minAlignmentPercent", "-100"},
+            {"directionMode", "fixed"},
+            {"x", "0"},
+            {"y", "0"},
+            {"z", "0"}};
 }
 
 std::optional<std::string> ValidateVelocityOptionSettings(

@@ -7,6 +7,8 @@ ColumnLayout {
     objectName: "randomSteeringMutationSettings"
     property var settings: ({})
     property var updateSetting
+    property string windowChainKey: ""
+    property var chainController: null
     property bool running: false
     property var viewer
 
@@ -14,6 +16,8 @@ ColumnLayout {
     spacing: 8
 
     TimeWindowSettings {
+        chainController: root.chainController
+        chainKey: root.windowChainKey
         viewer: root.viewer
         settings: root.settings
         updateSetting: root.updateSetting

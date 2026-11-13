@@ -26,6 +26,8 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         TabBar {
+            // On glass: no band behind the tabs.
+            background: Item {}
             id: sourceTabs
             objectName: "bestInputsSourceTabs"
             Layout.fillWidth: true

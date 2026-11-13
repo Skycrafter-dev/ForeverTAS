@@ -438,6 +438,7 @@ private:
                     evaluator = registration->create(
                             request_.evaluationTarget.settings,
                             kSearchTickDurationMs);
+                    evaluator->BindScene(runtime->sandbox);
                 }
                 if (task->tick > runtime->finalTickCount) {
                     throw std::out_of_range(
@@ -555,6 +556,7 @@ SearchResult RunLoadedSearch(
             evaluationRegistration.create(
                     request.evaluationTarget.settings,
                     kSearchTickDurationMs);
+    evaluator->BindScene(sandbox);
     std::vector<PhysicsSandboxCudaModifier> cudaModifiers;
     std::optional<PhysicsSandboxCudaEvaluator> cudaEvaluator;
     ReportProgress(control, SearchProgressStage::PreparingSearch, 0u, 0u);
@@ -884,6 +886,7 @@ SearchResult RunMultiThreadedCpuSearch(
             evaluationRegistration.create(
                     request.evaluationTarget.settings,
                     kSearchTickDurationMs);
+    evaluator->BindScene(sourceSandbox);
     std::mutex evaluatorMutex;
     const auto betterShared =
             [&](const auto &candidate, const auto &incumbent) {

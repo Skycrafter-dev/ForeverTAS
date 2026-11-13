@@ -1,7 +1,10 @@
 #include "viewer/race_timeline_item.h"
 
+#include "app/dock_layout.h"
 #include "app/panel_wheel_redirector.h"
 #include "viewer/gpu_ray_tracing_view.h"
+#include "viewer/render_module_view.h"
+#include "viewer/video_export_controller.h"
 #include "viewer/whiteboard_canvas_item.h"
 
 #include "time_format.h"
@@ -59,13 +62,9 @@ QColor InterpolateColor(const QColor &start,
             start.alphaF() + (end.alphaF() - start.alphaF()) * progress);
 }
 
-QColor CentisecondTickColor(qreal pixelsPerTick, bool darkMode) {
-    const QColor microColor(
-            darkMode ? QStringLiteral("#343b37")
-                     : QStringLiteral("#cbd1c8"));
-    const QColor minorColor(
-            darkMode ? QStringLiteral("#59635d")
-                     : QStringLiteral("#aeb8b0"));
+QColor CentisecondTickColor(qreal pixelsPerTick) {
+    const QColor microColor(QStringLiteral("#343b37"));
+    const QColor minorColor(QStringLiteral("#59635d"));
     if (pixelsPerTick <= 7.0) {
         QColor color = microColor;
         color.setAlphaF(InterpolationProgress(pixelsPerTick, 5.0, 7.0));
@@ -109,7 +108,8 @@ RaceTimelineItem::RaceTimelineItem(QQuickItem *parent)
     setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
     setAcceptHoverEvents(true);
     setAntialiasing(false);
-    setOpaquePainting(true);
+    setOpaquePainting(false);
+    setFillColor(Qt::transparent);
     setCursor(QCursor(Qt::SizeVerCursor));
     scrubUpdateTimer_.setSingleShot(true);
     scrubUpdateTimer_.setTimerType(Qt::PreciseTimer);
@@ -174,31 +174,15 @@ void RaceTimelineItem::setPixelsPerTick(qreal value) {
     emit pixelsPerTickChanged();
 }
 
-bool RaceTimelineItem::darkMode() const {
-    return darkMode_;
-}
-
-void RaceTimelineItem::setDarkMode(bool value) {
-    if (darkMode_ == value) {
-        return;
-    }
-    darkMode_ = value;
-    update();
-    emit darkModeChanged();
-}
-
 void RaceTimelineItem::paint(QPainter *painter) {
     const QRectF area = boundingRect();
-    painter->fillRect(
-            area,
-            QColor(darkMode_ ? QStringLiteral("#101412")
-                             : QStringLiteral("#f4f5f2")));
+    // The timeline sits on a glass panel: dark washes, not solid fills.
+    painter->fillRect(area, QColor(0, 0, 0, 56));
 
     if (viewer_ == nullptr || !viewer_->loaded() ||
         viewer_->tickCount() <= 0) {
         painter->setPen(
-                QColor(darkMode_ ? QStringLiteral("#778079")
-                                 : QStringLiteral("#667064")));
+                QColor(QStringLiteral("#778079")));
         painter->drawText(
                 area.adjusted(18.0, 18.0, -18.0, -18.0),
                 Qt::AlignCenter | Qt::TextWordWrap,
@@ -222,21 +206,17 @@ void RaceTimelineItem::paint(QPainter *painter) {
 
     painter->fillRect(
             QRectF(0.0, 0.0, rulerWidth, area.height()),
-            QColor(darkMode_ ? QStringLiteral("#0c100e")
-                             : QStringLiteral("#eef2ed")));
+            QColor(0, 0, 0, 46));
     painter->setPen(
-            QColor(darkMode_ ? QStringLiteral("#2b332f")
-                             : QStringLiteral("#cbd1c8")));
+            QColor(QStringLiteral("#2b332f")));
     painter->drawLine(QPointF(rulerRight, 0.0),
                       QPointF(rulerRight, area.height()));
 
     painter->fillRect(
             QRectF(controlLeft, 0.0, controlWidth, area.height()),
-            QColor(darkMode_ ? QStringLiteral("#171d1a")
-                             : QStringLiteral("#e1e5df")));
+            QColor(255, 255, 255, 10));
     painter->setPen(
-            QColor(darkMode_ ? QStringLiteral("#29312c")
-                             : QStringLiteral("#cbd1c8")));
+            QColor(QStringLiteral("#29312c")));
     painter->drawLine(QPointF(controlLeft, 0.0),
                       QPointF(controlLeft, area.height()));
     painter->drawLine(QPointF(controlLeft + brakeWidth, 0.0),
@@ -331,19 +311,17 @@ void RaceTimelineItem::paint(QPainter *painter) {
             viewer_->tickCount(), lastVisible + 1);
 
     QPen majorTickPen(
-            QColor(darkMode_ ? QStringLiteral("#9aa69e")
-                             : QStringLiteral("#667064")));
+            QColor(QStringLiteral("#9aa69e")));
     majorTickPen.setCosmetic(true);
     majorTickPen.setWidthF(1.0);
     QPen minorTickPen(
-            QColor(darkMode_ ? QStringLiteral("#59635d")
-                             : QStringLiteral("#aeb8b0")));
+            QColor(QStringLiteral("#59635d")));
     minorTickPen.setCosmetic(true);
     minorTickPen.setWidthF(1.0);
     const qreal centisecondTickLength =
             CentisecondTickLength(pixelsPerTick_);
     QPen centisecondTickPen(
-            CentisecondTickColor(pixelsPerTick_, darkMode_));
+            CentisecondTickColor(pixelsPerTick_));
     centisecondTickPen.setCosmetic(true);
     centisecondTickPen.setWidthF(1.0);
 
@@ -380,8 +358,7 @@ void RaceTimelineItem::paint(QPainter *painter) {
 
         if (majorTick) {
             painter->setPen(
-                    QColor(darkMode_ ? QStringLiteral("#aeb8b0")
-                                     : QStringLiteral("#667064")));
+                    QColor(QStringLiteral("#aeb8b0")));
             painter->drawText(
                     QRectF(2.0, alignedY - 8.0, 34.0, 16.0),
                     Qt::AlignRight | Qt::AlignVCenter,
@@ -389,9 +366,7 @@ void RaceTimelineItem::paint(QPainter *painter) {
         }
     }
 
-    const QColor currentTickColor(
-            darkMode_ ? QStringLiteral("#f3c85b")
-                      : QStringLiteral("#9a5b28"));
+    const QColor currentTickColor(QStringLiteral("#f3c85b"));
     painter->setPen(QPen(currentTickColor, 2.0));
     painter->drawLine(QPointF(0.0, centerY),
                       QPointF(area.width(), centerY));
@@ -524,15 +499,27 @@ void RegisterRaceViewerQmlTypes() {
     static const int wheelTypeId =
             qmlRegisterType<forevertas::app::PanelWheelRedirector>(
                     "ForeverTAS.Viewer", 1, 0, "PanelWheelRedirector");
+    static const int dockLayoutTypeId =
+            qmlRegisterType<forevertas::app::DockLayoutModel>(
+                    "ForeverTAS.Viewer", 1, 0, "DockLayout");
     static const int rayTracingTypeId =
             qmlRegisterType<GpuRayTracingView>(
                     "ForeverTAS.Viewer", 1, 0, "GpuRayTracingView");
+    static const int renderModuleTypeId =
+            qmlRegisterType<RenderModuleView>(
+                    "ForeverTAS.Viewer", 1, 0, "RenderModuleView");
+    static const int videoExportTypeId =
+            qmlRegisterType<VideoExportController>(
+                    "ForeverTAS.Viewer", 1, 0, "VideoExport");
     static const int whiteboardCanvasTypeId =
             qmlRegisterType<WhiteboardCanvasItem>(
                     "ForeverTAS.Viewer", 1, 0, "WhiteboardCanvasItem");
     Q_UNUSED(timelineTypeId);
     Q_UNUSED(wheelTypeId);
+    Q_UNUSED(dockLayoutTypeId);
     Q_UNUSED(rayTracingTypeId);
+    Q_UNUSED(renderModuleTypeId);
+    Q_UNUSED(videoExportTypeId);
     Q_UNUSED(whiteboardCanvasTypeId);
 }
 

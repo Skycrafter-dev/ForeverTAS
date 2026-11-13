@@ -334,9 +334,30 @@ bool SearchConfigurationModel::setModifierPassId(int index,
         QString::fromStdString(registration->id)) {
         return false;
     }
-    modifierPasses_[index] = ModifierPassValue(
+    QVariantMap replaced = ModifierPassValue(
             *registration, ToVariantMap(registration->defaultSettings),
             existing.value(QStringLiteral("enabled"), true).toBool());
+    if (existing.contains(QStringLiteral("chain"))) {
+        replaced.insert(QStringLiteral("chain"),
+                        existing.value(QStringLiteral("chain")));
+    }
+    modifierPasses_[index] = replaced;
+    persistModifierPasses();
+    return true;
+}
+
+QVariantMap SearchConfigurationModel::modifierPassChain(int index) const {
+    if (index < 0 || index >= modifierPasses_.size()) return {};
+    return modifierPasses_.at(index).toMap().value(QStringLiteral("chain")).toMap();
+}
+
+bool SearchConfigurationModel::setModifierPassChain(int index,
+                                                    const QVariantMap &chain) {
+    if (index < 0 || index >= modifierPasses_.size()) return false;
+    QVariantMap pass = modifierPasses_.at(index).toMap();
+    if (pass.value(QStringLiteral("chain")).toMap() == chain) return false;
+    pass.insert(QStringLiteral("chain"), chain);
+    modifierPasses_[index] = pass;
     persistModifierPasses();
     return true;
 }
@@ -543,9 +564,15 @@ void SearchConfigurationModel::loadModifierPasses() {
                 }
                 settings.insert(iterator.key(), iterator.value().toString());
             }
-            modifierPasses_.push_back(
-                    ModifierPassValue(*registration, settings,
-                            object.value(QStringLiteral("enabled")).toBool(true)));
+            QVariantMap pass = ModifierPassValue(
+                    *registration, settings,
+                    object.value(QStringLiteral("enabled")).toBool(true));
+            const QJsonObject chain =
+                    object.value(QStringLiteral("chain")).toObject();
+            if (!chain.isEmpty()) {
+                pass.insert(QStringLiteral("chain"), chain.toVariantMap());
+            }
+            modifierPasses_.push_back(pass);
         }
     }
     if (!modifierPasses_.isEmpty()) return;
@@ -574,12 +601,18 @@ void SearchConfigurationModel::persistModifierPasses() const {
              ++iterator) {
             settings.insert(iterator.key(), iterator.value().toString());
         }
-        array.push_back(QJsonObject{
+        QJsonObject stored{
                 {QStringLiteral("enabled"),
                  pass.value(QStringLiteral("enabled"), true).toBool()},
                 {QStringLiteral("id"),
                  pass.value(QStringLiteral("id")).toString()},
-                {QStringLiteral("settings"), settings}});
+                {QStringLiteral("settings"), settings}};
+        const QVariantMap chain = pass.value(QStringLiteral("chain")).toMap();
+        if (!chain.isEmpty()) {
+            stored.insert(QStringLiteral("chain"),
+                          QJsonObject::fromVariantMap(chain));
+        }
+        array.push_back(stored);
     }
     QSettings().setValue(
             QLatin1String(kModifierPassesKey),

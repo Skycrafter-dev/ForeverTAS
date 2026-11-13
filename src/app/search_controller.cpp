@@ -66,7 +66,6 @@ constexpr char kAutoRestartAttemptsKey[] = "search/autoRestartAttempts";
 constexpr char kDrawTargetsThroughBlocksKey[] =
         "viewer/drawTargetsThroughBlocks";
 constexpr char kTargetMouseEditingLockedKey[] = "viewer/targetMouseEditingLocked";
-constexpr char kDarkModeKey[] = "appearance/darkMode";
 constexpr char kViewerVisibleKey[] = "viewer/visible";
 std::atomic_bool gAutomaticPacksSearchScheduled{false};
 
@@ -94,7 +93,7 @@ std::optional<std::chrono::seconds> ParseRestartDuration(
             : std::nullopt;
 }
 
-void ApplyApplicationPalette(bool dark) {
+void ApplyApplicationPalette() {
     auto *const application =
             qobject_cast<QApplication *>(QCoreApplication::instance());
     if (application == nullptr) {
@@ -102,39 +101,18 @@ void ApplyApplicationPalette(bool dark) {
     }
 
     QPalette palette;
-    const QColor window =
-            dark ? QColor(QStringLiteral("#171a18"))
-                 : QColor(QStringLiteral("#eceeeb"));
-    const QColor surface =
-            dark ? QColor(QStringLiteral("#292e2a")) : Qt::white;
-    const QColor alternate =
-            dark ? QColor(QStringLiteral("#242925"))
-                 : QColor(QStringLiteral("#f3f5f1"));
-    const QColor control =
-            dark ? QColor(QStringLiteral("#343a35"))
-                 : QColor(QStringLiteral("#e1e5df"));
-    const QColor text =
-            dark ? QColor(QStringLiteral("#f0f3ef"))
-                 : QColor(QStringLiteral("#202421"));
-    const QColor muted =
-            dark ? QColor(QStringLiteral("#aeb8b0"))
-                 : QColor(QStringLiteral("#667064"));
-    const QColor accent =
-            dark ? QColor(QStringLiteral("#45b778"))
-                 : QColor(QStringLiteral("#26734d"));
-    const QColor accentText =
-            dark ? QColor(QStringLiteral("#101411")) : Qt::white;
-    const QColor disabledSurface =
-            dark ? QColor(QStringLiteral("#252925"))
-                 : QColor(QStringLiteral("#ecefe9"));
-    const QColor disabledText =
-            dark ? QColor(QStringLiteral("#737b74"))
-                 : QColor(QStringLiteral("#92988f"));
-    const QColor tooltip =
-            dark ? QColor(QStringLiteral("#f0f3ef"))
-                 : QColor(QStringLiteral("#202421"));
-    const QColor tooltipText =
-            dark ? QColor(QStringLiteral("#202421")) : Qt::white;
+    const QColor window(QStringLiteral("#171a18"));
+    const QColor surface(QStringLiteral("#292e2a"));
+    const QColor alternate(QStringLiteral("#242925"));
+    const QColor control(QStringLiteral("#343a35"));
+    const QColor text(QStringLiteral("#f0f3ef"));
+    const QColor muted(QStringLiteral("#aeb8b0"));
+    const QColor accent(QStringLiteral("#45b778"));
+    const QColor accentText(QStringLiteral("#101411"));
+    const QColor disabledSurface(QStringLiteral("#252925"));
+    const QColor disabledText(QStringLiteral("#737b74"));
+    const QColor tooltip(QStringLiteral("#141a17"));
+    const QColor tooltipText(QStringLiteral("#f0f3ef"));
 
     palette.setColor(QPalette::Window, window);
     palette.setColor(QPalette::WindowText, text);
@@ -384,9 +362,7 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             .value(QLatin1String(kDrawTargetsThroughBlocksKey), false)
             .toBool();
     targetMouseEditingLocked_ = settings.value(QLatin1String(kTargetMouseEditingLockedKey), false).toBool();
-    darkMode_ =
-            QSettings().value(QLatin1String(kDarkModeKey), false).toBool();
-    ApplyApplicationPalette(darkMode_);
+    ApplyApplicationPalette();
     viewerVisible_ = settings.value(QLatin1String(kViewerVisibleKey), true).toBool();
     const QString storedBackend = StoredValue(
             kSimulationBackendKey,
@@ -639,10 +615,6 @@ bool SearchController::randomizeSeedsOnStart() const {
 
 bool SearchController::drawTargetsThroughBlocks() const {
     return drawTargetsThroughBlocks_;
-}
-
-bool SearchController::darkMode() const {
-    return darkMode_;
 }
 
 bool SearchController::viewerVisible() const { return viewerVisible_; }
@@ -1012,6 +984,7 @@ void SearchController::setSimulationHorizonMs(const QString &value) {
     persist(kSimulationHorizonKey, value);
     emit simulationHorizonMsChanged();
     refreshValidation();
+    propagateWindowChain(QStringLiteral("searchEnd"));
 }
 
 void SearchController::setPreviewExtentMs(const QString &value) {
@@ -1019,6 +992,7 @@ void SearchController::setPreviewExtentMs(const QString &value) {
     previewExtentMs_ = value;
     persist(kPreviewExtentKey, value);
     emit previewExtentMsChanged();
+    propagateWindowChain(QStringLiteral("previewExtent"));
 }
 
 void SearchController::setConditionScript(const QString &value) {
@@ -1141,18 +1115,11 @@ void SearchController::setTargetMouseEditingLocked(bool value) {
     emit targetMouseEditingLockedChanged();
 }
 
-void SearchController::setDarkMode(bool value) {
-    if (darkMode_ == value) {
-        return;
-    }
-    darkMode_ = value;
-    QSettings().setValue(QLatin1String(kDarkModeKey), value);
-    ApplyApplicationPalette(value);
-    emit darkModeChanged();
-}
-
 void SearchController::setEvaluationTargetId(const QString &value) {
     if (!configuration_.setEvaluationTargetId(value)) return;
+    // Each target keeps its own chain.
+    ++windowChainRevision_;
+    emit windowChainsChanged();
     emit evaluationTargetIdChanged();
     emit evaluationTargetSettingsChanged();
     synchronizeSelectedCuboid();
@@ -1204,14 +1171,164 @@ void SearchController::setModifierPassSetting(int index,
     if (!configuration_.setModifierPassSetting(index, key, value)) return;
     emit modifierPassesChanged();
     refreshValidation();
+    if (key == QStringLiteral("minTimeMs") ||
+        key == QStringLiteral("maxTimeMs") ||
+        key == QStringLiteral("maxTimeMode")) {
+        propagateWindowChain(QStringLiteral("pass:") + QString::number(index));
+    }
+}
+
+namespace {
+
+// White when never chained, like TICK.
+QVariantMap NormalizedChain(const QVariantMap &chain) {
+    return {{QStringLiteral("color"),
+             chain.value(QStringLiteral("color"), QStringLiteral("white"))},
+            {QStringLiteral("linked"),
+             chain.value(QStringLiteral("linked"), false).toBool()}};
+}
+
+bool ChainedTogether(const QVariantMap &first, const QVariantMap &second) {
+    return first.value(QStringLiteral("linked")).toBool() &&
+           second.value(QStringLiteral("linked")).toBool() &&
+           first.value(QStringLiteral("color")) ==
+                   second.value(QStringLiteral("color"));
+}
+
+QString StoredChainKey(const QString &key, const QString &evaluationTargetId) {
+    return key == QStringLiteral("target")
+            ? QStringLiteral("chains/evaluation/") + evaluationTargetId
+            : QStringLiteral("chains/") + key;
+}
+
+}  // namespace
+
+QStringList SearchController::windowChainKeys() const {
+    QStringList keys;
+    for (int index = 0; index < configuration_.modifierPasses().size(); ++index) {
+        keys << QStringLiteral("pass:") + QString::number(index);
+    }
+    keys << QStringLiteral("target") << QStringLiteral("searchEnd")
+         << QStringLiteral("previewExtent");
+    return keys;
+}
+
+QVariantMap SearchController::windowChain(const QString &key) const {
+    if (key.startsWith(QStringLiteral("pass:"))) {
+        return NormalizedChain(configuration_.modifierPassChain(
+                key.mid(5).toInt()));
+    }
+    return NormalizedChain(
+            QSettings()
+                    .value(StoredChainKey(key, configuration_.evaluationTargetId()))
+                    .toMap());
+}
+
+void SearchController::setWindowChain(const QString &key, const QString &color,
+                                      bool linked) {
+    const QVariantMap chain{{QStringLiteral("color"), color},
+                            {QStringLiteral("linked"), linked}};
+    if (key.startsWith(QStringLiteral("pass:"))) {
+        configuration_.setModifierPassChain(key.mid(5).toInt(), chain);
+        emit modifierPassesChanged();
+    } else {
+        QSettings().setValue(
+                StoredChainKey(key, configuration_.evaluationTargetId()), chain);
+    }
+    ++windowChainRevision_;
+    emit windowChainsChanged();
+    if (!linked) return;
+    // A window joining a chain takes the window the chain already has.
+    for (const QString &other : windowChainKeys()) {
+        if (other == key || !ChainedTogether(chain, windowChain(other))) continue;
+        if (const auto window = chainWindow(other)) {
+            propagatingWindowChain_ = true;
+            applyChainWindow(key, *window);
+            propagatingWindowChain_ = false;
+            return;
+        }
+    }
+}
+
+std::optional<SearchController::ChainWindow> SearchController::chainWindow(
+        const QString &key) const {
+    if (key == QStringLiteral("searchEnd")) {
+        return ChainWindow{false, {}, simulationHorizonMs_,
+                           QStringLiteral("fixed")};
+    }
+    if (key == QStringLiteral("previewExtent")) {
+        return ChainWindow{false, {}, previewExtentMs_, QStringLiteral("fixed")};
+    }
+    const QVariantMap settings = key == QStringLiteral("target")
+            ? configuration_.evaluationTargetSettings()
+            : configuration_.modifierPasses()
+                      .value(key.mid(5).toInt())
+                      .toMap()
+                      .value(QStringLiteral("settings"))
+                      .toMap();
+    if (!settings.contains(QStringLiteral("minTimeMs")) ||
+        !settings.contains(QStringLiteral("maxTimeMs"))) {
+        return std::nullopt;
+    }
+    return ChainWindow{
+            true, settings.value(QStringLiteral("minTimeMs")).toString(),
+            settings.value(QStringLiteral("maxTimeMs")).toString(),
+            settings.value(QStringLiteral("maxTimeMode"), QStringLiteral("fixed"))
+                    .toString()};
+}
+
+void SearchController::applyChainWindow(const QString &key,
+                                        const ChainWindow &window) {
+    // "Until horizon" ends at Search end.
+    const QString end = window.endMode == QStringLiteral("horizon")
+            ? simulationHorizonMs_ : window.end;
+    if (key == QStringLiteral("searchEnd")) {
+        if (window.endMode != QStringLiteral("horizon")) {
+            setSimulationHorizonMs(end);
+        }
+        return;
+    }
+    if (key == QStringLiteral("previewExtent")) {
+        setPreviewExtentMs(end);
+        return;
+    }
+    const auto target = chainWindow(key);
+    if (!target) return;
+    const auto set = [&](const QString &name, const QString &value) {
+        if (key == QStringLiteral("target")) {
+            setEvaluationTargetSetting(name, value);
+        } else {
+            setModifierPassSetting(key.mid(5).toInt(), name, value);
+        }
+    };
+    if (window.hasStart) set(QStringLiteral("minTimeMs"), window.start);
+    set(QStringLiteral("maxTimeMode"), window.endMode);
+    set(QStringLiteral("maxTimeMs"), window.end);
+}
+
+void SearchController::propagateWindowChain(const QString &key) {
+    if (propagatingWindowChain_) return;
+    const QVariantMap chain = windowChain(key);
+    if (!chain.value(QStringLiteral("linked")).toBool()) return;
+    const auto window = chainWindow(key);
+    if (!window) return;
+    propagatingWindowChain_ = true;
+    for (const QString &other : windowChainKeys()) {
+        if (other != key && ChainedTogether(chain, windowChain(other))) {
+            applyChainWindow(other, *window);
+        }
+    }
+    propagatingWindowChain_ = false;
 }
 
 void SearchController::setEvaluationTargetSetting(const QString &key,
                                                   const QString &value) {
     const bool isCuboid = configuration_.evaluationTargetId() ==
             QString::fromLatin1(kVolumeEntryEvaluationId);
+    // Cuboid geometry belongs to the cuboid list; how a cuboid is judged
+    // is a setting like any other.
     if (!configuration_.setEvaluationTargetSetting(
-                key, value, !isCuboid)) {
+                key, value, !isCuboid || key == QStringLiteral("measure"))) {
         return;
     }
     if (isCuboid) {
@@ -1225,6 +1342,11 @@ void SearchController::setEvaluationTargetSetting(const QString &key,
     }
     emit evaluationTargetSettingsChanged();
     refreshValidation();
+    if (key == QStringLiteral("minTimeMs") ||
+        key == QStringLiteral("maxTimeMs") ||
+        key == QStringLiteral("maxTimeMode")) {
+        propagateWindowChain(QStringLiteral("target"));
+    }
 }
 
 void SearchController::synchronizeSelectedCuboid() {
@@ -1400,7 +1522,7 @@ void SearchController::setPacksDirectory(const QString &value) {
     refreshSessions();
 }
 
-void SearchController::browseForPacksDirectory() {
+bool SearchController::browseForPacksDirectory() {
     const QFileInfo current(packsDirectory_.isEmpty()
                                     ? autoDetectedPacksDirectory_
                                     : packsDirectory_);
@@ -1409,9 +1531,11 @@ void SearchController::browseForPacksDirectory() {
             : QDir::homePath();
     const QString selected = OpenSystemDirectoryDialog(
             QStringLiteral("Select Packs directory"), initialDirectory);
-    if (!selected.isEmpty()) {
-        setPacksDirectory(selected);
+    if (selected.isEmpty()) {
+        return false;
     }
+    setPacksDirectory(selected);
+    return true;
 }
 
 void SearchController::applyAutoDetectedPacksDirectory() {
@@ -1422,16 +1546,28 @@ void SearchController::applyAutoDetectedPacksDirectory() {
     setPacksDirectory(detected);
 }
 
-void SearchController::browseForReplay() {
+bool SearchController::browseForReplay() {
     const QFileInfo current(replayPath_);
     const QString initialPath = current.isFile()
             ? current.absoluteFilePath()
             : QDir::homePath();
     const QString selected = OpenSystemFileDialog(
             QStringLiteral("Select replay or challenge"), initialPath);
-    if (!selected.isEmpty()) {
-        setReplayPath(selected);
+    if (selected.isEmpty()) {
+        return false;
     }
+    setReplayPath(selected);
+    return true;
+}
+
+QVariant SearchController::uiSetting(const QString &key,
+                                     const QVariant &fallback) const {
+    return QSettings().value(QStringLiteral("ui/") + key, fallback);
+}
+
+void SearchController::setUiSetting(const QString &key,
+                                    const QVariant &value) {
+    QSettings().setValue(QStringLiteral("ui/") + key, value);
 }
 
 QString SearchController::formatCompactNumber(double value) const {

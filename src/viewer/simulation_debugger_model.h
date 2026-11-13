@@ -44,8 +44,6 @@ class SimulationDebuggerModel final : public QObject {
     Q_PROPERTY(QString editError READ editError NOTIFY linesChanged)
     Q_PROPERTY(bool hasEdits READ hasEdits NOTIFY filesChanged)
     Q_PROPERTY(qint64 executionTick READ executionTick NOTIFY executionChanged)
-    Q_PROPERTY(
-            bool darkMode READ darkMode WRITE setDarkMode NOTIFY themeChanged)
 
   public:
     explicit SimulationDebuggerModel(QObject *parent = nullptr);
@@ -80,7 +78,6 @@ class SimulationDebuggerModel final : public QObject {
     QString editError() const;
     bool hasEdits() const;
     qint64 executionTick() const;
-    bool darkMode() const;
 
     Q_INVOKABLE bool selectFile(const QString &path);
     Q_INVOKABLE void toggleFolder(const QString &path);
@@ -94,7 +91,6 @@ class SimulationDebuggerModel final : public QObject {
     Q_INVOKABLE bool stepSubstep();
     Q_INVOKABLE bool stepSourceLine();
     Q_INVOKABLE bool stepTick();
-    void setDarkMode(bool value);
 
     void configure(const QString &backendName);
     bool startSession(const QString &packsDirectory,
@@ -116,7 +112,6 @@ class SimulationDebuggerModel final : public QObject {
     void sourceLocationRequested(int line);
     void frameProduced(const QVariantMap &frame);
     void sessionFinished();
-    void themeChanged();
 
   private:
     struct SourceEdit {
@@ -129,8 +124,7 @@ class SimulationDebuggerModel final : public QObject {
         QString absolutePath;
         QStringList originalLines;
         QStringList currentLines;
-        QStringList highlightedLight;
-        QStringList highlightedDark;
+        QStringList highlighted;
         QStringList inlineValueLines;
         QVector<quint64> lineIds;
         QVector<int> sourceLineNumbers;
@@ -201,7 +195,7 @@ class SimulationDebuggerModel final : public QObject {
         Tick,
     };
 
-    static QString syntaxHighlighted(const QString &text, bool darkMode);
+    static QString syntaxHighlighted(const QString &text);
     static ProcessedDebuggerOutput
     processDebuggerOutput(const QString &output, bool parseVariables,
                           bool parseStopLocation, const QString &printToken);
@@ -343,7 +337,6 @@ class SimulationDebuggerModel final : public QObject {
     bool workerReady_ = false;
     bool stopping_ = false;
     bool pendingStart_ = false;
-    bool darkMode_ = false;
     quint64 sourceLoadGeneration_ = 0;
     quint64 sessionGeneration_ = 0;
     quint64 shutdownGeneration_ = 0;

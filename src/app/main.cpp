@@ -4,12 +4,15 @@
 #include "app/shutdown_controller.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
+#include "viewer/render_module_library.h"
 
 #include <QApplication>
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QQmlApplicationEngine>
+#include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QQuickStyle>
 #include <QSslSocket>
 #include <QTimer>
@@ -93,6 +96,11 @@ int main(int argc, char **argv) {
                 viewer.completeSearchPreview(std::move(completion));
             });
     forevertas::viewer::RegisterRaceViewerQmlTypes();
+    // A render module draws with OpenGL inside the window's own frame.
+    if (forevertas::viewer::LoadedRenderModule().loaded &&
+        forevertas::viewer::RenderModuleOpenGlUsable()) {
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+    }
     QQmlApplicationEngine engine;
     engine.addImportPath(QCoreApplication::applicationDirPath() +
                          QStringLiteral("/qml"));

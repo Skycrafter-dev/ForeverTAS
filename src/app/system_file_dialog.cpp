@@ -65,9 +65,13 @@ QByteArray PortalPathBytes(const QString &path) {
     return bytes;
 }
 
+enum class PortalDialogKind { OpenFile, OpenDirectory, SaveFile };
+
 QString OpenPortalDialog(const QString &title,
                          const QString &initialPath,
-                         bool directory) {
+                         PortalDialogKind kind) {
+    const bool directory = kind == PortalDialogKind::OpenDirectory;
+    const bool save = kind == PortalDialogKind::SaveFile;
     QDBusConnection connection = QDBusConnection::sessionBus();
     if (!connection.isConnected()) return {};
 
@@ -101,8 +105,14 @@ QString OpenPortalDialog(const QString &title,
     QVariantMap options;
     options.insert(QStringLiteral("handle_token"), token);
     options.insert(QStringLiteral("modal"), true);
-    options.insert(QStringLiteral("multiple"), false);
-    options.insert(QStringLiteral("directory"), directory);
+    if (save) {
+        if (!initial.isDir() && !initial.fileName().isEmpty()) {
+            options.insert(QStringLiteral("current_name"), initial.fileName());
+        }
+    } else {
+        options.insert(QStringLiteral("multiple"), false);
+        options.insert(QStringLiteral("directory"), directory);
+    }
     if (!initialDirectory.isEmpty()) {
         options.insert(QStringLiteral("current_folder"),
                        PortalPathBytes(initialDirectory));
@@ -112,7 +122,7 @@ QString OpenPortalDialog(const QString &title,
             kPortalService,
             kPortalPath,
             kFileChooserInterface,
-            QStringLiteral("OpenFile"));
+            save ? QStringLiteral("SaveFile") : QStringLiteral("OpenFile"));
     message << PortalParentWindow() << title << options;
     const QDBusMessage reply = connection.call(message);
     if (reply.type() == QDBusMessage::ErrorMessage ||
@@ -168,12 +178,20 @@ SystemFileDialogBackend ActiveSystemFileDialogBackend() {
 
 QString OpenSystemDirectoryDialog(const QString &title,
                                   const QString &initialDirectory) {
-    return OpenPortalDialog(title, initialDirectory, true);
+    return OpenPortalDialog(title, initialDirectory,
+                            PortalDialogKind::OpenDirectory);
 }
 
 QString OpenSystemFileDialog(const QString &title,
                              const QString &initialPath) {
-    return OpenPortalDialog(title, initialPath, false);
+    return OpenPortalDialog(title, initialPath, PortalDialogKind::OpenFile);
+}
+
+QString OpenSystemSaveDialog(const QString &title,
+                             const QString &initialPath,
+                             const QString &,
+                             const QString &) {
+    return OpenPortalDialog(title, initialPath, PortalDialogKind::SaveFile);
 }
 
 }  // namespace forevertas::app
@@ -253,10 +271,83 @@ QString OpenWindowsDialog(const QString &title,
     return selected;
 }
 
+QString SaveWindowsDialog(const QString &title,
+                          const QString &initialPath,
+                          const QString &filterName,
+                          const QString &extension) {
+    const HRESULT initialized = CoInitializeEx(
+            nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool uninitialize = SUCCEEDED(initialized);
+
+    IFileSaveDialog *dialog = nullptr;
+    HRESULT result = CoCreateInstance(
+            CLSID_FileSaveDialog,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&dialog));
+    if (FAILED(result)) {
+        if (uninitialize) CoUninitialize();
+        return {};
+    }
+    dialog->SetTitle(reinterpret_cast<const wchar_t *>(title.utf16()));
+    FILEOPENDIALOGOPTIONS options = 0;
+    if (SUCCEEDED(dialog->GetOptions(&options))) {
+        dialog->SetOptions(options | FOS_FORCEFILESYSTEM |
+                           FOS_PATHMUSTEXIST | FOS_OVERWRITEPROMPT);
+    }
+    const QString pattern = QStringLiteral("*.") + extension;
+    if (!extension.isEmpty()) {
+        const COMDLG_FILTERSPEC filter{
+                reinterpret_cast<const wchar_t *>(filterName.utf16()),
+                reinterpret_cast<const wchar_t *>(pattern.utf16())};
+        dialog->SetFileTypes(1, &filter);
+        dialog->SetDefaultExtension(
+                reinterpret_cast<const wchar_t *>(extension.utf16()));
+    }
+    const QFileInfo initial(initialPath);
+    const QString folderPath = QDir::toNativeSeparators(initial.absolutePath());
+    IShellItem *folder = nullptr;
+    if (SUCCEEDED(SHCreateItemFromParsingName(
+                reinterpret_cast<const wchar_t *>(folderPath.utf16()),
+                nullptr,
+                IID_PPV_ARGS(&folder)))) {
+        dialog->SetFolder(folder);
+        folder->Release();
+    }
+    if (!initial.fileName().isEmpty()) {
+        dialog->SetFileName(
+                reinterpret_cast<const wchar_t *>(initial.fileName().utf16()));
+    }
+
+    QString selected;
+    if (SUCCEEDED(dialog->Show(nullptr))) {
+        IShellItem *item = nullptr;
+        if (SUCCEEDED(dialog->GetResult(&item))) {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                selected = QString::fromWCharArray(path);
+                CoTaskMemFree(path);
+            }
+            item->Release();
+        }
+    }
+
+    dialog->Release();
+    if (uninitialize) CoUninitialize();
+    return selected;
+}
+
 }  // namespace
 
 SystemFileDialogBackend ActiveSystemFileDialogBackend() {
     return SystemFileDialogBackend::WindowsIFileDialog;
+}
+
+QString OpenSystemSaveDialog(const QString &title,
+                             const QString &initialPath,
+                             const QString &filterName,
+                             const QString &extension) {
+    return SaveWindowsDialog(title, initialPath, filterName, extension);
 }
 
 QString OpenSystemDirectoryDialog(const QString &title,

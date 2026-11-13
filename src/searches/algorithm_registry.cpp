@@ -3,6 +3,7 @@
 #include "input_timeline_time.h"
 #include "evaluators/precise_finish_time_evaluator.h"
 #include "evaluators/checkpoint_time_evaluator.h"
+#include "evaluators/distance_target_evaluator.h"
 #include "evaluators/time_evaluator.h"
 #include "evaluators/custom_volume_entry_evaluator.h"
 #include "evaluators/point_target_evaluator.h"
@@ -315,6 +316,14 @@ const std::vector<EvaluationTargetRegistration> &EvaluationTargetRegistry() {
              {},
              &ValidateScriptedTargetOptionSettings,
              &CreateScriptedTargetEvaluator},
+            {kDistanceTargetEvaluationId,
+             {},
+             "Distance to checkpoint/finish",
+             "DistanceTargetEvaluationSettings.qml",
+             DefaultDistanceTargetOptionSettings(),
+             {},
+             &ValidateDistanceTargetOptionSettings,
+             &CreateDistanceTargetEvaluator},
             {kCheckpointTimeEvaluationId,
              {},
              "Checkpoint time",

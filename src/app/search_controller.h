@@ -97,8 +97,6 @@ class SearchController final : public QObject {
     Q_PROPERTY(bool drawTargetsThroughBlocks READ drawTargetsThroughBlocks WRITE
                        setDrawTargetsThroughBlocks NOTIFY
                        drawTargetsThroughBlocksChanged)
-    Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY
-                       darkModeChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible WRITE setViewerVisible NOTIFY viewerVisibleChanged)
     Q_PROPERTY(bool targetMouseEditingLocked READ targetMouseEditingLocked WRITE
                        setTargetMouseEditingLocked NOTIFY targetMouseEditingLockedChanged)
@@ -113,6 +111,9 @@ class SearchController final : public QObject {
                        setEvaluationTargetId NOTIFY evaluationTargetIdChanged)
     Q_PROPERTY(QVariantMap searchAlgorithmSettings READ searchAlgorithmSettings
                        NOTIFY searchAlgorithmSettingsChanged)
+    // Bumped whenever a window chain changes, for bindings on windowChain().
+    Q_PROPERTY(int windowChainRevision READ windowChainRevision NOTIFY
+                       windowChainsChanged)
     Q_PROPERTY(QVariantList modifierPasses READ modifierPasses NOTIFY
                        modifierPassesChanged)
     Q_PROPERTY(QVariantMap evaluationTargetSettings READ
@@ -208,7 +209,6 @@ public:
     QString vulkanStatusText() const;
     bool randomizeSeedsOnStart() const;
     bool drawTargetsThroughBlocks() const;
-    bool darkMode() const;
     bool viewerVisible() const;
     bool targetMouseEditingLocked() const;
     QVariantList searchAlgorithmOptions() const;
@@ -281,15 +281,19 @@ public slots:
     void setAutoRestartDuration(const QString &value);
     void setAutoRestartAttempts(const QString &value);
     void setDrawTargetsThroughBlocks(bool value);
-    void setDarkMode(bool value);
     void setViewerVisible(bool value);
     void setTargetMouseEditingLocked(bool value);
     void setSearchAlgorithmId(const QString &value);
     void setEvaluationTargetId(const QString &value);
 
-    Q_INVOKABLE void browseForPacksDirectory();
+    // Both return whether a path was picked.
+    Q_INVOKABLE bool browseForPacksDirectory();
     Q_INVOKABLE void applyAutoDetectedPacksDirectory();
-    Q_INVOKABLE void browseForReplay();
+    Q_INVOKABLE bool browseForReplay();
+    // Saved window and panel preferences (panel layout, zoom, glass look).
+    Q_INVOKABLE QVariant uiSetting(const QString &key,
+                                   const QVariant &fallback) const;
+    Q_INVOKABLE void setUiSetting(const QString &key, const QVariant &value);
     Q_INVOKABLE QString formatCompactNumber(double value) const;
     Q_INVOKABLE bool extendSimulationHorizon();
     Q_INVOKABLE void previewBaseInputs();
@@ -306,6 +310,13 @@ public slots:
     Q_INVOKABLE void setModifierPassSetting(int index,
                                             const QString &key,
                                             const QString &value);
+    // Window chains (as in TICK): windows linked in the same color change
+    // together. Keys: "pass:<index>", "target", "searchEnd",
+    // "previewExtent". A chain is {color, linked}.
+    Q_INVOKABLE QVariantMap windowChain(const QString &key) const;
+    int windowChainRevision() const { return windowChainRevision_; }
+    Q_INVOKABLE void setWindowChain(const QString &key, const QString &color,
+                                    bool linked);
     Q_INVOKABLE void setEvaluationTargetSetting(const QString &key,
                                                 const QString &value);
     Q_INVOKABLE void focusSelectedCuboid();
@@ -345,13 +356,13 @@ signals:
     void cudaSessionSpecializationEnabledChanged();
     void randomizeSeedsOnStartChanged();
     void drawTargetsThroughBlocksChanged();
-    void darkModeChanged();
     void viewerVisibleChanged();
     void targetMouseEditingLockedChanged();
     void searchAlgorithmIdChanged();
     void evaluationTargetIdChanged();
     void searchAlgorithmSettingsChanged();
     void modifierPassesChanged();
+    void windowChainsChanged();
     void evaluationTargetSettingsChanged();
     void canStartChanged();
     void runningChanged();
@@ -378,6 +389,19 @@ signals:
                                   const QVector3D &size);
 
 private:
+    struct ChainWindow {
+        bool hasStart = false;
+        QString start;
+        QString end;
+        QString endMode;
+    };
+    QStringList windowChainKeys() const;
+    std::optional<ChainWindow> chainWindow(const QString &key) const;
+    void applyChainWindow(const QString &key, const ChainWindow &window);
+    void propagateWindowChain(const QString &key);
+    bool propagatingWindowChain_ = false;
+    int windowChainRevision_ = 0;
+
     struct ValidationResult {
         std::optional<SearchRequest> request;
         QString error;
@@ -451,7 +475,6 @@ private:
     QString vulkanStatusText_;
     bool randomizeSeedsOnStart_ = true;
     bool drawTargetsThroughBlocks_ = false;
-    bool darkMode_ = false;
     bool viewerVisible_ = true;
     bool targetMouseEditingLocked_ = false;
     SearchConfigurationModel configuration_;

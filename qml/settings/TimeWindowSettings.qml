@@ -14,9 +14,30 @@ ColumnLayout {
     property string maximumKey: "maxTimeMs"
     property string minimumLabel: qsTr("Minimum time")
     property string maximumLabel: qsTr("Maximum time")
+    // Window chains: which window this is ("pass:0", "target") and the
+    // controller holding the chains; no chain button without them.
+    property var chainController: null
+    property string chainKey: ""
 
     Layout.fillWidth: true
     spacing: 6
+
+    RowLayout {
+        Layout.fillWidth: true
+        visible: root.chainKey.length > 0 && !!root.chainController
+        Label {
+            text: qsTr("Time window")
+            color: ThemeControls.AppTheme.textMuted
+            font.pixelSize: 11
+        }
+        Item { Layout.fillWidth: true }
+        WindowChainButton {
+            controller: root.chainController
+            chainKey: root.chainKey
+            label: qsTr("Time window")
+            running: root.running
+        }
+    }
 
     SettingCombo {
         comboObjectName: "timeWindowEndMode"

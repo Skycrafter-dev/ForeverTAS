@@ -28,7 +28,7 @@ CheckBox {
         implicitHeight: 20
         x: control.leftPadding
         y: Math.round((control.height - height) / 2)
-        radius: 4
+        radius: 4 * AppTheme.cornerScale
         color: control.effectiveIndicatorColor
         border.width: control.activeFocus ? 2 : 1
         border.color: control.effectiveBorderColor

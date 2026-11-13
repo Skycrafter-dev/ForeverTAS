@@ -16,6 +16,8 @@ ColumnLayout {
         customActive ? controller.customVolumeTargets
                      : controller.cuboidTargets
     readonly property var selected: activeModel.selectedTarget
+    readonly property string measure:
+        controller.evaluationTargetSettings["measure"] ?? "time"
     readonly property var targetOptions: {
         let result = []
         const cuboids = controller.cuboidTargets.targets
@@ -70,6 +72,8 @@ ColumnLayout {
                      && !root.controller.customVolumeDrawing
             onActivated: index => {
                 const option = root.targetOptions[index]
+                // Cuboids and polygon volumes are judged the same way.
+                const measure = root.measure
                 if (option.kind === "custom") {
                     root.controller.customVolumeTargets.selectTarget(
                         option.index)
@@ -79,6 +83,9 @@ ColumnLayout {
                     root.controller.cuboidTargets.selectTarget(option.index)
                     root.controller.evaluationTargetId = "volume-entry-time"
                 }
+                if (root.measure !== measure)
+                    root.controller.setEvaluationTargetSetting("measure",
+                                                               measure)
             }
         }
 
@@ -99,7 +106,7 @@ ColumnLayout {
             ToolTip.visible: hovered
             ToolTip.text: qsTr("Add shape target")
 
-            Menu {
+            ThemeControls.GlassMenu {
                 id: addShapeMenu
 
                 objectName: "addShapeTargetMenu"
@@ -138,6 +145,19 @@ ColumnLayout {
                 }
             }
         }
+    }
+
+    SettingCombo {
+        comboObjectName: "shapeMeasureCombo"
+        label: qsTr("Best run")
+        options: [
+            { label: qsTr("Earliest entry"), value: "time" },
+            { label: qsTr("Fastest entry"), value: "speed" }
+        ]
+        value: root.measure
+        running: root.controller.running
+        onSelected: value =>
+            root.controller.setEvaluationTargetSetting("measure", value)
     }
 
     RowLayout {

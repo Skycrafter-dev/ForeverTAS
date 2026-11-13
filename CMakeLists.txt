@@ -79,6 +79,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Quick3D
     QuickControls2
     Widgets)
+# The glass panels are drawn with custom shaders.
+find_package(Qt6 6.5 REQUIRED COMPONENTS ShaderTools)
 if(UNIX AND NOT APPLE)
     find_package(Qt6 6.5 REQUIRED COMPONENTS DBus)
 endif()
@@ -171,7 +173,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 6a51fdfb80872424d40abb3f57f55e1a13f635f1
+        GIT_TAG 7391ec7982cb394a22ea9fef67cd18207e0b654a
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -197,7 +199,9 @@ add_library(forevertas_core STATIC
     src/evaluators/precise_finish_time_evaluator.cpp
     src/evaluators/precise_finish_time_evaluator.h
     src/evaluators/checkpoint_time_evaluator.cpp
+    src/evaluators/distance_target_evaluator.cpp
     src/evaluators/checkpoint_time_evaluator.h
+    src/evaluators/distance_target_evaluator.h
     src/evaluators/time_evaluator.cpp
     src/evaluators/time_evaluator.h
     src/evaluators/point_target_evaluator.cpp
@@ -289,6 +293,13 @@ add_library(forevertas_gui STATIC
     src/viewer/car_instancing.h
     src/viewer/race_geometry.cpp
     src/viewer/race_geometry.h
+    src/viewer/render_module_api.h
+    src/viewer/render_module_library.cpp
+    src/viewer/render_module_library.h
+    src/viewer/render_module_view.cpp
+    src/viewer/render_module_view.h
+    src/viewer/video_export_controller.cpp
+    src/viewer/video_export_controller.h
     src/viewer/ray_tracing_scene.cpp
     src/viewer/ray_tracing_scene.h
     src/viewer/race_timeline_item.cpp
@@ -328,6 +339,8 @@ add_library(forevertas_gui STATIC
     src/app/search_diagnostic.h
     src/app/packs_directory_finder.cpp
     src/app/packs_directory_finder.h
+    src/app/dock_layout.cpp
+    src/app/dock_layout.h
     src/app/panel_wheel_redirector.cpp
     src/app/panel_wheel_redirector.h
     src/app/rolling_throughput.h
@@ -503,12 +516,23 @@ qt_add_qml_module(forevertas_qml
     QML_FILES
         qml/ConditionReference.qml
         qml/AppTheme.qml
+        qml/DockFrame.qml
+        qml/DockHeaderButton.qml
+        qml/DockPanel.qml
+        qml/DockSpace.qml
         qml/DurationDisplay.qml
         qml/settings/DurationField.qml
         qml/EvaluationOverlay.qml
         qml/EditHistory.qml
         qml/FailureNotice.qml
+        qml/Glass.qml
+        qml/GlassMenu.qml
+        qml/GlassMenuBar.qml
+        qml/GlassPopupBackground.qml
+        qml/GlassDialog.qml
+        qml/Gloss.qml
         qml/GraphicsInspector.qml
+        qml/VideoExportDialog.qml
         qml/Main.qml
         qml/SearchSessionHistory.qml
         qml/SearchInputs.qml
@@ -546,6 +570,9 @@ qt_add_qml_module(forevertas_qml
         qml/settings/ScriptedTargetEvaluationSettings.qml
         qml/settings/SettingCombo.qml
         qml/settings/SettingSlider.qml
+        qml/settings/PoseWeightsEditor.qml
+        qml/settings/DistanceTargetEvaluationSettings.qml
+        qml/settings/WindowChainButton.qml
         qml/settings/SteeringUnits.qml
         qml/settings/SettingSwitch.qml
         qml/settings/SettingTextField.qml
@@ -564,6 +591,11 @@ qt_add_resources(forevertas_qml "replacement-materials"
     PREFIX "/materials"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials"
     FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
+# The map material of a render module's mode (RenderModuleView).
+qt_add_resources(forevertas_qml "module-screen-material"
+    PREFIX "/materials"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+    FILES shaders/module_screen.frag)
 file(GLOB FOREVERTAS_LUCIDE_ICONS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/*.svg")
 qt_add_resources(forevertas_qml "lucide-icons"
@@ -576,6 +608,12 @@ qt_add_resources(forevertas_qml "environment-textures"
     PREFIX "/environment"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment"
     FILES ${FOREVERTAS_ENVIRONMENT_TEXTURES})
+qt_add_shaders(forevertas_qml "glass-shaders"
+    PREFIX "/glass"
+    FILES
+        shaders/ambient.frag
+        shaders/glass.frag
+        shaders/gloss.frag)
 if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools)
     qt_add_shaders(forevertas_qml "ray-tracing-shaders"
         PREFIX "/raytracing"
@@ -610,6 +648,14 @@ if(WIN32 AND TARGET SDL3::SDL3-shared)
 endif()
 install(TARGETS forevertas-simulation-debug-worker
     RUNTIME DESTINATION "${forevertas_runtime_destination}")
+# Optional files a Windows build ships beside the executable, such as an
+# optional render module and the DLLs it needs (the Linux AppImage takes
+# FOREVERTAS_EXTRA_LIBRARIES instead). Plain builds have none.
+set(FOREVERTAS_EXTRA_INSTALL_FILES "" CACHE STRING
+    "Files installed beside the executable on Windows (a list)")
+if(WIN32 AND FOREVERTAS_EXTRA_INSTALL_FILES)
+    install(FILES ${FOREVERTAS_EXTRA_INSTALL_FILES} DESTINATION ".")
+endif()
 if(NOT FOREVERTAS_QML_MODULE_EXTERNAL)
     install(TARGETS forevertas_qml
         LIBRARY DESTINATION "${forevertas_runtime_destination}/qml/ForeverTAS"
@@ -939,6 +985,13 @@ if(BUILD_TESTING)
         target_compile_options(forevertas-condition-catalog-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
     endif()
     add_test(NAME forevertas-condition-catalog COMMAND forevertas-condition-catalog-tests)
+
+    add_executable(forevertas-dock-layout-tests tests/dock_layout_tests.cpp)
+    target_link_libraries(forevertas-dock-layout-tests PRIVATE forevertas_gui)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-dock-layout-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-dock-layout COMMAND forevertas-dock-layout-tests)
 
     # Manual benchmarks: need a copy of the persisted settings and game packs.
     add_executable(forevertas-node-cost-benchmark
@@ -1399,6 +1452,11 @@ if(BUILD_TESTING)
             BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials"
             FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
         qt_add_resources(forevertas-viewer-qml-smoke
+            "module-screen-material-test"
+            PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+            FILES shaders/module_screen.frag)
+        qt_add_resources(forevertas-viewer-qml-smoke
             "environment-textures-test"
             PREFIX "/environment"
             BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment"
@@ -1408,6 +1466,12 @@ if(BUILD_TESTING)
             PREFIX "/icons"
             BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons"
             FILES ${FOREVERTAS_LUCIDE_ICONS})
+        qt_add_shaders(forevertas-viewer-qml-smoke "glass-shaders-test"
+            PREFIX "/glass"
+            FILES
+                shaders/ambient.frag
+                shaders/glass.frag
+                shaders/gloss.frag)
         target_compile_definitions(forevertas-viewer-qml-smoke PRIVATE
             FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(forevertas-viewer-qml-smoke PRIVATE

@@ -18,7 +18,7 @@ Item {
 
     implicitHeight: 760
 
-    Dialog {
+    GlassDialog {
         id: toolsDialog
         parent: Overlay.overlay
         anchors.centerIn: parent
@@ -26,6 +26,7 @@ Item {
         title: qsTr("Debugger tools")
         modal: true
         footer: DialogButtonBox {
+            background: Item {}
             ThemedButton { text: qsTr("Apply"); DialogButtonBox.buttonRole: DialogButtonBox.AcceptRole }
             ThemedButton { text: qsTr("Cancel"); DialogButtonBox.buttonRole: DialogButtonBox.RejectRole }
         }
@@ -56,12 +57,6 @@ Item {
         anchors.fill: parent
         z: -1
         color: AppTheme.panel
-    }
-
-    Binding {
-        target: root.debuggerModel
-        property: "darkMode"
-        value: AppTheme.dark
     }
 
     function commitActiveEdit() {
@@ -802,6 +797,10 @@ Item {
             spacing: 6
 
             TabBar {
+
+                // On glass: no band behind the tabs.
+
+                background: Item {}
                 Layout.fillWidth: true
                 currentIndex: root.inspectionTab
                 onCurrentIndexChanged: root.inspectionTab = currentIndex

@@ -447,8 +447,6 @@ int main(int argc, char **argv) {
     QObject *const root = engine.rootObjects().front();
     QObject *const settingsPanel =
             root->findChild<QObject *>(QStringLiteral("settingsPanel"));
-    QObject *const darkModeToggle =
-            root->findChild<QObject *>(QStringLiteral("darkModeToggle"));
     QObject *const whiteboardImportDialog =
             root->findChild<QObject *>(
                     QStringLiteral("whiteboardImportDialog"));
@@ -470,12 +468,6 @@ int main(int argc, char **argv) {
             usesNativeFileDialog(whiteboardImportDialog) &&
             usesNativeFileDialog(whiteboardExportDialog) &&
             usesNativeFileDialog(whiteboardImageExportDialog);
-    QObject *const initialMainMapLight =
-            root->findChild<QObject *>(QStringLiteral("mainMapLight"));
-    QObject *const initialFillMapLight =
-            root->findChild<QObject *>(QStringLiteral("fillMapLight"));
-    QObject *const initialMapEnvironment =
-            root->findChild<QObject *>(QStringLiteral("mapEnvironment"));
     QObject *const initialPlaybackDock =
             root->findChild<QObject *>(QStringLiteral("playbackDock"));
     QObject *const initialStartButton =
@@ -512,68 +504,75 @@ int main(int argc, char **argv) {
                     object->objectName());
         }
     }
-    const QColor lightDisabledButton =
+    // One look only: dark glass. Disabled controls are faint washes over
+    // the glass; panels from the old overlays carry no fill of their own.
+    const auto argb = [](const QVariant &value) {
+        return value.value<QColor>().name(QColor::HexArgb).toStdString();
+    };
+    // QML colours go through 16-bit channels: allow one step of rounding.
+    const auto near = [](const QVariant &value, const QColor &expected) {
+        const QColor color = value.value<QColor>();
+        return std::abs(color.red() - expected.red()) <= 1 &&
+               std::abs(color.green() - expected.green()) <= 1 &&
+               std::abs(color.blue() - expected.blue()) <= 1 &&
+               std::abs(color.alpha() - expected.alpha()) <= 1;
+    };
+    const std::string disabledButton =
             initialStartButton != nullptr
-            ? initialStartButton
-                      ->property("effectiveBackgroundColor")
-                      .value<QColor>()
-            : QColor();
-    const QColor lightDisabledButtonBorder =
+            ? argb(initialStartButton->property("effectiveBackgroundColor"))
+            : std::string();
+    const std::string disabledButtonBorder =
             initialStartButton != nullptr
-            ? initialStartButton
-                      ->property("effectiveBorderColor")
-                      .value<QColor>()
-            : QColor();
-    const QColor lightSwitchTrack =
-            darkModeToggle != nullptr
-            ? darkModeToggle->property("effectiveTrackColor").value<QColor>()
-            : QColor();
-    const QColor lightPlaybackDock =
+            ? argb(initialStartButton->property("effectiveBorderColor"))
+            : std::string();
+    const std::string playbackDockColor =
             initialPlaybackDock != nullptr
-            ? initialPlaybackDock->property("color").value<QColor>()
-            : QColor();
-    const QColor lightDisabledTransportIcon =
+            ? argb(initialPlaybackDock->property("color"))
+            : std::string();
+    const QColor disabledTransportIcon =
             FirstDescendantColor(initialJumpStartIcon);
     const bool completeControlAudit =
             themedControls.size() >= 20 &&
             unthemedControlTypes.isEmpty() &&
             initialStartButton != nullptr &&
             !initialStartButton->property("enabled").toBool() &&
-            lightDisabledButton ==
-                    QColor(QStringLiteral("#ecefe9")) &&
-            lightDisabledButtonBorder ==
-                    QColor(QStringLiteral("#cbd1c8")) &&
-            lightSwitchTrack ==
-                    QColor(QStringLiteral("#e1e5df")) &&
-            lightPlaybackDock ==
-                    QColor(QStringLiteral("#edf4f5f2")) &&
+            near(initialStartButton->property("effectiveBackgroundColor"),
+                 QColor(255, 255, 255, 8)) &&
+            near(initialStartButton->property("effectiveBorderColor"),
+                 QColor(255, 255, 255, 26)) &&
+            initialPlaybackDock != nullptr &&
+            initialPlaybackDock->property("color").value<QColor>().alpha() == 0 &&
             initialJumpStartButton != nullptr &&
             !initialJumpStartButton->property("enabled").toBool() &&
-            lightDisabledTransportIcon ==
-                    QColor(QStringLiteral("#92988f")) &&
+            disabledTransportIcon == QColor(QStringLiteral("#737b74")) &&
             initialRaceTimeline != nullptr &&
-            !initialRaceTimeline->property("darkMode").toBool();
-    const QColor lightWindowColor = root->property("color").value<QColor>();
-    const QColor lightPanelColor =
-            settingsPanel != nullptr
-            ? settingsPanel->property("color").value<QColor>()
-            : QColor();
-    const QColor mainLightColor =
-            initialMainMapLight != nullptr
-            ? initialMainMapLight->property("color").value<QColor>()
-            : QColor();
-    const QColor fillLightColor =
-            initialFillMapLight != nullptr
-            ? initialFillMapLight->property("color").value<QColor>()
-            : QColor();
-    const QColor environmentColor =
-            initialMapEnvironment != nullptr
-            ? initialMapEnvironment->property("clearColor").value<QColor>()
-            : QColor();
-    const QColor lightWidgetWindowColor =
-            application.palette().color(QPalette::Window);
+            !initialRaceTimeline->property("darkMode").isValid();
+    const bool glassShellValid =
+            nativeFileDialogsValid &&
+            root->property("color").value<QColor>() ==
+                    QColor(QStringLiteral("#0f1311")) &&
+            settingsPanel != nullptr &&
+            settingsPanel->property("color").value<QColor>().alpha() == 0 &&
+            application.palette().color(QPalette::Text) ==
+                    QColor(QStringLiteral("#f0f3ef")) &&
+            application.palette().color(
+                    QPalette::Disabled, QPalette::Text) ==
+                    QColor(QStringLiteral("#737b74")) &&
+            controller.metaObject()->indexOfProperty("darkMode") < 0;
+    // A switch on its own, to walk through focus, hover and pressed.
+    QQmlComponent switchProbeComponent(&engine);
+    switchProbeComponent.setData(R"QML(
+        import QtQuick
+        ThemedSwitch { objectName: "switchProbe"; text: "Probe" }
+    )QML", QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_SOURCE_DIR "/qml/SwitchProbe.qml")));
+    std::unique_ptr<QObject> switchProbe(switchProbeComponent.create());
+    auto *const switchProbeItem = qobject_cast<QQuickItem *>(switchProbe.get());
+    if (switchProbeItem != nullptr) {
+        switchProbeItem->setParentItem(
+                qobject_cast<QQuickWindow *>(root)->contentItem());
+    }
     const auto exerciseControlStates =
-            [](QQuickItem *item) {
+            [&](QQuickItem *item) {
                 if (item == nullptr) {
                     return false;
                 }
@@ -583,7 +582,7 @@ int main(int argc, char **argv) {
                         item->property("activeFocus").toBool() &&
                         item->property("effectiveBorderColor")
                                         .value<QColor>() ==
-                                QColor(QStringLiteral("#315f8f"));
+                                QColor(QStringLiteral("#73d59d"));
                 const QPointF scenePosition = item->mapToScene(
                         QPointF(item->width() * 0.5,
                                 item->height() * 0.5));
@@ -596,119 +595,32 @@ int main(int argc, char **argv) {
                 QCoreApplication::processEvents();
                 const bool hoverState =
                         item->property("hovered").toBool() &&
-                        item->property("effectiveTrackColor")
-                                        .value<QColor>() ==
-                                QColor(QStringLiteral("#d9ded9"));
+                        near(item->property("effectiveTrackColor"),
+                             QColor(255, 255, 255, 33));
                 const bool downWritable =
                         item->setProperty("down", true);
                 QCoreApplication::processEvents();
                 const bool pressedState =
                         item->property("down").toBool() &&
-                        item->property("effectiveTrackColor")
-                                        .value<QColor>() ==
-                                QColor(QStringLiteral("#cbd2cc"));
+                        near(item->property("effectiveTrackColor"),
+                             QColor(255, 255, 255, 10));
                 item->setProperty("down", false);
                 QCoreApplication::processEvents();
                 return focusState && hoverState && downWritable &&
                         pressedState;
             };
     const bool interactiveControlStates =
-            exerciseControlStates(
-                    qobject_cast<QQuickItem *>(darkModeToggle));
-    controller.setDarkMode(true);
-    QCoreApplication::processEvents();
-    const QColor darkDisabledButton =
-            initialStartButton != nullptr
-            ? initialStartButton
-                      ->property("effectiveBackgroundColor")
-                      .value<QColor>()
-            : QColor();
-    const QColor darkDisabledButtonBorder =
-            initialStartButton != nullptr
-            ? initialStartButton
-                      ->property("effectiveBorderColor")
-                      .value<QColor>()
-            : QColor();
-    const QColor darkSwitchTrack =
-            darkModeToggle != nullptr
-            ? darkModeToggle->property("effectiveTrackColor").value<QColor>()
-            : QColor();
-    const QColor darkPlaybackDock =
-            initialPlaybackDock != nullptr
-            ? initialPlaybackDock->property("color").value<QColor>()
-            : QColor();
-    const bool darkThemeValid =
-            controller.darkMode() && darkModeToggle != nullptr &&
-            darkModeToggle->property("checked").toBool() &&
-            nativeFileDialogsValid &&
-            root->property("color").value<QColor>() != lightWindowColor &&
-            settingsPanel != nullptr &&
-            settingsPanel->property("color").value<QColor>() !=
-                    lightPanelColor &&
-            application.palette().color(QPalette::Window) !=
-                    lightWidgetWindowColor &&
-            application.palette().color(QPalette::Text) ==
-                    QColor(QStringLiteral("#f0f3ef")) &&
-            application.palette().color(
-                    QPalette::Disabled, QPalette::Text) ==
-                    QColor(QStringLiteral("#737b74")) &&
-            darkDisabledButton ==
-                    QColor(QStringLiteral("#252925")) &&
-            darkDisabledButtonBorder ==
-                    QColor(QStringLiteral("#4a534b")) &&
-            darkSwitchTrack ==
-                    QColor(QStringLiteral("#58c98c")) &&
-            darkPlaybackDock ==
-                    QColor(QStringLiteral("#ed111513")) &&
-            initialRaceTimeline != nullptr &&
-            initialRaceTimeline->property("darkMode").toBool() &&
-            initialMainMapLight != nullptr &&
-            initialMainMapLight->property("color").value<QColor>() ==
-                    mainLightColor &&
-            initialFillMapLight != nullptr &&
-            initialFillMapLight->property("color").value<QColor>() ==
-                    fillLightColor &&
-            initialMapEnvironment != nullptr &&
-            initialMapEnvironment->property("clearColor").value<QColor>() ==
-                    environmentColor;
-    controller.setDarkMode(false);
-    QCoreApplication::processEvents();
-    const bool lightThemeRestored =
-            darkModeToggle != nullptr &&
-            !darkModeToggle->property("checked").toBool() &&
-            settingsPanel != nullptr &&
-            root->property("color").value<QColor>() == lightWindowColor &&
-            settingsPanel->property("color").value<QColor>() ==
-                    lightPanelColor &&
-            application.palette().color(QPalette::Window) ==
-                    lightWidgetWindowColor &&
-            initialRaceTimeline != nullptr &&
-            !initialRaceTimeline->property("darkMode").toBool();
+            exerciseControlStates(switchProbeItem);
+    switchProbe.reset();
     if (!completeControlAudit || !interactiveControlStates ||
-        !darkThemeValid || !lightThemeRestored) {
-        std::cerr << "light/dark theme switching changed scene rendering or "
-                     "failed to update the complete UI shell"
-                  << " (toggle=" << (darkModeToggle != nullptr)
-                  << ", settings=" << (settingsPanel != nullptr)
-                  << ", light-window="
-                  << lightWindowColor.name().toStdString()
-                  << ", restored-window="
+        !glassShellValid) {
+        std::cerr << "glass theme did not cover the complete UI shell"
+                  << " (settings=" << (settingsPanel != nullptr)
+                  << ", window="
                   << root->property("color")
                              .value<QColor>()
                              .name()
                              .toStdString()
-                  << ", light-panel="
-                  << lightPanelColor.name().toStdString()
-                  << ", restored-panel="
-                  << (settingsPanel != nullptr
-                              ? settingsPanel->property("color")
-                                        .value<QColor>()
-                                        .name()
-                                        .toStdString()
-                              : std::string("<missing>"))
-                  << ", scene=" << (initialMainMapLight != nullptr)
-                  << "/" << (initialFillMapLight != nullptr)
-                  << "/" << (initialMapEnvironment != nullptr)
                   << ", themed-controls=" << themedControls.size()
                   << ", interactive-states="
                   << interactiveControlStates
@@ -717,20 +629,11 @@ int main(int argc, char **argv) {
                   << ", unthemed="
                   << unthemedControlTypes.join(QLatin1Char(','))
                              .toStdString()
-                  << ", disabled-button="
-                  << lightDisabledButton.name().toStdString()
-                  << "->"
-                  << darkDisabledButton.name().toStdString()
-                  << ", switch="
-                  << lightSwitchTrack.name().toStdString()
-                  << "->"
-                  << darkSwitchTrack.name().toStdString()
-                  << ", playback="
-                  << lightPlaybackDock.name(QColor::HexArgb).toStdString()
-                  << "->"
-                  << darkPlaybackDock.name(QColor::HexArgb).toStdString()
+                  << ", disabled-button=" << disabledButton
+                  << "/" << disabledButtonBorder
+                  << ", playback=" << playbackDockColor
                   << ", disabled-icon="
-                  << lightDisabledTransportIcon.name().toStdString()
+                  << disabledTransportIcon.name().toStdString()
                   << ")\n";
         return 1;
     }
@@ -739,34 +642,25 @@ int main(int argc, char **argv) {
             qobject_cast<QQuickItem *>(
                     root->findChild<QObject *>(
                             QStringLiteral("baseInputScriptSection")));
-    auto *const initialReplaySection =
-            qobject_cast<QQuickItem *>(
-                    root->findChild<QObject *>(
-                            QStringLiteral("replaySection")));
     auto *const initialAppearanceControls =
             qobject_cast<QQuickItem *>(
                     root->findChild<QObject *>(
                             QStringLiteral("appearanceControls")));
-    auto *const initialReplayPathField =
-            qobject_cast<QQuickItem *>(
-                    root->findChild<QObject *>(
-                            QStringLiteral("replayPathField")));
-    auto *const initialBrowseReplayButton =
-            qobject_cast<QQuickItem *>(
-                    root->findChild<QObject *>(
-                            QStringLiteral("browseReplayButton")));
-    auto *const initialLoadMapButton =
-            qobject_cast<QQuickItem *>(
-                    root->findChild<QObject *>(
-                            QStringLiteral("loadMapButton")));
-    auto *const initialExtractReplayInputsButton =
-            qobject_cast<QQuickItem *>(
-                    root->findChild<QObject *>(
-                            QStringLiteral("extractReplayInputsButton")));
-    auto *const initialToolTabs =
-            qobject_cast<QQuickItem *>(
-                    root->findChild<QObject *>(
-                            QStringLiteral("toolTabs")));
+    // Map source, packs folder, extraction and gamepad live in File.
+    QObject *const openMapMenuItem =
+            root->findChild<QObject *>(QStringLiteral("openMapMenuItem"));
+    QObject *const packsFolderMenuItem =
+            root->findChild<QObject *>(QStringLiteral("packsFolderMenuItem"));
+    QObject *const extractInputsMenuItem =
+            root->findChild<QObject *>(QStringLiteral("extractInputsMenuItem"));
+    QObject *const gamepadMenuItem =
+            root->findChild<QObject *>(QStringLiteral("gamepadMenuItem"));
+    QObject *const dockSpace =
+            root->findChild<QObject *>(QStringLiteral("dockSpace"));
+    QObject *const dockLayout =
+            dockSpace != nullptr
+            ? dockSpace->property("layout").value<QObject *>()
+            : nullptr;
     auto *const initialInnerTabs =
             qobject_cast<QQuickItem *>(
                     root->findChild<QObject *>(
@@ -798,38 +692,42 @@ int main(int argc, char **argv) {
             qEnvironmentVariableIsSet("FOREVERTAS_PASS_UI_ONLY");
     bool passManagementValid = passEditor != nullptr && stablePassTabs;
     {
-        auto *workspace = root->findChild<QQuickItem *>(QStringLiteral("workspaceContent"));
+        // View > Show viewer: hides the race view and its panels; the
+        // settings panels stay where they are.
+        auto *viewport = root->findChild<QQuickItem *>(QStringLiteral("raceViewport"));
         auto *settings = root->findChild<QQuickItem *>(QStringLiteral("settingsPanel"));
-        auto *show = root->findChild<QObject *>(QStringLiteral("showViewerToggle"));
+        auto *inputs = root->findChild<QQuickItem *>(QStringLiteral("inputsPanel"));
+        auto *show = root->findChild<QObject *>(QStringLiteral("showViewerMenuItem"));
         auto *rt = root->findChild<QObject *>(QStringLiteral("gpuRayTracingView"));
-        QCoreApplication::processEvents();
+        const auto settleLayout = []() {
+            QEventLoop loop;
+            QTimer::singleShot(600, &loop, &QEventLoop::quit);
+            loop.exec();
+        };
+        settleLayout();
         const double settingsWidth = settings ? settings->width() : 0;
         const QString script = controller.baseInputScript();
         const QVariant renderMode = root->property("renderMode");
-        bool visibilityValid = workspace && settings && show && rt;
-        const auto settleLayout = []() {
-            QEventLoop loop;
-            QTimer::singleShot(30, &loop, &QEventLoop::quit);
-            loop.exec();
-        };
+        bool visibilityValid = viewport && settings && inputs && show && rt &&
+                viewport->isVisible() && inputs->isVisible();
         if (visibilityValid) {
-            QQmlExpression hide(QQmlEngine::contextForObject(show), show,
-                                QStringLiteral("checked = false; toggled()"));
-            hide.evaluate();
+            QMetaObject::invokeMethod(show, "triggered");
             root->setProperty("renderMode", "textured-rt");
             settleLayout();
-            visibilityValid &= !hide.hasError() && !workspace->isVisible() &&
-                    show->property("visible").toBool() && !rt->property("active").toBool() &&
-                    std::abs(settings->width() - root->property("width").toDouble()) < 1;
+            visibilityValid &= !controller.viewerVisible() && !viewport->isVisible() &&
+                    !inputs->isVisible() && settings->isVisible() &&
+                    !rt->property("active").toBool() &&
+                    std::abs(settings->width() - settingsWidth) < 1;
             root->setProperty("renderMode", renderMode);
-            controller.setViewerVisible(true);
+            QMetaObject::invokeMethod(show, "triggered");
             settleLayout();
-            visibilityValid &= workspace->isVisible() &&
+            visibilityValid &= controller.viewerVisible() && viewport->isVisible() &&
+                    inputs->isVisible() &&
                     std::abs(settings->width() - settingsWidth) < 1 &&
                     controller.baseInputScript() == script;
         }
         passManagementValid &= visibilityValid;
-        if (!visibilityValid) std::cerr << "viewer hide/show or splitter restoration failed\n";
+        if (!visibilityValid) std::cerr << "viewer hide/show or panel restoration failed\n";
     }
     if (passManagementValid && passManagementOnly) {
         const auto settle = []() {
@@ -937,8 +835,7 @@ int main(int argc, char **argv) {
                 QStringLiteral("emptyConditionsStatus"));
         initialInnerTabs->setProperty("currentIndex", 3);
         if (conditionEditor && emptyConditions) {
-            for (bool dark : {false, true}) {
-                controller.setDarkMode(dark);
+            {
                 conditionEditor->setProperty("enabled", false);
                 settle();
                 passManagementValid &= conditionEditor->property("placeholderText")
@@ -957,7 +854,6 @@ int main(int argc, char **argv) {
                         conditionEditor->property("placeholderText").toString() ==
                                 QStringLiteral("No conditions");
             }
-            controller.setDarkMode(false);
             QObject *reference = root->findChild<QObject *>(QStringLiteral("conditionReference"));
             auto *filter = reference ? reference->findChild<QObject *>(QStringLiteral("conditionReferenceFilter")) : nullptr;
             if (reference && filter) {
@@ -1244,11 +1140,9 @@ int main(int argc, char **argv) {
         } else {
             passManagementValid = false;
         }
-        controller.setDarkMode(true);
         passManagementValid &= click("addModifierButton") &&
-                capture(QStringLiteral("06-dark-add-menu"));
+                capture(QStringLiteral("06-add-menu"));
         if (addMenu) QMetaObject::invokeMethod(addMenu, "close");
-        controller.setDarkMode(false);
         root->setProperty("width", passWindowWidth);
         root->setProperty("height", passWindowHeight);
         settle();
@@ -1566,13 +1460,12 @@ int main(int argc, char **argv) {
     }
     globalSettingsVisibleAcrossTabs &=
             initialGlobalScript != nullptr &&
-            initialReplaySection != nullptr &&
             initialAppearanceControls != nullptr &&
-            initialReplayPathField != nullptr &&
-            initialBrowseReplayButton != nullptr &&
-            initialLoadMapButton != nullptr &&
-            initialExtractReplayInputsButton != nullptr &&
-            initialToolTabs != nullptr &&
+            openMapMenuItem != nullptr &&
+            packsFolderMenuItem != nullptr &&
+            extractInputsMenuItem != nullptr &&
+            gamepadMenuItem != nullptr &&
+            dockLayout != nullptr &&
             initialInnerTabs != nullptr &&
             initialBruteforceContent != nullptr &&
             initialDebuggerContent != nullptr && stablePassTabs &&
@@ -1595,30 +1488,109 @@ int main(int argc, char **argv) {
                         QStringLiteral("physics.cpp").size();
     }
     if (globalSettingsVisibleAcrossTabs) {
-        initialToolTabs->setProperty("currentIndex", 1);
+        // Bruteforce and Code share a tab group by default: bring Code to
+        // the front, then Bruteforce again.
+        QString group;
+        QMetaObject::invokeMethod(dockLayout, "groupOf",
+                                  Q_RETURN_ARG(QString, group),
+                                  Q_ARG(QString, QStringLiteral("code")));
+        QMetaObject::invokeMethod(dockLayout, "setCurrent",
+                                  Q_ARG(QString, group),
+                                  Q_ARG(QString, QStringLiteral("code")));
         QCoreApplication::processEvents();
         globalSettingsVisibleAcrossTabs &=
                 !initialGlobalScript->isVisible() &&
-                initialReplaySection->isVisible() &&
-                initialAppearanceControls->isVisible() &&
-                initialReplayPathField->isVisible() &&
-                initialBrowseReplayButton->isVisible() &&
-                initialLoadMapButton->isVisible() &&
-                initialExtractReplayInputsButton->isVisible() &&
                 !initialBruteforceContent->isVisible() &&
                 initialDebuggerContent->isVisible();
-        initialToolTabs->setProperty("currentIndex", 0);
+        QMetaObject::invokeMethod(dockLayout, "setCurrent",
+                                  Q_ARG(QString, group),
+                                  Q_ARG(QString, QStringLiteral("bruteforce")));
         QCoreApplication::processEvents();
         globalSettingsVisibleAcrossTabs &=
                 initialGlobalScript->isVisible() &&
-                initialReplaySection->isVisible() &&
                 initialAppearanceControls->isVisible() &&
-                initialReplayPathField->isVisible() &&
-                initialBrowseReplayButton->isVisible() &&
-                initialLoadMapButton->isVisible() &&
-                initialExtractReplayInputsButton->isVisible() &&
                 initialBruteforceContent->isVisible() &&
                 !initialDebuggerContent->isVisible();
+    }
+    bool dockDragHeld = false;
+    if (dockLayout != nullptr) {
+        // Drag the docked Inputs panel by its header, hold it a while (its
+        // frame used to be thrown away mid-drag), then push the pointer
+        // against the right window edge: it docks there.
+        auto *const quickWindow = qobject_cast<QQuickWindow *>(root);
+        auto *const space = qobject_cast<QQuickItem *>(dockSpace);
+        const auto groupRect = [&](const QString &panel) {
+            QString id;
+            QMetaObject::invokeMethod(dockLayout, "groupOf",
+                                      Q_RETURN_ARG(QString, id),
+                                      Q_ARG(QString, panel));
+            for (const QVariant &entry :
+                 dockLayout->property("groups").toList()) {
+                const QVariantMap group = entry.toMap();
+                if (group.value(QStringLiteral("id")).toString() == id) {
+                    return QRectF(group.value(QStringLiteral("x")).toDouble(),
+                                  group.value(QStringLiteral("y")).toDouble(),
+                                  group.value(QStringLiteral("width")).toDouble(),
+                                  group.value(QStringLiteral("height")).toDouble());
+                }
+            }
+            return QRectF();
+        };
+        const auto send = [&](QEvent::Type type, QPointF point,
+                              Qt::MouseButtons buttons) {
+            const QPointF scene = space->mapToScene(point);
+            QMouseEvent event(type, scene, scene,
+                              quickWindow->mapToGlobal(scene.toPoint()),
+                              type == QEvent::MouseMove ? Qt::NoButton
+                                                        : Qt::LeftButton,
+                              buttons, Qt::NoModifier);
+            QCoreApplication::sendEvent(quickWindow, &event);
+        };
+        const auto wait = [](int milliseconds) {
+            QEventLoop loop;
+            QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit);
+            loop.exec();
+        };
+        const QRectF start = groupRect(QStringLiteral("inputs"));
+        if (quickWindow != nullptr && space != nullptr && !start.isEmpty()) {
+            QPointF point = start.topLeft() + QPointF(60, 16);
+            send(QEvent::MouseButtonPress, point, Qt::LeftButton);
+            for (int step = 1; step <= 10; ++step) {
+                send(QEvent::MouseMove, point + QPointF(step * 20, step * 20),
+                     Qt::LeftButton);
+                QCoreApplication::processEvents();
+            }
+            wait(400);
+            send(QEvent::MouseMove, point + QPointF(230, 210), Qt::LeftButton);
+            wait(50);
+            dockDragHeld = dockLayout->property("dragging").toBool() &&
+                    dockSpace->property("dragFrame").value<QObject *>() !=
+                            nullptr;
+            point = QPointF(space->width() - 3, space->height() / 2);
+            send(QEvent::MouseMove, point, Qt::LeftButton);
+            wait(50);
+            send(QEvent::MouseButtonRelease, point, Qt::NoButton);
+            wait(50);
+            const QRectF landed = groupRect(QStringLiteral("inputs"));
+            bool floating = true;
+            QString id;
+            QMetaObject::invokeMethod(dockLayout, "groupOf",
+                                      Q_RETURN_ARG(QString, id),
+                                      Q_ARG(QString, QStringLiteral("inputs")));
+            QMetaObject::invokeMethod(dockLayout, "isFloating",
+                                      Q_RETURN_ARG(bool, floating),
+                                      Q_ARG(QString, id));
+            dockDragHeld &= !dockLayout->property("dragging").toBool() &&
+                    !floating &&
+                    landed.right() >= space->width() - 12 &&
+                    landed.top() <= 12;
+            QMetaObject::invokeMethod(dockSpace, "resetLayout");
+            wait(50);
+        }
+    }
+    if (!dockDragHeld) {
+        std::cerr << "a docked panel did not stay dragged or did not dock at the window edge\n";
+        return 1;
     }
 
     QObject::connect(
@@ -1861,9 +1833,6 @@ int main(int argc, char **argv) {
                     QObject *const settingsWheelRedirector =
                             root->property("settingsWheelRedirectorObject")
                                     .value<QObject *>();
-                    auto *const toolTabs = qobject_cast<QQuickItem *>(
-                            root->findChild<QObject *>(
-                                    QStringLiteral("toolTabs")));
                     auto *const bruteforceTabContent =
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(
@@ -1874,14 +1843,6 @@ int main(int argc, char **argv) {
                                     root->findChild<QObject *>(
                                             QStringLiteral(
                                                     "simulationDebuggerPanel")));
-                    auto *const simulationDebuggerPanelHost =
-                            qobject_cast<QQuickItem *>(
-                                    root->findChild<QObject *>(QStringLiteral(
-                                            "simulationDebuggerPanelHost")));
-                    auto *const workspaceContent =
-                            qobject_cast<QQuickItem *>(
-                                    root->findChild<QObject *>(QStringLiteral(
-                                            "workspaceContent")));
                     auto *const settingsPanel =
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(QStringLiteral(
@@ -2032,17 +1993,11 @@ int main(int argc, char **argv) {
                     auto *const replaySection =
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(QStringLiteral(
-                                            "replaySection")));
+                                            "replayInputStatusSection")));
                     auto *const appearanceControls =
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(QStringLiteral(
                                             "appearanceControls")));
-                    QObject *const replayPathField =
-                            root->findChild<QObject *>(QStringLiteral(
-                                    "replayPathField"));
-                    QObject *const browseReplayButton =
-                            root->findChild<QObject *>(QStringLiteral(
-                                    "browseReplayButton"));
                     QObject *const baseInputScriptScrollView =
                             root->findChild<QObject *>(QStringLiteral(
                                     "baseInputScriptScrollView"));
@@ -2061,12 +2016,6 @@ int main(int argc, char **argv) {
                     QObject *const copyCurrentRaceInputsButton =
                             root->findChild<QObject *>(QStringLiteral(
                                     "copyCurrentRaceInputsButton"));
-                    QObject *const loadMapButton =
-                            root->findChild<QObject *>(
-                                    QStringLiteral("loadMapButton"));
-                    QObject *const extractReplayInputsButton =
-                            root->findChild<QObject *>(QStringLiteral(
-                                    "extractReplayInputsButton"));
                     QObject *const replaceBaseInputScriptDialog =
                             root->findChild<QObject *>(QStringLiteral(
                                     "replaceBaseInputScriptDialog"));
@@ -2184,6 +2133,43 @@ int main(int argc, char **argv) {
                                 return press.isAccepted() &&
                                         release.isAccepted();
                             };
+                    const auto sendMouseClickAt =
+                            [root](QQuickItem *item, QPointF scenePosition) {
+                                auto *const quickWindow =
+                                        qobject_cast<QQuickWindow *>(root);
+                                if (quickWindow == nullptr ||
+                                    item == nullptr) {
+                                    return false;
+                                }
+                                const QPointF global = quickWindow->mapToGlobal(
+                                        scenePosition.toPoint());
+                                QMouseEvent press(QEvent::MouseButtonPress,
+                                                  scenePosition, scenePosition,
+                                                  global, Qt::LeftButton,
+                                                  Qt::LeftButton,
+                                                  Qt::NoModifier);
+                                QCoreApplication::sendEvent(quickWindow,
+                                                            &press);
+                                QMouseEvent release(
+                                        QEvent::MouseButtonRelease,
+                                        scenePosition, scenePosition, global,
+                                        Qt::LeftButton, Qt::NoButton,
+                                        Qt::NoModifier);
+                                QCoreApplication::sendEvent(quickWindow,
+                                                            &release);
+                                QCoreApplication::processEvents();
+                                return press.isAccepted() &&
+                                        release.isAccepted();
+                            };
+                    const auto freeAreaCenter = [dockSpace, dockLayout]() {
+                        auto *const space =
+                                qobject_cast<QQuickItem *>(dockSpace);
+                        const QRectF center =
+                                dockLayout->property("center").toRectF();
+                        return space != nullptr
+                                ? space->mapToScene(center.center())
+                                : QPointF();
+                    };
                     auto *const manualDriveItem =
                             qobject_cast<QQuickItem *>(manualDriveButton);
                     bool takeoverControlValid =
@@ -2208,8 +2194,10 @@ int main(int argc, char **argv) {
                                      .toBool() &&
                             !viewer.takeOverOnInput();
                     if (takeoverControlValid) {
-                        takeoverControlValid &=
-                                sendMouseClick(takeOverOnInputCheckBox);
+                        // The click must toggle the box; on a glass panel Qt
+                        // reports the synthetic press as unaccepted even
+                        // though the box receives it.
+                        sendMouseClick(takeOverOnInputCheckBox);
                         takeoverControlValid &=
                                 viewer.takeOverOnInput() &&
                                 takeOverOnInputCheckBox
@@ -2225,8 +2213,11 @@ int main(int argc, char **argv) {
                                 !stepForward
                                          ->property("enabled")
                                          .toBool();
+                        // The race view fills the window; click the free
+                        // area between the panels.
                         takeoverControlValid &=
-                                sendMouseClick(manualInputFocus) &&
+                                sendMouseClickAt(manualInputFocus,
+                                                 freeAreaCenter()) &&
                                 manualInputFocus
                                         ->property("activeFocus")
                                         .toBool();
@@ -3072,64 +3063,57 @@ int main(int argc, char **argv) {
                             initialInnerTabs->property("currentIndex").toInt();
                     initialInnerTabs->setProperty("currentIndex", 0);
                     QCoreApplication::processEvents();
+                    // Packs folder: File > Set packs folder (a dialog).
+                    // Extraction result, base script and preferences: Base,
+                    // top to bottom.
+                    QObject *const packsDialog = root->findChild<QObject *>(
+                            QStringLiteral("packsDialog"));
                     bool globalSettingsPlacement =
                             globalSettingsVisibleAcrossTabs &&
                             packsDirectorySection != nullptr &&
                             replaySection != nullptr &&
                             baseInputScriptSection != nullptr &&
                             appearanceControls != nullptr &&
-                            toolTabs != nullptr &&
                             bruteforceTabContent != nullptr &&
                             simulationDebuggerPanel != nullptr &&
+                            packsDialog != nullptr &&
+                            packsDirectorySection->parent() != nullptr &&
                             root->findChildren<QObject *>(
                                         QStringLiteral(
                                                 "baseInputScriptSection"))
                                             .size() == 1 &&
                             root->findChildren<QObject *>(
-                                        QStringLiteral("replaySection"))
+                                        QStringLiteral(
+                                                "replayInputStatusSection"))
                                             .size() == 1 &&
                             root->findChildren<QObject *>(
                                         QStringLiteral("appearanceControls"))
                                             .size() == 1 &&
                             root->findChildren<QObject *>(
-                                        QStringLiteral("replayPathField"))
-                                            .size() == 1 &&
-                            root->findChildren<QObject *>(
-                                        QStringLiteral("browseReplayButton"))
-                                            .size() == 1 &&
-                            root->findChildren<QObject *>(
-                                        QStringLiteral("loadMapButton"))
+                                        QStringLiteral("openMapMenuItem"))
                                             .size() == 1 &&
                             root->findChildren<QObject *>(
                                         QStringLiteral(
-                                                "extractReplayInputsButton"))
+                                                "extractInputsMenuItem"))
                                             .size() == 1 &&
-                            packsDirectorySection->parentItem() ==
-                                    replaySection->parentItem() &&
+                            root->findChild<QObject *>(
+                                        QStringLiteral("replayPathField")) ==
+                                    nullptr &&
+                            root->findChild<QObject *>(
+                                        QStringLiteral("loadMapButton")) ==
+                                    nullptr &&
                             replaySection->parentItem() ==
                                     baseInputScriptSection->parentItem() &&
                             baseInputScriptSection->parentItem() ==
                                     appearanceControls->parentItem() &&
-                            appearanceControls->parentItem() !=
-                                    toolTabs->parentItem() &&
-                            packsDirectorySection->y() +
-                                            packsDirectorySection->height() <=
-                                    replaySection->y() &&
-                            replaySection->y() + replaySection->height() <=
-                                    baseInputScriptSection->y() &&
-                            toolTabs->mapToScene(QPointF()).y() <
-                                    packsDirectorySection->mapToScene(QPointF()).y() &&
+                            replaySection->y() <= baseInputScriptSection->y() &&
                             baseInputScriptSection->y() +
                                             baseInputScriptSection->height() <=
-                                    appearanceControls->y() &&
-                            appearanceControls->y() >=
-                                    baseInputScriptSection->y();
+                                    appearanceControls->y();
                     initialInnerTabs->setProperty("currentIndex", placementTab);
                     QCoreApplication::processEvents();
                     const bool baseInputScriptUiValid =
                             baseInputScriptSection != nullptr &&
-                            replayPathField != nullptr &&
-                            browseReplayButton != nullptr &&
                             baseInputScriptScrollView != nullptr &&
                             baseInputScriptTextArea != nullptr &&
                             baseInputScriptErrorLabel != nullptr &&
@@ -3149,8 +3133,8 @@ int main(int argc, char **argv) {
                             !ContainsText(
                                     root,
                                     QStringLiteral("Save trajectory")) &&
-                            loadMapButton != nullptr &&
-                            extractReplayInputsButton != nullptr &&
+                            openMapMenuItem != nullptr &&
+                            extractInputsMenuItem != nullptr &&
                             replaceBaseInputScriptDialog != nullptr &&
                             !baseInputScriptTextArea
                                      ->property("readOnly")
@@ -3162,12 +3146,12 @@ int main(int argc, char **argv) {
                                     ->property("text")
                                     .toString()
                                     .isEmpty() &&
-                            loadMapButton->property("text").toString() ==
-                                    QStringLiteral("Load map") &&
-                            extractReplayInputsButton
+                            openMapMenuItem->property("text").toString() ==
+                                    QStringLiteral("Open map or replay...") &&
+                            extractInputsMenuItem
                                             ->property("text")
                                             .toString() ==
-                                    QStringLiteral("Extract inputs to script");
+                                    QStringLiteral("Extract inputs from replay");
                     const bool bestInputsUiValid =
                             bestInputsScrollView != nullptr &&
                             bestInputsTextArea != nullptr &&
@@ -3591,7 +3575,7 @@ int main(int argc, char **argv) {
                                             .toInt() == 5 &&
                             modifierPassSelector->property("count").toInt() == 1 &&
                             evaluationTargetCombo->property("count").toInt() ==
-                                    10 &&
+                                    11 &&
                             searchAlgorithmCombo->property("currentValue")
                                             .toString() ==
                                     QStringLiteral("basic-brute-force") &&
@@ -3822,10 +3806,13 @@ int main(int argc, char **argv) {
                         QCoreApplication::processEvents();
                         return overflowState && movedToEnd;
                     }();
+                    // Code's expand button fills the window with the Code
+                    // panel (over the race view) and gives it back.
                     const bool codeExpansionValid = [&]() {
+                        auto *const viewport = root->findChild<QQuickItem *>(
+                                QStringLiteral("raceViewport"));
                         if (simulationDebuggerPanel == nullptr ||
-                            simulationDebuggerPanelHost == nullptr ||
-                            workspaceContent == nullptr ||
+                            viewport == nullptr || dockLayout == nullptr ||
                             settingsPanel == nullptr ||
                             toggleCodeEditorExpansionButton == nullptr ||
                             simulationCodeViewer == nullptr ||
@@ -3836,9 +3823,15 @@ int main(int argc, char **argv) {
                                 root->property("width").toInt();
                         const int originalHeight =
                                 root->property("height").toInt();
-                        simulationDebuggerPanelHost->setVisible(true);
-                        simulationDebuggerPanel->setVisible(true);
-                        bruteforceTabContent->setVisible(false);
+                        QString group;
+                        QMetaObject::invokeMethod(
+                                dockLayout, "groupOf",
+                                Q_RETURN_ARG(QString, group),
+                                Q_ARG(QString, QStringLiteral("code")));
+                        QMetaObject::invokeMethod(
+                                dockLayout, "setCurrent",
+                                Q_ARG(QString, group),
+                                Q_ARG(QString, QStringLiteral("code")));
                         SettleQuickLayout();
                         const qreal compactWidth =
                                 simulationDebuggerPanel->width();
@@ -3853,21 +3846,16 @@ int main(int argc, char **argv) {
                                         Qt::DirectConnection);
                         SettleQuickLayout();
                         bool valid =
+                                simulationDebuggerPanel->isVisible() &&
                                 expanded &&
                                 root->property("codeEditorExpanded")
                                         .toBool() &&
                                 simulationDebuggerPanel
                                         ->property("expanded")
                                         .toBool() &&
-                                simulationDebuggerPanel->parentItem() ==
-                                        settingsPanel &&
-                                !workspaceContent->isVisible() &&
-                                settingsPanel->width() >=
-                                        originalWidth - 1.0 &&
+                                !viewport->isVisible() &&
                                 simulationDebuggerPanel->width() >=
-                                        originalWidth - 1.0 &&
-                                simulationDebuggerPanel->height() >=
-                                        originalHeight - 1.0 &&
+                                        originalWidth - 60.0 &&
                                 simulationDebuggerPanel->width() >
                                         compactWidth * 2.0 &&
                                 toggleCodeEditorExpansionButton
@@ -3877,9 +3865,8 @@ int main(int argc, char **argv) {
                         root->setProperty("width", 1240);
                         root->setProperty("height", 580);
                         SettleQuickLayout();
-                        valid &= settingsPanel->width() >= 1239.0 &&
-                                simulationDebuggerPanel->width() >= 1239.0 &&
-                                simulationDebuggerPanel->height() >= 579.0 &&
+                        valid &= simulationDebuggerPanel->width() >= 1180.0 &&
+                                simulationDebuggerPanel->height() >= 450.0 &&
                                 simulationCodeViewer->width() > 1100.0 &&
                                 simulationCodeViewer->height() >= 145.0;
 
@@ -3892,7 +3879,7 @@ int main(int argc, char **argv) {
                         root->setProperty("height", originalHeight);
                         QEventLoop settle;
                         QTimer::singleShot(
-                                60, &settle, &QEventLoop::quit);
+                                600, &settle, &QEventLoop::quit);
                         settle.exec();
                         valid &= collapsed &&
                                 !root->property("codeEditorExpanded")
@@ -3900,13 +3887,13 @@ int main(int argc, char **argv) {
                                 !simulationDebuggerPanel
                                          ->property("expanded")
                                          .toBool() &&
-                                simulationDebuggerPanel->parentItem() ==
-                                        simulationDebuggerPanelHost &&
-                                workspaceContent->isVisible() &&
-                                settingsPanel->width() <= 480.0;
-                        simulationDebuggerPanelHost->setVisible(false);
-                        simulationDebuggerPanel->setVisible(false);
-                        bruteforceTabContent->setVisible(true);
+                                viewport->isVisible() &&
+                                std::abs(simulationDebuggerPanel->width() -
+                                         compactWidth) < 1.0;
+                        QMetaObject::invokeMethod(
+                                dockLayout, "setCurrent",
+                                Q_ARG(QString, group),
+                                Q_ARG(QString, QStringLiteral("bruteforce")));
                         QObject *const settingsContent =
                                 settingsScroll->property("contentItem")
                                         .value<QObject *>();
@@ -3914,19 +3901,17 @@ int main(int argc, char **argv) {
                             settingsContent->setProperty("contentY", 0.0);
                         }
                         QCoreApplication::processEvents();
-                        return valid;
+                        return valid && bruteforceTabContent->isVisible();
                     }();
+                    // Bruteforce and Code start as two tabs of one group,
+                    // Bruteforce in front.
                     const bool debuggerUiValid =
-                            toolTabs != nullptr &&
-                            toolTabs->property("count").toInt() == 2 &&
-                            toolTabs->property("currentIndex").toInt() == 0 &&
+                            dockLayout != nullptr &&
+                            dockLayout->property("groups").toList().size() > 0 &&
                             bruteforceTabContent != nullptr &&
                             bruteforceTabContent->isVisible() &&
                             simulationDebuggerPanel != nullptr &&
                             !simulationDebuggerPanel->isVisible() &&
-                            simulationDebuggerPanel->height() + 0.5 >=
-                                    simulationDebuggerPanel
-                                            ->implicitHeight() &&
                             referenceLoadingWarning != nullptr &&
                             !referenceLoadingWarning->isVisible() &&
                             referenceLoadingWarning
@@ -4459,9 +4444,15 @@ int main(int argc, char **argv) {
                                     "text", originalBestInputs);
                             QCoreApplication::processEvents();
 
-                            simulationDebuggerPanelHost->setVisible(true);
-                            simulationDebuggerPanel->setVisible(true);
-                            bruteforceTabContent->setVisible(false);
+                            QString codeGroup;
+                            QMetaObject::invokeMethod(
+                                    dockLayout, "groupOf",
+                                    Q_RETURN_ARG(QString, codeGroup),
+                                    Q_ARG(QString, QStringLiteral("code")));
+                            QMetaObject::invokeMethod(
+                                    dockLayout, "setCurrent",
+                                    Q_ARG(QString, codeGroup),
+                                    Q_ARG(QString, QStringLiteral("code")));
                             QCoreApplication::processEvents();
                             QCoreApplication::processEvents();
                             sourceTreeWheelValid = nestedWheelMoves(
@@ -4474,9 +4465,11 @@ int main(int argc, char **argv) {
                                             .toBool() &&
                                     sourceTreeWheelValid &&
                                     codeViewerWheelValid;
-                            simulationDebuggerPanel->setVisible(false);
-                            simulationDebuggerPanelHost->setVisible(false);
-                            bruteforceTabContent->setVisible(true);
+                            QMetaObject::invokeMethod(
+                                    dockLayout, "setCurrent",
+                                    Q_ARG(QString, codeGroup),
+                                    Q_ARG(QString,
+                                          QStringLiteral("bruteforce")));
                             QCoreApplication::processEvents();
                         }
                     }
@@ -4836,7 +4829,7 @@ int main(int argc, char **argv) {
                             insertionMinimumField
                                             ->property("effectiveBorderColor")
                                             .value<QColor>() ==
-                                    QColor(QStringLiteral("#a23434")) &&
+                                    QColor(QStringLiteral("#f07b78")) &&
                             controller.modifierPasses()
                                             .front()
                                             .toMap()
@@ -5740,7 +5733,9 @@ int main(int argc, char **argv) {
                             timeline->viewer() == &viewer &&
                             timeline->isEnabled() &&
                             timelinePanel != nullptr && viewport != nullptr &&
-                            timelinePanel->x() < viewport->x() &&
+                            timelinePanel->mapToScene(QPointF()).x() < root->property("width").toReal() / 2 &&
+                            viewport->mapToScene(QPointF()) == QPointF() &&
+                            std::abs(viewport->width() - root->property("width").toReal()) < 0.5 &&
                             runSelectorValid &&
                             widthFieldShowsLeadingDigits &&
                             globalSettingsPlacement &&
@@ -5828,9 +5823,6 @@ int main(int argc, char **argv) {
                                 << (appearanceControls != nullptr
                                             ? appearanceControls->height()
                                             : -1.0)
-                                << ", tabs="
-                                << (toolTabs != nullptr
-                                            ? toolTabs->y() : -1.0)
                                 << ")"
                                 << ", bestInputs=" << bestInputsUiValid
                                 << ", searchControls=" << searchControlsValid
@@ -5863,6 +5855,8 @@ int main(int argc, char **argv) {
                                 << ", scrub=" << unboundedFieldsScrubbable
                                 << ", keyboard=" << keyboardStepping
                                 << ", manual=" << manualDrivingUi
+                                << "/" << takeoverControlValid
+                                << "/" << freeCameraUiValid
                                 << ", targetLayout=" << targetLayoutUpdatesImmediately
                                 << "/" << expandedEvaluationHeight
                                 << "/" << compactEvaluationHeight
@@ -5876,7 +5870,7 @@ int main(int argc, char **argv) {
                                 << ", escalation=" << escalationSettingsValid
                                 << ", timeline=" << timeline->isEnabled()
                                 << "/" << (timeline->viewer() == &viewer)
-                                << "/" << (timelinePanel->x() < viewport->x())
+                                << "/" << (viewport->mapToScene(QPointF()) == QPointF())
                                 << ", transport=" << playPause->property("enabled").toBool()
                                 << "/" << playIcon->isVisible()
                                 << "/" << pauseIcon->isVisible()
@@ -6737,25 +6731,30 @@ int main(int argc, char **argv) {
                     root->setProperty("width", 1240);
                     root->setProperty("height", 580);
                     QCoreApplication::processEvents();
+                    // In the smallest window the splits panel stays inside
+                    // the window at its full width.
+                    QEventLoop compactSplitSettle;
+                    QTimer::singleShot(400, &compactSplitSettle,
+                                       &QEventLoop::quit);
+                    compactSplitSettle.exec();
+                    const QRectF compactSplitRect =
+                            checkpointSplitOverlay != nullptr
+                            ? QRectF(checkpointSplitOverlay->mapToScene(
+                                             QPointF()),
+                                     checkpointSplitOverlay->size())
+                            : QRectF();
                     const bool compactSplitLayout =
                             checkpointSplitOverlay != nullptr &&
                             cameraFocusToolbar != nullptr &&
                             scriptedTelemetry != nullptr &&
                             playbackDock != nullptr &&
-                            checkpointSplitOverlay->x() >= 13.9 &&
+                            checkpointSplitOverlay->isVisible() &&
+                            compactSplitRect.left() >= 0.0 &&
+                            compactSplitRect.top() >= 0.0 &&
+                            compactSplitRect.right() <= 1240.0 &&
+                            compactSplitRect.bottom() <= 580.0 &&
                             checkpointSplitOverlay->width() >= 197.9 &&
-                            std::abs(
-                                    checkpointSplitOverlay->x() +
-                                            checkpointSplitOverlay->width() -
-                                    cameraFocusToolbar->x() -
-                                            cameraFocusToolbar->width()) <= 2.1 &&
-                            checkpointSplitOverlay->y() >=
-                                    scriptedTelemetry->y() +
-                                            scriptedTelemetry->height() +
-                                            7.9 &&
-                            checkpointSplitOverlay->y() +
-                                            checkpointSplitOverlay->height() <=
-                                    playbackDock->y() - 7.9;
+                            checkpointSplitOverlay->height() >= 73.9;
                     root->setProperty(
                             "width", originalSplitReviewWidth);
                     root->setProperty(
@@ -7201,9 +7200,18 @@ int main(int argc, char **argv) {
                                         viewCamera->property("fieldOfView"),
                                         viewCamera->property("clipNear"),
                                         viewCamera->property("clipFar")};
-                                controller.setDarkMode(true);
+                                // Changing the UI look (zoom, glass) must
+                                // not touch the race scene.
+                                QQmlExpression changeLook(
+                                        QQmlEngine::contextForObject(root),
+                                        root,
+                                        QStringLiteral(
+                                                "AppTheme.zoom = 1.3; "
+                                                "AppTheme.darkening = 0.8"));
+                                changeLook.evaluate();
                                 QCoreApplication::processEvents();
                                 bool loadedSceneThemeInvariant =
+                                        !changeLook.hasError() &&
                                         sceneStateBeforeThemeChange ==
                                                 QVariantList{
                                                         filled->property(
@@ -7243,7 +7251,13 @@ int main(int argc, char **argv) {
                                             materialState(
                                                     visualMaterials.at(index));
                                 }
-                                controller.setDarkMode(false);
+                                QQmlExpression restoreLook(
+                                        QQmlEngine::contextForObject(root),
+                                        root,
+                                        QStringLiteral(
+                                                "AppTheme.zoom = 1; "
+                                                "AppTheme.darkening = AppTheme.defaultDarkening"));
+                                restoreLook.evaluate();
                                 QCoreApplication::processEvents();
                                 const int expectedCarModels =
                                         static_cast<int>(
@@ -7802,37 +7816,14 @@ int main(int argc, char **argv) {
                                                 QStringLiteral(
                                                         "Apex note")) == 1;
                                 QCoreApplication::processEvents();
-                                const QColor lightWhiteboardToolText =
-                                        whiteboardOverlay != nullptr
-                                        ? whiteboardOverlay
-                                                  ->property(
-                                                          "toolbarControlText")
-                                                  .value<QColor>()
-                                        : QColor();
-                                controller.setDarkMode(true);
-                                QCoreApplication::processEvents();
-                                const QColor darkWhiteboardToolText =
-                                        whiteboardOverlay != nullptr
-                                        ? whiteboardOverlay
-                                                  ->property(
-                                                          "toolbarControlText")
-                                                  .value<QColor>()
-                                        : QColor();
-                                controller.setDarkMode(false);
-                                QCoreApplication::processEvents();
                                 const bool whiteboardToolThemeContrast =
                                         whiteboardOverlay != nullptr &&
-                                        lightWhiteboardToolText ==
-                                                QColor(QStringLiteral(
-                                                        "#202421")) &&
-                                        darkWhiteboardToolText ==
-                                                QColor(QStringLiteral(
-                                                        "#f0f3ef")) &&
                                         whiteboardOverlay
                                                         ->property(
                                                                 "toolbarControlText")
                                                         .value<QColor>() ==
-                                                lightWhiteboardToolText;
+                                                QColor(QStringLiteral(
+                                                        "#f0f3ef"));
                                 const bool whiteboardActiveState =
                                         whiteboardOverlay != nullptr &&
                                         whiteboardToolbar != nullptr &&
@@ -7884,124 +7875,99 @@ int main(int argc, char **argv) {
                                                 root->findChild<QObject *>(
                                                         QStringLiteral(
                                                                 "whiteboardToolbar")));
-                                QVariant compactClosedX;
-                                QVariant compactClosedTopMargin;
-                                QVariant compactOpenX;
-                                QVariant compactOpenTopMargin;
-                                const bool compactLayoutInvoked =
-                                        compactCameraFocusToolbar != nullptr &&
-                                        QMetaObject::invokeMethod(
-                                                compactCameraFocusToolbar,
-                                                "layoutX",
-                                                Q_RETURN_ARG(
-                                                        QVariant,
-                                                        compactClosedX),
-                                                Q_ARG(QVariant,
-                                                      QVariant(591.0)),
-                                                Q_ARG(QVariant,
-                                                      QVariant(false))) &&
-                                        QMetaObject::invokeMethod(
-                                                compactCameraFocusToolbar,
-                                                "layoutTopMargin",
-                                                Q_RETURN_ARG(
-                                                        QVariant,
-                                                        compactClosedTopMargin),
-                                                Q_ARG(QVariant,
-                                                      QVariant(591.0)),
-                                                Q_ARG(QVariant,
-                                                      QVariant(false))) &&
-                                        QMetaObject::invokeMethod(
-                                                compactCameraFocusToolbar,
-                                                "layoutX",
-                                                Q_RETURN_ARG(
-                                                        QVariant,
-                                                        compactOpenX),
-                                                Q_ARG(QVariant,
-                                                      QVariant(591.0)),
-                                                Q_ARG(QVariant,
-                                                      QVariant(true))) &&
-                                        QMetaObject::invokeMethod(
-                                                compactCameraFocusToolbar,
-                                                "layoutTopMargin",
-                                                Q_RETURN_ARG(
-                                                        QVariant,
-                                                        compactOpenTopMargin),
-                                                Q_ARG(QVariant,
-                                                      QVariant(591.0)),
-                                                Q_ARG(QVariant,
-                                                      QVariant(true)));
-                                const qreal compactCameraClosedY =
-                                        compactRaceViewerHeader != nullptr
-                                        ? compactRaceViewerHeader->y() +
-                                                  compactRaceViewerHeader
-                                                          ->height() +
-                                                  compactClosedTopMargin
-                                                          .toReal()
-                                        : 0;
-                                const qreal compactCameraOpenY =
-                                        compactRaceViewerHeader != nullptr
-                                        ? compactRaceViewerHeader->y() +
-                                                  compactRaceViewerHeader
-                                                          ->height() +
-                                                  compactOpenTopMargin.toReal()
-                                        : 0;
+                                // The whiteboard toolbar and drawing list
+                                // live in their own panels; in the default
+                                // layout none of them covers the camera.
+                                const auto sceneRect = [](QQuickItem *item) {
+                                    return item == nullptr
+                                            ? QRectF()
+                                            : QRectF(item->mapToScene(QPointF()),
+                                                     item->size());
+                                };
+                                const auto settlePanels = []() {
+                                    QEventLoop loop;
+                                    QTimer::singleShot(400, &loop,
+                                                       &QEventLoop::quit);
+                                    loop.exec();
+                                };
+                                auto *const whiteboardToolbarHost =
+                                        root->findChild<QQuickItem *>(
+                                                QStringLiteral(
+                                                        "whiteboardToolbarHost"));
+                                auto *const whiteboardDrawingListHost =
+                                        root->findChild<QQuickItem *>(
+                                                QStringLiteral(
+                                                        "whiteboardDrawingListHost"));
+                                const QRectF cameraClosed =
+                                        sceneRect(compactCameraFocusToolbar);
                                 const bool compactWhiteboardToolbarsSeparated =
-                                        compactLayoutInvoked &&
                                         compactWhiteboardToolbar != nullptr &&
                                         compactCameraFocusToolbar != nullptr &&
                                         compactRaceViewerHeader != nullptr &&
-                                        qAbs(compactClosedX.toReal() -
-                                             (591.0 -
-                                              compactCameraFocusToolbar
-                                                      ->width() -
-                                              12.0)) < 0.1 &&
-                                        qAbs(compactOpenX.toReal() -
-                                             compactClosedX.toReal()) < 0.1 &&
-                                        qAbs(compactClosedTopMargin.toReal() -
-                                             10.0) < 0.1 &&
-                                        qAbs(compactOpenTopMargin.toReal() -
-                                             10.0) < 0.1 &&
-                                        compactWhiteboardToolbar->x() +
-                                                        compactWhiteboardToolbar
-                                                                ->width() +
-                                                        7.9 <=
-                                                compactCameraFocusToolbar->x();
+                                        whiteboardToolbarHost != nullptr &&
+                                        compactWhiteboardToolbar->parentItem() ==
+                                                whiteboardToolbarHost &&
+                                        !sceneRect(compactWhiteboardToolbar)
+                                                 .intersects(cameraClosed) &&
+                                        !sceneRect(compactRaceViewerHeader)
+                                                 .intersects(cameraClosed);
                                 if (whiteboardOverlay != nullptr) {
                                     whiteboardOverlay->setProperty(
                                             "drawingListOpen", true);
-                                    QCoreApplication::processEvents();
+                                    settlePanels();
                                 }
+                                auto *const drawingListItem =
+                                        qobject_cast<QQuickItem *>(
+                                                whiteboardDrawingList);
+                                const QRectF drawingListRect =
+                                        sceneRect(drawingListItem);
                                 const bool drawingListBelowWhiteboard =
-                                        whiteboardDrawingList != nullptr &&
-                                        compactWhiteboardToolbar != nullptr &&
-                                        whiteboardDrawingList
-                                                        ->property("y")
-                                                        .toReal() >=
-                                                compactWhiteboardToolbar->y() +
-                                                        compactWhiteboardToolbar
-                                                                ->height() +
-                                                        7.9 &&
-                                        qAbs(whiteboardDrawingList
-                                                     ->property("x").toReal() -
-                                             14.0) < 0.1 &&
-                                        whiteboardDrawingList
-                                                                ->property("x")
-                                                                .toReal() +
-                                                        whiteboardDrawingList
-                                                                ->property("width")
-                                                                .toReal() +
-                                                        7.9 <=
-                                                compactCameraFocusToolbar->x();
+                                        drawingListItem != nullptr &&
+                                        drawingListItem->isVisible() &&
+                                        whiteboardDrawingListHost != nullptr &&
+                                        drawingListItem->parentItem() ==
+                                                whiteboardDrawingListHost &&
+                                        drawingListRect.top() >=
+                                                sceneRect(compactWhiteboardToolbar)
+                                                        .bottom() &&
+                                        !drawingListRect.intersects(
+                                                cameraClosed);
+                                const QRectF cameraOpen =
+                                        sceneRect(compactCameraFocusToolbar);
                                 if (whiteboardOverlay != nullptr) {
                                     whiteboardOverlay->setProperty(
                                             "drawingListOpen", false);
-                                    QCoreApplication::processEvents();
+                                    settlePanels();
+                                }
+                                if (!drawingListBelowWhiteboard ||
+                                    cameraOpen != cameraClosed) {
+                                    std::cerr
+                                            << "drawing list: item="
+                                            << (drawingListItem != nullptr)
+                                            << " visible="
+                                            << (drawingListItem &&
+                                                drawingListItem->isVisible())
+                                            << " hosted="
+                                            << (drawingListItem &&
+                                                drawingListItem->parentItem() ==
+                                                        whiteboardDrawingListHost)
+                                            << " top=" << drawingListRect.top()
+                                            << " toolbarBottom="
+                                            << sceneRect(compactWhiteboardToolbar)
+                                                       .bottom()
+                                            << " camera="
+                                            << cameraClosed.x() << ","
+                                            << cameraClosed.y() << " "
+                                            << cameraClosed.width() << "x"
+                                            << cameraClosed.height()
+                                            << " list=" << drawingListRect.x()
+                                            << "," << drawingListRect.width()
+                                            << "\n";
                                 }
                                 const bool compactWhiteboardListSeparated =
-                                        compactLayoutInvoked &&
                                         drawingListBelowWhiteboard &&
-                                        qAbs(compactCameraOpenY -
-                                             compactCameraClosedY) < 0.1;
+                                        cameraOpen == cameraClosed &&
+                                        !drawingListItem->isVisible();
                                 QVariant whiteboardCaptureValue;
                                 const bool whiteboardViewCaptured =
                                         whiteboardViewport != nullptr &&
@@ -8433,34 +8399,13 @@ int main(int argc, char **argv) {
                                         buttonTextFits(whiteboardModeToggle) &&
                                         buttonTextFits(
                                                 whiteboardInactiveListButton);
-                                const QColor lightWhiteboardModeText =
-                                        whiteboardModeToggleLabel != nullptr
-                                        ? whiteboardModeToggleLabel
-                                                  ->property("color")
-                                                  .value<QColor>()
-                                        : QColor();
-                                controller.setDarkMode(true);
-                                QCoreApplication::processEvents();
-                                const QColor darkWhiteboardModeText =
-                                        whiteboardModeToggleLabel != nullptr
-                                        ? whiteboardModeToggleLabel
-                                                  ->property("color")
-                                                  .value<QColor>()
-                                        : QColor();
-                                controller.setDarkMode(false);
-                                QCoreApplication::processEvents();
                                 const bool whiteboardModeThemeContrast =
                                         whiteboardModeToggleLabel != nullptr &&
-                                        lightWhiteboardModeText ==
-                                                QColor(QStringLiteral(
-                                                        "#202421")) &&
-                                        darkWhiteboardModeText ==
-                                                QColor(QStringLiteral(
-                                                        "#f0f3ef")) &&
                                         whiteboardModeToggleLabel
                                                         ->property("color")
                                                         .value<QColor>() ==
-                                                lightWhiteboardModeText;
+                                                QColor(QStringLiteral(
+                                                        "#f0f3ef"));
                                 const bool whiteboardIntegrated =
                                         whiteboardActiveState &&
                                         compactWhiteboardToolbarsSeparated &&
@@ -8535,12 +8480,21 @@ int main(int argc, char **argv) {
                                 const bool exportOverlayHidden =
                                         exportOverlay != nullptr &&
                                         !exportOverlay->isVisible();
+                                // The export grabs the race view; the
+                                // header and playback panels are not in it.
+                                auto *const exportedView =
+                                        qobject_cast<QQuickItem *>(
+                                                whiteboardViewport);
                                 const bool exportHeaderHidden =
                                         exportHeader != nullptr &&
-                                        !exportHeader->isVisible();
+                                        exportedView != nullptr &&
+                                        !exportedView->isAncestorOf(
+                                                exportHeader);
                                 const bool exportDockHidden =
                                         exportDock != nullptr &&
-                                        !exportDock->isVisible();
+                                        exportedView != nullptr &&
+                                        !exportedView->isAncestorOf(
+                                                exportDock);
                                 const bool exportPlaneMode =
                                         whiteboardPlaneView != nullptr &&
                                         whiteboardPlaneView
@@ -9214,14 +9168,6 @@ int main(int argc, char **argv) {
                                             << ")/"
                                             << whiteboardToolThemeContrast << "/"
                                             << whiteboardModeThemeContrast << "/"
-                                            << lightWhiteboardToolText
-                                                       .name()
-                                                       .toStdString()
-                                            << "/"
-                                            << darkWhiteboardToolText
-                                                       .name()
-                                                       .toStdString()
-                                            << "/"
                                             << whiteboard->count()
                                             << "/placed="
                                             << whiteboardPlaced

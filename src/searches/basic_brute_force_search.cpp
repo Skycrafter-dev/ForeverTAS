@@ -488,13 +488,40 @@ std::string CudaEvaluationDescription(
                 } else if constexpr (std::is_same_v<
                                              T,
                                              PhysicsSandboxCudaVolumeEntryEvaluator>) {
+                    if (configured.entrySpeed) {
+                        return MetricDescription("Volume entry speed",
+                                                 batch.bestScore, "m/s",
+                                                 batch.bestTimeMs);
+                    }
                     return TimeMetricDescription(
                             "Volume entry time", batch.bestTimeMs);
                 } else if constexpr (std::is_same_v<
                                              T,
                                              PhysicsSandboxCudaCustomVolumeEntryEvaluator>) {
+                    if (configured.entrySpeed) {
+                        return MetricDescription("Custom volume entry speed",
+                                                 batch.bestScore, "m/s",
+                                                 batch.bestTimeMs);
+                    }
                     return TimeMetricDescription(
                             "Custom volume entry time", batch.bestTimeMs);
+                } else if constexpr (std::is_same_v<
+                                             T,
+                                             PhysicsSandboxCudaDistanceEvaluator>) {
+                    std::string target = configured.finish
+                            ? std::string("the finish")
+                            : "checkpoint " +
+                                      std::to_string(std::uint64_t{configured.checkpointIndex} + 1u);
+                    target += " of lap " + std::to_string(configured.lap);
+                    if (batch.bestScore < 1e12) {
+                        return "Reached " + target + " at " +
+                               FormatRaceTimeMilliseconds(batch.bestTimeMs);
+                    }
+                    // 1e12 + 1e6 per checkpoint still before it + metres.
+                    return MetricDescription(
+                            ("Distance to " + target).c_str(),
+                            std::fmod(batch.bestScore - 1e12, 1e6), "m",
+                            batch.bestTimeMs);
                 } else if constexpr (std::is_same_v<
                                              T,
                                              PhysicsSandboxCudaCheckpointEvaluator>) {

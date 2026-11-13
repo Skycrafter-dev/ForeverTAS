@@ -1047,30 +1047,22 @@ int main(int argc, char **argv) {
                                         originalApplyLine,
                         "multi-line input escaped the source-line edit "
                         "boundary");
-                const QVariantMap functionLine = model->lines().at(28).toMap();
-                const QString lightHighlight =
-                        functionLine.value(QStringLiteral("highlighted"))
-                                .toString();
-                model->setDarkMode(true);
-                const QString darkHighlight =
+                const QString highlight =
                         model->lines()
                                 .at(28)
                                 .toMap()
                                 .value(QStringLiteral("highlighted"))
                                 .toString();
-                okay &= Check(lightHighlight.startsWith(
+                okay &= Check(highlight.startsWith(
                                       QStringLiteral(
                                               "<pre style=\"margin:0; "
                                               "white-space:pre\">")) &&
-                                      lightHighlight.endsWith(
+                                      highlight.endsWith(
                                               QStringLiteral("</pre>")) &&
-                                      model->darkMode() &&
-                                      darkHighlight != lightHighlight &&
-                                      darkHighlight.contains(
+                                      highlight.contains(
                                               QStringLiteral("#80b9ef")),
                               "source highlighting did not preserve whitespace "
-                              "or switch to the dark theme");
-                model->setDarkMode(false);
+                              "or use the theme colours");
                 const int originalLineCount = model->lines().size();
                 const qulonglong originalApplyId =
                         model->lines()
@@ -1190,7 +1182,7 @@ int main(int argc, char **argv) {
                         "corrupted the immutable source");
                 okay &= Check(
                         !originalApplyLine.isEmpty() &&
-                                lightHighlight.contains(
+                                highlight.contains(
                                         QStringLiteral("<span")) &&
                                 model->toggleBreakpoint(
                                         QString::fromLatin1(kVehicleSource),

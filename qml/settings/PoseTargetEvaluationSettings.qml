@@ -206,6 +206,8 @@ ColumnLayout {
     }
 
     TimeWindowSettings {
+        chainController: root.controller
+        chainKey: "target"
         viewer: root.viewer
         settings: root.settings
         updateSetting: root.controller.setEvaluationTargetSetting
@@ -224,5 +226,12 @@ ColumnLayout {
         onEdited: value =>
             root.controller.setEvaluationTargetSetting(
                 "rotationWeightPercent", value)
+    }
+
+    PoseWeightsEditor {
+        settings: root.settings
+        running: root.controller.running
+        onEdited: (key, value) =>
+            root.controller.setEvaluationTargetSetting(key, value)
     }
 }

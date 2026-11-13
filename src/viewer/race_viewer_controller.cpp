@@ -1,5 +1,7 @@
 #include "viewer/race_viewer_controller.h"
 
+#include "evaluators/distance_target_evaluator.h"
+
 #include "app/search_completion.h"
 #include "app/search_diagnostic.h"
 #include "conditions/condition_program.h"
@@ -1622,6 +1624,8 @@ RaceViewerLoadResult LoadMapData(const QString &packsDirectory,
             item.insert(QStringLiteral("radii"), ToQt(ellipsoid.radii));
             result.carEllipsoids.push_back(std::move(item));
         }
+        result.carShape = scene.carEllipsoids;
+        result.checkpointTriggers = scene.checkpointTriggers;
 
         const std::vector<PhysicsSandboxInputEvent> canonicalInputs =
                 Require(sandbox.ReadInputs(),
@@ -2266,6 +2270,70 @@ SimulationDebuggerModel *RaceViewerController::simulationDebugger() {
 
 QVariantList RaceViewerController::carEllipsoids() const {
     return carEllipsoids_;
+}
+
+QVariantList RaceViewerController::checkpointTriggers() const {
+    QVariantList result;
+    for (const auto &trigger : checkpointTriggers_) {
+        if (trigger.triangles.empty()) continue;
+        QVector3D minimum(std::numeric_limits<float>::max(),
+                          std::numeric_limits<float>::max(),
+                          std::numeric_limits<float>::max());
+        QVector3D maximum = -minimum;
+        for (const auto &triangle : trigger.triangles) {
+            for (const auto &vertex : {triangle.a, triangle.b, triangle.c}) {
+                const QVector3D point = ToQt(vertex);
+                minimum = QVector3D(std::min(minimum.x(), point.x()),
+                                    std::min(minimum.y(), point.y()),
+                                    std::min(minimum.z(), point.z()));
+                maximum = QVector3D(std::max(maximum.x(), point.x()),
+                                    std::max(maximum.y(), point.y()),
+                                    std::max(maximum.z(), point.z()));
+            }
+        }
+        QVariantMap item;
+        item.insert(QStringLiteral("finish"),
+                    trigger.role != forevervalidator::experimental::
+                                            PhysicsSandboxCheckpointTriggerRole::
+                                                    Checkpoint);
+        item.insert(QStringLiteral("slot"),
+                    static_cast<int>(trigger.checkpointSlot));
+        item.insert(QStringLiteral("center"), (minimum + maximum) * 0.5f);
+        item.insert(QStringLiteral("top"),
+                    QVector3D((minimum.x() + maximum.x()) * 0.5f, maximum.y(),
+                              (minimum.z() + maximum.z()) * 0.5f));
+        result.push_back(item);
+    }
+    return result;
+}
+
+double RaceViewerController::distanceToTrigger(
+        const QString &target, int slot, const QVector3D &position,
+        const QQuaternion &rotation) const {
+    forevervalidator::experimental::PhysicsSandboxCarState car;
+    car.position = {position.x(), position.y(), position.z()};
+    car.rotationX = rotation.x();
+    car.rotationY = rotation.y();
+    car.rotationZ = rotation.z();
+    car.rotationW = rotation.scalar();
+    const bool finish = target == QStringLiteral("finish");
+    double best = std::numeric_limits<double>::infinity();
+    for (const auto &trigger : checkpointTriggers_) {
+        const bool finishLine =
+                trigger.role != forevervalidator::experimental::
+                                        PhysicsSandboxCheckpointTriggerRole::Checkpoint;
+        // A negative slot is any checkpoint.
+        if (finish ? !finishLine
+                   : finishLine ||
+                             (slot >= 0 &&
+                              trigger.checkpointSlot !=
+                                      static_cast<std::uint32_t>(slot))) {
+            continue;
+        }
+        best = std::min(best, CarDistanceToTriangles(carShape_,
+                                                     trigger.triangles, car));
+    }
+    return best;
 }
 
 QVariantList RaceViewerController::visualInstances() const {
@@ -4460,6 +4528,12 @@ void RaceViewerController::releaseManualInputs() {
     setManualInput(QStringLiteral("brake"), false);
 }
 
+std::vector<SandboxInputEvent> RaceViewerController::selectedRunInputs() const {
+    const RaceViewerRun *const run = selectedRun();
+    return run != nullptr ? inputHistoryForRun(*run)
+                          : std::vector<SandboxInputEvent>{};
+}
+
 std::vector<SandboxInputEvent>
 RaceViewerController::inputHistoryForRun(
         const RaceViewerRun &run) const {
@@ -5320,6 +5394,8 @@ void RaceViewerController::applyLoadResult(
     visualMaterials_ = std::move(result.visualMaterials);
     visualBatches_ = std::move(visualBatches);
     carEllipsoids_ = std::move(result.carEllipsoids);
+    carShape_ = std::move(result.carShape);
+    checkpointTriggers_ = std::move(result.checkpointTriggers);
     triangleCount_ = result.triangleCount;
     visualTriangleCount_ = result.visualTriangleCount;
     sourceVisualObjectCount_ = result.sourceVisualObjectCount;

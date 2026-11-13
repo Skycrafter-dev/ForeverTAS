@@ -16,6 +16,12 @@ QString OpenSystemDirectoryDialog(const QString &title,
                                   const QString &initialDirectory);
 QString OpenSystemFileDialog(const QString &title,
                              const QString &initialPath);
+// Asks where to save a file: initialPath suggests the folder and name;
+// extension (without the dot) is offered as filterName.
+QString OpenSystemSaveDialog(const QString &title,
+                             const QString &initialPath,
+                             const QString &filterName,
+                             const QString &extension);
 
 }  // namespace forevertas::app
 

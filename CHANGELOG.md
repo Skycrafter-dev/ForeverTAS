@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### New and improved
+
+- **New look:** every panel is now a sheet of glass over the race view, which
+  fills the whole window. Light and dark mode are gone; there is one look.
+  View > Glass look... adjusts how dark, blurred and bent the glass is.
+- **Panels you arrange yourself:** Inputs, Graphics, Bruteforce, Code, the race
+  viewer header, Camera, Scripted telemetry, Splits, Playback, Manual driving,
+  Whiteboard and Drawings are all panels. Drag a panel by its title to move it.
+  While dragging, drop targets appear: drop on a panel's side to split its
+  space, on its middle to stack the two as tabs, or on a window edge to dock
+  along that edge. Drop anywhere else and the panel floats; floating panels
+  stick to each other's edges and never leave the window. Drag the gaps between
+  docked panels to resize them, or the edges of a floating panel.
+- **Closable panels:** every panel has a close button and comes back in the same
+  place from the View menu. Splits, Scripted telemetry and Manual driving still
+  appear only when they have something to show.
+- **Menu bar:** File holds Open map or replay (which loads it right away), Set
+  packs folder, Extract inputs from replay and Gamepad settings. Edit has Undo,
+  Redo, Cut, Copy, Paste and Select all. View turns panels on and off and has
+  Hide all panels (Tab), Show viewer, Zoom in/out (Ctrl++ / Ctrl+-, Ctrl+0 to
+  reset), Glass look and Reset layout.
+- The panel layout, zoom and glass look are saved between sessions.
+
 ## 0.2.7
 
 ### Fixes

@@ -15,6 +15,8 @@ ColumnLayout {
     spacing: 8
 
     TimeWindowSettings {
+        chainController: root.controller
+        chainKey: "target"
         settings: root.settings
         updateSetting: root.controller.setEvaluationTargetSetting
         running: root.controller.running

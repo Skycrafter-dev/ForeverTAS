@@ -123,6 +123,7 @@ cmake -S $RepoRoot -B $BuildDirectory -G Ninja `
     "-DFOREVERTAS_WINDOWS_RUNTIME_DIR=$RuntimeDirectory" `
     "-DFOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR=$env:VCToolsRedistDir/x64/Microsoft.VC143.CRT" `
     -DBUILD_TESTING=OFF `
+    "-DFOREVERTAS_EXTRA_INSTALL_FILES=$($env:FOREVERTAS_EXTRA_FILES)" `
     @FlavorOptions
 $ConfigureExitCode = $LASTEXITCODE
 $ErrorActionPreference = "Stop"

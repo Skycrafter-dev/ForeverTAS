@@ -307,6 +307,18 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
                    "--workdir", "/workspace"]
         if cpu_set:
             command.extend(("--cpuset-cpus", ",".join(map(str, cpu_set))))
+        # Optional libraries shipped beside the executable (see
+        # build-appimage.sh), mounted read-only into the build.
+        extra = [Path(path).resolve() for path in
+                 os.environ.get("FOREVERTAS_EXTRA_LIBRARIES", "").split(":")
+                 if path]
+        for index, library in enumerate(extra):
+            command.extend(("--volume",
+                            f"{library}:/extra/{index}/{library.name}:ro"))
+        if extra:
+            environment["FOREVERTAS_EXTRA_LIBRARIES"] = ":".join(
+                f"/extra/{index}/{library.name}"
+                for index, library in enumerate(extra))
         for key, value in environment.items():
             command.extend(("--env", f"{key}={value}"))
         command.extend((hip if nvidia or amd else base,

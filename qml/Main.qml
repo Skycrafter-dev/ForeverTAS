@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import QtQml.Models
 import QtQuick3D
+import QtQuick.Effects
 import "settings"
 import ForeverTAS.Viewer 1.0
 
@@ -14,6 +15,9 @@ ApplicationWindow {
     property var updater: null
     property var shutdown: null
     onClosing: close => {
+        dockSpace.flushState()
+        if (lookSaveTimer.running)
+            window.saveLook()
         if (shutdown && !shutdown.requestClose()) {
             close.accepted = false
             shutdownDialog.open()
@@ -26,7 +30,7 @@ ApplicationWindow {
             window.close()
         }
     }
-    Dialog {
+    GlassDialog {
         id: shutdownDialog
         objectName: "shutdownDialog"
         parent: Overlay.overlay
@@ -55,7 +59,15 @@ ApplicationWindow {
     }
 
     property string renderMode: "textured"
-    Dialog {
+    VideoExportDialog {
+        id: videoExportDialog
+        objectName: "videoExportDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(440, window.width - 32)
+        viewer: window.viewer
+    }
+    GlassDialog {
         id: gamepadDialog
         objectName: "gamepadDialog"
         parent: Overlay.overlay
@@ -102,17 +114,22 @@ ApplicationWindow {
     property bool codeEditorExpanded: false
     readonly property bool rayTracingEnabled:
         renderMode === "textured-rt"
+    // The map's own textures; a render module's mode shows them too until
+    // its first frame.
+    readonly property bool texturedMap: renderMode === "textured"
+                                        || renderMode === "module"
+    readonly property bool moduleMapShown: renderMode === "module"
+                                           && moduleRenderView.ready
+    // The render module draws the selected run's car as the game does,
+    // in place of ForeverTAS's.
+    property bool moduleGameCar: String(window.controller.uiSetting(
+                                     "moduleGameCar", true)) !== "false"
+    readonly property bool moduleCarShown: moduleMapShown && moduleGameCar
     readonly property real measuredFps: rayTracingEnabled
         ? rayTracingTrajectoryOverlay.renderStats.fps : rasterMapView.renderStats.fps
     onRenderModeChanged: editHistory.noteChange()
     readonly property var settingsWheelRedirectorObject:
         settingsWheelRedirector
-
-    Binding {
-        target: AppTheme
-        property: "dark"
-        value: window.controller.darkMode
-    }
 
     EditHistory {
         id: editHistory
@@ -145,7 +162,6 @@ ApplicationWindow {
         function onCudaSessionSpecializationEnabledChanged() { editHistory.noteChange() }
         function onRandomizeSeedsOnStartChanged() { editHistory.noteChange() }
         function onDrawTargetsThroughBlocksChanged() { editHistory.noteChange() }
-        function onDarkModeChanged() { editHistory.noteChange() }
         function onSearchAlgorithmIdChanged() { editHistory.noteChange() }
         function onSearchAlgorithmSettingsChanged() { editHistory.noteChange() }
         function onModifierPassesChanged() { editHistory.noteChange() }
@@ -328,6 +344,35 @@ ApplicationWindow {
         return item && typeof item.undo === "function" ? item : null
     }
 
+    readonly property bool canUndoEdit:
+        !window.controller.running
+        && !window.viewer.manualDriving
+        && editHistory.gestureDepth === 0
+        && (editHistory.canUndo
+            || (window.focusedTextEditor()?.canUndo ?? false))
+    readonly property bool canRedoEdit:
+        !window.controller.running
+        && !window.viewer.manualDriving
+        && editHistory.gestureDepth === 0
+        && (editHistory.canRedo
+            || (window.focusedTextEditor()?.canRedo ?? false))
+
+    function undoEdit() {
+        const editor = window.focusedTextEditor()
+        if (editor?.canUndo)
+            editor.undo()
+        else
+            editHistory.undo()
+    }
+
+    function redoEdit() {
+        const editor = window.focusedTextEditor()
+        if (editor?.canRedo)
+            editor.redo()
+        else
+            editHistory.redo()
+    }
+
     onActiveChanged: {
         if (!active) {
             window.viewer.releaseManualInputs()
@@ -378,7 +423,7 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    GlassDialog {
         id: updateDialog
         objectName: "updateDialog"
         anchors.centerIn: parent
@@ -542,7 +587,7 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    GlassDialog {
         id: replaceBaseInputScriptDialog
 
         objectName: "replaceBaseInputScriptDialog"
@@ -582,7 +627,7 @@ ApplicationWindow {
         }
     }
 
-    Dialog {
+    GlassDialog {
         id: telemetryEditorDialog
         objectName: "telemetryEditorDialog"
         anchors.centerIn: parent
@@ -810,71 +855,3385 @@ ApplicationWindow {
         objectName: "undoBaseInputScriptShortcut"
         sequences: [StandardKey.Undo]
         context: Qt.ApplicationShortcut
-        enabled: !window.controller.running
-                 && !window.viewer.manualDriving
-                 && editHistory.gestureDepth === 0
-                 && (editHistory.canUndo
-                     || (window.focusedTextEditor()?.canUndo ?? false))
-        onActivated: {
-            const editor = window.focusedTextEditor()
-            if (editor?.canUndo)
-                editor.undo()
-            else
-                editHistory.undo()
-        }
+        enabled: window.canUndoEdit
+        onActivated: window.undoEdit()
     }
 
     Shortcut {
         objectName: "redoEditShortcut"
         sequence: "Ctrl+Shift+Z"
         context: Qt.ApplicationShortcut
-        enabled: !window.controller.running
-                 && !window.viewer.manualDriving
-                 && editHistory.gestureDepth === 0
-                 && (editHistory.canRedo
-                     || (window.focusedTextEditor()?.canRedo ?? false))
-        onActivated: {
-            const editor = window.focusedTextEditor()
-            if (editor?.canRedo)
-                editor.redo()
-            else
-                editHistory.redo()
+        enabled: window.canRedoEdit
+        onActivated: window.redoEdit()
+    }
+
+
+    // ---- glass UI: menus, zoom, saved look and layout -------------------------
+
+    readonly property real menuBarHeight: 30
+    // The text field last typed in, for Edit > Cut/Copy/Paste/Select all
+    // (opening the menu takes the focus away from it).
+    property Item lastTextEditor: null
+    onActiveFocusItemChanged: {
+        const item = window.activeFocusItem
+        if (item && typeof item.selectAll === "function"
+                && typeof item.paste === "function")
+            window.lastTextEditor = item
+    }
+
+    function editText(action) {
+        const editor = window.lastTextEditor
+        if (!editor || !editor.visible)
+            return
+        editor.forceActiveFocus()
+        editor[action]()
+    }
+
+    function setZoom(value) {
+        AppTheme.zoom = Math.round(Math.max(0.7, Math.min(1.6, value)) * 10) / 10
+    }
+
+    readonly property bool canOpenMap: !window.viewer.loading
+                                       && !window.viewer.manualDriving
+                                       && !window.controller.running
+                                       && !window.controller.extractingReplayInputs
+    readonly property bool canExtractInputs: window.controller.canExtractReplayInputs
+                                             && !window.viewer.loading
+                                             && !window.viewer.manualDriving
+
+    function loadMapIfReady() {
+        if (window.canOpenMap
+                && window.controller.packsDirectory.length > 0
+                && window.controller.replayPath.length > 0)
+            window.viewer.loadMap(window.controller.packsDirectory,
+                                  window.controller.replayPath)
+    }
+
+    function openMapOrReplay() {
+        if (!window.controller.browseForReplay())
+            return
+        if (window.controller.packsDirectory.length === 0) {
+            // Needed first; the map loads when the dialog closes.
+            packsDialog.loadAfter = true
+            packsDialog.open()
+            return
+        }
+        window.loadMapIfReady()
+    }
+
+    function extractInputs() {
+        if (window.controller.baseInputScript.trim().length > 0)
+            replaceBaseInputScriptDialog.open()
+        else
+            window.controller.extractReplayInputs()
+    }
+
+    // Code runs the simulation debugger while its panel is on screen (it
+    // used to run while the Code tab was selected).
+    function updateSimulationDebugger() {
+        if (codePanel.onTop) {
+            if (window.viewer.loaded)
+                window.viewer.startSimulationDebugger()
+        } else {
+            window.codeEditorExpanded = false
+            window.viewer.stopSimulationDebugger()
         }
     }
 
-    SplitView {
+    // First run and View > Reset layout: Inputs over Graphics on the left,
+    // Bruteforce and Code as tabs on the right, the race viewer header above
+    // the race view, and the old race view overlays floating where they were.
+    function defaultLayout(w, h) {
+        const m = AppTheme.margin, g = AppTheme.gap, hh = AppTheme.headerHeight
+        const left = 300, right = 390
+        const headerHeight = hh + 52
+        const x0 = m + left + g, x1 = m + w - right - g
+        const y0 = m + headerHeight + g, y1 = m + h
+        const mid = (x0 + x1) / 2
+        function tabs(id, panels) {
+            return { type: "tabs", id: id, tabs: panels, current: panels[0] }
+        }
+        function floating(id, panel, x, y, fw, fh) {
+            return { id: id, tabs: [panel], current: panel,
+                     rect: { x: x, y: y, w: fw, h: fh }, collapsed: false }
+        }
+        // The whiteboard toolbar gets taller while drawing (two rows of
+        // buttons when narrow); leave it room.
+        const whiteboardWidth = Math.min(520, Math.max(330, (x1 - x0 - 24) * 0.6))
+        const whiteboardHeight = hh + 46
+        const whiteboardRoom = hh + 164
+        const telemetryHeight = hh + 46
+        const playbackHeight = hh + 58
+        // Camera sits top right of the race view, next to the whiteboard
+        // when there is room, under it otherwise.
+        const room = x1 - x0 - 24 - whiteboardWidth - g
+        const cameraWidth = Math.max(260, Math.min(480, room))
+        // Below 440 px the camera buttons wrap onto two rows.
+        const cameraHeight = hh + (cameraWidth < 440 ? 80 : 44)
+        const cameraY = room >= 260 ? y0 + 12 : y0 + 12 + whiteboardRoom + g
+        return {
+            version: 1,
+            nextId: 40,
+            root: {
+                type: "split", id: "g1", dir: "row", ratio: left / Math.max(1, w - g), size: left,
+                a: { type: "split", id: "g2", dir: "column", ratio: 0.5,
+                     a: tabs("g3", ["inputs"]), b: tabs("g4", ["graphics"]) },
+                b: { type: "split", id: "g5", dir: "row",
+                     ratio: (w - left - right - 2 * g) / Math.max(1, w - left - 2 * g),
+                     size: right,
+                     a: { type: "split", id: "g6", dir: "column",
+                          ratio: headerHeight / Math.max(1, h - g), size: headerHeight,
+                          a: tabs("g7", ["race"]),
+                          b: { type: "center", id: "center" } },
+                     b: tabs("g8", ["bruteforce", "code"]) }
+            },
+            floating: [
+                floating("g20", "whiteboard", x0 + 12, y0 + 12, whiteboardWidth, whiteboardHeight),
+                floating("g21", "drawings", x0 + 12, y0 + 12 + whiteboardRoom + g,
+                         330, 420),
+                floating("g22", "camera", x1 - 12 - cameraWidth, cameraY, cameraWidth, cameraHeight),
+                floating("g23", "telemetry", x1 - 12 - 300, cameraY + cameraHeight + g,
+                         300, telemetryHeight),
+                floating("g24", "splits", x1 - 12 - 230,
+                         cameraY + cameraHeight + g + telemetryHeight + g, 230, hh + 230),
+                floating("g25", "playback", mid - 215, y1 - 12 - playbackHeight, 430, playbackHeight),
+                floating("g26", "manualDrive", mid - 130,
+                         y1 - 12 - playbackHeight - g - (hh + 36), 260, hh + 36)
+            ],
+            closed: []
+        }
+    }
+
+    // Zoom, glass look: saved preferences.
+    QtObject {
+        Component.onCompleted: {
+            window.setZoom(Number(window.controller.uiSetting("zoom", 1.0)))
+            AppTheme.darkening = Number(window.controller.uiSetting("glassDarkening", AppTheme.defaultDarkening))
+            AppTheme.blur = Number(window.controller.uiSetting("glassBlur", AppTheme.defaultBlur))
+            AppTheme.edgeBend = Number(window.controller.uiSetting("glassEdgeBend", AppTheme.defaultEdgeBend))
+            AppTheme.shadowStrength = Number(window.controller.uiSetting("glassShadowStrength", AppTheme.defaultShadowStrength))
+            AppTheme.shadowSize = Number(window.controller.uiSetting("glassShadowSize", AppTheme.defaultShadowSize))
+            AppTheme.cornerRadius = Number(window.controller.uiSetting("glassCornerRadius", AppTheme.defaultCornerRadius))
+            // Popups and dialogs live in the overlay: zoom it too.
+            const overlay = window.Overlay.overlay
+            overlay.transformOrigin = Item.TopLeft
+            overlay.scale = Qt.binding(function() { return AppTheme.zoom })
+            window.fitOverlay()
+        }
+    }
+    function fitOverlay() {
+        const overlay = window.Overlay.overlay
+        const w = window.width / AppTheme.zoom, h = window.height / AppTheme.zoom
+        if (overlay.width !== w)
+            overlay.width = w
+        if (overlay.height !== h)
+            overlay.height = h
+    }
+    Connections {
+        target: window.Overlay.overlay
+        function onWidthChanged() { Qt.callLater(window.fitOverlay) }
+        function onHeightChanged() { Qt.callLater(window.fitOverlay) }
+    }
+    Connections {
+        target: AppTheme
+        function onZoomChanged() {
+            lookSaveTimer.restart()
+            window.fitOverlay()
+        }
+        function onDarkeningChanged() { lookSaveTimer.restart() }
+        function onBlurChanged() { lookSaveTimer.restart() }
+        function onEdgeBendChanged() { lookSaveTimer.restart() }
+        function onShadowStrengthChanged() { lookSaveTimer.restart() }
+        function onShadowSizeChanged() { lookSaveTimer.restart() }
+        function onCornerRadiusChanged() { lookSaveTimer.restart() }
+    }
+    // Saved once a slider stops moving: each save rewrites the settings file.
+    Timer {
+        id: lookSaveTimer
+        interval: 500
+        onTriggered: window.saveLook()
+    }
+    function saveLook() {
+        lookSaveTimer.stop()
+        window.controller.setUiSetting("zoom", AppTheme.zoom)
+        window.controller.setUiSetting("glassDarkening", AppTheme.darkening)
+        window.controller.setUiSetting("glassBlur", AppTheme.blur)
+        window.controller.setUiSetting("glassEdgeBend", AppTheme.edgeBend)
+        window.controller.setUiSetting("glassShadowStrength", AppTheme.shadowStrength)
+        window.controller.setUiSetting("glassShadowSize", AppTheme.shadowSize)
+        window.controller.setUiSetting("glassCornerRadius", AppTheme.cornerRadius)
+    }
+    onWidthChanged: Qt.callLater(window.fitOverlay)
+    onHeightChanged: Qt.callLater(window.fitOverlay)
+
+    Shortcut {
+        objectName: "openMapShortcut"
+        sequences: [StandardKey.Open]
+        context: Qt.ApplicationShortcut
+        enabled: window.canOpenMap
+        onActivated: window.openMapOrReplay()
+    }
+
+    Shortcut {
+        objectName: "quitShortcut"
+        sequences: [StandardKey.Quit]
+        context: Qt.ApplicationShortcut
+        onActivated: window.close()
+    }
+
+    // Tab hides every panel while the race view has the keyboard; in forms
+    // it keeps moving between fields.
+    Shortcut {
+        objectName: "hideAllPanelsShortcut"
+        sequence: "Tab"
+        context: Qt.WindowShortcut
+        enabled: !window.activeFocusItem
+                 || window.activeFocusItem === manualInputFocus
+                 || window.activeFocusItem === window.contentItem
+        onActivated: dockSpace.hideAll = !dockSpace.hideAll
+    }
+
+    Shortcut {
+        objectName: "zoomInShortcut"
+        sequences: [StandardKey.ZoomIn, "Ctrl+="]
+        context: Qt.ApplicationShortcut
+        onActivated: window.setZoom(AppTheme.zoom + 0.1)
+    }
+
+    Shortcut {
+        objectName: "zoomOutShortcut"
+        sequences: [StandardKey.ZoomOut]
+        context: Qt.ApplicationShortcut
+        onActivated: window.setZoom(AppTheme.zoom - 0.1)
+    }
+
+    Shortcut {
+        objectName: "resetZoomShortcut"
+        sequence: "Ctrl+0"
+        context: Qt.ApplicationShortcut
+        onActivated: window.setZoom(1.0)
+    }
+
+    component PanelMenuItem: ThemedMenuItem {
+        property string panelId
+        showMark: true
+        marked: dockSpace.layout.revision >= 0 && dockSpace.layout.isOpen(panelId)
+        onTriggered: dockSpace.setOpen(panelId, !dockSpace.layout.isOpen(panelId))
+    }
+
+    component LookSlider: RowLayout {
+        property alias text: label.text
+        property alias from: slider.from
+        property alias to: slider.to
+        property alias value: slider.value
+        signal moved(real value)
+        Layout.fillWidth: true
+        spacing: 10
+        Label {
+            id: label
+            Layout.preferredWidth: 90
+            color: AppTheme.text
+        }
+        ThemedSlider {
+            id: slider
+            Layout.fillWidth: true
+            onMoved: parent.moved(value)
+        }
+    }
+
+    // The glass look, as a settings dialog in the middle of the window; it
+    // does not darken the window, so changes show as they are made.
+    GlassDialog {
+        id: glassLookPopup
+        objectName: "glassLookPopup"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(380, window.width - 32)
+        title: qsTr("Glass look")
+        modal: true
+        dim: false
+        closePolicy: Popup.CloseOnEscape
+
+        contentItem: ColumnLayout {
+            spacing: 8
+
+            LookSlider {
+                text: qsTr("Darkening")
+                from: 0
+                to: 0.85
+                value: AppTheme.darkening
+                onMoved: value => AppTheme.darkening = value
+            }
+            LookSlider {
+                text: qsTr("Blur")
+                from: 0
+                to: 1.0
+                value: AppTheme.blur
+                onMoved: value => AppTheme.blur = value
+            }
+            LookSlider {
+                text: qsTr("Edge bend")
+                from: 0
+                to: 32
+                value: AppTheme.edgeBend
+                onMoved: value => AppTheme.edgeBend = value
+            }
+            LookSlider {
+                text: qsTr("Shadow")
+                from: 0
+                to: 1
+                value: AppTheme.shadowStrength
+                onMoved: value => AppTheme.shadowStrength = value
+            }
+            LookSlider {
+                text: qsTr("Shadow size")
+                from: 0
+                to: 1.5
+                value: AppTheme.shadowSize
+                onMoved: value => AppTheme.shadowSize = value
+            }
+            LookSlider {
+                text: qsTr("Corners")
+                from: 0
+                to: 32
+                value: AppTheme.cornerRadius
+                onMoved: value => AppTheme.cornerRadius = value
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 4
+                spacing: 6
+
+                ThemedButton {
+                    objectName: "glassLookReset"
+                    text: qsTr("Reset")
+                    onClicked: {
+                        AppTheme.darkening = AppTheme.defaultDarkening
+                        AppTheme.blur = AppTheme.defaultBlur
+                        AppTheme.edgeBend = AppTheme.defaultEdgeBend
+                        AppTheme.shadowStrength = AppTheme.defaultShadowStrength
+                        AppTheme.shadowSize = AppTheme.defaultShadowSize
+                        AppTheme.cornerRadius = AppTheme.defaultCornerRadius
+                    }
+                }
+                Item { Layout.fillWidth: true }
+                ThemedButton {
+                    objectName: "glassLookClose"
+                    text: qsTr("Close")
+                    onClicked: glassLookPopup.close()
+                }
+            }
+        }
+    }
+
+    // ---- race view, with the glass panels over it ---------------------------
+    // The race view fills the window; docked and floating panels both sit
+    // over it, so docking never moves or resizes the view. The ambient layer
+    // only shows when the view is smaller than the window.
+    readonly property rect raceRect: Qt.rect(0, 0, Math.max(1, window.width),
+                                             Math.max(1, window.height))
+    // The part of the race view the cameras frame, as the race view of
+    // releases: between the docked side columns, over the window's full
+    // height (its header and transport sat over the picture). The rest of
+    // the window carries the same picture on.
+    readonly property rect framedRect: {
+        const zoom = AppTheme.zoom
+        const c = dockSpace.layout.center
+        const a = dockSpace.area
+        const g = AppTheme.gap
+        const ox = dockSpace.x * zoom
+        const left = c.x <= a.x + 0.5 ? 0 : ox + (c.x - g) * zoom
+        const right = c.x + c.width >= a.x + a.width - 0.5
+                      ? window.width : ox + (c.x + c.width + g) * zoom
+        return Qt.rect(left, 0, Math.max(1, right - left),
+                       Math.max(1, window.height))
+    }
+    // A camera's projection over the whole race view that shows the framed
+    // part as a camera of that size and vertical field of view would.
+    function framedProjection(fieldOfView, near, far) {
+        const width = Math.max(1, raceRect.width)
+        const height = Math.max(1, raceRect.height)
+        const r = framedRect
+        const focal = r.height / 2 / Math.tan(fieldOfView * Math.PI / 360)
+        const cx = r.x + r.width / 2
+        const cy = r.y + r.height / 2
+        return Qt.matrix4x4(2 * focal / width, 0, 1 - 2 * cx / width, 0,
+                            0, 2 * focal / height, 2 * cy / height - 1, 0,
+                            0, 0, -(far + near) / (far - near),
+                            -2 * far * near / (far - near),
+                            0, 0, -1, 0)
+    }
+
+    Item {
+        id: raceLayer
+        objectName: "raceLayer"
         anchors.fill: parent
-        orientation: Qt.Horizontal
+
+        Binding {
+            target: AppTheme
+            property: "glassAvailable"
+            value: raceLayer.GraphicsInfo.api !== GraphicsInfo.Software
+        }
 
         Rectangle {
-            id: workspaceContent
-
-            objectName: "workspaceContent"
-            SplitView.fillWidth: true
-            SplitView.minimumWidth: 680
-            visible: window.controller.viewerVisible && !window.codeEditorExpanded
-            onVisibleChanged: {
-                if (!visible) viewport.releaseFreeMovement()
-            }
+            anchors.fill: parent
             color: AppTheme.window
+        }
 
-            RowLayout {
+        // Hidden behind the race view; its texture feeds the glass.
+        MultiEffect {
+            id: blurredRace
+            x: raceBackdrop.x
+            y: raceBackdrop.y
+            width: raceBackdrop.width
+            height: raceBackdrop.height
+            visible: AppTheme.glassAvailable
+            source: raceBackdrop
+            autoPaddingEnabled: false
+            blurEnabled: true
+            blur: 1.0
+            blurMax: 64
+            layer.enabled: AppTheme.glassAvailable
+            layer.textureSize: Qt.size(Math.max(1, width / 2), Math.max(1, height / 2))
+        }
+
+        // The panels, blurred, for the glass of popups (lists, menus,
+        // dialogs) so the text under them does not show through. Drawn
+        // under the race view; captured only while such a popup is open.
+        ShaderEffectSource {
+            id: panelCapture
+            anchors.fill: parent
+            visible: AppTheme.glassAvailable
+            sourceItem: ui
+            live: AppTheme.panelViewers > 0
+            hideSource: false
+            textureSize: Qt.size(Math.max(1, width / 2), Math.max(1, height / 2))
+        }
+        MultiEffect {
+            id: panelsBlurred
+            anchors.fill: parent
+            visible: AppTheme.glassAvailable
+            source: panelCapture
+            autoPaddingEnabled: false
+            blurEnabled: true
+            blur: 0.8
+            blurMax: 48
+            layer.enabled: AppTheme.glassAvailable && AppTheme.panelViewers > 0
+            layer.textureSize: Qt.size(Math.max(1, width / 2), Math.max(1, height / 2))
+        }
+
+        ShaderEffect {
+            id: ambient
+            anchors.fill: parent
+            visible: AppTheme.glassAvailable
+            property vector2d itemSize: Qt.vector2d(width, height)
+            property vector2d viewOrigin: Qt.vector2d(raceBackdrop.x, raceBackdrop.y)
+            property vector2d viewSize: Qt.vector2d(raceBackdrop.width, raceBackdrop.height)
+            property real dim: 0.05
+            property var blurSource: blurredRace
+            fragmentShader: "qrc:/glass/shaders/ambient.frag.qsb"
+        }
+
+        Item {
+            id: raceBackdrop
+            objectName: "raceBackdrop"
+            x: window.raceRect.x
+            y: window.raceRect.y
+            width: window.raceRect.width
+            height: window.raceRect.height
+            layer.enabled: AppTheme.glassAvailable
+
+            Rectangle {
                 anchors.fill: parent
-                spacing: 0
+                color: AppTheme.window
+            }
 
-                ColumnLayout {
-                    Layout.preferredWidth: 300
-                    Layout.minimumWidth: 270
-                    Layout.maximumWidth: 350
-                    Layout.fillHeight: true
-                    spacing: 0
+            Item {
+                id: viewport
+                objectName: "raceViewport"
+                anchors.fill: parent
+                visible: window.controller.viewerVisible
+                         && !window.codeEditorExpanded
+                onVisibleChanged: {
+                    if (!visible) releaseFreeMovement()
+                }
+
+                property real orbitYaw: 35
+                property real orbitPitch: -20
+                property real orbitDistance: 38
+                property real cameraFieldOfView: 55
+                property bool freeCamera: false
+                property bool orbitalCamera: false
+                property bool pointPlacementActive: false
+                readonly property bool targetMouseEditingAllowed:
+                    !window.controller.running && !window.controller.targetMouseEditingLocked
+                onTargetMouseEditingAllowedChanged: {
+                    if (!targetMouseEditingAllowed) {
+                        endCuboidInteraction()
+                        endCustomInteraction()
+                        endPoseInteraction()
+                        pointPlacementActive = false
+                        cuboidPointerCaptured = false
+                        editHistory.endGesture()
+                    }
+                }
+                Connections {
+                    target: window.controller
+                    function onEvaluationTargetIdChanged() {
+                        if (!evaluationOverlay.showsPoint)
+                            viewport.pointPlacementActive = false
+                    }
+                    function onRunningChanged() {
+                        if (window.controller.running)
+                            viewport.pointPlacementActive = false
+                    }
+                }
+                readonly property vector3d sceneCameraPosition:
+                    viewCamera.scenePosition
+                readonly property var sceneCameraRotation:
+                    viewCamera.sceneRotation
+                property vector3d freeCameraPosition:
+                    Qt.vector3d(0, 0, 0)
+                function renderTelemetry(script) {
+                    // These explicit reads keep the binding live while the
+                    // C++ formatter samples the selected run internally.
+                    const timelineTime = window.viewer.timeMs
+                    const selectedCarPosition = window.viewer.carPosition
+                    const context = evaluationOverlay.telemetryContext
+                    const frame = evaluationOverlay.projectionFrame
+                    return window.viewer.renderTelemetryWithContext(
+                                script, frame ? frame[0] : viewCamera.scenePosition,
+                                context, true)
+                }
+                readonly property bool carCameraActive:
+                    !freeCamera && !orbitalCamera && !cuboidFocused
+                    && window.viewer.carCameraAvailable
+                    && window.viewer.runCount > 0
+                readonly property vector3d cameraForward: {
+                    if (carCameraActive) {
+                        const dx = window.viewer.carCameraTarget.x
+                                 - window.viewer.carCameraPosition.x
+                        const dy = window.viewer.carCameraTarget.y
+                                 - window.viewer.carCameraPosition.y
+                        const dz = window.viewer.carCameraTarget.z
+                                 - window.viewer.carCameraPosition.z
+                        const length = Math.sqrt(dx * dx + dy * dy
+                                               + dz * dz)
+                        if (length > 0.000001)
+                            return Qt.vector3d(dx / length, dy / length,
+                                               dz / length)
+                    }
+                    const yaw = orbitYaw * Math.PI / 180
+                    const pitch = orbitPitch * Math.PI / 180
+                    const pitchCos = Math.cos(pitch)
+                    return Qt.vector3d(
+                        -Math.sin(yaw) * pitchCos,
+                        Math.sin(pitch),
+                        -Math.cos(yaw) * pitchCos)
+                }
+                readonly property vector3d freeCameraTarget:
+                    Qt.vector3d(
+                        freeCameraPosition.x
+                            + cameraForward.x * orbitDistance,
+                        freeCameraPosition.y
+                            + cameraForward.y * orbitDistance,
+                        freeCameraPosition.z
+                            + cameraForward.z * orbitDistance)
+                property bool hasObjectFocus: false
+                property bool cuboidFocused: false
+                property int exactWhiteboardBoardIndex: -1
+                property string exactWhiteboardBoardId: ""
+                property int lastFocusedWhiteboardIndex: -1
+                property string lastFocusedWhiteboardId: ""
+                property vector3d cuboidFocusCenter:
+                    Qt.vector3d(0, 0, 0)
+                readonly property vector3d cameraTarget:
+                    freeCamera ? freeCameraTarget
+                    : cuboidFocused ? cuboidFocusCenter
+                    : carCameraActive
+                      ? window.viewer.carCameraTarget
+                      : window.viewer.carPosition
+                readonly property string cameraFocusMode:
+                    freeCamera ? "free"
+                    : cuboidFocused ? "object"
+                    : orbitalCamera ? "orbital"
+                    : carCameraActive ? "preset" : "car"
+                property bool freeMoveForward: false
+                property bool freeMoveBackward: false
+                property bool freeMoveLeft: false
+                property bool freeMoveRight: false
+                property bool freeMoveUp: false
+                property bool freeMoveDown: false
+                property real freeMoveSpeed: 0
+                property real freeMoveStartedAt: 0
+                property real freeMoveLastStepAt: 0
+                readonly property real freeMoveInitialSpeed: 9
+                readonly property real freeMoveAcceleration: 30
+                readonly property real freeMoveMaximumSpeed: 360
+                property real viewRotationTargetYaw: orbitYaw
+                property real viewRotationTargetPitch: orbitPitch
+                property bool viewRotationSmoothing: false
+                property bool cuboidDragActive: false
+                property bool cuboidPointerCaptured: false
+                property string cuboidDragKind: ""
+                property string cuboidDragAxis: ""
+                property real cuboidDragX: 0
+                property real cuboidDragY: 0
+                property bool customVertexDragActive: false
+                property int customVertexDragIndex: -1
+                property bool customDepthDragActive: false
+                property bool poseDragActive: false
+                property string poseDragKind: ""
+                property string poseDragAxis: ""
+                property bool exportingWhiteboardImage: false
+                property url whiteboardImageExportUrl: ""
+
+                function hasFreeMovement() {
+                    return freeMoveForward || freeMoveBackward
+                        || freeMoveLeft || freeMoveRight
+                        || freeMoveUp || freeMoveDown
+                }
+
+                function releaseFreeMovement() {
+                    freeMoveForward = false
+                    freeMoveBackward = false
+                    freeMoveLeft = false
+                    freeMoveRight = false
+                    freeMoveUp = false
+                    freeMoveDown = false
+                    freeMoveSpeed = 0
+                    freeMoveStartedAt = 0
+                    freeMoveLastStepAt = 0
+                    freeCameraMovementTimer.stop()
+                }
+
+                function setFreeMovement(direction, active) {
+                    const hadMovement = hasFreeMovement()
+                    if (direction === "forward")
+                        freeMoveForward = active
+                    else if (direction === "backward")
+                        freeMoveBackward = active
+                    else if (direction === "left")
+                        freeMoveLeft = active
+                    else if (direction === "right")
+                        freeMoveRight = active
+                    else if (direction === "up")
+                        freeMoveUp = active
+                    else if (direction === "down")
+                        freeMoveDown = active
+                    else
+                        return false
+
+                    const hasMovement = hasFreeMovement()
+                    if (!hadMovement && hasMovement) {
+                        const now = Date.now()
+                        freeMoveStartedAt = now
+                        freeMoveLastStepAt = now
+                        freeMoveSpeed = freeMoveInitialSpeed
+                        freeCameraMovementTimer.start()
+                    } else if (!hasMovement) {
+                        releaseFreeMovement()
+                    }
+                    return true
+                }
+
+                function freeMovementForKey(key) {
+                    if (key === Qt.Key_Up || key === Qt.Key_W
+                            || key === Qt.Key_Z)
+                        return "forward"
+                    if (key === Qt.Key_Down || key === Qt.Key_S)
+                        return "backward"
+                    if (key === Qt.Key_Left || key === Qt.Key_A
+                            || key === Qt.Key_Q)
+                        return "left"
+                    if (key === Qt.Key_Right || key === Qt.Key_D)
+                        return "right"
+                    if (key === Qt.Key_E)
+                        return "up"
+                    if (key === Qt.Key_C)
+                        return "down"
+                    return ""
+                }
+
+                function handleCameraPresetKey(event, active) {
+                    let preset = 0
+                    if (event.key === Qt.Key_1)
+                        preset = 1
+                    else if (event.key === Qt.Key_2)
+                        preset = 2
+                    else if (event.key === Qt.Key_3)
+                        preset = 3
+                    else if (event.key === Qt.Key_7) {
+                        event.accepted = true
+                        if (active && !event.isAutoRepeat)
+                            enableFreeCamera()
+                        return true
+                    } else {
+                        return false
+                    }
+                    event.accepted = true
+                    if (active && !event.isAutoRepeat
+                            && window.viewer.runCount > 0
+                            && window.viewer.carCameraAvailable) {
+                        window.viewer.cameraPreset = preset
+                        focusCurrentCar()
+                    }
+                    return true
+                }
+
+                function handleFreeCameraKey(event, active) {
+                    if (!freeCamera)
+                        return false
+                    const direction = freeMovementForKey(event.key)
+                    if (direction.length === 0)
+                        return false
+                    event.accepted = true
+                    if (!event.isAutoRepeat)
+                        setFreeMovement(direction, active)
+                    return true
+                }
+
+                function stepFreeCameraMovement(timestamp) {
+                    if (!freeCamera) {
+                        releaseFreeMovement()
+                        return false
+                    }
+                    if (!hasFreeMovement())
+                        return false
+                    const now = Number.isFinite(timestamp)
+                              ? timestamp : Date.now()
+                    if (freeMoveStartedAt <= 0)
+                        freeMoveStartedAt = now
+                    if (freeMoveLastStepAt <= 0)
+                        freeMoveLastStepAt = now
+                    const elapsed = Math.max(
+                        0, (now - freeMoveStartedAt) / 1000)
+                    const delta = Math.max(
+                        0,
+                        Math.min(0.05,
+                                 (now - freeMoveLastStepAt) / 1000))
+                    freeMoveLastStepAt = now
+                    freeMoveSpeed = Math.min(
+                        freeMoveMaximumSpeed,
+                        freeMoveInitialSpeed
+                            + elapsed * freeMoveAcceleration)
+                    if (delta <= 0)
+                        return true
+
+                    const yaw = orbitYaw * Math.PI / 180
+                    const pitch = orbitPitch * Math.PI / 180
+                    const pitchCos = Math.cos(pitch)
+                    const forward = Qt.vector3d(
+                        -Math.sin(yaw) * pitchCos,
+                        Math.sin(pitch),
+                        -Math.cos(yaw) * pitchCos)
+                    const right = Qt.vector3d(
+                        Math.cos(yaw), 0, -Math.sin(yaw))
+                    let x = 0
+                    let y = 0
+                    let z = 0
+                    if (freeMoveForward) {
+                        x += forward.x
+                        y += forward.y
+                        z += forward.z
+                    }
+                    if (freeMoveBackward) {
+                        x -= forward.x
+                        y -= forward.y
+                        z -= forward.z
+                    }
+                    if (freeMoveRight) {
+                        x += right.x
+                        z += right.z
+                    }
+                    if (freeMoveLeft) {
+                        x -= right.x
+                        z -= right.z
+                    }
+                    if (freeMoveUp)
+                        y += 1
+                    if (freeMoveDown)
+                        y -= 1
+                    const length = Math.sqrt(x * x + y * y + z * z)
+                    if (length <= 0.000001)
+                        return true
+                    const distance = freeMoveSpeed * delta / length
+                    freeCameraPosition = Qt.vector3d(
+                        freeCameraPosition.x + x * distance,
+                        freeCameraPosition.y + y * distance,
+                        freeCameraPosition.z + z * distance)
+                    return true
+                }
+
+                function zoomOrbit(wheelDeltaY) {
+                    if (carCameraActive || freeCamera)
+                        return false
+                    leaveExactWhiteboardView()
+                    const factor = Math.exp(-wheelDeltaY / 1200)
+                    orbitDistance = Math.max(
+                        3, Math.min(1000, orbitDistance * factor))
+                    return true
+                }
+
+                function beginViewRotation() {
+                    viewRotationTargetYaw = orbitYaw
+                    viewRotationTargetPitch = orbitPitch
+                    viewRotationSmoothing = false
+                }
+
+                function updateViewRotation(deltaX, deltaY) {
+                    if (carCameraActive)
+                        return
+                    if (!freeCamera) {
+                        orbitYaw -= deltaX
+                        orbitPitch = Math.max(
+                            -85, Math.min(85, orbitPitch - deltaY))
+                        viewRotationTargetYaw = orbitYaw
+                        viewRotationTargetPitch = orbitPitch
+                        viewRotationSmoothing = false
+                        return
+                    }
+                    viewRotationTargetYaw -= deltaX * 0.5
+                    viewRotationTargetPitch = Math.max(
+                        -85,
+                        Math.min(85,
+                                 viewRotationTargetPitch - deltaY * 0.5))
+                    viewRotationSmoothing = true
+                }
+
+                function stepViewRotation(frameTime) {
+                    if (!viewRotationSmoothing)
+                        return false
+                    const seconds = Math.max(
+                        0,
+                        Math.min(0.05,
+                                 Number.isFinite(frameTime)
+                                 ? frameTime : 1 / 60))
+                    const blend = 1 - Math.exp(-24 * seconds)
+                    orbitYaw += (viewRotationTargetYaw - orbitYaw) * blend
+                    orbitPitch += (viewRotationTargetPitch - orbitPitch)
+                        * blend
+                    if (Math.abs(viewRotationTargetYaw - orbitYaw) < 0.001
+                            && Math.abs(viewRotationTargetPitch
+                                        - orbitPitch) < 0.001) {
+                        orbitYaw = viewRotationTargetYaw
+                        orbitPitch = viewRotationTargetPitch
+                        viewRotationSmoothing = false
+                    }
+                    return true
+                }
+
+                function enableFreeCamera() {
+                    window.viewer.releaseManualInputs()
+                    orbitalCamera = false
+                    const wasCarCamera = carCameraActive
+                    const forward = cameraForward
+                    const position = freeCamera
+                        ? freeCameraPosition
+                        : wasCarCamera
+                          ? window.viewer.carCameraPosition
+                          : Qt.vector3d(
+                                cameraTarget.x
+                                    - forward.x * orbitDistance,
+                                cameraTarget.y
+                                    - forward.y * orbitDistance,
+                                cameraTarget.z
+                                    - forward.z * orbitDistance)
+                    if (wasCarCamera) {
+                        const dx = window.viewer.carCameraTarget.x
+                                 - position.x
+                        const dy = window.viewer.carCameraTarget.y
+                                 - position.y
+                        const dz = window.viewer.carCameraTarget.z
+                                 - position.z
+                        orbitDistance = Math.max(
+                            0.1, Math.sqrt(dx * dx + dy * dy + dz * dz))
+                        orbitPitch = Math.asin(
+                            Math.max(-1, Math.min(1, forward.y)))
+                            * 180 / Math.PI
+                        orbitYaw = Math.atan2(-forward.x, -forward.z)
+                            * 180 / Math.PI
+                    }
+                    beginViewRotation()
+                    freeCameraPosition = Qt.vector3d(
+                        position.x, position.y, position.z)
+                    exactWhiteboardBoardIndex = -1
+                    exactWhiteboardBoardId = ""
+                    cameraFieldOfView = 55
+                    freeCamera = true
+                    cuboidFocused = false
+                }
+
+                function leaveExactWhiteboardView() {
+                    if (exactWhiteboardBoardIndex < 0)
+                        return
+                    exactWhiteboardBoardIndex = -1
+                    exactWhiteboardBoardId = ""
+                    cameraFieldOfView = 55
+                }
+
+                function enableOrbitalCamera() {
+                    window.viewer.releaseManualInputs()
+                    releaseFreeMovement()
+                    beginViewRotation()
+                    exactWhiteboardBoardIndex = -1
+                    exactWhiteboardBoardId = ""
+                    cameraFieldOfView = 55
+                    freeCamera = false
+                    cuboidFocused = false
+                    orbitalCamera = true
+                }
+
+                function focusCurrentCar() {
+                    releaseFreeMovement()
+                    beginViewRotation()
+                    exactWhiteboardBoardIndex = -1
+                    exactWhiteboardBoardId = ""
+                    cameraFieldOfView = 55
+                    freeCamera = false
+                    cuboidFocused = false
+                    orbitalCamera = false
+                }
+
+                function resetCameraFocus() {
+                    focusCurrentCar()
+                    hasObjectFocus = false
+                    lastFocusedWhiteboardIndex = -1
+                    lastFocusedWhiteboardId = ""
+                    cuboidFocusCenter = Qt.vector3d(0, 0, 0)
+                }
+
+                function whiteboardIndexForId(id) {
+                    if (id.length === 0)
+                        return -1
+                    const boards = window.viewer.whiteboard.boards
+                    for (let index = 0; index < boards.length; ++index) {
+                        if (boards[index].id === id)
+                            return index
+                    }
+                    return -1
+                }
+
+                function synchronizeWhiteboardFocus() {
+                    if (lastFocusedWhiteboardId.length === 0)
+                        return
+                    const index = whiteboardIndexForId(
+                        lastFocusedWhiteboardId)
+                    const board = index >= 0
+                        ? window.viewer.whiteboard.boards[index] : null
+                    if (!board || !board.isCurrentMap) {
+                        enableFreeCamera()
+                        lastFocusedWhiteboardIndex = -1
+                        lastFocusedWhiteboardId = ""
+                        hasObjectFocus = false
+                        return
+                    }
+                    lastFocusedWhiteboardIndex = index
+                    if (exactWhiteboardBoardId ===
+                            lastFocusedWhiteboardId) {
+                        exactWhiteboardBoardIndex = index
+                    }
+                }
+
+                function focusLastObject() {
+                    if (!hasObjectFocus)
+                        return
+                    const whiteboardIndex = whiteboardIndexForId(
+                        lastFocusedWhiteboardId)
+                    if (whiteboardIndex >= 0) {
+                        const board = window.viewer.whiteboard.boards[
+                            whiteboardIndex]
+                        if (board && board.isCurrentMap) {
+                            restoreWhiteboardView(board)
+                            return
+                        }
+                    }
+                    releaseFreeMovement()
+                    beginViewRotation()
+                    exactWhiteboardBoardIndex = -1
+                    exactWhiteboardBoardId = ""
+                    cameraFieldOfView = 55
+                    freeCamera = false
+                    cuboidFocused = true
+                    orbitalCamera = false
+                }
+
+                function focusCuboid(center, size) {
+                    releaseFreeMovement()
+                    beginViewRotation()
+                    exactWhiteboardBoardIndex = -1
+                    exactWhiteboardBoardId = ""
+                    lastFocusedWhiteboardIndex = -1
+                    lastFocusedWhiteboardId = ""
+                    cameraFieldOfView = 55
+                    cuboidFocusCenter = center
+                    hasObjectFocus = true
+                    freeCamera = false
+                    cuboidFocused = true
+                    orbitalCamera = false
+                    orbitDistance = Math.max(
+                        3,
+                        Math.min(1000,
+                                 Math.max(size.x, size.y, size.z) * 2.4))
+                }
+
+                function captureWhiteboardView() {
+                    const camera = viewCamera.scenePosition
+                    const target = cameraTarget
+                    const viewportWidth = Math.max(1, width)
+                    const viewportHeight = Math.max(1, height)
+                    const contentX = 0
+                    const contentY = Math.min(
+                        1, whiteboardOverlay.boardTop / viewportHeight)
+                    const contentWidth = 1
+                    const contentHeight = Math.max(
+                        0.000001, 1 - contentY)
+                    const planeDistance = Math.max(
+                        viewCamera.clipNear * 2,
+                        Math.min(
+                            Math.max(0.05, orbitDistance - 0.01),
+                            Math.max(0.05, orbitDistance * 0.32)))
+                    const fullHeight = 2 * Math.tan(
+                        cameraFieldOfView * Math.PI / 360)
+                        * planeDistance
+                    const fullWidth = fullHeight
+                        * viewportWidth / viewportHeight
+                    const planeWidth = fullWidth * contentWidth
+                    const planeHeight = fullHeight * contentHeight
+                    const contentCenterX =
+                        contentX + contentWidth * 0.5
+                    const contentCenterY =
+                        contentY + contentHeight * 0.5
+                    const rightOffset =
+                        fullWidth * (contentCenterX - 0.5)
+                    const upOffset =
+                        fullHeight * (0.5 - contentCenterY)
+                    const yaw = orbitYaw * Math.PI / 180
+                    const pitch = orbitPitch * Math.PI / 180
+                    const right = Qt.vector3d(
+                        Math.cos(yaw), 0, -Math.sin(yaw))
+                    const up = Qt.vector3d(
+                        Math.sin(yaw) * Math.sin(pitch),
+                        Math.cos(pitch),
+                        Math.cos(yaw) * Math.sin(pitch))
+                    return {
+                        "projection": "perspective-vertical",
+                        "fieldOfView": cameraFieldOfView,
+                        "planeDistance": planeDistance,
+                        "viewportWidth": viewportWidth,
+                        "viewportHeight": viewportHeight,
+                        "contentX": contentX,
+                        "contentY": contentY,
+                        "contentWidth": contentWidth,
+                        "contentHeight": contentHeight,
+                        "canvasWidth": Math.max(
+                            1, whiteboardOverlay.width),
+                        "canvasHeight": Math.max(
+                            1,
+                            whiteboardOverlay.height
+                            - whiteboardOverlay.boardTop),
+                        "targetX": target.x,
+                        "targetY": target.y,
+                        "targetZ": target.z,
+                        "yaw": orbitYaw,
+                        "pitch": orbitPitch,
+                        "distance": orbitDistance,
+                        "planeX": camera.x
+                                  + cameraForward.x * planeDistance
+                                  + right.x * rightOffset
+                                  + up.x * upOffset,
+                        "planeY": camera.y
+                                  + cameraForward.y * planeDistance
+                                  + right.y * rightOffset
+                                  + up.y * upOffset,
+                        "planeZ": camera.z
+                                  + cameraForward.z * planeDistance
+                                  + right.z * rightOffset
+                                  + up.z * upOffset,
+                        "planeWidth": planeWidth,
+                        "planeHeight": planeHeight
+                    }
+                }
+
+                function restoreWhiteboardView(board) {
+                    releaseFreeMovement()
+                    cuboidFocusCenter = Qt.vector3d(
+                        board.targetX,
+                        board.targetY,
+                        board.targetZ)
+                    hasObjectFocus = true
+                    freeCamera = false
+                    cuboidFocused = true
+                    orbitalCamera = false
+                    orbitYaw = board.yaw
+                    orbitPitch = board.pitch
+                    beginViewRotation()
+                    orbitDistance = board.distance
+                    cameraFieldOfView =
+                        board.projectionVersion >= 1
+                        ? board.fieldOfView : 55
+                    exactWhiteboardBoardIndex =
+                        board.projectionVersion >= 1
+                        ? board.boardIndex : -1
+                    exactWhiteboardBoardId =
+                        board.projectionVersion >= 1
+                        ? board.id : ""
+                    lastFocusedWhiteboardIndex = board.boardIndex
+                    lastFocusedWhiteboardId = board.id
+                }
+
+                function whiteboardPlaneFocusEnabled() {
+                    return !window.viewer.whiteboard.active
+                        && !freeCamera
+                }
+
+                Timer {
+                    id: freeCameraMovementTimer
+                    interval: 16
+                    repeat: true
+                    onTriggered:
+                        viewport.stepFreeCameraMovement(Date.now())
+                }
+
+                FrameAnimation {
+                    running: viewport.viewRotationSmoothing
+                             && window.visible && viewport.visible
+                    onTriggered:
+                        viewport.stepViewRotation(frameTime)
+                }
+
+                function finishWhiteboardImageExport(success) {
+                    whiteboardExportTimer.stop()
+                    whiteboardExportWatchdog.stop()
+                    whiteboardPlaneView.forcedBoardIndex = -1
+                    whiteboardPlaneView.exportMode = false
+                    exportingWhiteboardImage = false
+                    whiteboardImageExportUrl = ""
+                    window.viewer.whiteboard.finishBoardImageExport(
+                                success, true)
+                }
+
+                function exportWhiteboardBackground(index, fileUrl) {
+                    if (exportingWhiteboardImage
+                            || index < 0
+                            || index >= window.viewer.whiteboard.boardCount) {
+                        return false
+                    }
+                    const board = window.viewer.whiteboard.boards[index]
+                    const path =
+                            window.viewer.whiteboard.imageExportPath(fileUrl)
+                    if (!board || !board.isCurrentMap
+                            || path.length === 0
+                            || !window.viewer.whiteboard.selectBoard(index)) {
+                        return false
+                    }
+                    restoreWhiteboardView(board)
+                    whiteboardImageExportUrl = fileUrl
+                    whiteboardPlaneView.forcedBoardIndex = index
+                    whiteboardPlaneView.exportMode = true
+                    exportingWhiteboardImage = true
+                    whiteboardExportTimer.restart()
+                    return true
+                }
+
+                Timer {
+                    id: whiteboardExportTimer
+                    interval: 120
+                    repeat: false
+                    onTriggered: {
+                        const path =
+                                window.viewer.whiteboard.imageExportPath(
+                                    viewport.whiteboardImageExportUrl)
+                        if (path.length === 0) {
+                            viewport.finishWhiteboardImageExport(false)
+                            return
+                        }
+                        const started = viewport.grabToImage(
+                            function(result) {
+                                const saved = result !== null
+                                        && window.viewer.whiteboard
+                                               .saveBoardBackgroundImage(
+                                                   result.image,
+                                                   viewport
+                                                       .whiteboardImageExportUrl)
+                                viewport.finishWhiteboardImageExport(saved)
+                            })
+                        if (started) {
+                            whiteboardExportWatchdog.restart()
+                        } else {
+                            viewport.finishWhiteboardImageExport(false)
+                        }
+                    }
+                }
+
+                Timer {
+                    id: whiteboardExportWatchdog
+                    interval: 10000
+                    repeat: false
+                    onTriggered:
+                        viewport.finishWhiteboardImageExport(false)
+                }
+
+                function beginCuboidInteraction(kind, axis, x, y) {
+                    if (!targetMouseEditingAllowed)
+                        return false
+                    cuboidDragKind = kind
+                    cuboidDragAxis = axis
+                    cuboidDragX = x
+                    cuboidDragY = y
+                    cuboidDragActive = kind === "move"
+                                       || kind === "resize"
+                    return cuboidDragActive
+                }
+
+                function updateCuboidInteraction(x, y) {
+                    if (!cuboidDragActive || !targetMouseEditingAllowed)
+                        return
+                    const dx = x - cuboidDragX
+                    const dy = y - cuboidDragY
+                    const scale = orbitDistance
+                                  / Math.max(200, Math.min(width, height))
+                    const yaw = orbitYaw * Math.PI / 180
+                    const pitch = orbitPitch * Math.PI / 180
+                    let amount = 0
+                    if (cuboidDragAxis === "x") {
+                        amount = (dx * Math.cos(yaw)
+                                  - dy * Math.sin(yaw)
+                                    * Math.sin(pitch)) * scale
+                    } else if (cuboidDragAxis === "y") {
+                        amount = -dy * Math.cos(pitch) * scale
+                    } else {
+                        amount = (-dx * Math.sin(yaw)
+                                  - dy * Math.cos(yaw)
+                                    * Math.sin(pitch)) * scale
+                    }
+                    if (cuboidDragKind === "resize") {
+                        window.controller.cuboidTargets.resizeSelected(
+                            cuboidDragAxis, amount)
+                    } else if (cuboidDragAxis === "x") {
+                        window.controller.cuboidTargets.translateSelected(
+                            amount, 0, 0)
+                    } else if (cuboidDragAxis === "y") {
+                        window.controller.cuboidTargets.translateSelected(
+                            0, amount, 0)
+                    } else {
+                        window.controller.cuboidTargets.translateSelected(
+                            0, 0, amount)
+                    }
+                    cuboidDragX = x
+                    cuboidDragY = y
+                }
+
+                function endCuboidInteraction() {
+                    cuboidDragActive = false
+                    cuboidDragKind = ""
+                    cuboidDragAxis = ""
+                }
+
+                function customPlanePoint(x, y) {
+                    const target =
+                        window.controller.customVolumeTargets.selectedTarget
+                    const view = window.rayTracingEnabled
+                               ? rayTracingTrajectoryOverlay
+                               : rasterMapView
+                    const nearPoint = view.mapTo3DScene(
+                        Qt.vector3d(x, y, 1))
+                    const farPoint = view.mapTo3DScene(
+                        Qt.vector3d(x, y, 2))
+                    const direction = farPoint.minus(nearPoint)
+                    let numerator = 0
+                    let denominator = 0
+                    if (target.plane === "xy") {
+                        numerator = target.origin.z - nearPoint.z
+                        denominator = direction.z
+                    } else if (target.plane === "yz") {
+                        numerator = target.origin.x - nearPoint.x
+                        denominator = direction.x
+                    } else {
+                        numerator = target.origin.y - nearPoint.y
+                        denominator = direction.y
+                    }
+                    if (Math.abs(denominator) < 0.000001)
+                        return target.origin
+                    const amount = numerator / denominator
+                    return nearPoint.plus(direction.times(amount))
+                }
+
+                function beginCustomInteraction(kind, index, x, y) {
+                    if (!targetMouseEditingAllowed
+                        || window.controller.customVolumeDrawing)
+                        return false
+                    cuboidDragX = x
+                    cuboidDragY = y
+                    customVertexDragIndex = index
+                    customVertexDragActive = kind === "custom-vertex"
+                    customDepthDragActive = kind === "custom-depth"
+                    return customVertexDragActive
+                           || customDepthDragActive
+                }
+
+                function updateCustomInteraction(x, y) {
+                    if (!targetMouseEditingAllowed) return
+                    if (customVertexDragActive) {
+                        const point = customPlanePoint(x, y)
+                        window.controller.customVolumeTargets.setVertexWorld(
+                            customVertexDragIndex,
+                            point.x,
+                            point.y,
+                            point.z)
+                    } else if (customDepthDragActive) {
+                        const target =
+                            window.controller.customVolumeTargets.selectedTarget
+                        const dx = x - cuboidDragX
+                        const dy = y - cuboidDragY
+                        const scale = orbitDistance
+                                      / Math.max(200,
+                                                 Math.min(width, height))
+                        const yaw = orbitYaw * Math.PI / 180
+                        const pitch = orbitPitch * Math.PI / 180
+                        let amount = 0
+                        if (target.plane === "xy") {
+                            amount = (-dx * Math.sin(yaw)
+                                      - dy * Math.cos(yaw)
+                                        * Math.sin(pitch)) * scale
+                        } else if (target.plane === "yz") {
+                            amount = (dx * Math.cos(yaw)
+                                      - dy * Math.sin(yaw)
+                                        * Math.sin(pitch)) * scale
+                        } else {
+                            amount = -dy * Math.cos(pitch) * scale
+                        }
+                        window.controller.customVolumeTargets
+                              .resizeDepthSelected(amount)
+                    }
+                    cuboidDragX = x
+                    cuboidDragY = y
+                }
+
+                function endCustomInteraction() {
+                    customVertexDragActive = false
+                    customDepthDragActive = false
+                    customVertexDragIndex = -1
+                }
+
+                function beginPoseInteraction(kind, axis, x, y) {
+                    if (!targetMouseEditingAllowed)
+                        return false
+                    poseDragKind = kind
+                    poseDragAxis = axis
+                    cuboidDragX = x
+                    cuboidDragY = y
+                    poseDragActive = kind === "pose-move"
+                                     || kind === "pose-rotate"
+                    return poseDragActive
+                }
+
+                function updatePoseInteraction(x, y) {
+                    if (!poseDragActive || !targetMouseEditingAllowed)
+                        return
+                    const dx = x - cuboidDragX
+                    const dy = y - cuboidDragY
+                    if (poseDragKind === "pose-rotate") {
+                        let degrees = 0
+                        if (poseDragAxis === "yaw")
+                            degrees = dx * 0.5
+                        else if (poseDragAxis === "pitch")
+                            degrees = -dy * 0.5
+                        else
+                            degrees = (dx - dy) * 0.35
+                        window.controller.poseTargets.rotateSelected(
+                            poseDragAxis, degrees)
+                    } else {
+                        const scale = orbitDistance
+                                      / Math.max(
+                                          200, Math.min(width, height))
+                        const yaw = orbitYaw * Math.PI / 180
+                        const pitch = orbitPitch * Math.PI / 180
+                        let amount = 0
+                        if (poseDragAxis === "x") {
+                            amount = (dx * Math.cos(yaw)
+                                      - dy * Math.sin(yaw)
+                                        * Math.sin(pitch)) * scale
+                            window.controller.poseTargets
+                                  .translateSelected(amount, 0, 0)
+                        } else if (poseDragAxis === "y") {
+                            amount = -dy * Math.cos(pitch) * scale
+                            window.controller.poseTargets
+                                  .translateSelected(0, amount, 0)
+                        } else {
+                            amount = (-dx * Math.sin(yaw)
+                                      - dy * Math.cos(yaw)
+                                        * Math.sin(pitch)) * scale
+                            window.controller.poseTargets
+                                  .translateSelected(0, 0, amount)
+                        }
+                    }
+                    cuboidDragX = x
+                    cuboidDragY = y
+                }
+
+                function endPoseInteraction() {
+                    poseDragActive = false
+                    poseDragKind = ""
+                    poseDragAxis = ""
+                }
+
+                component CuboidEditorScene: Node {
+                    id: cuboidScene
+                    property bool interactive: false
+                    property bool throughPass: false
+
+                    Repeater3D {
+                        model: window.controller.cuboidTargets
+
+                        delegate: Node {
+                            id: cuboidRoot
+                            objectName: "cuboidTargetRoot"
+
+                            required property int index
+                            required property string targetId
+                            required property vector3d targetCenter
+                            required property vector3d targetSize
+                            required property bool targetSelected
+                            readonly property int targetIndex: index
+                            readonly property var layerStyle:
+                                window.visualStyle("target:cuboid:" + targetId,
+                                                   { color: "#55a7d8",
+                                                     opacity: 0.13,
+                                                     throughBlocks:
+                                                         window.controller.drawTargetsThroughBlocks })
+                            readonly property bool targetActive:
+                                targetSelected
+                                && window.controller.evaluationTargetId
+                                   === "volume-entry-time"
+                            position: targetCenter
+                            visible: layerStyle.visible
+                                     && (cuboidScene.throughPass
+                                         ? window.rayTracingEnabled
+                                           || layerStyle.throughBlocks
+                                         : !layerStyle.throughBlocks)
+
+                            Model {
+                                objectName: "cuboidTargetModel"
+                                property int targetIndex:
+                                    cuboidRoot.targetIndex
+                                property string editorKind: "select"
+                                property string editorAxis: ""
+                                source: "#Cube"
+                                scale: Qt.vector3d(
+                                    cuboidRoot.targetSize.x / 100,
+                                    cuboidRoot.targetSize.y / 100,
+                                    cuboidRoot.targetSize.z / 100)
+                                pickable: cuboidScene.interactive
+                                castsShadows: false
+                                receivesShadows: false
+                                materials: DefaultMaterial {
+                                    lighting: DefaultMaterial.NoLighting
+                                    diffuseColor: cuboidRoot.targetActive
+                                        ? Qt.lighter(cuboidRoot.layerStyle.color, 1.25)
+                                        : cuboidRoot.layerStyle.color
+                                    opacity: cuboidRoot.targetActive
+                                        ? Math.min(1, cuboidRoot.layerStyle.opacity * 2.08)
+                                        : cuboidRoot.layerStyle.opacity
+                                    cullMode: Material.NoCulling
+                                }
+                            }
+
+                            Node {
+                                visible: cuboidRoot.targetActive
+                                         && !window.controller.running
+                                readonly property real barLength:
+                                    Math.max(1.6,
+                                             viewport.orbitDistance * 0.055)
+                                readonly property real thickness:
+                                    Math.max(0.12,
+                                             viewport.orbitDistance * 0.005)
+                                readonly property real handleSize:
+                                    Math.max(0.34,
+                                             viewport.orbitDistance * 0.014)
+
+                                Model {
+                                    property int targetIndex:
+                                        cuboidRoot.targetIndex
+                                    property string editorKind: "move"
+                                    property string editorAxis: "x"
+                                    source: "#Cube"
+                                    x: cuboidRoot.targetSize.x / 2
+                                       + parent.barLength / 2
+                                    scale: Qt.vector3d(
+                                        parent.barLength / 100,
+                                        parent.thickness / 100,
+                                        parent.thickness / 100)
+                                    pickable: cuboidScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#e55353"
+                                    }
+                                }
+                                Model {
+                                    property int targetIndex:
+                                        cuboidRoot.targetIndex
+                                    property string editorKind: "move"
+                                    property string editorAxis: "y"
+                                    source: "#Cube"
+                                    y: cuboidRoot.targetSize.y / 2
+                                       + parent.barLength / 2
+                                    scale: Qt.vector3d(
+                                        parent.thickness / 100,
+                                        parent.barLength / 100,
+                                        parent.thickness / 100)
+                                    pickable: cuboidScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#62c96b"
+                                    }
+                                }
+                                Model {
+                                    property int targetIndex:
+                                        cuboidRoot.targetIndex
+                                    property string editorKind: "move"
+                                    property string editorAxis: "z"
+                                    source: "#Cube"
+                                    z: cuboidRoot.targetSize.z / 2
+                                       + parent.barLength / 2
+                                    scale: Qt.vector3d(
+                                        parent.thickness / 100,
+                                        parent.thickness / 100,
+                                        parent.barLength / 100)
+                                    pickable: cuboidScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#4c86e8"
+                                    }
+                                }
+
+                                Model {
+                                    objectName: "cuboidResizeHandleX"
+                                    property int targetIndex:
+                                        cuboidRoot.targetIndex
+                                    property string editorKind: "resize"
+                                    property string editorAxis: "x"
+                                    source: "#Cube"
+                                    x: cuboidRoot.targetSize.x / 2
+                                       + parent.barLength
+                                    scale: Qt.vector3d(
+                                        parent.handleSize / 100,
+                                        parent.handleSize / 100,
+                                        parent.handleSize / 100)
+                                    pickable: cuboidScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#ff7770"
+                                    }
+                                }
+                                Model {
+                                    objectName: "cuboidResizeHandleY"
+                                    property int targetIndex:
+                                        cuboidRoot.targetIndex
+                                    property string editorKind: "resize"
+                                    property string editorAxis: "y"
+                                    source: "#Cube"
+                                    y: cuboidRoot.targetSize.y / 2
+                                       + parent.barLength
+                                    scale: Qt.vector3d(
+                                        parent.handleSize / 100,
+                                        parent.handleSize / 100,
+                                        parent.handleSize / 100)
+                                    pickable: cuboidScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#87e58e"
+                                    }
+                                }
+                                Model {
+                                    objectName: "cuboidResizeHandleZ"
+                                    property int targetIndex:
+                                        cuboidRoot.targetIndex
+                                    property string editorKind: "resize"
+                                    property string editorAxis: "z"
+                                    source: "#Cube"
+                                    z: cuboidRoot.targetSize.z / 2
+                                       + parent.barLength
+                                    scale: Qt.vector3d(
+                                        parent.handleSize / 100,
+                                        parent.handleSize / 100,
+                                        parent.handleSize / 100)
+                                    pickable: cuboidScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#78a6ff"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                component CustomVolumeEditorScene: Node {
+                    id: customVolumeScene
+                    property bool interactive: false
+                    property bool throughPass: false
+
+                    Repeater3D {
+                        model:
+                            window.controller.customVolumeTargets.targets
+
+                        delegate: Node {
+                            id: customVolumeRoot
+
+                            required property int index
+                            required property var modelData
+                            readonly property int targetIndex: index
+                            readonly property var layerStyle:
+                                window.visualStyle("target:custom:" + modelData.id,
+                                                   { color: "#ca7ccc",
+                                                     opacity: 0.14,
+                                                     throughBlocks:
+                                                         window.controller.drawTargetsThroughBlocks })
+                            readonly property bool targetSelected:
+                                modelData.selected
+                            readonly property bool targetActive:
+                                targetSelected
+                                && window.controller.evaluationTargetId
+                                   === "custom-volume-entry-time"
+                            visible: layerStyle.visible
+                                     && (customVolumeScene.throughPass
+                                         ? window.rayTracingEnabled
+                                           || layerStyle.throughBlocks
+                                         : !layerStyle.throughBlocks)
+
+                            Model {
+                                objectName: "customVolumeTargetModel"
+                                property int targetIndex:
+                                    customVolumeRoot.targetIndex
+                                property string editorKind:
+                                    "custom-select"
+                                property int vertexIndex: -1
+                                visible: window.viewer.loaded
+                                geometry: customVolumeRoot.modelData.geometry
+                                pickable: customVolumeScene.interactive
+                                castsShadows: false
+                                receivesShadows: false
+                                materials: DefaultMaterial {
+                                    lighting: DefaultMaterial.NoLighting
+                                    diffuseColor: customVolumeRoot.targetActive
+                                        ? Qt.lighter(customVolumeRoot.layerStyle.color, 1.25)
+                                        : customVolumeRoot.layerStyle.color
+                                    opacity: customVolumeRoot.targetActive
+                                        ? Math.min(1, customVolumeRoot.layerStyle.opacity * 2.14)
+                                        : customVolumeRoot.layerStyle.opacity
+                                    cullMode: Material.NoCulling
+                                }
+                            }
+
+                            Model {
+                                objectName: "customVolumeDrawingPlane"
+                                visible:
+                                    window.viewer.loaded
+                                    && customVolumeRoot.targetActive
+                                    && window.controller.customVolumeDrawing
+                                position: customVolumeRoot.modelData.origin
+                                source: "#Cube"
+                                scale:
+                                    customVolumeRoot.modelData.plane === "xy"
+                                    ? Qt.vector3d(0.5, 0.5, 0.002)
+                                    : customVolumeRoot.modelData.plane
+                                      === "yz"
+                                      ? Qt.vector3d(0.002, 0.5, 0.5)
+                                      : Qt.vector3d(0.5, 0.002, 0.5)
+                                materials: DefaultMaterial {
+                                    lighting: DefaultMaterial.NoLighting
+                                    diffuseColor: "#e6b75d"
+                                    opacity: 0.1
+                                    cullMode: Material.NoCulling
+                                }
+                            }
+
+                            Node {
+                                visible:
+                                    window.viewer.loaded
+                                    && customVolumeRoot.targetSelected
+                                    && window.controller.evaluationTargetId
+                                       === "custom-volume-entry-time"
+                                    && !window.controller
+                                              .customVolumeDrawing
+
+                                Model {
+                                    objectName:
+                                        "customVolumePlaneChoiceXY"
+                                    property int targetIndex:
+                                        customVolumeRoot.targetIndex
+                                    property string editorKind:
+                                        "custom-plane"
+                                    property string planeChoice: "xy"
+                                    property int vertexIndex: -1
+                                    position:
+                                        customVolumeRoot.modelData.origin
+                                        .plus(Qt.vector3d(-6, 3, 0))
+                                    source: "#Cube"
+                                    scale: Qt.vector3d(
+                                        0.04, 0.04, 0.002)
+                                    pickable:
+                                        customVolumeScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#e36d6d"
+                                        opacity: 0.22
+                                    }
+                                }
+                                Model {
+                                    objectName:
+                                        "customVolumePlaneChoiceXZ"
+                                    property int targetIndex:
+                                        customVolumeRoot.targetIndex
+                                    property string editorKind:
+                                        "custom-plane"
+                                    property string planeChoice: "xz"
+                                    property int vertexIndex: -1
+                                    position:
+                                        customVolumeRoot.modelData.origin
+                                        .plus(Qt.vector3d(0, 0, 0))
+                                    source: "#Cube"
+                                    scale: Qt.vector3d(
+                                        0.04, 0.002, 0.04)
+                                    pickable:
+                                        customVolumeScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#6ed47b"
+                                        opacity: 0.22
+                                    }
+                                }
+                                Model {
+                                    objectName:
+                                        "customVolumePlaneChoiceYZ"
+                                    property int targetIndex:
+                                        customVolumeRoot.targetIndex
+                                    property string editorKind:
+                                        "custom-plane"
+                                    property string planeChoice: "yz"
+                                    property int vertexIndex: -1
+                                    position:
+                                        customVolumeRoot.modelData.origin
+                                        .plus(Qt.vector3d(6, 3, 0))
+                                    source: "#Cube"
+                                    scale: Qt.vector3d(
+                                        0.002, 0.04, 0.04)
+                                    pickable:
+                                        customVolumeScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#669cf0"
+                                        opacity: 0.22
+                                    }
+                                }
+                            }
+
+                            Repeater3D {
+                                model:
+                                    customVolumeRoot.modelData.vertices
+
+                                delegate: Model {
+                                    required property var modelData
+                                    property int targetIndex:
+                                        customVolumeRoot.targetIndex
+                                    property string editorKind:
+                                        "custom-vertex"
+                                    property int vertexIndex:
+                                        modelData.index
+                                    visible:
+                                        window.viewer.loaded
+                                        && customVolumeRoot.targetActive
+                                    position: modelData.world
+                                    source: "#Sphere"
+                                    scale: Qt.vector3d(
+                                        Math.max(
+                                            0.004,
+                                            viewport.orbitDistance
+                                            * 0.00016),
+                                        Math.max(
+                                            0.004,
+                                            viewport.orbitDistance
+                                            * 0.00016),
+                                        Math.max(
+                                            0.004,
+                                            viewport.orbitDistance
+                                            * 0.00016))
+                                    pickable:
+                                        customVolumeScene.interactive
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: "#ffd06a"
+                                    }
+                                }
+                            }
+
+                            Model {
+                                objectName: "customVolumeDepthHandle"
+                                property int targetIndex:
+                                    customVolumeRoot.targetIndex
+                                property string editorKind: "custom-depth"
+                                property int vertexIndex: -1
+                                visible:
+                                    window.viewer.loaded
+                                    && customVolumeRoot.targetActive
+                                    && !window.controller.customVolumeDrawing
+                                position:
+                                    customVolumeRoot.modelData.depthHandle
+                                source: "#Cube"
+                                scale: Qt.vector3d(
+                                    Math.max(
+                                        0.005,
+                                        viewport.orbitDistance
+                                        * 0.0002),
+                                    Math.max(
+                                        0.005,
+                                        viewport.orbitDistance
+                                        * 0.0002),
+                                    Math.max(
+                                        0.005,
+                                        viewport.orbitDistance
+                                        * 0.0002))
+                                pickable: customVolumeScene.interactive
+                                materials: DefaultMaterial {
+                                    lighting: DefaultMaterial.NoLighting
+                                    diffuseColor: "#fff0a6"
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Every restart's latest improvement car, drawn with one
+                // instanced call per render mode however many restarts.
+                component ImprovementCars: Node {
+                    id: improvementCarsNode
+                    readonly property var layerStyle:
+                        window.visualStyle("car:improvements",
+                                           { color: "#ffffff", opacity: 1 })
+
+                    Model {
+                        objectName: "improvementCarsFilledModel"
+                        visible: window.renderMode !== "wireframe"
+                        geometry: window.viewer.ellipsoidFilledGeometry
+                        instancing: window.viewer.improvementCars
+                        castsShadows: false
+                        receivesShadows: false
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            vertexColorsEnabled: true
+                            diffuseColor: improvementCarsNode.layerStyle.color
+                            opacity: improvementCarsNode.layerStyle.opacity
+                            cullMode: Material.BackFaceCulling
+                        }
+                    }
+
+                    Model {
+                        objectName: "improvementCarsWireModel"
+                        visible: window.renderMode === "wireframe"
+                        geometry: window.viewer.ellipsoidWireGeometry
+                        instancing: window.viewer.improvementCars
+                        castsShadows: false
+                        receivesShadows: false
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            vertexColorsEnabled: true
+                            diffuseColor: improvementCarsNode.layerStyle.color
+                            opacity: improvementCarsNode.layerStyle.opacity
+                            cullMode: Material.NoCulling
+                        }
+                    }
+                }
+
+                component PoseTargetEditorScene: Node {
+                    id: poseScene
+                    property bool interactive: false
+                    property bool throughPass: false
+
+                    Repeater3D {
+                        model: window.controller.poseTargets.targets
+
+                        delegate: Node {
+                            id: poseRoot
+
+                            required property int index
+                            required property var modelData
+                            readonly property int targetIndex: index
+                            readonly property var layerStyle:
+                                window.visualStyle("target:pose:" + modelData.id,
+                                                   { color: "#65a7d8",
+                                                     opacity: 0.36,
+                                                     throughBlocks:
+                                                         window.controller.drawTargetsThroughBlocks })
+                            readonly property bool targetActive:
+                                modelData.selected
+                                && window.controller.evaluationTargetId
+                                   === "pose-target"
+                            position: modelData.position
+                            visible: window.viewer.loaded
+                                     && layerStyle.visible
+                                     && (poseScene.throughPass
+                                         ? window.rayTracingEnabled
+                                           || layerStyle.throughBlocks
+                                         : !layerStyle.throughBlocks)
+
+                            Node {
+                                rotation: poseRoot.modelData.rotation
+
+                                Repeater3D {
+                                    model: window.viewer.carEllipsoids.length
+
+                                    delegate: Node {
+                                        required property int index
+                                        readonly property var ellipsoid:
+                                            window.viewer.carEllipsoids[index]
+
+                                        position: ellipsoid.position
+                                        rotation: ellipsoid.rotation
+                                        scale: ellipsoid.radii
+
+                                        Model {
+                                            objectName:
+                                                "poseTargetCarModel"
+                                            property int targetIndex:
+                                                poseRoot.targetIndex
+                                            property string editorKind:
+                                                "pose-select"
+                                            property string editorAxis: ""
+                                            geometry:
+                                                window.viewer
+                                                      .ellipsoidFilledGeometry
+                                            pickable:
+                                                poseScene.interactive
+                                            castsShadows: false
+                                            receivesShadows: false
+                                            materials: DefaultMaterial {
+                                                lighting:
+                                                    DefaultMaterial
+                                                    .NoLighting
+                                                diffuseColor: poseRoot.targetActive
+                                                    ? Qt.lighter(poseRoot.layerStyle.color, 1.25)
+                                                    : poseRoot.layerStyle.color
+                                                opacity: poseRoot.targetActive
+                                                    ? Math.min(1, poseRoot.layerStyle.opacity * 2.28)
+                                                    : poseRoot.layerStyle.opacity
+                                                cullMode:
+                                                    Material.NoCulling
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            Node {
+                                id: poseHandleRoot
+
+                                visible: poseRoot.targetActive
+                                         && !window.controller.running
+                                readonly property real barLength:
+                                    Math.max(
+                                        1.8,
+                                        viewport.orbitDistance * 0.05)
+                                readonly property real thickness:
+                                    Math.max(
+                                        0.12,
+                                        viewport.orbitDistance * 0.004)
+                                readonly property real rotationHandleSize:
+                                    Math.max(
+                                        0.5,
+                                        viewport.orbitDistance * 0.018)
+
+                                Repeater3D {
+                                    model: [
+                                        {
+                                            "axis": "x",
+                                            "position":
+                                                Qt.vector3d(
+                                                    1.6
+                                                    + poseHandleRoot
+                                                          .barLength
+                                                      / 2,
+                                                    0,
+                                                    0),
+                                            "scale": Qt.vector3d(
+                                                poseHandleRoot.barLength
+                                                / 100,
+                                                poseHandleRoot.thickness
+                                                / 100,
+                                                poseHandleRoot.thickness
+                                                / 100),
+                                            "color": "#e36d6d"
+                                        },
+                                        {
+                                            "axis": "y",
+                                            "position":
+                                                Qt.vector3d(
+                                                    0,
+                                                    1.1
+                                                    + poseHandleRoot
+                                                          .barLength
+                                                      / 2,
+                                                    0),
+                                            "scale": Qt.vector3d(
+                                                poseHandleRoot.thickness
+                                                / 100,
+                                                poseHandleRoot.barLength
+                                                / 100,
+                                                poseHandleRoot.thickness
+                                                / 100),
+                                            "color": "#6ed47b"
+                                        },
+                                        {
+                                            "axis": "z",
+                                            "position":
+                                                Qt.vector3d(
+                                                    0,
+                                                    0,
+                                                    3.2
+                                                    + poseHandleRoot
+                                                          .barLength
+                                                      / 2),
+                                            "scale": Qt.vector3d(
+                                                poseHandleRoot.thickness
+                                                / 100,
+                                                poseHandleRoot.thickness
+                                                / 100,
+                                                poseHandleRoot.barLength
+                                                / 100),
+                                            "color": "#669cf0"
+                                        }
+                                    ]
+
+                                    delegate: Model {
+                                        required property var modelData
+                                        objectName:
+                                            "poseTargetMoveHandle"
+                                        property int targetIndex:
+                                            poseRoot.targetIndex
+                                        property string editorKind:
+                                            "pose-move"
+                                        property string editorAxis:
+                                            modelData.axis
+                                        position: modelData.position
+                                        scale: modelData.scale
+                                        source: "#Cube"
+                                        pickable:
+                                            poseScene.interactive
+                                        materials: DefaultMaterial {
+                                            lighting:
+                                                DefaultMaterial.NoLighting
+                                            diffuseColor: modelData.color
+                                        }
+                                    }
+                                }
+
+                                Repeater3D {
+                                    model: [
+                                        {
+                                            "axis": "pitch",
+                                            "position":
+                                                Qt.vector3d(-2.3, 0, 0),
+                                            "color": "#ffadad"
+                                        },
+                                        {
+                                            "axis": "yaw",
+                                            "position":
+                                                Qt.vector3d(0, -1.8, 0),
+                                            "color": "#a9efb2"
+                                        },
+                                        {
+                                            "axis": "roll",
+                                            "position":
+                                                Qt.vector3d(0, 0, -3.9),
+                                            "color": "#a8c7ff"
+                                        }
+                                    ]
+
+                                    delegate: Model {
+                                        required property var modelData
+                                        objectName:
+                                            "poseTargetRotationHandle"
+                                        property int targetIndex:
+                                            poseRoot.targetIndex
+                                        property string editorKind:
+                                            "pose-rotate"
+                                        property string editorAxis:
+                                            modelData.axis
+                                        position: modelData.position
+                                        scale: Qt.vector3d(
+                                            poseHandleRoot
+                                                  .rotationHandleSize
+                                            / 100,
+                                            poseHandleRoot
+                                                  .rotationHandleSize
+                                            / 100,
+                                            poseHandleRoot
+                                                  .rotationHandleSize
+                                            / 100)
+                                        source: "#Sphere"
+                                        pickable:
+                                            poseScene.interactive
+                                        materials: DefaultMaterial {
+                                            lighting:
+                                                DefaultMaterial.NoLighting
+                                            diffuseColor: modelData.color
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // The race view as the render module draws it, behind the
+                // 3D view (whose map meshes show the same image).
+                RenderModuleView {
+                    id: moduleRenderView
+                    objectName: "moduleRenderView"
+                    anchors.fill: parent
+                    z: -1
+                    // Shows nothing until its first frame.
+                    visible: window.renderMode === "module"
+                    active: window.renderMode === "module" && viewport.visible
+                            && window.viewer.loaded
+                    packsDirectory: window.viewer.loadedPacksDirectory
+                    mapPath: window.viewer.loadedReplayPath
+                    viewer: window.viewer
+                    raceTimeMs: window.viewer.timeMs
+                    showCar: window.moduleGameCar
+                    // The 3D view's map meshes show this frame: draw them
+                    // again with it.
+                    onFrameChanged: rasterMapView.update()
+                    cameraPosition: viewCamera.scenePosition
+                    cameraTarget: viewCamera.scenePosition.plus(viewCamera.forward)
+                    cameraUp: viewCamera.up
+                    fieldOfView: viewCamera.fieldOfView
+                    clipNear: viewCamera.clipNear
+                    clipFar: viewCamera.clipFar
+                    framing: window.framedRect
+                }
+
+                View3D {
+                    id: rasterMapView
+                    objectName: "rasterMapView"
+                    anchors.fill: parent
+                    visible: !window.rayTracingEnabled
+                    camera: viewCamera
+
+                    environment: SceneEnvironment {
+                        objectName: "mapEnvironment"
+                        // The module's image shows behind the map.
+                        backgroundMode: window.moduleMapShown
+                                        ? SceneEnvironment.Transparent
+                                        : SceneEnvironment.SkyBox
+                        antialiasingMode: SceneEnvironment.MSAA
+                        antialiasingQuality: SceneEnvironment.Medium
+                        tonemapMode: SceneEnvironment.TonemapModeAces
+                        probeExposure: 1.0
+                        skyboxBlurAmount: 0.0
+                        specularAAEnabled: true
+
+                        lightProbe: Texture {
+                            objectName: "daySkyTexture"
+                            source: "qrc:/environment/day_sky.png"
+                            mappingMode: Texture.LightProbe
+                            generateMipmaps: true
+                        }
+                    }
+
+                    Node {
+                        position: viewport.carCameraActive
+                                  ? window.viewer.carCameraPosition
+                                  : viewport.freeCamera
+                                    ? viewport.freeCameraPosition
+                                    : viewport.cameraTarget
+                        rotation: viewport.carCameraActive
+                                  ? window.viewer.carCameraRotation
+                                  : Qt.quaternion(1, 0, 0, 0)
+
+                        Node {
+                            eulerRotation.x: viewport.carCameraActive
+                                             ? 0 : viewport.orbitPitch
+                            eulerRotation.y: viewport.carCameraActive
+                                             ? 0 : viewport.orbitYaw
+
+                            CustomCamera {
+                                id: viewCamera
+                                objectName: "viewCamera"
+                                readonly property real clipDistance:
+                                    viewport.carCameraActive
+                                    ? window.viewer.carCameraPosition
+                                            .minus(window.viewer
+                                                   .carCameraTarget)
+                                            .length()
+                                    : viewport.freeCamera ? 0 : viewport.orbitDistance
+                                readonly property var dynamicClipPlanes:
+                                    window.viewer.cameraClipPlanes(
+                                        scenePosition, clipDistance)
+
+                                z: viewport.carCameraActive
+                                   || viewport.freeCamera
+                                   ? 0 : viewport.orbitDistance
+                                property real clipNear: dynamicClipPlanes.x
+                                property real clipFar: dynamicClipPlanes.y
+                                // Vertical, over the framed part of the view.
+                                property real fieldOfView: viewport.carCameraActive
+                                    ? window.viewer.carCameraFieldOfView
+                                    : viewport.cameraFieldOfView
+                                projection: window.framedProjection(
+                                    fieldOfView, clipNear, clipFar)
+                            }
+                        }
+                    }
+
+                    DirectionalLight {
+                        objectName: "mainMapLight"
+                        eulerRotation.x: -52
+                        eulerRotation.y: -32
+                        brightness: 1.2
+                        color: "#fff3d7"
+                        castsShadow: false
+                    }
+
+                    DirectionalLight {
+                        objectName: "fillMapLight"
+                        eulerRotation.x: -20
+                        eulerRotation.y: 145
+                        brightness: 0.35
+                        color: "#b9dbf2"
+                        castsShadow: false
+                    }
+
+                    Instantiator {
+                        id: visualMaterialCache
+                        model: window.viewer.visualMaterials
+
+                        delegate: PrincipledMaterial {
+                            required property var modelData
+
+                            objectName: "trackVisualMaterial"
+                            Texture {
+                                id: replacementBaseMap
+                                objectName: "trackVisualBaseTexture"
+                                source: modelData.baseTexture
+                                tilingModeHorizontal: Texture.Repeat
+                                tilingModeVertical: Texture.Repeat
+                                generateMipmaps: true
+                                minFilter: Texture.Linear
+                                magFilter: Texture.Linear
+                                mipFilter: Texture.Linear
+                            }
+
+                            lighting:
+                                PrincipledMaterial.FragmentLighting
+                            baseColor: window.renderMode ===
+                                       "neutral"
+                                       ? "#aeb3af"
+                                       : (window.renderMode ===
+                                          "material-debug"
+                                          ? modelData.debugColor
+                                          : "#ffffff")
+                            baseColorMap: window.texturedMap
+                                          ? replacementBaseMap
+                                          : null
+                            roughness: window.renderMode ===
+                                       "neutral"
+                                       ? 0.74
+                                       : modelData.roughness
+                            metalness: window.renderMode ===
+                                       "neutral"
+                                       ? 0
+                                       : modelData.metalness
+                            cullMode: Material.NoCulling
+                            vertexColorsEnabled:
+                                modelData.vertexColors
+                                && window.texturedMap
+                            emissiveMap: window.texturedMap
+                                         && modelData.emissiveStrength > 0
+                                         ? replacementBaseMap
+                                         : null
+                            emissiveFactor: window.texturedMap
+                                            ? Qt.vector3d(
+                                                  modelData.emissiveStrength,
+                                                  modelData.emissiveStrength,
+                                                  modelData.emissiveStrength)
+                                            : Qt.vector3d(0, 0, 0)
+                        }
+                    }
+
+                    CustomMaterial {
+                        id: moduleScreenMaterial
+                        objectName: "moduleScreenMaterial"
+                        shadingMode: CustomMaterial.Unshaded
+                        cullMode: Material.NoCulling
+                        fragmentShader: "qrc:/materials/module_screen.frag"
+                        property TextureInput moduleImage: TextureInput {
+                            texture: Texture {
+                                sourceItem: moduleRenderView
+                            }
+                        }
+                        property size viewSize: moduleRenderView.frameSize
+                        // Where the view sits in the module's image.
+                        property vector2d moduleImageSize: Qt.vector2d(
+                            moduleRenderView.imageSize.width,
+                            moduleRenderView.imageSize.height)
+                        property vector2d moduleImageOrigin: Qt.vector2d(
+                            moduleRenderView.imageOrigin.x,
+                            moduleRenderView.imageOrigin.y)
+                    }
+
+                    Repeater3D {
+                        model: window.viewer.visualBatches
+
+                        delegate: Model {
+                            required property var modelData
+                            readonly property int materialBindingIndex:
+                                modelData.materialBindingIndex
+                            readonly property var sharedMaterial: {
+                                const cacheSize = visualMaterialCache.count
+                                return cacheSize > 0
+                                       ? visualMaterialCache.objectAt(
+                                             materialBindingIndex)
+                                       : null
+                            }
+
+                            objectName: "trackVisualModel"
+                            visible: window.viewer.loaded
+                                     && window.texturedMap
+                                     && modelData.defaultVisible
+                            geometry: modelData.geometry
+                            castsShadows: false
+
+                            // The render module's image, pixel for pixel,
+                            // so the map hides what is behind it.
+                            materials: window.moduleMapShown
+                                       ? [moduleScreenMaterial]
+                                       : sharedMaterial
+                                         ? [sharedMaterial] : []
+                        }
+                    }
+
+                    CuboidEditorScene {
+                        objectName: "rasterCuboidEditorScene"
+                        interactive: viewport.targetMouseEditingAllowed
+                    }
+
+                    CustomVolumeEditorScene {
+                        objectName: "rasterCustomVolumeEditorScene"
+                        interactive: viewport.targetMouseEditingAllowed
+                    }
+
+                    PoseTargetEditorScene {
+                        objectName: "rasterPoseTargetEditorScene"
+                        interactive: viewport.targetMouseEditingAllowed
+                    }
+
+                    Model {
+                        objectName: "trackFilledModel"
+                        visible: window.viewer.loaded
+                                 && (window.renderMode === "neutral"
+                                     || window.renderMode === "collision"
+                                     || window.renderMode ===
+                                        "material-debug")
+                        geometry: window.viewer.loaded
+                                  ? window.viewer.trackFilledGeometry
+                                  : null
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            vertexColorsEnabled: true
+                            diffuseColor: window.renderMode === "neutral"
+                                          ? "#aeb3af" : "white"
+                            cullMode: Material.BackFaceCulling
+                        }
+                    }
+
+                    Model {
+                        objectName: "trackWireModel"
+                        visible: window.viewer.loaded
+                                 && window.renderMode === "wireframe"
+                        geometry: window.viewer.loaded
+                                  ? window.viewer.trackWireGeometry
+                                  : null
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            diffuseColor: "#b8d9c7"
+                            cullMode: Material.NoCulling
+                        }
+                    }
+
+                    Repeater3D {
+                        model: window.viewer.trajectoryPaths
+
+                        delegate: Model {
+                            required property var modelData
+                            readonly property var layerStyle:
+                                window.visualStyle(modelData.visualId,
+                                                   { color: modelData.color,
+                                                     opacity: modelData.opacity,
+                                                     width: 3 })
+
+                            objectName: "trajectoryPathModel"
+                            visible: window.viewer.loaded
+                                     && (modelData.visible ?? true)
+                                     && layerStyle.visible
+                                     && !layerStyle.throughBlocks
+                            geometry: modelData.geometry
+                            castsShadows: false
+                            receivesShadows: false
+                            materials: DefaultMaterial {
+                                lighting: DefaultMaterial.NoLighting
+                                vertexColorsEnabled: modelData.vertexColors ?? false
+                                diffuseColor: layerStyle.color
+                                opacity: layerStyle.opacity
+                                lineWidth: layerStyle.width
+                                cullMode: Material.NoCulling
+                            }
+                        }
+                    }
+
+                    Repeater3D {
+                        model: graphicsInspector.windowRows.filter(
+                            row => !row.group && row.kind === "window")
+                        delegate: Model {
+                            required property var modelData
+                            readonly property var layerStyle:
+                                window.visualStyle(modelData.id,
+                                                   { color: modelData.color,
+                                                     width: modelData.width,
+                                                     opacity: modelData.opacity,
+                                                     throughBlocks: true })
+                            readonly property var runs: window.viewer.runOptions
+                            readonly property var timeRange:
+                                window.overlayWindowRange(modelData.id)
+                            objectName: "occludedTimeWindowModel"
+                            visible: layerStyle.visible
+                                     && !layerStyle.throughBlocks
+                            geometry: runs.length > 0
+                                ? window.viewer.timeRangeGeometry(
+                                    modelData.id, modelData.runId,
+                                    timeRange[0], timeRange[1],
+                                    layerStyle.linePattern === "dash")
+                                : null
+                            castsShadows: false
+                            receivesShadows: false
+                            materials: DefaultMaterial {
+                                lighting: DefaultMaterial.NoLighting
+                                diffuseColor: layerStyle.color
+                                opacity: layerStyle.opacity
+                                lineWidth: layerStyle.width
+                            }
+                        }
+                    }
+
+                    Repeater3D {
+                        model: graphicsInspector.windowRows.filter(
+                            row => !row.group && row.kind === "window")
+                        delegate: Node {
+                            id: windowEndpoints
+                            required property var modelData
+                            readonly property var layerStyle:
+                                window.visualStyle(modelData.id,
+                                                   { color: modelData.color,
+                                                     opacity: modelData.opacity,
+                                                     throughBlocks: true })
+                            readonly property var timeRange:
+                                window.overlayWindowRange(modelData.id)
+                            visible: layerStyle.visible
+                                     && !layerStyle.throughBlocks
+                            Repeater3D {
+                                model: windowEndpoints.timeRange
+                                delegate: Model {
+                                    required property var modelData
+                                    readonly property var sample:
+                                        evaluationOverlay.sampleAt(
+                                            Number(modelData))
+                                    visible: sample !== null
+                                    position: sample ? sample.position
+                                                     : Qt.vector3d(0, 0, 0)
+                                    source: "#Sphere"
+                                    scale: Qt.vector3d(0.004, 0.004, 0.004)
+                                    materials: DefaultMaterial {
+                                        lighting: DefaultMaterial.NoLighting
+                                        diffuseColor:
+                                            windowEndpoints.layerStyle.color
+                                        opacity:
+                                            windowEndpoints.layerStyle.opacity
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Model {
+                        objectName: "occludedHorizonMarker"
+                        readonly property var sample:
+                            evaluationOverlay.sampleAt(
+                                evaluationOverlay.horizonTime())
+                        readonly property var layerStyle:
+                            evaluationOverlay.horizonStyle
+                        visible: window.viewer.loaded && sample
+                                 && layerStyle.visible
+                                 && !layerStyle.throughBlocks
+                        position: sample ? sample.position
+                                         : Qt.vector3d(0, 0, 0)
+                        source: "#Sphere"
+                        scale: Qt.vector3d(0.005, 0.005, 0.005)
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            diffuseColor: parent.layerStyle.color
+                            opacity: parent.layerStyle.opacity
+                        }
+                    }
+
+                    Model {
+                        objectName: "occludedEvaluationEventMarker"
+                        readonly property var event:
+                            window.controller.evaluationTargetId === "stunt-points"
+                            ? evaluationOverlay.sampleAt(
+                                evaluationOverlay.stuntTime())
+                            : evaluationOverlay.summary.event
+                        readonly property var layerStyle:
+                            evaluationOverlay.eventStyle
+                        visible: window.viewer.loaded && event
+                                 && layerStyle.visible
+                                 && !layerStyle.throughBlocks
+                        position: event ? event.position
+                                        : Qt.vector3d(0, 0, 0)
+                        source: "#Sphere"
+                        scale: Qt.vector3d(0.006, 0.006, 0.006)
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            diffuseColor: parent.layerStyle.color
+                            opacity: parent.layerStyle.opacity
+                        }
+                    }
+
+                    Model {
+                        objectName: "occludedPointTargetMarker"
+                        readonly property var layerStyle:
+                            evaluationOverlay.pointStyle
+                        visible: window.viewer.loaded
+                                 && evaluationOverlay.showsPoint
+                                 && layerStyle.visible
+                                 && !layerStyle.throughBlocks
+                        position: evaluationOverlay.pointTarget()
+                        source: "#Sphere"
+                        scale: Qt.vector3d(0.007, 0.007, 0.007)
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            diffuseColor: parent.layerStyle.color
+                            opacity: parent.layerStyle.opacity
+                        }
+                    }
+
+                    Model {
+                        objectName: "occludedPointTargetLine"
+                        readonly property var layerStyle:
+                            evaluationOverlay.pointStyle
+                        visible: window.viewer.loaded
+                                 && window.controller.evaluationTargetId
+                                    === "point-target"
+                                 && evaluationOverlay.summary.event
+                                 && layerStyle.visible
+                                 && !layerStyle.throughBlocks
+                        geometry: visible
+                            ? window.viewer.visualLineGeometry(
+                                "target:point",
+                                [evaluationOverlay.summary.event.position,
+                                 evaluationOverlay.pointTarget()], false)
+                            : null
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            diffuseColor: parent.layerStyle.color
+                            opacity: parent.layerStyle.opacity
+                            lineWidth: parent.layerStyle.width
+                        }
+                    }
+
+                    Model {
+                        objectName: "occludedVelocityDirection"
+                        readonly property var layerStyle:
+                            evaluationOverlay.velocityStyle
+                        readonly property var direction:
+                            evaluationOverlay.directionFrom(start)
+                        readonly property real length:
+                            Math.max(4, window.viewer.carVelocity.length())
+                        readonly property var start:
+                            window.viewer.carPosition
+                        readonly property var end:
+                            Qt.vector3d(start.x + direction.x * length,
+                                        start.y + direction.y * length,
+                                        start.z + direction.z * length)
+                        visible: window.viewer.loaded
+                                 && window.controller.evaluationTargetId
+                                    === "velocity"
+                                 && layerStyle.visible
+                                 && !layerStyle.throughBlocks
+                        geometry: visible
+                            ? window.viewer.visualLineGeometry(
+                                "target:velocity", [start, end], false)
+                            : null
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            diffuseColor: parent.layerStyle.color
+                            opacity: parent.layerStyle.opacity
+                            lineWidth: parent.layerStyle.width
+                        }
+                    }
+
+                    Model {
+                        objectName: "occludedConditionPlane"
+                        readonly property var layerStyle:
+                            evaluationOverlay.conditionStyle
+                        readonly property var corners:
+                            evaluationOverlay.conditionPlaneCorners()
+                        visible: window.viewer.loaded
+                                 && corners.length === 4
+                                 && layerStyle.visible
+                                 && !layerStyle.throughBlocks
+                        geometry: visible
+                            ? window.viewer.visualLineGeometry(
+                                "condition:threshold", corners, true)
+                            : null
+                        materials: DefaultMaterial {
+                            lighting: DefaultMaterial.NoLighting
+                            diffuseColor: parent.layerStyle.color
+                            opacity: parent.layerStyle.opacity
+                            lineWidth: parent.layerStyle.width
+                        }
+                    }
+
+                    Repeater3D {
+                        model: window.viewer.runCount
+
+                        delegate: Node {
+                            id: runCarRoot
+
+                            required property int index
+                            readonly property var runPose:
+                                window.viewer.runPoses[index]
+                            readonly property int runIndex: index
+                            readonly property var layerStyle:
+                                window.visualStyle("car:" + runPose.id,
+                                                   { color: window.runColor(index),
+                                                     opacity: 1 })
+
+                            objectName: "runCarRoot"
+                            visible: !runPose.selected
+                                     && layerStyle.visible
+                                     && !layerStyle.throughBlocks
+                            position: runPose.position
+                            rotation: runPose.rotation
+
+                            Repeater3D {
+                                model: window.viewer.carEllipsoids.length
+
+                                delegate: Node {
+                                    required property int index
+                                    readonly property var ellipsoid:
+                                        window.viewer.carEllipsoids[
+                                            index]
+
+                                    objectName: "runCarEllipsoidNode"
+                                    position: ellipsoid.position
+                                    rotation: ellipsoid.rotation
+                                    scale: ellipsoid.radii
+
+                                    Model {
+                                        objectName: "runCarFilledModel"
+                                        visible: window.renderMode !==
+                                                 "wireframe"
+                                        geometry: window.viewer
+                                            .ellipsoidFilledGeometries[
+                                                runCarRoot.runIndex %
+                                                window.viewer
+                                                    .ellipsoidFilledGeometries
+                                                    .length]
+                                        materials: DefaultMaterial {
+                                            objectName: "runCarFilledMaterial"
+                                            lighting:
+                                                DefaultMaterial.NoLighting
+                                            vertexColorsEnabled: true
+                                            diffuseColor: runCarRoot.layerStyle.color
+                                            opacity: runCarRoot.layerStyle.opacity
+                                            cullMode:
+                                                Material.BackFaceCulling
+                                        }
+                                    }
+
+                                    Model {
+                                        objectName: "runCarWireModel"
+                                        visible: window.renderMode ===
+                                                 "wireframe"
+                                        geometry:
+                                            window.viewer.ellipsoidWireGeometry
+                                        materials: DefaultMaterial {
+                                            lighting:
+                                                DefaultMaterial.NoLighting
+                                            diffuseColor: runCarRoot.layerStyle.color
+                                            opacity: runCarRoot.layerStyle.opacity
+                                            cullMode: Material.NoCulling
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Node {
+                        id: selectedRunCarRoot
+                        readonly property var layerStyle:
+                            window.visualStyle(
+                                "car:" + window.viewer.selectedRunId,
+                                { color: window.runColor(
+                                    window.viewer.selectedRunIndex),
+                                  opacity: 1 })
+
+                        objectName: "selectedRunCarRoot"
+                        visible: window.viewer.loaded
+                                 && window.viewer.runCount > 0
+                                 && layerStyle.visible
+                                 && !layerStyle.throughBlocks
+                                 && !(viewport.carCameraActive
+                                      && window.viewer.hideSelectedCar)
+                                 && !window.moduleCarShown
+                        position: window.viewer.carPosition
+                        rotation: window.viewer.carRotation
+
+                        Repeater3D {
+                            model: window.viewer.carEllipsoids.length
+
+                            delegate: Node {
+                                required property int index
+                                readonly property var ellipsoid:
+                                    window.viewer.carEllipsoids[index]
+
+                                objectName: "selectedRunCarEllipsoidNode"
+                                position: ellipsoid.position
+                                rotation: ellipsoid.rotation
+                                scale: ellipsoid.radii
+
+                                Model {
+                                    objectName: "selectedRunCarFilledModel"
+                                    visible: window.renderMode !==
+                                             "wireframe"
+                                    geometry: window.viewer
+                                        .selectedEllipsoidFilledGeometry
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        vertexColorsEnabled: true
+                                        diffuseColor: selectedRunCarRoot.layerStyle.color
+                                        opacity: selectedRunCarRoot.layerStyle.opacity
+                                        cullMode:
+                                            Material.BackFaceCulling
+                                    }
+                                }
+
+                                Model {
+                                    objectName: "selectedRunCarWireModel"
+                                    visible: window.renderMode ===
+                                             "wireframe"
+                                    geometry:
+                                        window.viewer
+                                            .ellipsoidWireGeometry
+                                    materials: DefaultMaterial {
+                                        lighting:
+                                            DefaultMaterial.NoLighting
+                                        diffuseColor: selectedRunCarRoot.layerStyle.color
+                                        opacity: selectedRunCarRoot.layerStyle.opacity
+                                        cullMode: Material.NoCulling
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    ImprovementCars {
+                        objectName: "improvementCarsRoot"
+                        visible: window.viewer.loaded
+                                 && window.viewer.improvementCarCount > 0
+                                 && layerStyle.visible
+                                 && !layerStyle.throughBlocks
+                    }
+                }
+
+                GpuRayTracingView {
+                    id: gpuRayTracingView
+                    objectName: "gpuRayTracingView"
+                    anchors.fill: parent
+                    z: 1
+                    visible: window.rayTracingEnabled
+                    active: window.rayTracingEnabled && viewport.visible &&
+                            (!window.shutdown || !window.shutdown.closing)
+                            && window.viewer.loaded
+                    viewer: window.viewer
+                    cameraPosition: viewCamera.scenePosition
+                    cameraTarget: viewport.cameraTarget
+                    cameraUp: viewCamera.up
+                    fieldOfView: viewCamera.fieldOfView
+                    framing: window.framedRect
+                }
+
+                View3D {
+                    id: rayTracingTrajectoryOverlay
+                    objectName: "rayTracingTrajectoryOverlay"
+                    anchors.fill: parent
+                    z: 1.5
+                    camera: rayTracingOverlayCamera
+                    visible: window.viewer.loaded
+                             && window.hasThroughVisuals()
+
+                    environment: SceneEnvironment {
+                        backgroundMode: SceneEnvironment.Transparent
+                        antialiasingMode: SceneEnvironment.MSAA
+                        antialiasingQuality: SceneEnvironment.Medium
+                    }
+
+                    Node {
+                        position: viewport.carCameraActive
+                                  ? window.viewer.carCameraPosition
+                                  : viewport.freeCamera
+                                    ? viewport.freeCameraPosition
+                                    : viewport.cameraTarget
+                        rotation: viewport.carCameraActive
+                                  ? window.viewer.carCameraRotation
+                                  : Qt.quaternion(1, 0, 0, 0)
+
+                        Node {
+                            eulerRotation.x: viewport.carCameraActive
+                                             ? 0 : viewport.orbitPitch
+                            eulerRotation.y: viewport.carCameraActive
+                                             ? 0 : viewport.orbitYaw
+
+                            CustomCamera {
+                                id: rayTracingOverlayCamera
+                                objectName: "rayTracingOverlayCamera"
+                                readonly property var dynamicClipPlanes:
+                                    window.viewer.cameraClipPlanes(
+                                        scenePosition,
+                                        viewCamera.clipDistance)
+
+                                z: viewport.carCameraActive
+                                   || viewport.freeCamera
+                                   ? 0 : viewport.orbitDistance
+                                projection: window.framedProjection(
+                                    viewCamera.fieldOfView, dynamicClipPlanes.x,
+                                    dynamicClipPlanes.y)
+                            }
+                        }
+                    }
+
+                    Repeater3D {
+                        model: window.viewer.trajectoryPaths
+
+                        delegate: Model {
+                            required property var modelData
+                            readonly property var layerStyle:
+                                window.visualStyle(modelData.visualId,
+                                                   { color: modelData.color,
+                                                     opacity: modelData.opacity,
+                                                     width: 3 })
+
+                            objectName:
+                                "rayTracingTrajectoryPathModel"
+                            visible: (window.rayTracingEnabled
+                                      || layerStyle.throughBlocks)
+                                     && layerStyle.visible
+                                     && (modelData.visible ?? true)
+                            geometry: modelData.geometry
+                            castsShadows: false
+                            receivesShadows: false
+                            materials: DefaultMaterial {
+                                lighting: DefaultMaterial.NoLighting
+                                vertexColorsEnabled: modelData.vertexColors ?? false
+                                diffuseColor: layerStyle.color
+                                opacity: layerStyle.opacity
+                                lineWidth: layerStyle.width
+                                cullMode: Material.NoCulling
+                            }
+                        }
+                    }
+
+                    // Keyed by count, like the raster cars: a pose list
+                    // model would rebuild every car on each pose update.
+                    Repeater3D {
+                        model: window.viewer.runCount
+
+                        delegate: Node {
+                            id: throughCar
+                            required property int index
+                            readonly property var modelData:
+                                window.viewer.runPoses[index]
+                            readonly property var layerStyle:
+                                window.visualStyle("car:" + modelData.id,
+                                                   { color: window.runColor(index),
+                                                     opacity: 1 })
+                            objectName: "throughRunCarRoot"
+                            visible: layerStyle.visible
+                                     && (window.rayTracingEnabled
+                                         || layerStyle.throughBlocks)
+                                     && !(modelData.selected
+                                          && viewport.carCameraActive
+                                          && window.viewer.hideSelectedCar)
+                                     && !(modelData.selected
+                                          && window.moduleCarShown)
+                            position: modelData.selected
+                                ? window.viewer.carPosition
+                                : modelData.position
+                            rotation: modelData.selected
+                                ? window.viewer.carRotation
+                                : modelData.rotation
+
+                            Repeater3D {
+                                model: window.viewer.carEllipsoids.length
+                                delegate: Node {
+                                    required property int index
+                                    readonly property var ellipsoid:
+                                        window.viewer.carEllipsoids[index]
+                                    position: ellipsoid.position
+                                    rotation: ellipsoid.rotation
+                                    scale: ellipsoid.radii
+                                    Model {
+                                        geometry: window.viewer.ellipsoidFilledGeometry
+                                        visible: window.renderMode !== "wireframe"
+                                        materials: DefaultMaterial {
+                                            lighting: DefaultMaterial.NoLighting
+                                            vertexColorsEnabled: true
+                                            diffuseColor: throughCar.layerStyle.color
+                                            opacity: throughCar.layerStyle.opacity
+                                            cullMode: Material.NoCulling
+                                        }
+                                    }
+                                    Model {
+                                        geometry: window.viewer.ellipsoidWireGeometry
+                                        visible: window.renderMode === "wireframe"
+                                        materials: DefaultMaterial {
+                                            lighting: DefaultMaterial.NoLighting
+                                            diffuseColor: throughCar.layerStyle.color
+                                            opacity: throughCar.layerStyle.opacity
+                                            lineWidth: 1.5
+                                            cullMode: Material.NoCulling
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    ImprovementCars {
+                        objectName: "throughImprovementCarsRoot"
+                        visible: window.viewer.improvementCarCount > 0
+                                 && layerStyle.visible
+                                 && (window.rayTracingEnabled
+                                     || layerStyle.throughBlocks)
+                    }
+
+                    CuboidEditorScene {
+                        objectName: "rayTracingCuboidEditorScene"
+                        throughPass: true
+                        interactive: viewport.targetMouseEditingAllowed
+                    }
+
+                    CustomVolumeEditorScene {
+                        objectName: "rayTracingCustomVolumeEditorScene"
+                        throughPass: true
+                        interactive: viewport.targetMouseEditingAllowed
+                    }
+
+                    PoseTargetEditorScene {
+                        objectName: "rayTracingPoseTargetEditorScene"
+                        throughPass: true
+                        interactive: viewport.targetMouseEditingAllowed
+                    }
+                }
+
+                WhiteboardPlanes {
+                    id: whiteboardPlaneView
+                    anchors.fill: parent
+                    z: 1.75
+                    model: window.viewer.whiteboard
+                    cameraTarget: viewport.cameraTarget
+                    cameraPosition: viewCamera.scenePosition
+                    freeCamera: viewport.freeCamera
+                    orbitYaw: viewport.orbitYaw
+                    orbitPitch: viewport.orbitPitch
+                    orbitDistance: viewport.orbitDistance
+                    fieldOfView: viewCamera.fieldOfView
+                    exactBoardIndex:
+                        viewport.exactWhiteboardBoardIndex
+                    contentTop: whiteboardOverlay.boardTop
+                }
+
+                Connections {
+                    target: window.viewer.whiteboard
+
+                    function onBoardsChanged() {
+                        viewport.synchronizeWhiteboardFocus()
+                    }
+                }
+
+                Connections {
+                    target: window.controller
+
+                    function onCuboidFocusRequested(center, size) {
+                        viewport.focusCuboid(center, size)
+                    }
+                    function onCustomVolumeFocusRequested(center, size) {
+                        viewport.focusCuboid(center, size)
+                    }
+                    function onPoseTargetFocusRequested(center, size) {
+                        viewport.focusCuboid(center, size)
+                    }
+                }
+
+                MouseArea {
+                    id: manualInputFocus
+                    objectName: "manualInputFocus"
+                    anchors.fill: parent
+                    z: 2
+                    focus: false
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Canvas
+                    Accessible.name: qsTr("Race preview")
+                    Accessible.focusable: true
+                    acceptedButtons: Qt.LeftButton
+                    hoverEnabled: true
+                    property real previousX: 0
+                    property real previousY: 0
+
+                    Keys.priority: Keys.BeforeItem
+                    Keys.onPressed: event => {
+                        viewport.handleCameraPresetKey(event, true)
+                        if (!event.accepted)
+                            viewport.handleFreeCameraKey(event, true)
+                        if (!event.accepted)
+                            window.handleManualKey(event, true)
+                    }
+                    Keys.onReleased: event => {
+                        viewport.handleCameraPresetKey(event, false)
+                        if (!event.accepted)
+                            viewport.handleFreeCameraKey(event, false)
+                        if (!event.accepted)
+                            window.handleManualKey(event, false)
+                    }
+                    onActiveFocusChanged: {
+                        if (!activeFocus
+                            && window.viewer.manualDriving) {
+                            window.viewer.releaseManualInputs()
+                        }
+                        if (!activeFocus)
+                            viewport.releaseFreeMovement()
+                    }
+
+                    onPressed: mouse => {
+                        editHistory.beginGesture()
+                        manualInputFocus.forceActiveFocus()
+                        previousX = mouse.x
+                        previousY = mouse.y
+                        viewport.beginViewRotation()
+                        if (window.controller.customVolumeDrawing
+                            && viewport.targetMouseEditingAllowed) {
+                            const point = viewport.customPlanePoint(
+                                mouse.x, mouse.y)
+                            window.controller.customVolumeTargets
+                                  .addVertexWorld(
+                                      point.x, point.y, point.z)
+                            viewport.cuboidPointerCaptured = true
+                            return
+                        }
+                        if (viewport.whiteboardPlaneFocusEnabled()) {
+                            const boardIndex =
+                                whiteboardPlaneView.pickBoard(
+                                    mouse.x, mouse.y)
+                            if (boardIndex >= 0
+                                && window.viewer.whiteboard
+                                         .selectBoard(boardIndex)) {
+                                viewport.restoreWhiteboardView(
+                                    window.viewer.whiteboard
+                                          .boards[boardIndex])
+                                viewport.cuboidPointerCaptured = true
+                                return
+                            }
+                        }
+                        const view = window.rayTracingEnabled
+                                     || window.controller
+                                              .drawTargetsThroughBlocks
+                                     ? rayTracingTrajectoryOverlay
+                                     : rasterMapView
+                        if (viewport.pointPlacementActive
+                            && viewport.targetMouseEditingAllowed) {
+                            const picked = rasterMapView.pick(
+                                mouse.x, mouse.y)
+                            const point = picked.objectHit
+                                          ? picked.scenePosition
+                                          : viewport.customPlanePoint(
+                                                mouse.x, mouse.y)
+                            window.controller.setEvaluationTargetSetting(
+                                "x", String(point.x))
+                            window.controller.setEvaluationTargetSetting(
+                                "y", String(point.y))
+                            window.controller.setEvaluationTargetSetting(
+                                "z", String(point.z))
+                            viewport.pointPlacementActive = false
+                            viewport.cuboidPointerCaptured = true
+                            return
+                        }
+                        const hit = view.pick(mouse.x, mouse.y).objectHit
+                        if (hit && hit.targetIndex !== undefined
+                            && viewport.targetMouseEditingAllowed) {
+                            viewport.cuboidPointerCaptured = true
+                            if (hit.editorKind
+                                && hit.editorKind.indexOf("pose-")
+                                   === 0) {
+                                window.controller.poseTargets
+                                      .selectTarget(hit.targetIndex)
+                                window.controller.evaluationTargetId =
+                                    "pose-target"
+                                viewport.beginPoseInteraction(
+                                    hit.editorKind,
+                                    hit.editorAxis,
+                                    mouse.x,
+                                    mouse.y)
+                            } else if (hit.editorKind
+                                && hit.editorKind.indexOf("custom-")
+                                   === 0) {
+                                window.controller.customVolumeTargets
+                                      .selectTarget(hit.targetIndex)
+                                window.controller.evaluationTargetId =
+                                    "custom-volume-entry-time"
+                                if (hit.editorKind === "custom-plane") {
+                                    window.controller.customVolumeTargets
+                                          .setPlane(
+                                              hit.targetIndex,
+                                              hit.planeChoice)
+                                }
+                                viewport.beginCustomInteraction(
+                                    hit.editorKind,
+                                    hit.vertexIndex,
+                                    mouse.x,
+                                    mouse.y)
+                            } else {
+                                window.controller.cuboidTargets
+                                      .selectTarget(hit.targetIndex)
+                                window.controller.evaluationTargetId =
+                                    "volume-entry-time"
+                            }
+                            if (hit.editorKind === "move"
+                                || hit.editorKind === "resize") {
+                                viewport.beginCuboidInteraction(
+                                    hit.editorKind,
+                                    hit.editorAxis,
+                                    mouse.x,
+                                    mouse.y)
+                            }
+                            return
+                        }
+                    }
+                    onPositionChanged: mouse => {
+                        if (!(mouse.buttons & Qt.LeftButton))
+                            return
+                        if (viewport.cuboidDragActive) {
+                            viewport.updateCuboidInteraction(
+                                mouse.x, mouse.y)
+                            previousX = mouse.x
+                            previousY = mouse.y
+                            return
+                        }
+                        if (viewport.customVertexDragActive
+                            || viewport.customDepthDragActive) {
+                            viewport.updateCustomInteraction(
+                                mouse.x, mouse.y)
+                            previousX = mouse.x
+                            previousY = mouse.y
+                            return
+                        }
+                        if (viewport.poseDragActive) {
+                            viewport.updatePoseInteraction(
+                                mouse.x, mouse.y)
+                            previousX = mouse.x
+                            previousY = mouse.y
+                            return
+                        }
+                        if (viewport.cuboidPointerCaptured)
+                            return
+                        viewport.leaveExactWhiteboardView()
+                        viewport.updateViewRotation(
+                            mouse.x - previousX,
+                            mouse.y - previousY)
+                        previousX = mouse.x
+                        previousY = mouse.y
+                    }
+                    onReleased: {
+                        viewport.endCuboidInteraction()
+                        viewport.endCustomInteraction()
+                        viewport.endPoseInteraction()
+                        viewport.cuboidPointerCaptured = false
+                        if (window.viewer.manualDriving
+                            || window.viewer.takeOverOnInput
+                            || viewport.freeCamera)
+                            manualInputFocus.forceActiveFocus()
+                        editHistory.endGesture()
+                    }
+                    onCanceled: {
+                        viewport.endCuboidInteraction()
+                        viewport.endCustomInteraction()
+                        viewport.endPoseInteraction()
+                        viewport.cuboidPointerCaptured = false
+                        editHistory.endGesture()
+                    }
+                    onWheel: wheel => {
+                        if (viewport.zoomOrbit(wheel.angleDelta.y))
+                            wheel.accepted = true
+                    }
+                }
+
+                WhiteboardOverlay {
+                    id: whiteboardOverlay
+                    objectName: "whiteboardOverlay"
+                    onEditGestureStarted: editHistory.beginGesture()
+                    onEditGestureFinished: editHistory.endGesture()
+                    anchors.fill: parent
+                    z: 2.5
+                    model: window.viewer.whiteboard
+                    available: window.viewer.loaded
+                    captureViewpoint: function() {
+                        return viewport.captureWhiteboardView()
+                    }
+                    restoreViewpoint: function(board) {
+                        viewport.restoreWhiteboardView(board)
+                    }
+                    afterPickUp: function() {
+                        viewport.enableFreeCamera()
+                    }
+                    imageExportInProgress:
+                        viewport.exportingWhiteboardImage
+                    exportBackgroundImage: function(index, fileUrl) {
+                        return viewport.exportWhiteboardBackground(
+                                    index, fileUrl)
+                    }
+                    toolbarMaximumWidth: whiteboardToolbarHost.width
+                    toolbarHost: whiteboardToolbarHost
+                    drawingListHost: whiteboardDrawingListHost
+                    visible: !viewport.exportingWhiteboardImage
+                }
+
+                EvaluationOverlay {
+                    id: evaluationOverlay
+                    anchors.fill: parent
+                    controller: window.controller
+                    viewer: window.viewer
+                    projector: rasterMapView
+                    suppressed: viewport.exportingWhiteboardImage
+                }
+
+                Column {
+                    anchors.centerIn: parent
+                    width: Math.min(parent.width / AppTheme.zoom - 60, 430)
+                    scale: AppTheme.zoom
+                    spacing: 12
+                    visible: !window.viewer.loaded
+                             && !viewport.exportingWhiteboardImage
+
+                    BusyIndicator {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        running: window.viewer.loading
+                        visible: running
+                    }
+
+                    Label {
+                        width: parent.width
+                        horizontalAlignment: Text.AlignHCenter
+                        text: window.viewer.loading
+                              ? window.viewer.statusText
+                              : qsTr("Open a replay or challenge with File > Open map or replay.")
+                        color: AppTheme.viewerOverlayText
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 16
+                    }
+
+                    Label {
+                        width: parent.width
+                        visible: !window.viewer.loading
+                                 && window.viewer.statusText
+                                    !== qsTr("No map loaded")
+                                 && !mapFailure.visible
+                        horizontalAlignment: Text.AlignHCenter
+                        text: window.viewer.statusText
+                        color: "#f0a19e"
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 12
+                    }
+
+                    FailureNotice {
+                        id: mapFailure
+                        objectName: "viewerFailure"
+                        width: parent.width
+                        visible: !window.viewer.loading
+                                 && reason.length > 0
+                        failure: window.viewer.statusFailure
+                        textColor: AppTheme.viewerOverlayText
+                        detailsColor: AppTheme.viewerOverlayMuted
+                    }
+
+                }
+            }
+        }
+
+        Component.onCompleted: {
+            AppTheme.backdrop = raceBackdrop
+            AppTheme.blurred = blurredRace
+            AppTheme.panelsBlurred = panelsBlurred
+            AppTheme.panelMap = Qt.binding(function() {
+                return Qt.vector4d(ui.x - raceBackdrop.x, ui.y - raceBackdrop.y,
+                                   window.width, window.height)
+            })
+        }
+    }
+
+    // ---- panels and menus (scaled by View > Zoom) ------------------------------
+    Item {
+        id: ui
+        objectName: "uiLayer"
+        width: window.width / AppTheme.zoom
+        height: window.height / AppTheme.zoom
+        scale: AppTheme.zoom
+        transformOrigin: Item.TopLeft
+
+        DockSpace {
+            id: dockSpace
+            objectName: "dockSpace"
+            y: window.menuBarHeight
+            width: parent.width
+            height: parent.height - y
+            backdropOrigin: Qt.point(dockSpace.x * AppTheme.zoom - raceBackdrop.x,
+                                     dockSpace.y * AppTheme.zoom - raceBackdrop.y)
+            maximizedPanel: window.codeEditorExpanded ? "code" : ""
+            onMaximizeEnded: window.codeEditorExpanded = false
+            savedState: String(window.controller.uiSetting("layout", ""))
+            onStateSaved: state => window.controller.setUiSetting("layout", state)
+            defaultLayout: window.defaultLayout
+
+            DockPanel {
+                id: inputsPanel
+                objectName: "inputsPanel"
+                panelId: "inputs"
+                title: qsTr("Inputs")
+                available: window.controller.viewerVisible
 
                 Rectangle {
                     id: timelinePanel
                     objectName: "timelinePanel"
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.preferredHeight: workspaceContent.height / 2
+                    anchors.fill: parent
                     color: AppTheme.panel
 
                     ColumnLayout {
@@ -924,7 +4283,6 @@ ApplicationWindow {
                             Layout.fillWidth: true
                             Layout.fillHeight: true
                             viewer: window.viewer
-                            darkMode: AppTheme.dark
                             enabled: window.viewer.runCount > 0
                                      && !window.viewer.manualDriving
                             pixelsPerTick: 3
@@ -979,3215 +4337,526 @@ ApplicationWindow {
                         }
                     }
                 }
+            }
 
-                Rectangle {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: 1
-                    color: AppTheme.border
-                }
+            DockPanel {
+                id: graphicsPanel
+                objectName: "graphicsPanel"
+                panelId: "graphics"
+                title: qsTr("Graphics")
+                available: window.controller.viewerVisible
 
                 GraphicsInspector {
                     id: graphicsInspector
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    Layout.preferredHeight: workspaceContent.height / 2
+                    anchors.fill: parent
                     viewer: window.viewer
                     controller: window.controller
                     editHistory: editHistory
                     renderMode: window.renderMode
                     rayTracingSupported: gpuRayTracingView.supported
+                    moduleRenderLabel: moduleRenderView.available
+                                       ? moduleRenderView.label : ""
+                    moduleRenderStatus: moduleRenderView.status
+                    moduleGameCar: window.moduleGameCar
+                    onModuleGameCarRequested: show => {
+                        window.moduleGameCar = show
+                        window.controller.setUiSetting("moduleGameCar", show)
+                    }
                     rayTracingStatus: gpuRayTracingView.status
                     onRenderModeRequested: mode => window.renderMode = mode
                 }
-                }
+            }
+
+            DockPanel {
+                id: racePanel
+                objectName: "racePanel"
+                panelId: "race"
+                title: qsTr("Race viewer")
+                available: window.controller.viewerVisible
 
                 Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.fillHeight: true
-                    color: AppTheme.border
-                }
-
-                Item {
-                    id: viewport
-                    objectName: "raceViewport"
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-
-                    property real orbitYaw: 35
-                    property real orbitPitch: -20
-                    property real orbitDistance: 38
-                    property real cameraFieldOfView: 55
-                    property bool freeCamera: false
-                    property bool orbitalCamera: false
-                    property bool pointPlacementActive: false
-                    readonly property bool targetMouseEditingAllowed:
-                        !window.controller.running && !window.controller.targetMouseEditingLocked
-                    onTargetMouseEditingAllowedChanged: {
-                        if (!targetMouseEditingAllowed) {
-                            endCuboidInteraction()
-                            endCustomInteraction()
-                            endPoseInteraction()
-                            pointPlacementActive = false
-                            cuboidPointerCaptured = false
-                            editHistory.endGesture()
-                        }
-                    }
-                    Connections {
-                        target: window.controller
-                        function onEvaluationTargetIdChanged() {
-                            if (window.controller.evaluationTargetId
-                                    !== "point-target")
-                                viewport.pointPlacementActive = false
-                        }
-                        function onRunningChanged() {
-                            if (window.controller.running)
-                                viewport.pointPlacementActive = false
-                        }
-                    }
-                    readonly property vector3d sceneCameraPosition:
-                        viewCamera.scenePosition
-                    readonly property var sceneCameraRotation:
-                        viewCamera.sceneRotation
-                    property vector3d freeCameraPosition:
-                        Qt.vector3d(0, 0, 0)
-                    function renderTelemetry(script) {
-                        // These explicit reads keep the binding live while the
-                        // C++ formatter samples the selected run internally.
-                        const timelineTime = window.viewer.timeMs
-                        const selectedCarPosition = window.viewer.carPosition
-                        const context = evaluationOverlay.telemetryContext
-                        const frame = evaluationOverlay.projectionFrame
-                        return window.viewer.renderTelemetryWithContext(
-                                    script, frame ? frame[0] : viewCamera.scenePosition,
-                                    context, true)
-                    }
-                    readonly property bool carCameraActive:
-                        !freeCamera && !orbitalCamera && !cuboidFocused
-                        && window.viewer.carCameraAvailable
-                        && window.viewer.runCount > 0
-                    readonly property vector3d cameraForward: {
-                        if (carCameraActive) {
-                            const dx = window.viewer.carCameraTarget.x
-                                     - window.viewer.carCameraPosition.x
-                            const dy = window.viewer.carCameraTarget.y
-                                     - window.viewer.carCameraPosition.y
-                            const dz = window.viewer.carCameraTarget.z
-                                     - window.viewer.carCameraPosition.z
-                            const length = Math.sqrt(dx * dx + dy * dy
-                                                   + dz * dz)
-                            if (length > 0.000001)
-                                return Qt.vector3d(dx / length, dy / length,
-                                                   dz / length)
-                        }
-                        const yaw = orbitYaw * Math.PI / 180
-                        const pitch = orbitPitch * Math.PI / 180
-                        const pitchCos = Math.cos(pitch)
-                        return Qt.vector3d(
-                            -Math.sin(yaw) * pitchCos,
-                            Math.sin(pitch),
-                            -Math.cos(yaw) * pitchCos)
-                    }
-                    readonly property vector3d freeCameraTarget:
-                        Qt.vector3d(
-                            freeCameraPosition.x
-                                + cameraForward.x * orbitDistance,
-                            freeCameraPosition.y
-                                + cameraForward.y * orbitDistance,
-                            freeCameraPosition.z
-                                + cameraForward.z * orbitDistance)
-                    property bool hasObjectFocus: false
-                    property bool cuboidFocused: false
-                    property int exactWhiteboardBoardIndex: -1
-                    property string exactWhiteboardBoardId: ""
-                    property int lastFocusedWhiteboardIndex: -1
-                    property string lastFocusedWhiteboardId: ""
-                    property vector3d cuboidFocusCenter:
-                        Qt.vector3d(0, 0, 0)
-                    readonly property vector3d cameraTarget:
-                        freeCamera ? freeCameraTarget
-                        : cuboidFocused ? cuboidFocusCenter
-                        : carCameraActive
-                          ? window.viewer.carCameraTarget
-                          : window.viewer.carPosition
-                    readonly property string cameraFocusMode:
-                        freeCamera ? "free"
-                        : cuboidFocused ? "object"
-                        : orbitalCamera ? "orbital"
-                        : carCameraActive ? "preset" : "car"
-                    property bool freeMoveForward: false
-                    property bool freeMoveBackward: false
-                    property bool freeMoveLeft: false
-                    property bool freeMoveRight: false
-                    property bool freeMoveUp: false
-                    property bool freeMoveDown: false
-                    property real freeMoveSpeed: 0
-                    property real freeMoveStartedAt: 0
-                    property real freeMoveLastStepAt: 0
-                    readonly property real freeMoveInitialSpeed: 9
-                    readonly property real freeMoveAcceleration: 30
-                    readonly property real freeMoveMaximumSpeed: 360
-                    property real viewRotationTargetYaw: orbitYaw
-                    property real viewRotationTargetPitch: orbitPitch
-                    property bool viewRotationSmoothing: false
-                    property bool cuboidDragActive: false
-                    property bool cuboidPointerCaptured: false
-                    property string cuboidDragKind: ""
-                    property string cuboidDragAxis: ""
-                    property real cuboidDragX: 0
-                    property real cuboidDragY: 0
-                    property bool customVertexDragActive: false
-                    property int customVertexDragIndex: -1
-                    property bool customDepthDragActive: false
-                    property bool poseDragActive: false
-                    property string poseDragKind: ""
-                    property string poseDragAxis: ""
-                    property bool exportingWhiteboardImage: false
-                    property url whiteboardImageExportUrl: ""
-
-                    function hasFreeMovement() {
-                        return freeMoveForward || freeMoveBackward
-                            || freeMoveLeft || freeMoveRight
-                            || freeMoveUp || freeMoveDown
-                    }
-
-                    function releaseFreeMovement() {
-                        freeMoveForward = false
-                        freeMoveBackward = false
-                        freeMoveLeft = false
-                        freeMoveRight = false
-                        freeMoveUp = false
-                        freeMoveDown = false
-                        freeMoveSpeed = 0
-                        freeMoveStartedAt = 0
-                        freeMoveLastStepAt = 0
-                        freeCameraMovementTimer.stop()
-                    }
-
-                    function setFreeMovement(direction, active) {
-                        const hadMovement = hasFreeMovement()
-                        if (direction === "forward")
-                            freeMoveForward = active
-                        else if (direction === "backward")
-                            freeMoveBackward = active
-                        else if (direction === "left")
-                            freeMoveLeft = active
-                        else if (direction === "right")
-                            freeMoveRight = active
-                        else if (direction === "up")
-                            freeMoveUp = active
-                        else if (direction === "down")
-                            freeMoveDown = active
-                        else
-                            return false
-
-                        const hasMovement = hasFreeMovement()
-                        if (!hadMovement && hasMovement) {
-                            const now = Date.now()
-                            freeMoveStartedAt = now
-                            freeMoveLastStepAt = now
-                            freeMoveSpeed = freeMoveInitialSpeed
-                            freeCameraMovementTimer.start()
-                        } else if (!hasMovement) {
-                            releaseFreeMovement()
-                        }
-                        return true
-                    }
-
-                    function freeMovementForKey(key) {
-                        if (key === Qt.Key_Up || key === Qt.Key_W
-                                || key === Qt.Key_Z)
-                            return "forward"
-                        if (key === Qt.Key_Down || key === Qt.Key_S)
-                            return "backward"
-                        if (key === Qt.Key_Left || key === Qt.Key_A
-                                || key === Qt.Key_Q)
-                            return "left"
-                        if (key === Qt.Key_Right || key === Qt.Key_D)
-                            return "right"
-                        if (key === Qt.Key_E)
-                            return "up"
-                        if (key === Qt.Key_C)
-                            return "down"
-                        return ""
-                    }
-
-                    function handleCameraPresetKey(event, active) {
-                        let preset = 0
-                        if (event.key === Qt.Key_1)
-                            preset = 1
-                        else if (event.key === Qt.Key_2)
-                            preset = 2
-                        else if (event.key === Qt.Key_3)
-                            preset = 3
-                        else if (event.key === Qt.Key_7) {
-                            event.accepted = true
-                            if (active && !event.isAutoRepeat)
-                                enableFreeCamera()
-                            return true
-                        } else {
-                            return false
-                        }
-                        event.accepted = true
-                        if (active && !event.isAutoRepeat
-                                && window.viewer.runCount > 0
-                                && window.viewer.carCameraAvailable) {
-                            window.viewer.cameraPreset = preset
-                            focusCurrentCar()
-                        }
-                        return true
-                    }
-
-                    function handleFreeCameraKey(event, active) {
-                        if (!freeCamera)
-                            return false
-                        const direction = freeMovementForKey(event.key)
-                        if (direction.length === 0)
-                            return false
-                        event.accepted = true
-                        if (!event.isAutoRepeat)
-                            setFreeMovement(direction, active)
-                        return true
-                    }
-
-                    function stepFreeCameraMovement(timestamp) {
-                        if (!freeCamera) {
-                            releaseFreeMovement()
-                            return false
-                        }
-                        if (!hasFreeMovement())
-                            return false
-                        const now = Number.isFinite(timestamp)
-                                  ? timestamp : Date.now()
-                        if (freeMoveStartedAt <= 0)
-                            freeMoveStartedAt = now
-                        if (freeMoveLastStepAt <= 0)
-                            freeMoveLastStepAt = now
-                        const elapsed = Math.max(
-                            0, (now - freeMoveStartedAt) / 1000)
-                        const delta = Math.max(
-                            0,
-                            Math.min(0.05,
-                                     (now - freeMoveLastStepAt) / 1000))
-                        freeMoveLastStepAt = now
-                        freeMoveSpeed = Math.min(
-                            freeMoveMaximumSpeed,
-                            freeMoveInitialSpeed
-                                + elapsed * freeMoveAcceleration)
-                        if (delta <= 0)
-                            return true
-
-                        const yaw = orbitYaw * Math.PI / 180
-                        const pitch = orbitPitch * Math.PI / 180
-                        const pitchCos = Math.cos(pitch)
-                        const forward = Qt.vector3d(
-                            -Math.sin(yaw) * pitchCos,
-                            Math.sin(pitch),
-                            -Math.cos(yaw) * pitchCos)
-                        const right = Qt.vector3d(
-                            Math.cos(yaw), 0, -Math.sin(yaw))
-                        let x = 0
-                        let y = 0
-                        let z = 0
-                        if (freeMoveForward) {
-                            x += forward.x
-                            y += forward.y
-                            z += forward.z
-                        }
-                        if (freeMoveBackward) {
-                            x -= forward.x
-                            y -= forward.y
-                            z -= forward.z
-                        }
-                        if (freeMoveRight) {
-                            x += right.x
-                            z += right.z
-                        }
-                        if (freeMoveLeft) {
-                            x -= right.x
-                            z -= right.z
-                        }
-                        if (freeMoveUp)
-                            y += 1
-                        if (freeMoveDown)
-                            y -= 1
-                        const length = Math.sqrt(x * x + y * y + z * z)
-                        if (length <= 0.000001)
-                            return true
-                        const distance = freeMoveSpeed * delta / length
-                        freeCameraPosition = Qt.vector3d(
-                            freeCameraPosition.x + x * distance,
-                            freeCameraPosition.y + y * distance,
-                            freeCameraPosition.z + z * distance)
-                        return true
-                    }
-
-                    function zoomOrbit(wheelDeltaY) {
-                        if (carCameraActive || freeCamera)
-                            return false
-                        leaveExactWhiteboardView()
-                        const factor = Math.exp(-wheelDeltaY / 1200)
-                        orbitDistance = Math.max(
-                            3, Math.min(1000, orbitDistance * factor))
-                        return true
-                    }
-
-                    function beginViewRotation() {
-                        viewRotationTargetYaw = orbitYaw
-                        viewRotationTargetPitch = orbitPitch
-                        viewRotationSmoothing = false
-                    }
-
-                    function updateViewRotation(deltaX, deltaY) {
-                        if (carCameraActive)
-                            return
-                        if (!freeCamera) {
-                            orbitYaw -= deltaX
-                            orbitPitch = Math.max(
-                                -85, Math.min(85, orbitPitch - deltaY))
-                            viewRotationTargetYaw = orbitYaw
-                            viewRotationTargetPitch = orbitPitch
-                            viewRotationSmoothing = false
-                            return
-                        }
-                        viewRotationTargetYaw -= deltaX * 0.5
-                        viewRotationTargetPitch = Math.max(
-                            -85,
-                            Math.min(85,
-                                     viewRotationTargetPitch - deltaY * 0.5))
-                        viewRotationSmoothing = true
-                    }
-
-                    function stepViewRotation(frameTime) {
-                        if (!viewRotationSmoothing)
-                            return false
-                        const seconds = Math.max(
-                            0,
-                            Math.min(0.05,
-                                     Number.isFinite(frameTime)
-                                     ? frameTime : 1 / 60))
-                        const blend = 1 - Math.exp(-24 * seconds)
-                        orbitYaw += (viewRotationTargetYaw - orbitYaw) * blend
-                        orbitPitch += (viewRotationTargetPitch - orbitPitch)
-                            * blend
-                        if (Math.abs(viewRotationTargetYaw - orbitYaw) < 0.001
-                                && Math.abs(viewRotationTargetPitch
-                                            - orbitPitch) < 0.001) {
-                            orbitYaw = viewRotationTargetYaw
-                            orbitPitch = viewRotationTargetPitch
-                            viewRotationSmoothing = false
-                        }
-                        return true
-                    }
-
-                    function enableFreeCamera() {
-                        window.viewer.releaseManualInputs()
-                        orbitalCamera = false
-                        const wasCarCamera = carCameraActive
-                        const forward = cameraForward
-                        const position = freeCamera
-                            ? freeCameraPosition
-                            : wasCarCamera
-                              ? window.viewer.carCameraPosition
-                              : Qt.vector3d(
-                                    cameraTarget.x
-                                        - forward.x * orbitDistance,
-                                    cameraTarget.y
-                                        - forward.y * orbitDistance,
-                                    cameraTarget.z
-                                        - forward.z * orbitDistance)
-                        if (wasCarCamera) {
-                            const dx = window.viewer.carCameraTarget.x
-                                     - position.x
-                            const dy = window.viewer.carCameraTarget.y
-                                     - position.y
-                            const dz = window.viewer.carCameraTarget.z
-                                     - position.z
-                            orbitDistance = Math.max(
-                                0.1, Math.sqrt(dx * dx + dy * dy + dz * dz))
-                            orbitPitch = Math.asin(
-                                Math.max(-1, Math.min(1, forward.y)))
-                                * 180 / Math.PI
-                            orbitYaw = Math.atan2(-forward.x, -forward.z)
-                                * 180 / Math.PI
-                        }
-                        beginViewRotation()
-                        freeCameraPosition = Qt.vector3d(
-                            position.x, position.y, position.z)
-                        exactWhiteboardBoardIndex = -1
-                        exactWhiteboardBoardId = ""
-                        cameraFieldOfView = 55
-                        freeCamera = true
-                        cuboidFocused = false
-                    }
-
-                    function leaveExactWhiteboardView() {
-                        if (exactWhiteboardBoardIndex < 0)
-                            return
-                        exactWhiteboardBoardIndex = -1
-                        exactWhiteboardBoardId = ""
-                        cameraFieldOfView = 55
-                    }
-
-                    function enableOrbitalCamera() {
-                        window.viewer.releaseManualInputs()
-                        releaseFreeMovement()
-                        beginViewRotation()
-                        exactWhiteboardBoardIndex = -1
-                        exactWhiteboardBoardId = ""
-                        cameraFieldOfView = 55
-                        freeCamera = false
-                        cuboidFocused = false
-                        orbitalCamera = true
-                    }
-
-                    function focusCurrentCar() {
-                        releaseFreeMovement()
-                        beginViewRotation()
-                        exactWhiteboardBoardIndex = -1
-                        exactWhiteboardBoardId = ""
-                        cameraFieldOfView = 55
-                        freeCamera = false
-                        cuboidFocused = false
-                        orbitalCamera = false
-                    }
-
-                    function resetCameraFocus() {
-                        focusCurrentCar()
-                        hasObjectFocus = false
-                        lastFocusedWhiteboardIndex = -1
-                        lastFocusedWhiteboardId = ""
-                        cuboidFocusCenter = Qt.vector3d(0, 0, 0)
-                    }
-
-                    function whiteboardIndexForId(id) {
-                        if (id.length === 0)
-                            return -1
-                        const boards = window.viewer.whiteboard.boards
-                        for (let index = 0; index < boards.length; ++index) {
-                            if (boards[index].id === id)
-                                return index
-                        }
-                        return -1
-                    }
-
-                    function synchronizeWhiteboardFocus() {
-                        if (lastFocusedWhiteboardId.length === 0)
-                            return
-                        const index = whiteboardIndexForId(
-                            lastFocusedWhiteboardId)
-                        const board = index >= 0
-                            ? window.viewer.whiteboard.boards[index] : null
-                        if (!board || !board.isCurrentMap) {
-                            enableFreeCamera()
-                            lastFocusedWhiteboardIndex = -1
-                            lastFocusedWhiteboardId = ""
-                            hasObjectFocus = false
-                            return
-                        }
-                        lastFocusedWhiteboardIndex = index
-                        if (exactWhiteboardBoardId ===
-                                lastFocusedWhiteboardId) {
-                            exactWhiteboardBoardIndex = index
-                        }
-                    }
-
-                    function focusLastObject() {
-                        if (!hasObjectFocus)
-                            return
-                        const whiteboardIndex = whiteboardIndexForId(
-                            lastFocusedWhiteboardId)
-                        if (whiteboardIndex >= 0) {
-                            const board = window.viewer.whiteboard.boards[
-                                whiteboardIndex]
-                            if (board && board.isCurrentMap) {
-                                restoreWhiteboardView(board)
-                                return
-                            }
-                        }
-                        releaseFreeMovement()
-                        beginViewRotation()
-                        exactWhiteboardBoardIndex = -1
-                        exactWhiteboardBoardId = ""
-                        cameraFieldOfView = 55
-                        freeCamera = false
-                        cuboidFocused = true
-                        orbitalCamera = false
-                    }
-
-                    function focusCuboid(center, size) {
-                        releaseFreeMovement()
-                        beginViewRotation()
-                        exactWhiteboardBoardIndex = -1
-                        exactWhiteboardBoardId = ""
-                        lastFocusedWhiteboardIndex = -1
-                        lastFocusedWhiteboardId = ""
-                        cameraFieldOfView = 55
-                        cuboidFocusCenter = center
-                        hasObjectFocus = true
-                        freeCamera = false
-                        cuboidFocused = true
-                        orbitalCamera = false
-                        orbitDistance = Math.max(
-                            3,
-                            Math.min(1000,
-                                     Math.max(size.x, size.y, size.z) * 2.4))
-                    }
-
-                    function captureWhiteboardView() {
-                        const camera = viewCamera.scenePosition
-                        const target = cameraTarget
-                        const viewportWidth = Math.max(1, width)
-                        const viewportHeight = Math.max(1, height)
-                        const contentX = 0
-                        const contentY = Math.min(
-                            1, whiteboardOverlay.boardTop / viewportHeight)
-                        const contentWidth = 1
-                        const contentHeight = Math.max(
-                            0.000001, 1 - contentY)
-                        const planeDistance = Math.max(
-                            viewCamera.clipNear * 2,
-                            Math.min(
-                                Math.max(0.05, orbitDistance - 0.01),
-                                Math.max(0.05, orbitDistance * 0.32)))
-                        const fullHeight = 2 * Math.tan(
-                            cameraFieldOfView * Math.PI / 360)
-                            * planeDistance
-                        const fullWidth = fullHeight
-                            * viewportWidth / viewportHeight
-                        const planeWidth = fullWidth * contentWidth
-                        const planeHeight = fullHeight * contentHeight
-                        const contentCenterX =
-                            contentX + contentWidth * 0.5
-                        const contentCenterY =
-                            contentY + contentHeight * 0.5
-                        const rightOffset =
-                            fullWidth * (contentCenterX - 0.5)
-                        const upOffset =
-                            fullHeight * (0.5 - contentCenterY)
-                        const yaw = orbitYaw * Math.PI / 180
-                        const pitch = orbitPitch * Math.PI / 180
-                        const right = Qt.vector3d(
-                            Math.cos(yaw), 0, -Math.sin(yaw))
-                        const up = Qt.vector3d(
-                            Math.sin(yaw) * Math.sin(pitch),
-                            Math.cos(pitch),
-                            Math.cos(yaw) * Math.sin(pitch))
-                        return {
-                            "projection": "perspective-vertical",
-                            "fieldOfView": cameraFieldOfView,
-                            "planeDistance": planeDistance,
-                            "viewportWidth": viewportWidth,
-                            "viewportHeight": viewportHeight,
-                            "contentX": contentX,
-                            "contentY": contentY,
-                            "contentWidth": contentWidth,
-                            "contentHeight": contentHeight,
-                            "canvasWidth": Math.max(
-                                1, whiteboardOverlay.width),
-                            "canvasHeight": Math.max(
-                                1,
-                                whiteboardOverlay.height
-                                - whiteboardOverlay.boardTop),
-                            "targetX": target.x,
-                            "targetY": target.y,
-                            "targetZ": target.z,
-                            "yaw": orbitYaw,
-                            "pitch": orbitPitch,
-                            "distance": orbitDistance,
-                            "planeX": camera.x
-                                      + cameraForward.x * planeDistance
-                                      + right.x * rightOffset
-                                      + up.x * upOffset,
-                            "planeY": camera.y
-                                      + cameraForward.y * planeDistance
-                                      + right.y * rightOffset
-                                      + up.y * upOffset,
-                            "planeZ": camera.z
-                                      + cameraForward.z * planeDistance
-                                      + right.z * rightOffset
-                                      + up.z * upOffset,
-                            "planeWidth": planeWidth,
-                            "planeHeight": planeHeight
-                        }
-                    }
-
-                    function restoreWhiteboardView(board) {
-                        releaseFreeMovement()
-                        cuboidFocusCenter = Qt.vector3d(
-                            board.targetX,
-                            board.targetY,
-                            board.targetZ)
-                        hasObjectFocus = true
-                        freeCamera = false
-                        cuboidFocused = true
-                        orbitalCamera = false
-                        orbitYaw = board.yaw
-                        orbitPitch = board.pitch
-                        beginViewRotation()
-                        orbitDistance = board.distance
-                        cameraFieldOfView =
-                            board.projectionVersion >= 1
-                            ? board.fieldOfView : 55
-                        exactWhiteboardBoardIndex =
-                            board.projectionVersion >= 1
-                            ? board.boardIndex : -1
-                        exactWhiteboardBoardId =
-                            board.projectionVersion >= 1
-                            ? board.id : ""
-                        lastFocusedWhiteboardIndex = board.boardIndex
-                        lastFocusedWhiteboardId = board.id
-                    }
-
-                    function whiteboardPlaneFocusEnabled() {
-                        return !window.viewer.whiteboard.active
-                            && !freeCamera
-                    }
-
-                    Timer {
-                        id: freeCameraMovementTimer
-                        interval: 16
-                        repeat: true
-                        onTriggered:
-                            viewport.stepFreeCameraMovement(Date.now())
-                    }
-
-                    FrameAnimation {
-                        running: viewport.viewRotationSmoothing
-                                 && window.visible && workspaceContent.visible
-                        onTriggered:
-                            viewport.stepViewRotation(frameTime)
-                    }
-
-                    function finishWhiteboardImageExport(success) {
-                        whiteboardExportTimer.stop()
-                        whiteboardExportWatchdog.stop()
-                        whiteboardPlaneView.forcedBoardIndex = -1
-                        whiteboardPlaneView.exportMode = false
-                        exportingWhiteboardImage = false
-                        whiteboardImageExportUrl = ""
-                        window.viewer.whiteboard.finishBoardImageExport(
-                                    success, true)
-                    }
-
-                    function exportWhiteboardBackground(index, fileUrl) {
-                        if (exportingWhiteboardImage
-                                || index < 0
-                                || index >= window.viewer.whiteboard.boardCount) {
-                            return false
-                        }
-                        const board = window.viewer.whiteboard.boards[index]
-                        const path =
-                                window.viewer.whiteboard.imageExportPath(fileUrl)
-                        if (!board || !board.isCurrentMap
-                                || path.length === 0
-                                || !window.viewer.whiteboard.selectBoard(index)) {
-                            return false
-                        }
-                        restoreWhiteboardView(board)
-                        whiteboardImageExportUrl = fileUrl
-                        whiteboardPlaneView.forcedBoardIndex = index
-                        whiteboardPlaneView.exportMode = true
-                        exportingWhiteboardImage = true
-                        whiteboardExportTimer.restart()
-                        return true
-                    }
-
-                    Timer {
-                        id: whiteboardExportTimer
-                        interval: 120
-                        repeat: false
-                        onTriggered: {
-                            const path =
-                                    window.viewer.whiteboard.imageExportPath(
-                                        viewport.whiteboardImageExportUrl)
-                            if (path.length === 0) {
-                                viewport.finishWhiteboardImageExport(false)
-                                return
-                            }
-                            const started = viewport.grabToImage(
-                                function(result) {
-                                    const saved = result !== null
-                                            && window.viewer.whiteboard
-                                                   .saveBoardBackgroundImage(
-                                                       result.image,
-                                                       viewport
-                                                           .whiteboardImageExportUrl)
-                                    viewport.finishWhiteboardImageExport(saved)
-                                })
-                            if (started) {
-                                whiteboardExportWatchdog.restart()
-                            } else {
-                                viewport.finishWhiteboardImageExport(false)
-                            }
-                        }
-                    }
-
-                    Timer {
-                        id: whiteboardExportWatchdog
-                        interval: 10000
-                        repeat: false
-                        onTriggered:
-                            viewport.finishWhiteboardImageExport(false)
-                    }
-
-                    function beginCuboidInteraction(kind, axis, x, y) {
-                        if (!targetMouseEditingAllowed)
-                            return false
-                        cuboidDragKind = kind
-                        cuboidDragAxis = axis
-                        cuboidDragX = x
-                        cuboidDragY = y
-                        cuboidDragActive = kind === "move"
-                                           || kind === "resize"
-                        return cuboidDragActive
-                    }
-
-                    function updateCuboidInteraction(x, y) {
-                        if (!cuboidDragActive || !targetMouseEditingAllowed)
-                            return
-                        const dx = x - cuboidDragX
-                        const dy = y - cuboidDragY
-                        const scale = orbitDistance
-                                      / Math.max(200, Math.min(width, height))
-                        const yaw = orbitYaw * Math.PI / 180
-                        const pitch = orbitPitch * Math.PI / 180
-                        let amount = 0
-                        if (cuboidDragAxis === "x") {
-                            amount = (dx * Math.cos(yaw)
-                                      - dy * Math.sin(yaw)
-                                        * Math.sin(pitch)) * scale
-                        } else if (cuboidDragAxis === "y") {
-                            amount = -dy * Math.cos(pitch) * scale
-                        } else {
-                            amount = (-dx * Math.sin(yaw)
-                                      - dy * Math.cos(yaw)
-                                        * Math.sin(pitch)) * scale
-                        }
-                        if (cuboidDragKind === "resize") {
-                            window.controller.cuboidTargets.resizeSelected(
-                                cuboidDragAxis, amount)
-                        } else if (cuboidDragAxis === "x") {
-                            window.controller.cuboidTargets.translateSelected(
-                                amount, 0, 0)
-                        } else if (cuboidDragAxis === "y") {
-                            window.controller.cuboidTargets.translateSelected(
-                                0, amount, 0)
-                        } else {
-                            window.controller.cuboidTargets.translateSelected(
-                                0, 0, amount)
-                        }
-                        cuboidDragX = x
-                        cuboidDragY = y
-                    }
-
-                    function endCuboidInteraction() {
-                        cuboidDragActive = false
-                        cuboidDragKind = ""
-                        cuboidDragAxis = ""
-                    }
-
-                    function customPlanePoint(x, y) {
-                        const target =
-                            window.controller.customVolumeTargets.selectedTarget
-                        const view = window.rayTracingEnabled
-                                   ? rayTracingTrajectoryOverlay
-                                   : rasterMapView
-                        const nearPoint = view.mapTo3DScene(
-                            Qt.vector3d(x, y, 1))
-                        const farPoint = view.mapTo3DScene(
-                            Qt.vector3d(x, y, 2))
-                        const direction = farPoint.minus(nearPoint)
-                        let numerator = 0
-                        let denominator = 0
-                        if (target.plane === "xy") {
-                            numerator = target.origin.z - nearPoint.z
-                            denominator = direction.z
-                        } else if (target.plane === "yz") {
-                            numerator = target.origin.x - nearPoint.x
-                            denominator = direction.x
-                        } else {
-                            numerator = target.origin.y - nearPoint.y
-                            denominator = direction.y
-                        }
-                        if (Math.abs(denominator) < 0.000001)
-                            return target.origin
-                        const amount = numerator / denominator
-                        return nearPoint.plus(direction.times(amount))
-                    }
-
-                    function beginCustomInteraction(kind, index, x, y) {
-                        if (!targetMouseEditingAllowed
-                            || window.controller.customVolumeDrawing)
-                            return false
-                        cuboidDragX = x
-                        cuboidDragY = y
-                        customVertexDragIndex = index
-                        customVertexDragActive = kind === "custom-vertex"
-                        customDepthDragActive = kind === "custom-depth"
-                        return customVertexDragActive
-                               || customDepthDragActive
-                    }
-
-                    function updateCustomInteraction(x, y) {
-                        if (!targetMouseEditingAllowed) return
-                        if (customVertexDragActive) {
-                            const point = customPlanePoint(x, y)
-                            window.controller.customVolumeTargets.setVertexWorld(
-                                customVertexDragIndex,
-                                point.x,
-                                point.y,
-                                point.z)
-                        } else if (customDepthDragActive) {
-                            const target =
-                                window.controller.customVolumeTargets.selectedTarget
-                            const dx = x - cuboidDragX
-                            const dy = y - cuboidDragY
-                            const scale = orbitDistance
-                                          / Math.max(200,
-                                                     Math.min(width, height))
-                            const yaw = orbitYaw * Math.PI / 180
-                            const pitch = orbitPitch * Math.PI / 180
-                            let amount = 0
-                            if (target.plane === "xy") {
-                                amount = (-dx * Math.sin(yaw)
-                                          - dy * Math.cos(yaw)
-                                            * Math.sin(pitch)) * scale
-                            } else if (target.plane === "yz") {
-                                amount = (dx * Math.cos(yaw)
-                                          - dy * Math.sin(yaw)
-                                            * Math.sin(pitch)) * scale
-                            } else {
-                                amount = -dy * Math.cos(pitch) * scale
-                            }
-                            window.controller.customVolumeTargets
-                                  .resizeDepthSelected(amount)
-                        }
-                        cuboidDragX = x
-                        cuboidDragY = y
-                    }
-
-                    function endCustomInteraction() {
-                        customVertexDragActive = false
-                        customDepthDragActive = false
-                        customVertexDragIndex = -1
-                    }
-
-                    function beginPoseInteraction(kind, axis, x, y) {
-                        if (!targetMouseEditingAllowed)
-                            return false
-                        poseDragKind = kind
-                        poseDragAxis = axis
-                        cuboidDragX = x
-                        cuboidDragY = y
-                        poseDragActive = kind === "pose-move"
-                                         || kind === "pose-rotate"
-                        return poseDragActive
-                    }
-
-                    function updatePoseInteraction(x, y) {
-                        if (!poseDragActive || !targetMouseEditingAllowed)
-                            return
-                        const dx = x - cuboidDragX
-                        const dy = y - cuboidDragY
-                        if (poseDragKind === "pose-rotate") {
-                            let degrees = 0
-                            if (poseDragAxis === "yaw")
-                                degrees = dx * 0.5
-                            else if (poseDragAxis === "pitch")
-                                degrees = -dy * 0.5
-                            else
-                                degrees = (dx - dy) * 0.35
-                            window.controller.poseTargets.rotateSelected(
-                                poseDragAxis, degrees)
-                        } else {
-                            const scale = orbitDistance
-                                          / Math.max(
-                                              200, Math.min(width, height))
-                            const yaw = orbitYaw * Math.PI / 180
-                            const pitch = orbitPitch * Math.PI / 180
-                            let amount = 0
-                            if (poseDragAxis === "x") {
-                                amount = (dx * Math.cos(yaw)
-                                          - dy * Math.sin(yaw)
-                                            * Math.sin(pitch)) * scale
-                                window.controller.poseTargets
-                                      .translateSelected(amount, 0, 0)
-                            } else if (poseDragAxis === "y") {
-                                amount = -dy * Math.cos(pitch) * scale
-                                window.controller.poseTargets
-                                      .translateSelected(0, amount, 0)
-                            } else {
-                                amount = (-dx * Math.sin(yaw)
-                                          - dy * Math.cos(yaw)
-                                            * Math.sin(pitch)) * scale
-                                window.controller.poseTargets
-                                      .translateSelected(0, 0, amount)
-                            }
-                        }
-                        cuboidDragX = x
-                        cuboidDragY = y
-                    }
-
-                    function endPoseInteraction() {
-                        poseDragActive = false
-                        poseDragKind = ""
-                        poseDragAxis = ""
-                    }
-
-                    component CuboidEditorScene: Node {
-                        id: cuboidScene
-                        property bool interactive: false
-                        property bool throughPass: false
-
-                        Repeater3D {
-                            model: window.controller.cuboidTargets
-
-                            delegate: Node {
-                                id: cuboidRoot
-                                objectName: "cuboidTargetRoot"
-
-                                required property int index
-                                required property string targetId
-                                required property vector3d targetCenter
-                                required property vector3d targetSize
-                                required property bool targetSelected
-                                readonly property int targetIndex: index
-                                readonly property var layerStyle:
-                                    window.visualStyle("target:cuboid:" + targetId,
-                                                       { color: "#55a7d8",
-                                                         opacity: 0.13,
-                                                         throughBlocks:
-                                                             window.controller.drawTargetsThroughBlocks })
-                                readonly property bool targetActive:
-                                    targetSelected
-                                    && window.controller.evaluationTargetId
-                                       === "volume-entry-time"
-                                position: targetCenter
-                                visible: layerStyle.visible
-                                         && (cuboidScene.throughPass
-                                             ? window.rayTracingEnabled
-                                               || layerStyle.throughBlocks
-                                             : !layerStyle.throughBlocks)
-
-                                Model {
-                                    objectName: "cuboidTargetModel"
-                                    property int targetIndex:
-                                        cuboidRoot.targetIndex
-                                    property string editorKind: "select"
-                                    property string editorAxis: ""
-                                    source: "#Cube"
-                                    scale: Qt.vector3d(
-                                        cuboidRoot.targetSize.x / 100,
-                                        cuboidRoot.targetSize.y / 100,
-                                        cuboidRoot.targetSize.z / 100)
-                                    pickable: cuboidScene.interactive
-                                    castsShadows: false
-                                    receivesShadows: false
-                                    materials: DefaultMaterial {
-                                        lighting: DefaultMaterial.NoLighting
-                                        diffuseColor: cuboidRoot.targetActive
-                                            ? Qt.lighter(cuboidRoot.layerStyle.color, 1.25)
-                                            : cuboidRoot.layerStyle.color
-                                        opacity: cuboidRoot.targetActive
-                                            ? Math.min(1, cuboidRoot.layerStyle.opacity * 2.08)
-                                            : cuboidRoot.layerStyle.opacity
-                                        cullMode: Material.NoCulling
-                                    }
-                                }
-
-                                Node {
-                                    visible: cuboidRoot.targetActive
-                                             && !window.controller.running
-                                    readonly property real barLength:
-                                        Math.max(1.6,
-                                                 viewport.orbitDistance * 0.055)
-                                    readonly property real thickness:
-                                        Math.max(0.12,
-                                                 viewport.orbitDistance * 0.005)
-                                    readonly property real handleSize:
-                                        Math.max(0.34,
-                                                 viewport.orbitDistance * 0.014)
-
-                                    Model {
-                                        property int targetIndex:
-                                            cuboidRoot.targetIndex
-                                        property string editorKind: "move"
-                                        property string editorAxis: "x"
-                                        source: "#Cube"
-                                        x: cuboidRoot.targetSize.x / 2
-                                           + parent.barLength / 2
-                                        scale: Qt.vector3d(
-                                            parent.barLength / 100,
-                                            parent.thickness / 100,
-                                            parent.thickness / 100)
-                                        pickable: cuboidScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#e55353"
-                                        }
-                                    }
-                                    Model {
-                                        property int targetIndex:
-                                            cuboidRoot.targetIndex
-                                        property string editorKind: "move"
-                                        property string editorAxis: "y"
-                                        source: "#Cube"
-                                        y: cuboidRoot.targetSize.y / 2
-                                           + parent.barLength / 2
-                                        scale: Qt.vector3d(
-                                            parent.thickness / 100,
-                                            parent.barLength / 100,
-                                            parent.thickness / 100)
-                                        pickable: cuboidScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#62c96b"
-                                        }
-                                    }
-                                    Model {
-                                        property int targetIndex:
-                                            cuboidRoot.targetIndex
-                                        property string editorKind: "move"
-                                        property string editorAxis: "z"
-                                        source: "#Cube"
-                                        z: cuboidRoot.targetSize.z / 2
-                                           + parent.barLength / 2
-                                        scale: Qt.vector3d(
-                                            parent.thickness / 100,
-                                            parent.thickness / 100,
-                                            parent.barLength / 100)
-                                        pickable: cuboidScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#4c86e8"
-                                        }
-                                    }
-
-                                    Model {
-                                        objectName: "cuboidResizeHandleX"
-                                        property int targetIndex:
-                                            cuboidRoot.targetIndex
-                                        property string editorKind: "resize"
-                                        property string editorAxis: "x"
-                                        source: "#Cube"
-                                        x: cuboidRoot.targetSize.x / 2
-                                           + parent.barLength
-                                        scale: Qt.vector3d(
-                                            parent.handleSize / 100,
-                                            parent.handleSize / 100,
-                                            parent.handleSize / 100)
-                                        pickable: cuboidScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#ff7770"
-                                        }
-                                    }
-                                    Model {
-                                        objectName: "cuboidResizeHandleY"
-                                        property int targetIndex:
-                                            cuboidRoot.targetIndex
-                                        property string editorKind: "resize"
-                                        property string editorAxis: "y"
-                                        source: "#Cube"
-                                        y: cuboidRoot.targetSize.y / 2
-                                           + parent.barLength
-                                        scale: Qt.vector3d(
-                                            parent.handleSize / 100,
-                                            parent.handleSize / 100,
-                                            parent.handleSize / 100)
-                                        pickable: cuboidScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#87e58e"
-                                        }
-                                    }
-                                    Model {
-                                        objectName: "cuboidResizeHandleZ"
-                                        property int targetIndex:
-                                            cuboidRoot.targetIndex
-                                        property string editorKind: "resize"
-                                        property string editorAxis: "z"
-                                        source: "#Cube"
-                                        z: cuboidRoot.targetSize.z / 2
-                                           + parent.barLength
-                                        scale: Qt.vector3d(
-                                            parent.handleSize / 100,
-                                            parent.handleSize / 100,
-                                            parent.handleSize / 100)
-                                        pickable: cuboidScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#78a6ff"
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    component CustomVolumeEditorScene: Node {
-                        id: customVolumeScene
-                        property bool interactive: false
-                        property bool throughPass: false
-
-                        Repeater3D {
-                            model:
-                                window.controller.customVolumeTargets.targets
-
-                            delegate: Node {
-                                id: customVolumeRoot
-
-                                required property int index
-                                required property var modelData
-                                readonly property int targetIndex: index
-                                readonly property var layerStyle:
-                                    window.visualStyle("target:custom:" + modelData.id,
-                                                       { color: "#ca7ccc",
-                                                         opacity: 0.14,
-                                                         throughBlocks:
-                                                             window.controller.drawTargetsThroughBlocks })
-                                readonly property bool targetSelected:
-                                    modelData.selected
-                                readonly property bool targetActive:
-                                    targetSelected
-                                    && window.controller.evaluationTargetId
-                                       === "custom-volume-entry-time"
-                                visible: layerStyle.visible
-                                         && (customVolumeScene.throughPass
-                                             ? window.rayTracingEnabled
-                                               || layerStyle.throughBlocks
-                                             : !layerStyle.throughBlocks)
-
-                                Model {
-                                    objectName: "customVolumeTargetModel"
-                                    property int targetIndex:
-                                        customVolumeRoot.targetIndex
-                                    property string editorKind:
-                                        "custom-select"
-                                    property int vertexIndex: -1
-                                    visible: window.viewer.loaded
-                                    geometry: customVolumeRoot.modelData.geometry
-                                    pickable: customVolumeScene.interactive
-                                    castsShadows: false
-                                    receivesShadows: false
-                                    materials: DefaultMaterial {
-                                        lighting: DefaultMaterial.NoLighting
-                                        diffuseColor: customVolumeRoot.targetActive
-                                            ? Qt.lighter(customVolumeRoot.layerStyle.color, 1.25)
-                                            : customVolumeRoot.layerStyle.color
-                                        opacity: customVolumeRoot.targetActive
-                                            ? Math.min(1, customVolumeRoot.layerStyle.opacity * 2.14)
-                                            : customVolumeRoot.layerStyle.opacity
-                                        cullMode: Material.NoCulling
-                                    }
-                                }
-
-                                Model {
-                                    objectName: "customVolumeDrawingPlane"
-                                    visible:
-                                        window.viewer.loaded
-                                        && customVolumeRoot.targetActive
-                                        && window.controller.customVolumeDrawing
-                                    position: customVolumeRoot.modelData.origin
-                                    source: "#Cube"
-                                    scale:
-                                        customVolumeRoot.modelData.plane === "xy"
-                                        ? Qt.vector3d(0.5, 0.5, 0.002)
-                                        : customVolumeRoot.modelData.plane
-                                          === "yz"
-                                          ? Qt.vector3d(0.002, 0.5, 0.5)
-                                          : Qt.vector3d(0.5, 0.002, 0.5)
-                                    materials: DefaultMaterial {
-                                        lighting: DefaultMaterial.NoLighting
-                                        diffuseColor: "#e6b75d"
-                                        opacity: 0.1
-                                        cullMode: Material.NoCulling
-                                    }
-                                }
-
-                                Node {
-                                    visible:
-                                        window.viewer.loaded
-                                        && customVolumeRoot.targetSelected
-                                        && window.controller.evaluationTargetId
-                                           === "custom-volume-entry-time"
-                                        && !window.controller
-                                                  .customVolumeDrawing
-
-                                    Model {
-                                        objectName:
-                                            "customVolumePlaneChoiceXY"
-                                        property int targetIndex:
-                                            customVolumeRoot.targetIndex
-                                        property string editorKind:
-                                            "custom-plane"
-                                        property string planeChoice: "xy"
-                                        property int vertexIndex: -1
-                                        position:
-                                            customVolumeRoot.modelData.origin
-                                            .plus(Qt.vector3d(-6, 3, 0))
-                                        source: "#Cube"
-                                        scale: Qt.vector3d(
-                                            0.04, 0.04, 0.002)
-                                        pickable:
-                                            customVolumeScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#e36d6d"
-                                            opacity: 0.22
-                                        }
-                                    }
-                                    Model {
-                                        objectName:
-                                            "customVolumePlaneChoiceXZ"
-                                        property int targetIndex:
-                                            customVolumeRoot.targetIndex
-                                        property string editorKind:
-                                            "custom-plane"
-                                        property string planeChoice: "xz"
-                                        property int vertexIndex: -1
-                                        position:
-                                            customVolumeRoot.modelData.origin
-                                            .plus(Qt.vector3d(0, 0, 0))
-                                        source: "#Cube"
-                                        scale: Qt.vector3d(
-                                            0.04, 0.002, 0.04)
-                                        pickable:
-                                            customVolumeScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#6ed47b"
-                                            opacity: 0.22
-                                        }
-                                    }
-                                    Model {
-                                        objectName:
-                                            "customVolumePlaneChoiceYZ"
-                                        property int targetIndex:
-                                            customVolumeRoot.targetIndex
-                                        property string editorKind:
-                                            "custom-plane"
-                                        property string planeChoice: "yz"
-                                        property int vertexIndex: -1
-                                        position:
-                                            customVolumeRoot.modelData.origin
-                                            .plus(Qt.vector3d(6, 3, 0))
-                                        source: "#Cube"
-                                        scale: Qt.vector3d(
-                                            0.002, 0.04, 0.04)
-                                        pickable:
-                                            customVolumeScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#669cf0"
-                                            opacity: 0.22
-                                        }
-                                    }
-                                }
-
-                                Repeater3D {
-                                    model:
-                                        customVolumeRoot.modelData.vertices
-
-                                    delegate: Model {
-                                        required property var modelData
-                                        property int targetIndex:
-                                            customVolumeRoot.targetIndex
-                                        property string editorKind:
-                                            "custom-vertex"
-                                        property int vertexIndex:
-                                            modelData.index
-                                        visible:
-                                            window.viewer.loaded
-                                            && customVolumeRoot.targetActive
-                                        position: modelData.world
-                                        source: "#Sphere"
-                                        scale: Qt.vector3d(
-                                            Math.max(
-                                                0.004,
-                                                viewport.orbitDistance
-                                                * 0.00016),
-                                            Math.max(
-                                                0.004,
-                                                viewport.orbitDistance
-                                                * 0.00016),
-                                            Math.max(
-                                                0.004,
-                                                viewport.orbitDistance
-                                                * 0.00016))
-                                        pickable:
-                                            customVolumeScene.interactive
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: "#ffd06a"
-                                        }
-                                    }
-                                }
-
-                                Model {
-                                    objectName: "customVolumeDepthHandle"
-                                    property int targetIndex:
-                                        customVolumeRoot.targetIndex
-                                    property string editorKind: "custom-depth"
-                                    property int vertexIndex: -1
-                                    visible:
-                                        window.viewer.loaded
-                                        && customVolumeRoot.targetActive
-                                        && !window.controller.customVolumeDrawing
-                                    position:
-                                        customVolumeRoot.modelData.depthHandle
-                                    source: "#Cube"
-                                    scale: Qt.vector3d(
-                                        Math.max(
-                                            0.005,
-                                            viewport.orbitDistance
-                                            * 0.0002),
-                                        Math.max(
-                                            0.005,
-                                            viewport.orbitDistance
-                                            * 0.0002),
-                                        Math.max(
-                                            0.005,
-                                            viewport.orbitDistance
-                                            * 0.0002))
-                                    pickable: customVolumeScene.interactive
-                                    materials: DefaultMaterial {
-                                        lighting: DefaultMaterial.NoLighting
-                                        diffuseColor: "#fff0a6"
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // Every restart's latest improvement car, drawn with one
-                    // instanced call per render mode however many restarts.
-                    component ImprovementCars: Node {
-                        id: improvementCarsNode
-                        readonly property var layerStyle:
-                            window.visualStyle("car:improvements",
-                                               { color: "#ffffff", opacity: 1 })
-
-                        Model {
-                            objectName: "improvementCarsFilledModel"
-                            visible: window.renderMode !== "wireframe"
-                            geometry: window.viewer.ellipsoidFilledGeometry
-                            instancing: window.viewer.improvementCars
-                            castsShadows: false
-                            receivesShadows: false
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                vertexColorsEnabled: true
-                                diffuseColor: improvementCarsNode.layerStyle.color
-                                opacity: improvementCarsNode.layerStyle.opacity
-                                cullMode: Material.BackFaceCulling
-                            }
-                        }
-
-                        Model {
-                            objectName: "improvementCarsWireModel"
-                            visible: window.renderMode === "wireframe"
-                            geometry: window.viewer.ellipsoidWireGeometry
-                            instancing: window.viewer.improvementCars
-                            castsShadows: false
-                            receivesShadows: false
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                vertexColorsEnabled: true
-                                diffuseColor: improvementCarsNode.layerStyle.color
-                                opacity: improvementCarsNode.layerStyle.opacity
-                                cullMode: Material.NoCulling
-                            }
-                        }
-                    }
-
-                    component PoseTargetEditorScene: Node {
-                        id: poseScene
-                        property bool interactive: false
-                        property bool throughPass: false
-
-                        Repeater3D {
-                            model: window.controller.poseTargets.targets
-
-                            delegate: Node {
-                                id: poseRoot
-
-                                required property int index
-                                required property var modelData
-                                readonly property int targetIndex: index
-                                readonly property var layerStyle:
-                                    window.visualStyle("target:pose:" + modelData.id,
-                                                       { color: "#65a7d8",
-                                                         opacity: 0.36,
-                                                         throughBlocks:
-                                                             window.controller.drawTargetsThroughBlocks })
-                                readonly property bool targetActive:
-                                    modelData.selected
-                                    && window.controller.evaluationTargetId
-                                       === "pose-target"
-                                position: modelData.position
-                                visible: window.viewer.loaded
-                                         && layerStyle.visible
-                                         && (poseScene.throughPass
-                                             ? window.rayTracingEnabled
-                                               || layerStyle.throughBlocks
-                                             : !layerStyle.throughBlocks)
-
-                                Node {
-                                    rotation: poseRoot.modelData.rotation
-
-                                    Repeater3D {
-                                        model: window.viewer.carEllipsoids.length
-
-                                        delegate: Node {
-                                            required property int index
-                                            readonly property var ellipsoid:
-                                                window.viewer.carEllipsoids[index]
-
-                                            position: ellipsoid.position
-                                            rotation: ellipsoid.rotation
-                                            scale: ellipsoid.radii
-
-                                            Model {
-                                                objectName:
-                                                    "poseTargetCarModel"
-                                                property int targetIndex:
-                                                    poseRoot.targetIndex
-                                                property string editorKind:
-                                                    "pose-select"
-                                                property string editorAxis: ""
-                                                geometry:
-                                                    window.viewer
-                                                          .ellipsoidFilledGeometry
-                                                pickable:
-                                                    poseScene.interactive
-                                                castsShadows: false
-                                                receivesShadows: false
-                                                materials: DefaultMaterial {
-                                                    lighting:
-                                                        DefaultMaterial
-                                                        .NoLighting
-                                                    diffuseColor: poseRoot.targetActive
-                                                        ? Qt.lighter(poseRoot.layerStyle.color, 1.25)
-                                                        : poseRoot.layerStyle.color
-                                                    opacity: poseRoot.targetActive
-                                                        ? Math.min(1, poseRoot.layerStyle.opacity * 2.28)
-                                                        : poseRoot.layerStyle.opacity
-                                                    cullMode:
-                                                        Material.NoCulling
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-
-                                Node {
-                                    id: poseHandleRoot
-
-                                    visible: poseRoot.targetActive
-                                             && !window.controller.running
-                                    readonly property real barLength:
-                                        Math.max(
-                                            1.8,
-                                            viewport.orbitDistance * 0.05)
-                                    readonly property real thickness:
-                                        Math.max(
-                                            0.12,
-                                            viewport.orbitDistance * 0.004)
-                                    readonly property real rotationHandleSize:
-                                        Math.max(
-                                            0.5,
-                                            viewport.orbitDistance * 0.018)
-
-                                    Repeater3D {
-                                        model: [
-                                            {
-                                                "axis": "x",
-                                                "position":
-                                                    Qt.vector3d(
-                                                        1.6
-                                                        + poseHandleRoot
-                                                              .barLength
-                                                          / 2,
-                                                        0,
-                                                        0),
-                                                "scale": Qt.vector3d(
-                                                    poseHandleRoot.barLength
-                                                    / 100,
-                                                    poseHandleRoot.thickness
-                                                    / 100,
-                                                    poseHandleRoot.thickness
-                                                    / 100),
-                                                "color": "#e36d6d"
-                                            },
-                                            {
-                                                "axis": "y",
-                                                "position":
-                                                    Qt.vector3d(
-                                                        0,
-                                                        1.1
-                                                        + poseHandleRoot
-                                                              .barLength
-                                                          / 2,
-                                                        0),
-                                                "scale": Qt.vector3d(
-                                                    poseHandleRoot.thickness
-                                                    / 100,
-                                                    poseHandleRoot.barLength
-                                                    / 100,
-                                                    poseHandleRoot.thickness
-                                                    / 100),
-                                                "color": "#6ed47b"
-                                            },
-                                            {
-                                                "axis": "z",
-                                                "position":
-                                                    Qt.vector3d(
-                                                        0,
-                                                        0,
-                                                        3.2
-                                                        + poseHandleRoot
-                                                              .barLength
-                                                          / 2),
-                                                "scale": Qt.vector3d(
-                                                    poseHandleRoot.thickness
-                                                    / 100,
-                                                    poseHandleRoot.thickness
-                                                    / 100,
-                                                    poseHandleRoot.barLength
-                                                    / 100),
-                                                "color": "#669cf0"
-                                            }
-                                        ]
-
-                                        delegate: Model {
-                                            required property var modelData
-                                            objectName:
-                                                "poseTargetMoveHandle"
-                                            property int targetIndex:
-                                                poseRoot.targetIndex
-                                            property string editorKind:
-                                                "pose-move"
-                                            property string editorAxis:
-                                                modelData.axis
-                                            position: modelData.position
-                                            scale: modelData.scale
-                                            source: "#Cube"
-                                            pickable:
-                                                poseScene.interactive
-                                            materials: DefaultMaterial {
-                                                lighting:
-                                                    DefaultMaterial.NoLighting
-                                                diffuseColor: modelData.color
-                                            }
-                                        }
-                                    }
-
-                                    Repeater3D {
-                                        model: [
-                                            {
-                                                "axis": "pitch",
-                                                "position":
-                                                    Qt.vector3d(-2.3, 0, 0),
-                                                "color": "#ffadad"
-                                            },
-                                            {
-                                                "axis": "yaw",
-                                                "position":
-                                                    Qt.vector3d(0, -1.8, 0),
-                                                "color": "#a9efb2"
-                                            },
-                                            {
-                                                "axis": "roll",
-                                                "position":
-                                                    Qt.vector3d(0, 0, -3.9),
-                                                "color": "#a8c7ff"
-                                            }
-                                        ]
-
-                                        delegate: Model {
-                                            required property var modelData
-                                            objectName:
-                                                "poseTargetRotationHandle"
-                                            property int targetIndex:
-                                                poseRoot.targetIndex
-                                            property string editorKind:
-                                                "pose-rotate"
-                                            property string editorAxis:
-                                                modelData.axis
-                                            position: modelData.position
-                                            scale: Qt.vector3d(
-                                                poseHandleRoot
-                                                      .rotationHandleSize
-                                                / 100,
-                                                poseHandleRoot
-                                                      .rotationHandleSize
-                                                / 100,
-                                                poseHandleRoot
-                                                      .rotationHandleSize
-                                                / 100)
-                                            source: "#Sphere"
-                                            pickable:
-                                                poseScene.interactive
-                                            materials: DefaultMaterial {
-                                                lighting:
-                                                    DefaultMaterial.NoLighting
-                                                diffuseColor: modelData.color
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    View3D {
-                        id: rasterMapView
-                        objectName: "rasterMapView"
+                    id: raceViewerHeader
+                    objectName: "raceViewerHeader"
+                    anchors.fill: parent
+                    color: "transparent"
+
+                    RowLayout {
+                        id: headerControlsRow
+                        objectName: "headerControlsRow"
                         anchors.fill: parent
-                        visible: !window.rayTracingEnabled
-                        camera: viewCamera
-
-                        environment: SceneEnvironment {
-                            objectName: "mapEnvironment"
-                            backgroundMode: SceneEnvironment.SkyBox
-                            antialiasingMode: SceneEnvironment.MSAA
-                            antialiasingQuality: SceneEnvironment.Medium
-                            tonemapMode: SceneEnvironment.TonemapModeAces
-                            probeExposure: 1.0
-                            skyboxBlurAmount: 0.0
-                            specularAAEnabled: true
-
-                            lightProbe: Texture {
-                                objectName: "daySkyTexture"
-                                source: "qrc:/environment/day_sky.png"
-                                mappingMode: Texture.LightProbe
-                                generateMipmaps: true
-                            }
-                        }
-
-                        Node {
-                            position: viewport.carCameraActive
-                                      ? window.viewer.carCameraPosition
-                                      : viewport.freeCamera
-                                        ? viewport.freeCameraPosition
-                                        : viewport.cameraTarget
-                            rotation: viewport.carCameraActive
-                                      ? window.viewer.carCameraRotation
-                                      : Qt.quaternion(1, 0, 0, 0)
-
-                            Node {
-                                eulerRotation.x: viewport.carCameraActive
-                                                 ? 0 : viewport.orbitPitch
-                                eulerRotation.y: viewport.carCameraActive
-                                                 ? 0 : viewport.orbitYaw
-
-                                PerspectiveCamera {
-                                    id: viewCamera
-                                    objectName: "viewCamera"
-                                    readonly property real clipDistance:
-                                        viewport.carCameraActive
-                                        ? window.viewer.carCameraPosition
-                                                .minus(window.viewer
-                                                       .carCameraTarget)
-                                                .length()
-                                        : viewport.freeCamera ? 0 : viewport.orbitDistance
-                                    readonly property var dynamicClipPlanes:
-                                        window.viewer.cameraClipPlanes(
-                                            scenePosition, clipDistance)
-
-                                    z: viewport.carCameraActive
-                                       || viewport.freeCamera
-                                       ? 0 : viewport.orbitDistance
-                                    clipNear: dynamicClipPlanes.x
-                                    clipFar: dynamicClipPlanes.y
-                                    fieldOfView: viewport.carCameraActive
-                                        ? window.viewer.carCameraFieldOfView
-                                        : viewport.cameraFieldOfView
-                                    fieldOfViewOrientation:
-                                        PerspectiveCamera.Vertical
-                                }
-                            }
-                        }
-
-                        DirectionalLight {
-                            objectName: "mainMapLight"
-                            eulerRotation.x: -52
-                            eulerRotation.y: -32
-                            brightness: 1.2
-                            color: "#fff3d7"
-                            castsShadow: false
-                        }
-
-                        DirectionalLight {
-                            objectName: "fillMapLight"
-                            eulerRotation.x: -20
-                            eulerRotation.y: 145
-                            brightness: 0.35
-                            color: "#b9dbf2"
-                            castsShadow: false
-                        }
-
-                        Instantiator {
-                            id: visualMaterialCache
-                            model: window.viewer.visualMaterials
-
-                            delegate: PrincipledMaterial {
-                                required property var modelData
-
-                                objectName: "trackVisualMaterial"
-                                Texture {
-                                    id: replacementBaseMap
-                                    objectName: "trackVisualBaseTexture"
-                                    source: modelData.baseTexture
-                                    tilingModeHorizontal: Texture.Repeat
-                                    tilingModeVertical: Texture.Repeat
-                                    generateMipmaps: true
-                                    minFilter: Texture.Linear
-                                    magFilter: Texture.Linear
-                                    mipFilter: Texture.Linear
-                                }
-
-                                lighting:
-                                    PrincipledMaterial.FragmentLighting
-                                baseColor: window.renderMode ===
-                                           "neutral"
-                                           ? "#aeb3af"
-                                           : (window.renderMode ===
-                                              "material-debug"
-                                              ? modelData.debugColor
-                                              : "#ffffff")
-                                baseColorMap: window.renderMode ===
-                                              "textured"
-                                              ? replacementBaseMap
-                                              : null
-                                roughness: window.renderMode ===
-                                           "neutral"
-                                           ? 0.74
-                                           : modelData.roughness
-                                metalness: window.renderMode ===
-                                           "neutral"
-                                           ? 0
-                                           : modelData.metalness
-                                cullMode: Material.NoCulling
-                                vertexColorsEnabled:
-                                    modelData.vertexColors
-                                    && window.renderMode === "textured"
-                                emissiveMap: window.renderMode ===
-                                             "textured"
-                                             && modelData.emissiveStrength > 0
-                                             ? replacementBaseMap
-                                             : null
-                                emissiveFactor: window.renderMode ===
-                                                "textured"
-                                                ? Qt.vector3d(
-                                                      modelData.emissiveStrength,
-                                                      modelData.emissiveStrength,
-                                                      modelData.emissiveStrength)
-                                                : Qt.vector3d(0, 0, 0)
-                            }
-                        }
-
-                        Repeater3D {
-                            model: window.viewer.visualBatches
-
-                            delegate: Model {
-                                required property var modelData
-                                readonly property int materialBindingIndex:
-                                    modelData.materialBindingIndex
-                                readonly property var sharedMaterial: {
-                                    const cacheSize = visualMaterialCache.count
-                                    return cacheSize > 0
-                                           ? visualMaterialCache.objectAt(
-                                                 materialBindingIndex)
-                                           : null
-                                }
-
-                                objectName: "trackVisualModel"
-                                visible: window.viewer.loaded
-                                         && window.renderMode === "textured"
-                                         && modelData.defaultVisible
-                                geometry: modelData.geometry
-                                castsShadows: false
-
-                                materials: sharedMaterial
-                                           ? [sharedMaterial] : []
-                            }
-                        }
-
-                        CuboidEditorScene {
-                            objectName: "rasterCuboidEditorScene"
-                            interactive: viewport.targetMouseEditingAllowed
-                        }
-
-                        CustomVolumeEditorScene {
-                            objectName: "rasterCustomVolumeEditorScene"
-                            interactive: viewport.targetMouseEditingAllowed
-                        }
-
-                        PoseTargetEditorScene {
-                            objectName: "rasterPoseTargetEditorScene"
-                            interactive: viewport.targetMouseEditingAllowed
-                        }
-
-                        Model {
-                            objectName: "trackFilledModel"
-                            visible: window.viewer.loaded
-                                     && (window.renderMode === "neutral"
-                                         || window.renderMode === "collision"
-                                         || window.renderMode ===
-                                            "material-debug")
-                            geometry: window.viewer.loaded
-                                      ? window.viewer.trackFilledGeometry
-                                      : null
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                vertexColorsEnabled: true
-                                diffuseColor: window.renderMode === "neutral"
-                                              ? "#aeb3af" : "white"
-                                cullMode: Material.BackFaceCulling
-                            }
-                        }
-
-                        Model {
-                            objectName: "trackWireModel"
-                            visible: window.viewer.loaded
-                                     && window.renderMode === "wireframe"
-                            geometry: window.viewer.loaded
-                                      ? window.viewer.trackWireGeometry
-                                      : null
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                diffuseColor: "#b8d9c7"
-                                cullMode: Material.NoCulling
-                            }
-                        }
-
-                        Repeater3D {
-                            model: window.viewer.trajectoryPaths
-
-                            delegate: Model {
-                                required property var modelData
-                                readonly property var layerStyle:
-                                    window.visualStyle(modelData.visualId,
-                                                       { color: modelData.color,
-                                                         opacity: modelData.opacity,
-                                                         width: 3 })
-
-                                objectName: "trajectoryPathModel"
-                                visible: window.viewer.loaded
-                                         && (modelData.visible ?? true)
-                                         && layerStyle.visible
-                                         && !layerStyle.throughBlocks
-                                geometry: modelData.geometry
-                                castsShadows: false
-                                receivesShadows: false
-                                materials: DefaultMaterial {
-                                    lighting: DefaultMaterial.NoLighting
-                                    vertexColorsEnabled: modelData.vertexColors ?? false
-                                    diffuseColor: layerStyle.color
-                                    opacity: layerStyle.opacity
-                                    lineWidth: layerStyle.width
-                                    cullMode: Material.NoCulling
-                                }
-                            }
-                        }
-
-                        Repeater3D {
-                            model: graphicsInspector.windowRows.filter(
-                                row => !row.group && row.kind === "window")
-                            delegate: Model {
-                                required property var modelData
-                                readonly property var layerStyle:
-                                    window.visualStyle(modelData.id,
-                                                       { color: modelData.color,
-                                                         width: modelData.width,
-                                                         opacity: modelData.opacity,
-                                                         throughBlocks: true })
-                                readonly property var runs: window.viewer.runOptions
-                                readonly property var timeRange:
-                                    window.overlayWindowRange(modelData.id)
-                                objectName: "occludedTimeWindowModel"
-                                visible: layerStyle.visible
-                                         && !layerStyle.throughBlocks
-                                geometry: runs.length > 0
-                                    ? window.viewer.timeRangeGeometry(
-                                        modelData.id, modelData.runId,
-                                        timeRange[0], timeRange[1],
-                                        layerStyle.linePattern === "dash")
-                                    : null
-                                castsShadows: false
-                                receivesShadows: false
-                                materials: DefaultMaterial {
-                                    lighting: DefaultMaterial.NoLighting
-                                    diffuseColor: layerStyle.color
-                                    opacity: layerStyle.opacity
-                                    lineWidth: layerStyle.width
-                                }
-                            }
-                        }
-
-                        Repeater3D {
-                            model: graphicsInspector.windowRows.filter(
-                                row => !row.group && row.kind === "window")
-                            delegate: Node {
-                                id: windowEndpoints
-                                required property var modelData
-                                readonly property var layerStyle:
-                                    window.visualStyle(modelData.id,
-                                                       { color: modelData.color,
-                                                         opacity: modelData.opacity,
-                                                         throughBlocks: true })
-                                readonly property var timeRange:
-                                    window.overlayWindowRange(modelData.id)
-                                visible: layerStyle.visible
-                                         && !layerStyle.throughBlocks
-                                Repeater3D {
-                                    model: windowEndpoints.timeRange
-                                    delegate: Model {
-                                        required property var modelData
-                                        readonly property var sample:
-                                            evaluationOverlay.sampleAt(
-                                                Number(modelData))
-                                        visible: sample !== null
-                                        position: sample ? sample.position
-                                                         : Qt.vector3d(0, 0, 0)
-                                        source: "#Sphere"
-                                        scale: Qt.vector3d(0.004, 0.004, 0.004)
-                                        materials: DefaultMaterial {
-                                            lighting: DefaultMaterial.NoLighting
-                                            diffuseColor:
-                                                windowEndpoints.layerStyle.color
-                                            opacity:
-                                                windowEndpoints.layerStyle.opacity
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Model {
-                            objectName: "occludedHorizonMarker"
-                            readonly property var sample:
-                                evaluationOverlay.sampleAt(
-                                    evaluationOverlay.horizonTime())
-                            readonly property var layerStyle:
-                                evaluationOverlay.horizonStyle
-                            visible: window.viewer.loaded && sample
-                                     && layerStyle.visible
-                                     && !layerStyle.throughBlocks
-                            position: sample ? sample.position
-                                             : Qt.vector3d(0, 0, 0)
-                            source: "#Sphere"
-                            scale: Qt.vector3d(0.005, 0.005, 0.005)
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                diffuseColor: parent.layerStyle.color
-                                opacity: parent.layerStyle.opacity
-                            }
-                        }
-
-                        Model {
-                            objectName: "occludedEvaluationEventMarker"
-                            readonly property var event:
-                                window.controller.evaluationTargetId === "stunt-points"
-                                ? evaluationOverlay.sampleAt(
-                                    evaluationOverlay.stuntTime())
-                                : evaluationOverlay.summary.event
-                            readonly property var layerStyle:
-                                evaluationOverlay.eventStyle
-                            visible: window.viewer.loaded && event
-                                     && layerStyle.visible
-                                     && !layerStyle.throughBlocks
-                            position: event ? event.position
-                                            : Qt.vector3d(0, 0, 0)
-                            source: "#Sphere"
-                            scale: Qt.vector3d(0.006, 0.006, 0.006)
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                diffuseColor: parent.layerStyle.color
-                                opacity: parent.layerStyle.opacity
-                            }
-                        }
-
-                        Model {
-                            objectName: "occludedPointTargetMarker"
-                            readonly property var layerStyle:
-                                evaluationOverlay.pointStyle
-                            visible: window.viewer.loaded
-                                     && window.controller.evaluationTargetId
-                                        === "point-target"
-                                     && layerStyle.visible
-                                     && !layerStyle.throughBlocks
-                            position: evaluationOverlay.pointTarget()
-                            source: "#Sphere"
-                            scale: Qt.vector3d(0.007, 0.007, 0.007)
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                diffuseColor: parent.layerStyle.color
-                                opacity: parent.layerStyle.opacity
-                            }
-                        }
-
-                        Model {
-                            objectName: "occludedPointTargetLine"
-                            readonly property var layerStyle:
-                                evaluationOverlay.pointStyle
-                            visible: window.viewer.loaded
-                                     && window.controller.evaluationTargetId
-                                        === "point-target"
-                                     && evaluationOverlay.summary.event
-                                     && layerStyle.visible
-                                     && !layerStyle.throughBlocks
-                            geometry: visible
-                                ? window.viewer.visualLineGeometry(
-                                    "target:point",
-                                    [evaluationOverlay.summary.event.position,
-                                     evaluationOverlay.pointTarget()], false)
-                                : null
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                diffuseColor: parent.layerStyle.color
-                                opacity: parent.layerStyle.opacity
-                                lineWidth: parent.layerStyle.width
-                            }
-                        }
-
-                        Model {
-                            objectName: "occludedVelocityDirection"
-                            readonly property var layerStyle:
-                                evaluationOverlay.velocityStyle
-                            readonly property var direction:
-                                evaluationOverlay.direction()
-                            readonly property real length:
-                                Math.max(4, window.viewer.carVelocity.length())
-                            readonly property var start:
-                                window.viewer.carPosition
-                            readonly property var end:
-                                Qt.vector3d(start.x + direction.x * length,
-                                            start.y + direction.y * length,
-                                            start.z + direction.z * length)
-                            visible: window.viewer.loaded
-                                     && window.controller.evaluationTargetId
-                                        === "velocity"
-                                     && layerStyle.visible
-                                     && !layerStyle.throughBlocks
-                            geometry: visible
-                                ? window.viewer.visualLineGeometry(
-                                    "target:velocity", [start, end], false)
-                                : null
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                diffuseColor: parent.layerStyle.color
-                                opacity: parent.layerStyle.opacity
-                                lineWidth: parent.layerStyle.width
-                            }
-                        }
-
-                        Model {
-                            objectName: "occludedConditionPlane"
-                            readonly property var layerStyle:
-                                evaluationOverlay.conditionStyle
-                            readonly property var corners:
-                                evaluationOverlay.conditionPlaneCorners()
-                            visible: window.viewer.loaded
-                                     && corners.length === 4
-                                     && layerStyle.visible
-                                     && !layerStyle.throughBlocks
-                            geometry: visible
-                                ? window.viewer.visualLineGeometry(
-                                    "condition:threshold", corners, true)
-                                : null
-                            materials: DefaultMaterial {
-                                lighting: DefaultMaterial.NoLighting
-                                diffuseColor: parent.layerStyle.color
-                                opacity: parent.layerStyle.opacity
-                                lineWidth: parent.layerStyle.width
-                            }
-                        }
-
-                        Repeater3D {
-                            model: window.viewer.runCount
-
-                            delegate: Node {
-                                id: runCarRoot
-
-                                required property int index
-                                readonly property var runPose:
-                                    window.viewer.runPoses[index]
-                                readonly property int runIndex: index
-                                readonly property var layerStyle:
-                                    window.visualStyle("car:" + runPose.id,
-                                                       { color: window.runColor(index),
-                                                         opacity: 1 })
-
-                                objectName: "runCarRoot"
-                                visible: !runPose.selected
-                                         && layerStyle.visible
-                                         && !layerStyle.throughBlocks
-                                position: runPose.position
-                                rotation: runPose.rotation
-
-                                Repeater3D {
-                                    model: window.viewer.carEllipsoids.length
-
-                                    delegate: Node {
-                                        required property int index
-                                        readonly property var ellipsoid:
-                                            window.viewer.carEllipsoids[
-                                                index]
-
-                                        objectName: "runCarEllipsoidNode"
-                                        position: ellipsoid.position
-                                        rotation: ellipsoid.rotation
-                                        scale: ellipsoid.radii
-
-                                        Model {
-                                            objectName: "runCarFilledModel"
-                                            visible: window.renderMode !==
-                                                     "wireframe"
-                                            geometry: window.viewer
-                                                .ellipsoidFilledGeometries[
-                                                    runCarRoot.runIndex %
-                                                    window.viewer
-                                                        .ellipsoidFilledGeometries
-                                                        .length]
-                                            materials: DefaultMaterial {
-                                                objectName: "runCarFilledMaterial"
-                                                lighting:
-                                                    DefaultMaterial.NoLighting
-                                                vertexColorsEnabled: true
-                                                diffuseColor: runCarRoot.layerStyle.color
-                                                opacity: runCarRoot.layerStyle.opacity
-                                                cullMode:
-                                                    Material.BackFaceCulling
-                                            }
-                                        }
-
-                                        Model {
-                                            objectName: "runCarWireModel"
-                                            visible: window.renderMode ===
-                                                     "wireframe"
-                                            geometry:
-                                                window.viewer.ellipsoidWireGeometry
-                                            materials: DefaultMaterial {
-                                                lighting:
-                                                    DefaultMaterial.NoLighting
-                                                diffuseColor: runCarRoot.layerStyle.color
-                                                opacity: runCarRoot.layerStyle.opacity
-                                                cullMode: Material.NoCulling
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Node {
-                            id: selectedRunCarRoot
-                            readonly property var layerStyle:
-                                window.visualStyle(
-                                    "car:" + window.viewer.selectedRunId,
-                                    { color: window.runColor(
-                                        window.viewer.selectedRunIndex),
-                                      opacity: 1 })
-
-                            objectName: "selectedRunCarRoot"
-                            visible: window.viewer.loaded
-                                     && window.viewer.runCount > 0
-                                     && layerStyle.visible
-                                     && !layerStyle.throughBlocks
-                                     && !(viewport.carCameraActive
-                                          && window.viewer.hideSelectedCar)
-                            position: window.viewer.carPosition
-                            rotation: window.viewer.carRotation
-
-                            Repeater3D {
-                                model: window.viewer.carEllipsoids.length
-
-                                delegate: Node {
-                                    required property int index
-                                    readonly property var ellipsoid:
-                                        window.viewer.carEllipsoids[index]
-
-                                    objectName: "selectedRunCarEllipsoidNode"
-                                    position: ellipsoid.position
-                                    rotation: ellipsoid.rotation
-                                    scale: ellipsoid.radii
-
-                                    Model {
-                                        objectName: "selectedRunCarFilledModel"
-                                        visible: window.renderMode !==
-                                                 "wireframe"
-                                        geometry: window.viewer
-                                            .selectedEllipsoidFilledGeometry
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            vertexColorsEnabled: true
-                                            diffuseColor: selectedRunCarRoot.layerStyle.color
-                                            opacity: selectedRunCarRoot.layerStyle.opacity
-                                            cullMode:
-                                                Material.BackFaceCulling
-                                        }
-                                    }
-
-                                    Model {
-                                        objectName: "selectedRunCarWireModel"
-                                        visible: window.renderMode ===
-                                                 "wireframe"
-                                        geometry:
-                                            window.viewer
-                                                .ellipsoidWireGeometry
-                                        materials: DefaultMaterial {
-                                            lighting:
-                                                DefaultMaterial.NoLighting
-                                            diffuseColor: selectedRunCarRoot.layerStyle.color
-                                            opacity: selectedRunCarRoot.layerStyle.opacity
-                                            cullMode: Material.NoCulling
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        ImprovementCars {
-                            objectName: "improvementCarsRoot"
-                            visible: window.viewer.loaded
-                                     && window.viewer.improvementCarCount > 0
-                                     && layerStyle.visible
-                                     && !layerStyle.throughBlocks
-                        }
-                    }
-
-                    GpuRayTracingView {
-                        id: gpuRayTracingView
-                        objectName: "gpuRayTracingView"
-                        anchors.fill: parent
-                        z: 1
-                        visible: window.rayTracingEnabled
-                        active: window.rayTracingEnabled && workspaceContent.visible &&
-                                (!window.shutdown || !window.shutdown.closing)
-                                && window.viewer.loaded
-                        viewer: window.viewer
-                        cameraPosition: viewCamera.scenePosition
-                        cameraTarget: viewport.cameraTarget
-                        cameraUp: viewCamera.up
-                        fieldOfView: viewCamera.fieldOfView
-                    }
-
-                    View3D {
-                        id: rayTracingTrajectoryOverlay
-                        objectName: "rayTracingTrajectoryOverlay"
-                        anchors.fill: parent
-                        z: 1.5
-                        camera: rayTracingOverlayCamera
-                        visible: window.viewer.loaded
-                                 && window.hasThroughVisuals()
-
-                        environment: SceneEnvironment {
-                            backgroundMode: SceneEnvironment.Transparent
-                            antialiasingMode: SceneEnvironment.MSAA
-                            antialiasingQuality: SceneEnvironment.Medium
-                        }
-
-                        Node {
-                            position: viewport.carCameraActive
-                                      ? window.viewer.carCameraPosition
-                                      : viewport.freeCamera
-                                        ? viewport.freeCameraPosition
-                                        : viewport.cameraTarget
-                            rotation: viewport.carCameraActive
-                                      ? window.viewer.carCameraRotation
-                                      : Qt.quaternion(1, 0, 0, 0)
-
-                            Node {
-                                eulerRotation.x: viewport.carCameraActive
-                                                 ? 0 : viewport.orbitPitch
-                                eulerRotation.y: viewport.carCameraActive
-                                                 ? 0 : viewport.orbitYaw
-
-                                PerspectiveCamera {
-                                    id: rayTracingOverlayCamera
-                                    objectName: "rayTracingOverlayCamera"
-                                    readonly property var dynamicClipPlanes:
-                                        window.viewer.cameraClipPlanes(
-                                            scenePosition,
-                                            viewCamera.clipDistance)
-
-                                    z: viewport.carCameraActive
-                                       || viewport.freeCamera
-                                       ? 0 : viewport.orbitDistance
-                                    clipNear: dynamicClipPlanes.x
-                                    clipFar: dynamicClipPlanes.y
-                                    fieldOfView: viewCamera.fieldOfView
-                                    fieldOfViewOrientation:
-                                        PerspectiveCamera.Vertical
-                                }
-                            }
-                        }
-
-                        Repeater3D {
-                            model: window.viewer.trajectoryPaths
-
-                            delegate: Model {
-                                required property var modelData
-                                readonly property var layerStyle:
-                                    window.visualStyle(modelData.visualId,
-                                                       { color: modelData.color,
-                                                         opacity: modelData.opacity,
-                                                         width: 3 })
-
-                                objectName:
-                                    "rayTracingTrajectoryPathModel"
-                                visible: (window.rayTracingEnabled
-                                          || layerStyle.throughBlocks)
-                                         && layerStyle.visible
-                                         && (modelData.visible ?? true)
-                                geometry: modelData.geometry
-                                castsShadows: false
-                                receivesShadows: false
-                                materials: DefaultMaterial {
-                                    lighting: DefaultMaterial.NoLighting
-                                    vertexColorsEnabled: modelData.vertexColors ?? false
-                                    diffuseColor: layerStyle.color
-                                    opacity: layerStyle.opacity
-                                    lineWidth: layerStyle.width
-                                    cullMode: Material.NoCulling
-                                }
-                            }
-                        }
-
-                        // Keyed by count, like the raster cars: a pose list
-                        // model would rebuild every car on each pose update.
-                        Repeater3D {
-                            model: window.viewer.runCount
-
-                            delegate: Node {
-                                id: throughCar
-                                required property int index
-                                readonly property var modelData:
-                                    window.viewer.runPoses[index]
-                                readonly property var layerStyle:
-                                    window.visualStyle("car:" + modelData.id,
-                                                       { color: window.runColor(index),
-                                                         opacity: 1 })
-                                objectName: "throughRunCarRoot"
-                                visible: layerStyle.visible
-                                         && (window.rayTracingEnabled
-                                             || layerStyle.throughBlocks)
-                                         && !(modelData.selected
-                                              && viewport.carCameraActive
-                                              && window.viewer.hideSelectedCar)
-                                position: modelData.selected
-                                    ? window.viewer.carPosition
-                                    : modelData.position
-                                rotation: modelData.selected
-                                    ? window.viewer.carRotation
-                                    : modelData.rotation
-
-                                Repeater3D {
-                                    model: window.viewer.carEllipsoids.length
-                                    delegate: Node {
-                                        required property int index
-                                        readonly property var ellipsoid:
-                                            window.viewer.carEllipsoids[index]
-                                        position: ellipsoid.position
-                                        rotation: ellipsoid.rotation
-                                        scale: ellipsoid.radii
-                                        Model {
-                                            geometry: window.viewer.ellipsoidFilledGeometry
-                                            visible: window.renderMode !== "wireframe"
-                                            materials: DefaultMaterial {
-                                                lighting: DefaultMaterial.NoLighting
-                                                vertexColorsEnabled: true
-                                                diffuseColor: throughCar.layerStyle.color
-                                                opacity: throughCar.layerStyle.opacity
-                                                cullMode: Material.NoCulling
-                                            }
-                                        }
-                                        Model {
-                                            geometry: window.viewer.ellipsoidWireGeometry
-                                            visible: window.renderMode === "wireframe"
-                                            materials: DefaultMaterial {
-                                                lighting: DefaultMaterial.NoLighting
-                                                diffuseColor: throughCar.layerStyle.color
-                                                opacity: throughCar.layerStyle.opacity
-                                                lineWidth: 1.5
-                                                cullMode: Material.NoCulling
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        ImprovementCars {
-                            objectName: "throughImprovementCarsRoot"
-                            visible: window.viewer.improvementCarCount > 0
-                                     && layerStyle.visible
-                                     && (window.rayTracingEnabled
-                                         || layerStyle.throughBlocks)
-                        }
-
-                        CuboidEditorScene {
-                            objectName: "rayTracingCuboidEditorScene"
-                            throughPass: true
-                            interactive: viewport.targetMouseEditingAllowed
-                        }
-
-                        CustomVolumeEditorScene {
-                            objectName: "rayTracingCustomVolumeEditorScene"
-                            throughPass: true
-                            interactive: viewport.targetMouseEditingAllowed
-                        }
-
-                        PoseTargetEditorScene {
-                            objectName: "rayTracingPoseTargetEditorScene"
-                            throughPass: true
-                            interactive: viewport.targetMouseEditingAllowed
-                        }
-                    }
-
-                    WhiteboardPlanes {
-                        id: whiteboardPlaneView
-                        anchors.fill: parent
-                        z: 1.75
-                        model: window.viewer.whiteboard
-                        cameraTarget: viewport.cameraTarget
-                        cameraPosition: viewCamera.scenePosition
-                        freeCamera: viewport.freeCamera
-                        orbitYaw: viewport.orbitYaw
-                        orbitPitch: viewport.orbitPitch
-                        orbitDistance: viewport.orbitDistance
-                        fieldOfView: viewCamera.fieldOfView
-                        exactBoardIndex:
-                            viewport.exactWhiteboardBoardIndex
-                        contentTop: whiteboardOverlay.boardTop
-                    }
-
-                    Connections {
-                        target: window.viewer.whiteboard
-
-                        function onBoardsChanged() {
-                            viewport.synchronizeWhiteboardFocus()
-                        }
-                    }
-
-                    Connections {
-                        target: window.controller
-
-                        function onCuboidFocusRequested(center, size) {
-                            viewport.focusCuboid(center, size)
-                        }
-                        function onCustomVolumeFocusRequested(center, size) {
-                            viewport.focusCuboid(center, size)
-                        }
-                        function onPoseTargetFocusRequested(center, size) {
-                            viewport.focusCuboid(center, size)
-                        }
-                    }
-
-                    MouseArea {
-                        id: manualInputFocus
-                        objectName: "manualInputFocus"
-                        anchors.fill: parent
-                        z: 2
-                        focus: false
-                        activeFocusOnTab: true
-                        Accessible.role: Accessible.Canvas
-                        Accessible.name: qsTr("Race preview")
-                        Accessible.focusable: true
-                        acceptedButtons: Qt.LeftButton
-                        hoverEnabled: true
-                        property real previousX: 0
-                        property real previousY: 0
-
-                        Keys.priority: Keys.BeforeItem
-                        Keys.onPressed: event => {
-                            viewport.handleCameraPresetKey(event, true)
-                            if (!event.accepted)
-                                viewport.handleFreeCameraKey(event, true)
-                            if (!event.accepted)
-                                window.handleManualKey(event, true)
-                        }
-                        Keys.onReleased: event => {
-                            viewport.handleCameraPresetKey(event, false)
-                            if (!event.accepted)
-                                viewport.handleFreeCameraKey(event, false)
-                            if (!event.accepted)
-                                window.handleManualKey(event, false)
-                        }
-                        onActiveFocusChanged: {
-                            if (!activeFocus
-                                && window.viewer.manualDriving) {
-                                window.viewer.releaseManualInputs()
-                            }
-                            if (!activeFocus)
-                                viewport.releaseFreeMovement()
-                        }
-
-                        onPressed: mouse => {
-                            editHistory.beginGesture()
-                            manualInputFocus.forceActiveFocus()
-                            previousX = mouse.x
-                            previousY = mouse.y
-                            viewport.beginViewRotation()
-                            if (window.controller.customVolumeDrawing
-                                && viewport.targetMouseEditingAllowed) {
-                                const point = viewport.customPlanePoint(
-                                    mouse.x, mouse.y)
-                                window.controller.customVolumeTargets
-                                      .addVertexWorld(
-                                          point.x, point.y, point.z)
-                                viewport.cuboidPointerCaptured = true
-                                return
-                            }
-                            if (viewport.whiteboardPlaneFocusEnabled()) {
-                                const boardIndex =
-                                    whiteboardPlaneView.pickBoard(
-                                        mouse.x, mouse.y)
-                                if (boardIndex >= 0
-                                    && window.viewer.whiteboard
-                                             .selectBoard(boardIndex)) {
-                                    viewport.restoreWhiteboardView(
-                                        window.viewer.whiteboard
-                                              .boards[boardIndex])
-                                    viewport.cuboidPointerCaptured = true
-                                    return
-                                }
-                            }
-                            const view = window.rayTracingEnabled
-                                         || window.controller
-                                                  .drawTargetsThroughBlocks
-                                         ? rayTracingTrajectoryOverlay
-                                         : rasterMapView
-                            if (viewport.pointPlacementActive
-                                && viewport.targetMouseEditingAllowed) {
-                                const picked = rasterMapView.pick(
-                                    mouse.x, mouse.y)
-                                const point = picked.objectHit
-                                              ? picked.scenePosition
-                                              : viewport.customPlanePoint(
-                                                    mouse.x, mouse.y)
-                                window.controller.setEvaluationTargetSetting(
-                                    "x", String(point.x))
-                                window.controller.setEvaluationTargetSetting(
-                                    "y", String(point.y))
-                                window.controller.setEvaluationTargetSetting(
-                                    "z", String(point.z))
-                                viewport.pointPlacementActive = false
-                                viewport.cuboidPointerCaptured = true
-                                return
-                            }
-                            const hit = view.pick(mouse.x, mouse.y).objectHit
-                            if (hit && hit.targetIndex !== undefined
-                                && viewport.targetMouseEditingAllowed) {
-                                viewport.cuboidPointerCaptured = true
-                                if (hit.editorKind
-                                    && hit.editorKind.indexOf("pose-")
-                                       === 0) {
-                                    window.controller.poseTargets
-                                          .selectTarget(hit.targetIndex)
-                                    window.controller.evaluationTargetId =
-                                        "pose-target"
-                                    viewport.beginPoseInteraction(
-                                        hit.editorKind,
-                                        hit.editorAxis,
-                                        mouse.x,
-                                        mouse.y)
-                                } else if (hit.editorKind
-                                    && hit.editorKind.indexOf("custom-")
-                                       === 0) {
-                                    window.controller.customVolumeTargets
-                                          .selectTarget(hit.targetIndex)
-                                    window.controller.evaluationTargetId =
-                                        "custom-volume-entry-time"
-                                    if (hit.editorKind === "custom-plane") {
-                                        window.controller.customVolumeTargets
-                                              .setPlane(
-                                                  hit.targetIndex,
-                                                  hit.planeChoice)
-                                    }
-                                    viewport.beginCustomInteraction(
-                                        hit.editorKind,
-                                        hit.vertexIndex,
-                                        mouse.x,
-                                        mouse.y)
-                                } else {
-                                    window.controller.cuboidTargets
-                                          .selectTarget(hit.targetIndex)
-                                    window.controller.evaluationTargetId =
-                                        "volume-entry-time"
-                                }
-                                if (hit.editorKind === "move"
-                                    || hit.editorKind === "resize") {
-                                    viewport.beginCuboidInteraction(
-                                        hit.editorKind,
-                                        hit.editorAxis,
-                                        mouse.x,
-                                        mouse.y)
-                                }
-                                return
-                            }
-                        }
-                        onPositionChanged: mouse => {
-                            if (!(mouse.buttons & Qt.LeftButton))
-                                return
-                            if (viewport.cuboidDragActive) {
-                                viewport.updateCuboidInteraction(
-                                    mouse.x, mouse.y)
-                                previousX = mouse.x
-                                previousY = mouse.y
-                                return
-                            }
-                            if (viewport.customVertexDragActive
-                                || viewport.customDepthDragActive) {
-                                viewport.updateCustomInteraction(
-                                    mouse.x, mouse.y)
-                                previousX = mouse.x
-                                previousY = mouse.y
-                                return
-                            }
-                            if (viewport.poseDragActive) {
-                                viewport.updatePoseInteraction(
-                                    mouse.x, mouse.y)
-                                previousX = mouse.x
-                                previousY = mouse.y
-                                return
-                            }
-                            if (viewport.cuboidPointerCaptured)
-                                return
-                            viewport.leaveExactWhiteboardView()
-                            viewport.updateViewRotation(
-                                mouse.x - previousX,
-                                mouse.y - previousY)
-                            previousX = mouse.x
-                            previousY = mouse.y
-                        }
-                        onReleased: {
-                            viewport.endCuboidInteraction()
-                            viewport.endCustomInteraction()
-                            viewport.endPoseInteraction()
-                            viewport.cuboidPointerCaptured = false
-                            if (window.viewer.manualDriving
-                                || window.viewer.takeOverOnInput
-                                || viewport.freeCamera)
-                                manualInputFocus.forceActiveFocus()
-                            editHistory.endGesture()
-                        }
-                        onCanceled: {
-                            viewport.endCuboidInteraction()
-                            viewport.endCustomInteraction()
-                            viewport.endPoseInteraction()
-                            viewport.cuboidPointerCaptured = false
-                            editHistory.endGesture()
-                        }
-                        onWheel: wheel => {
-                            if (viewport.zoomOrbit(wheel.angleDelta.y))
-                                wheel.accepted = true
-                        }
-                    }
-
-                    WhiteboardOverlay {
-                        id: whiteboardOverlay
-                        objectName: "whiteboardOverlay"
-                        onEditGestureStarted: editHistory.beginGesture()
-                        onEditGestureFinished: editHistory.endGesture()
-                        anchors.fill: parent
-                        z: 2.5
-                        model: window.viewer.whiteboard
-                        available: window.viewer.loaded
-                        captureViewpoint: function() {
-                            return viewport.captureWhiteboardView()
-                        }
-                        restoreViewpoint: function(board) {
-                            viewport.restoreWhiteboardView(board)
-                        }
-                        afterPickUp: function() {
-                            viewport.enableFreeCamera()
-                        }
-                        imageExportInProgress:
-                            viewport.exportingWhiteboardImage
-                        exportBackgroundImage: function(index, fileUrl) {
-                            return viewport.exportWhiteboardBackground(
-                                        index, fileUrl)
-                        }
-                        toolbarMaximumWidth: viewport.width < 470
-                            ? viewport.width - 28
-                            : Math.max(198, cameraFocusToolbar.x - 22)
-                        visible: !viewport.exportingWhiteboardImage
-                    }
-
-                    EvaluationOverlay {
-                        id: evaluationOverlay
-                        anchors.fill: parent
-                        controller: window.controller
-                        viewer: window.viewer
-                        projector: rasterMapView
-                        suppressed: viewport.exportingWhiteboardImage
-                    }
-
-                    Rectangle {
-                        id: cameraFocusToolbar
-                        objectName: "cameraFocusToolbar"
-
-                        function layoutX(viewportWidth, drawingListOpen) {
-                            return viewportWidth - width - 12
-                        }
-
-                        function layoutTopMargin(viewportWidth,
-                                                 drawingListOpen) {
-                            return viewportWidth < 470
-                                ? whiteboardOverlay.toolbarBottom
-                                  - raceViewerHeader.height + 8
-                                : 10
-                        }
-
-                        anchors.top: raceViewerHeader.bottom
-                        anchors.topMargin: layoutTopMargin(
-                                               parent.width,
-                                               whiteboardOverlay
-                                                       .drawingListOpen)
-                        x: layoutX(parent.width,
-                                   whiteboardOverlay.drawingListOpen)
-                        z: 3
-                        width: cameraFocusControls.implicitWidth + 12
-                        height: cameraFocusControls.implicitHeight + 10
-                        radius: 6
-                        color: AppTheme.viewerOverlay
-                        border.width: 1
-                        border.color: AppTheme.viewerOverlayBorder
-                        visible: window.viewer.loaded
-                                 && !viewport.exportingWhiteboardImage
-                                 && !(viewport.width < 470
-                                      && whiteboardOverlay.drawingListOpen)
-
-                        GridLayout {
-                            id: cameraFocusControls
-                            anchors.centerIn: parent
-                            columns: viewport.width < 700 ? 3 : 6
-                            columnSpacing: 4
-                            rowSpacing: 4
-
-                            ThemedButton {
-                                objectName: "freeCameraButton"
-                                Layout.preferredWidth: Math.max(58, implicitWidth)
-                                Layout.preferredHeight: 32
-                                text: qsTr("Free")
-                                highlighted: viewport.freeCamera
-                                Accessible.name: qsTr("Free camera")
-                                onClicked: {
-                                    viewport.enableFreeCamera()
-                                    manualInputFocus.forceActiveFocus()
-                                }
-                                ToolTip.visible: hovered
-                                ToolTip.delay: 350
-                                ToolTip.text: qsTr("Free camera")
-                            }
-
-                            ThemedButton {
-                                objectName: "orbitalCameraButton"
-                                Layout.preferredWidth: Math.max(70, implicitWidth)
-                                Layout.preferredHeight: 32
-                                text: qsTr("Orbital")
-                                enabled: window.viewer.runCount > 0
-                                highlighted: enabled
-                                             && viewport.orbitalCamera
-                                Accessible.name: qsTr("Orbital camera")
-                                onClicked: {
-                                    viewport.enableOrbitalCamera()
-                                    manualInputFocus.forceActiveFocus()
-                                }
-                                ToolTip.visible: hovered
-                                ToolTip.delay: 350
-                                ToolTip.text: qsTr(
-                                    "Orbit around the car with drag and wheel")
-                            }
-
-                            ThemedButton {
-                                objectName: "focusCarButton"
-                                Layout.preferredWidth: Math.max(52, implicitWidth)
-                                Layout.preferredHeight: 32
-                                text: qsTr("Far")
-                                enabled: window.viewer.runCount > 0
-                                         && window.viewer.carCameraAvailable
-                                highlighted: enabled
-                                    && viewport.carCameraActive
-                                    && window.viewer.cameraPreset === 1
-                                Accessible.name: qsTr("Far car camera")
-                                onClicked: {
-                                    window.viewer.cameraPreset = 1
-                                    viewport.focusCurrentCar()
-                                    manualInputFocus.forceActiveFocus()
-                                }
-                                ToolTip.visible: hovered
-                                ToolTip.delay: 350
-                                ToolTip.text: qsTr("Far car camera (1)")
-                            }
-
-                            ThemedButton {
-                                objectName: "nearCameraButton"
-                                Layout.preferredWidth: Math.max(60, implicitWidth)
-                                Layout.preferredHeight: 32
-                                text: qsTr("Near")
-                                enabled: window.viewer.runCount > 0
-                                         && window.viewer.carCameraAvailable
-                                highlighted: enabled
-                                    && viewport.carCameraActive
-                                    && window.viewer.cameraPreset === 2
-                                Accessible.name: qsTr("Near car camera")
-                                onClicked: {
-                                    window.viewer.cameraPreset = 2
-                                    viewport.focusCurrentCar()
-                                    manualInputFocus.forceActiveFocus()
-                                }
-                                ToolTip.visible: hovered
-                                ToolTip.delay: 350
-                                ToolTip.text: qsTr("Near car camera (2)")
-                            }
-
-                            ThemedButton {
-                                objectName: "internalCameraButton"
-                                Layout.preferredWidth: Math.max(82, implicitWidth)
-                                Layout.preferredHeight: 32
-                                text: qsTr("Internal")
-                                enabled: window.viewer.runCount > 0
-                                         && window.viewer.carCameraAvailable
-                                highlighted: enabled
-                                    && viewport.carCameraActive
-                                    && window.viewer.cameraPreset === 3
-                                Accessible.name: qsTr("Internal car camera")
-                                onClicked: {
-                                    window.viewer.cameraPreset = 3
-                                    viewport.focusCurrentCar()
-                                    manualInputFocus.forceActiveFocus()
-                                }
-                                ToolTip.visible: hovered
-                                ToolTip.delay: 350
-                                ToolTip.text: qsTr("Internal car camera (3)")
-                            }
-
-                            ThemedButton {
-                                objectName: "focusObjectButton"
-                                Layout.preferredWidth: 64
-                                Layout.preferredHeight: 32
-                                text: qsTr("Target")
-                                enabled: viewport.hasObjectFocus
-                                highlighted: !viewport.freeCamera
-                                             && viewport.cuboidFocused
-                                Accessible.name: qsTr("Focus selected target")
-                                onClicked: {
-                                    viewport.focusLastObject()
-                                    manualInputFocus.forceActiveFocus()
-                                }
-                                ToolTip.visible: hovered
-                                ToolTip.delay: 350
-                                ToolTip.text: qsTr("Focus selected target")
-                            }
-                        }
-                    }
-
-                    Rectangle {
-                        id: scriptedTelemetry
-                        objectName: "scriptedTelemetry"
-                        anchors.top: cameraFocusToolbar.bottom
-                        anchors.topMargin: 6
-                        anchors.right: cameraFocusToolbar.right
-                        z: 3
-                        width: Math.min(
-                                   500,
-                                   Math.max(
-                                       220,
-                                       scriptedTelemetryContent
-                                           .implicitWidth + 16))
-                        height: Math.min(
-                                    210,
-                                    Math.max(
-                                        34,
-                                        scriptedTelemetryContent
-                                            .implicitHeight + 12))
-                        radius: 6
-                        color: AppTheme.viewerOverlay
-                        border.width: 1
-                        border.color: AppTheme.viewerOverlayBorder
-                        visible: window.viewer.loaded
-                                 && !viewport.exportingWhiteboardImage
-                                 && !(viewport.width < 470
-                                      && whiteboardOverlay.drawingListOpen)
-
-                        RowLayout {
-                            id: scriptedTelemetryContent
-                            anchors.fill: parent
-                            anchors.margins: 6
-                            spacing: 4
+                        anchors.leftMargin: 14
+                        anchors.rightMargin: 14
+                        spacing: 10
+
+                        ColumnLayout {
+                            id: raceViewerTitleBlock
+                            objectName: "raceViewerTitleBlock"
+                            visible: raceViewerHeader.width >= 470
+                            Layout.fillWidth: true
+                            Layout.minimumWidth:
+                                visible ? (raceViewerHeader.width < 650
+                                           ? 100 : 150) : 0
+                            Layout.alignment: Qt.AlignVCenter
+                            spacing: 0
 
                             Label {
-                                id: scriptedTelemetryText
-                                objectName: "scriptedTelemetryText"
-                                Layout.fillWidth: true
-                                Layout.maximumWidth: 430
-                                text: viewport.renderTelemetry(
-                                          window.viewer.telemetryScript)
-                                textFormat: Text.RichText
+                                text: qsTr("Race Viewer")
                                 color: AppTheme.viewerOverlayText
-                                font.pixelSize: 12
-                                font.family: "monospace"
-                                wrapMode: Text.Wrap
-                                Accessible.name: qsTr("Scripted telemetry")
-                                Accessible.description: text
+                                font.pixelSize: 17
+                                font.weight: Font.DemiBold
                             }
 
-                            ThemedToolButton {
-                                id: editTelemetryButton
-                                objectName: "editTelemetryButton"
-                                Layout.preferredWidth: 26
-                                Layout.preferredHeight: 26
-                                text: "\u270e"
-                                font.pixelSize: 15
-                                Accessible.name: qsTr("Edit scripted telemetry")
-                                onClicked: telemetryEditorDialog.open()
-                                ToolTip.visible: hovered
-                                ToolTip.delay: 350
-                                ToolTip.text: qsTr("Edit scripted telemetry")
+                            Label {
+                                Layout.fillWidth: true
+                                text: window.viewer.loaded
+                                      ? qsTr("%1 triangles · %2 batches · %3 FPS")
+                                            .arg(window.controller
+                                                     .formatCompactNumber(
+                                                         window.viewer
+                                                           .visualTriangleCount))
+                                            .arg(window.controller
+                                                     .formatCompactNumber(
+                                                         window.viewer
+                                                           .visualBatchCount))
+                                            .arg(Math.round(
+                                                     window.measuredFps))
+                                      : window.viewer.statusText
+                                color: AppTheme.viewerOverlayMuted
+                                font.pixelSize: 11
+                                elide: Text.ElideRight
+                            }
+                        }
+
+                        StyledComboBox {
+                            id: runSelector
+
+                            objectName: "runSelector"
+                            Layout.preferredWidth:
+                                raceViewerHeader.width < 650 ? 118 : 160
+                            Layout.alignment: Qt.AlignVCenter
+                            model: window.viewer.runOptions
+                            textRole: "name"
+                            valueRole: "id"
+                            enabled: count > 0
+                                     && !window.viewer.manualDriving
+
+                            function synchronizeSelection() {
+                                const selected = indexOfValue(
+                                    window.viewer.selectedRunId)
+                                if (selected >= 0
+                                    && currentIndex !== selected) {
+                                    currentIndex = selected
+                                }
+                            }
+
+                            Component.onCompleted:
+                                synchronizeSelection()
+                            onModelChanged:
+                                Qt.callLater(synchronizeSelection)
+                            onActivated: selectedIndex =>
+                                window.viewer.selectedRunId =
+                                    valueAt(selectedIndex)
+
+                            Connections {
+                                target: window.viewer
+
+                                function onRunsChanged() {
+                                    Qt.callLater(
+                                        runSelector.synchronizeSelection)
+                                }
+                                function onSelectedRunChanged() {
+                                    runSelector.synchronizeSelection()
+                                }
+                            }
+                        }
+
+
+                        ThemedButton {
+                            objectName: "resetViewButton"
+                            Layout.alignment: Qt.AlignVCenter
+                            Layout.preferredWidth:
+                                raceViewerHeader.width < 650 ? 86 : 100
+                            text: qsTr("Reset view")
+                            enabled: window.viewer.loaded
+                            onClicked: {
+                                viewport.orbitYaw = 35
+                                viewport.orbitPitch = -20
+                                viewport.orbitDistance = 38
+                                viewport.focusCurrentCar()
                             }
                         }
                     }
+                }
+            }
+
+            DockPanel {
+                id: cameraPanel
+                objectName: "cameraPanel"
+                panelId: "camera"
+                title: qsTr("Camera")
+                available: window.controller.viewerVisible && window.viewer.loaded
+
+                Rectangle {
+                    id: cameraFocusToolbar
+                    objectName: "cameraFocusToolbar"
+                    anchors.fill: parent
+                    color: "transparent"
+
+                    GridLayout {
+                        id: cameraFocusControls
+                        anchors.centerIn: parent
+                        columns: cameraFocusToolbar.width < 440 ? 3 : 6
+                        columnSpacing: 4
+                        rowSpacing: 4
+
+                        ThemedButton {
+                            objectName: "freeCameraButton"
+                            Layout.preferredWidth: Math.max(58, implicitWidth)
+                            Layout.preferredHeight: 32
+                            text: qsTr("Free")
+                            highlighted: viewport.freeCamera
+                            Accessible.name: qsTr("Free camera")
+                            onClicked: {
+                                viewport.enableFreeCamera()
+                                manualInputFocus.forceActiveFocus()
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr("Free camera")
+                        }
+
+                        ThemedButton {
+                            objectName: "orbitalCameraButton"
+                            Layout.preferredWidth: Math.max(70, implicitWidth)
+                            Layout.preferredHeight: 32
+                            text: qsTr("Orbital")
+                            enabled: window.viewer.runCount > 0
+                            highlighted: enabled
+                                         && viewport.orbitalCamera
+                            Accessible.name: qsTr("Orbital camera")
+                            onClicked: {
+                                viewport.enableOrbitalCamera()
+                                manualInputFocus.forceActiveFocus()
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr(
+                                "Orbit around the car with drag and wheel")
+                        }
+
+                        ThemedButton {
+                            objectName: "focusCarButton"
+                            Layout.preferredWidth: Math.max(52, implicitWidth)
+                            Layout.preferredHeight: 32
+                            text: qsTr("Far")
+                            enabled: window.viewer.runCount > 0
+                                     && window.viewer.carCameraAvailable
+                            highlighted: enabled
+                                && viewport.carCameraActive
+                                && window.viewer.cameraPreset === 1
+                            Accessible.name: qsTr("Far car camera")
+                            onClicked: {
+                                window.viewer.cameraPreset = 1
+                                viewport.focusCurrentCar()
+                                manualInputFocus.forceActiveFocus()
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr("Far car camera (1)")
+                        }
+
+                        ThemedButton {
+                            objectName: "nearCameraButton"
+                            Layout.preferredWidth: Math.max(60, implicitWidth)
+                            Layout.preferredHeight: 32
+                            text: qsTr("Near")
+                            enabled: window.viewer.runCount > 0
+                                     && window.viewer.carCameraAvailable
+                            highlighted: enabled
+                                && viewport.carCameraActive
+                                && window.viewer.cameraPreset === 2
+                            Accessible.name: qsTr("Near car camera")
+                            onClicked: {
+                                window.viewer.cameraPreset = 2
+                                viewport.focusCurrentCar()
+                                manualInputFocus.forceActiveFocus()
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr("Near car camera (2)")
+                        }
+
+                        ThemedButton {
+                            objectName: "internalCameraButton"
+                            Layout.preferredWidth: Math.max(82, implicitWidth)
+                            Layout.preferredHeight: 32
+                            text: qsTr("Internal")
+                            enabled: window.viewer.runCount > 0
+                                     && window.viewer.carCameraAvailable
+                            highlighted: enabled
+                                && viewport.carCameraActive
+                                && window.viewer.cameraPreset === 3
+                            Accessible.name: qsTr("Internal car camera")
+                            onClicked: {
+                                window.viewer.cameraPreset = 3
+                                viewport.focusCurrentCar()
+                                manualInputFocus.forceActiveFocus()
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr("Internal car camera (3)")
+                        }
+
+                        ThemedButton {
+                            objectName: "focusObjectButton"
+                            Layout.preferredWidth: 64
+                            Layout.preferredHeight: 32
+                            text: qsTr("Target")
+                            enabled: viewport.hasObjectFocus
+                            highlighted: !viewport.freeCamera
+                                         && viewport.cuboidFocused
+                            Accessible.name: qsTr("Focus selected target")
+                            onClicked: {
+                                viewport.focusLastObject()
+                                manualInputFocus.forceActiveFocus()
+                            }
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr("Focus selected target")
+                        }
+                    }
+                }
+            }
+
+            DockPanel {
+                id: telemetryPanel
+                objectName: "telemetryPanel"
+                panelId: "telemetry"
+                title: qsTr("Scripted telemetry")
+                available: window.controller.viewerVisible && window.viewer.loaded
+
+                Rectangle {
+                    id: scriptedTelemetry
+                    objectName: "scriptedTelemetry"
+                    anchors.fill: parent
+                    color: "transparent"
+
+                    RowLayout {
+                        id: scriptedTelemetryContent
+                        anchors.fill: parent
+                        anchors.margins: 6
+                        spacing: 4
+
+                        Label {
+                            id: scriptedTelemetryText
+                            objectName: "scriptedTelemetryText"
+                            Layout.fillWidth: true
+                            Layout.maximumWidth: 430
+                            text: viewport.renderTelemetry(
+                                      window.viewer.telemetryScript)
+                            textFormat: Text.RichText
+                            color: AppTheme.viewerOverlayText
+                            font.pixelSize: 12
+                            font.family: "monospace"
+                            wrapMode: Text.Wrap
+                            Accessible.name: qsTr("Scripted telemetry")
+                            Accessible.description: text
+                        }
+
+                        ThemedToolButton {
+                            id: editTelemetryButton
+                            objectName: "editTelemetryButton"
+                            Layout.preferredWidth: 26
+                            Layout.preferredHeight: 26
+                            text: "\u270e"
+                            font.pixelSize: 15
+                            Accessible.name: qsTr("Edit scripted telemetry")
+                            onClicked: telemetryEditorDialog.open()
+                            ToolTip.visible: hovered
+                            ToolTip.delay: 350
+                            ToolTip.text: qsTr("Edit scripted telemetry")
+                        }
+                    }
+                }
+            }
+
+            DockPanel {
+                id: splitsPanel
+                objectName: "splitsPanel"
+                panelId: "splits"
+                title: qsTr("Splits")
+                available: window.controller.viewerVisible
+                           && window.viewer.checkpointSplits.length > 0
+
+                Rectangle {
+                    id: checkpointSplitOverlay
+                    objectName: "checkpointSplitOverlay"
+                    anchors.fill: parent
+                    color: "transparent"
+                    clip: true
 
                     Rectangle {
-                        id: raceViewerHeader
-                        objectName: "raceViewerHeader"
+                        id: checkpointSplitHeader
+                        objectName: "checkpointSplitHeader"
                         anchors.top: parent.top
                         anchors.left: parent.left
                         anchors.right: parent.right
-                        z: 3
-                        visible: !viewport.exportingWhiteboardImage
-                        height: 52
-                        color: AppTheme.viewerOverlay
+                        height: 38
+                        color: AppTheme.viewerOverlayControl
 
-                        RowLayout {
-                            id: headerControlsRow
-                            objectName: "headerControlsRow"
-                            anchors.fill: parent
-                            anchors.leftMargin: 14
-                            anchors.rightMargin: 14
-                            spacing: 10
+                        Label {
+                            anchors.left: parent.left
+                            anchors.leftMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: qsTr("Splits")
+                            color: AppTheme.viewerOverlayText
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
+                        }
+                    }
 
-                            ColumnLayout {
-                                id: raceViewerTitleBlock
-                                objectName: "raceViewerTitleBlock"
-                                visible: raceViewerHeader.width >= 470
-                                Layout.fillWidth: true
-                                Layout.minimumWidth:
-                                    visible ? (raceViewerHeader.width < 650
-                                               ? 100 : 150) : 0
-                                Layout.alignment: Qt.AlignVCenter
-                                spacing: 0
+                    ListView {
+                        id: checkpointSplitList
+                        objectName: "checkpointSplitList"
+                        anchors.top: checkpointSplitHeader.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        model: window.viewer.checkpointSplits
+                        boundsBehavior: Flickable.StopAtBounds
+                        clip: true
+
+                        onCountChanged: {
+                            if (count > 0)
+                                positionViewAtEnd()
+                        }
+
+                        ScrollBar.vertical: ScrollBar {
+                            policy: checkpointSplitList.contentHeight
+                                    > checkpointSplitList.height
+                                    ? ScrollBar.AsNeeded
+                                    : ScrollBar.AlwaysOff
+                        }
+
+                        delegate: Rectangle {
+                            required property int index
+                            required property var modelData
+                            objectName: "checkpointSplitRow_" + index
+                            width: checkpointSplitList.width
+                            height: 36
+                            color: modelData.isFinish
+                                   ? "#244b34"
+                                   : "transparent"
+
+                            Rectangle {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.bottom: parent.bottom
+                                height: 1
+                                color: AppTheme.viewerOverlayBorder
+                                opacity: 0.5
+                            }
+
+                            RowLayout {
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                anchors.leftMargin: 12
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                spacing: 8
 
                                 Label {
-                                    text: qsTr("Race Viewer")
-                                    color: AppTheme.viewerOverlayText
-                                    font.pixelSize: 17
-                                    font.weight: Font.DemiBold
-                                }
-
-                                Label {
+                                    objectName:
+                                        "checkpointSplitLabel_" + index
                                     Layout.fillWidth: true
-                                    text: window.viewer.loaded
-                                          ? qsTr("%1 triangles · %2 batches · %3 FPS")
-                                                .arg(window.controller
-                                                         .formatCompactNumber(
-                                                             window.viewer
-                                                               .visualTriangleCount))
-                                                .arg(window.controller
-                                                         .formatCompactNumber(
-                                                             window.viewer
-                                                               .visualBatchCount))
-                                                .arg(Math.round(
-                                                         window.measuredFps))
-                                          : window.viewer.statusText
-                                    color: AppTheme.viewerOverlayMuted
-                                    font.pixelSize: 11
+                                    text: modelData.label
+                                    color: modelData.isFinish
+                                           ? "#8ee1ac"
+                                           : AppTheme.viewerOverlayText
                                     elide: Text.ElideRight
-                                }
-                            }
-
-                            StyledComboBox {
-                                id: runSelector
-
-                                objectName: "runSelector"
-                                Layout.preferredWidth:
-                                    raceViewerHeader.width < 650 ? 118 : 160
-                                Layout.alignment: Qt.AlignVCenter
-                                model: window.viewer.runOptions
-                                textRole: "name"
-                                valueRole: "id"
-                                enabled: count > 0
-                                         && !window.viewer.manualDriving
-
-                                function synchronizeSelection() {
-                                    const selected = indexOfValue(
-                                        window.viewer.selectedRunId)
-                                    if (selected >= 0
-                                        && currentIndex !== selected) {
-                                        currentIndex = selected
-                                    }
+                                    font.pixelSize: 11
+                                    font.weight: modelData.isFinish
+                                                 ? Font.DemiBold
+                                                 : Font.Normal
                                 }
 
-                                Component.onCompleted:
-                                    synchronizeSelection()
-                                onModelChanged:
-                                    Qt.callLater(synchronizeSelection)
-                                onActivated: selectedIndex =>
-                                    window.viewer.selectedRunId =
-                                        valueAt(selectedIndex)
-
-                                Connections {
-                                    target: window.viewer
-
-                                    function onRunsChanged() {
-                                        Qt.callLater(
-                                            runSelector.synchronizeSelection)
-                                    }
-                                    function onSelectedRunChanged() {
-                                        runSelector.synchronizeSelection()
-                                    }
-                                }
-                            }
-
-
-                            ThemedButton {
-                                objectName: "resetViewButton"
-                                Layout.alignment: Qt.AlignVCenter
-                                Layout.preferredWidth:
-                                    raceViewerHeader.width < 650 ? 86 : 100
-                                text: qsTr("Reset view")
-                                enabled: window.viewer.loaded
-                                onClicked: {
-                                    viewport.orbitYaw = 35
-                                    viewport.orbitPitch = -20
-                                    viewport.orbitDistance = 38
-                                    viewport.focusCurrentCar()
+                                Label {
+                                    objectName:
+                                        "checkpointSplitTime_" + index
+                                    Layout.alignment: Qt.AlignRight
+                                    text: modelData.time
+                                    color: modelData.isFinish
+                                           ? "#8ee1ac"
+                                           : AppTheme.viewerOverlayMuted
+                                    font.family: "monospace"
+                                    font.pixelSize: 11
+                                    font.weight: Font.DemiBold
                                 }
                             }
                         }
                     }
+                }
+            }
 
-                    Rectangle {
-                        id: playbackDock
-                        objectName: "playbackDock"
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 20
-                        z: 3
-                        visible: !viewport.exportingWhiteboardImage
-                        width: Math.min(430, parent.width - 28)
-                        height: viewport.width < 470 ? 102 : 58
-                        radius: 16
-                        color: AppTheme.viewerOverlay
-                        border.width: 1
-                        border.color: AppTheme.viewerOverlayBorder
+            DockPanel {
+                id: playbackPanel
+                objectName: "playbackPanel"
+                panelId: "playback"
+                title: qsTr("Playback")
+                available: window.controller.viewerVisible
 
-                        GridLayout {
-                            anchors.centerIn: parent
-                            columns: viewport.width < 470 ? 4 : 5
-                            columnSpacing: 8
-                            rowSpacing: 4
+                Rectangle {
+                    id: playbackDock
+                    objectName: "playbackDock"
+                    readonly property bool compact: width < 400
+                    anchors.fill: parent
+                    color: "transparent"
 
-                            ThemedToolButton {
-                                id: jumpStartButton
-                                objectName: "jumpStartButton"
-                                Layout.preferredWidth: 42
-                                Layout.preferredHeight: 42
-                                implicitWidth: 42
-                                implicitHeight: 42
-                                text: ""
-                                enabled: window.viewer.runCount > 0
-                                         && !window.viewer.manualDriving
-                                palette.buttonText: AppTheme.viewerOverlayText
-                                ToolTip.visible: hovered
-                                ToolTip.text: qsTr("Go to start and focus car")
-                                onClicked: {
-                                    window.viewer.jumpToStart()
-                                    viewport.resetCameraFocus()
-                                }
+                    GridLayout {
+                        anchors.centerIn: parent
+                        columns: playbackDock.compact ? 4 : 5
+                        columnSpacing: 8
+                        rowSpacing: 4
 
-                                contentItem: Item {
-                                    Item {
-                                        objectName: "jumpStartTransportIcon"
-                                        anchors.centerIn: parent
-                                        width: 18
-                                        height: 18
-
-                                        Rectangle {
-                                            x: 2
-                                            y: 2
-                                            width: 3
-                                            height: 14
-                                            radius: 1
-                                            color:
-                                                jumpStartButton.effectiveTextColor
-                                        }
-
-                                        Canvas {
-                                            anchors.fill: parent
-                                            property color iconColor:
-                                                jumpStartButton.effectiveTextColor
-                                            antialiasing: true
-                                            onIconColorChanged: requestPaint()
-                                            onPaint: {
-                                                const context = getContext("2d")
-                                                context.clearRect(0, 0,
-                                                                  width, height)
-                                                context.fillStyle = iconColor
-                                                context.beginPath()
-                                                context.moveTo(15, 2)
-                                                context.lineTo(6, 9)
-                                                context.lineTo(15, 16)
-                                                context.closePath()
-                                                context.fill()
-                                            }
-                                        }
-                                    }
-                                }
+                        ThemedToolButton {
+                            id: jumpStartButton
+                            objectName: "jumpStartButton"
+                            Layout.preferredWidth: 42
+                            Layout.preferredHeight: 42
+                            implicitWidth: 42
+                            implicitHeight: 42
+                            text: ""
+                            enabled: window.viewer.runCount > 0
+                                     && !window.viewer.manualDriving
+                            palette.buttonText: AppTheme.viewerOverlayText
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Go to start and focus car")
+                            onClicked: {
+                                window.viewer.jumpToStart()
+                                viewport.resetCameraFocus()
                             }
 
-                            ThemedToolButton {
-                                id: playPauseButton
-                                objectName: "playPauseButton"
-                                Layout.preferredWidth: 42
-                                Layout.preferredHeight: 42
-                                implicitWidth: 42
-                                implicitHeight: 42
-                                text: ""
-                                enabled: window.viewer.runCount > 0
-                                         && !window.viewer.manualDriving
-                                palette.buttonText:
-                                    AppTheme.viewerOverlayText
-                                ToolTip.visible: hovered
-                                ToolTip.text: window.viewer.playing
-                                              ? qsTr("Pause")
-                                              : qsTr("Play")
-                                onClicked: window.viewer.togglePlayback()
+                            contentItem: Item {
+                                Item {
+                                    objectName: "jumpStartTransportIcon"
+                                    anchors.centerIn: parent
+                                    width: 18
+                                    height: 18
 
-                                contentItem: Item {
+                                    Rectangle {
+                                        x: 2
+                                        y: 2
+                                        width: 3
+                                        height: 14
+                                        radius: 1
+                                        color:
+                                            jumpStartButton.effectiveTextColor
+                                    }
+
                                     Canvas {
-                                        objectName: "playTransportIcon"
-                                        anchors.centerIn: parent
-                                        width: 18
-                                        height: 18
-                                        visible: !window.viewer.playing
+                                        anchors.fill: parent
                                         property color iconColor:
-                                            playPauseButton.effectiveTextColor
+                                            jumpStartButton.effectiveTextColor
                                         antialiasing: true
                                         onIconColorChanged: requestPaint()
                                         onPaint: {
@@ -4196,1746 +4865,1734 @@ ApplicationWindow {
                                                               width, height)
                                             context.fillStyle = iconColor
                                             context.beginPath()
-                                            context.moveTo(4, 2)
-                                            context.lineTo(16, 9)
-                                            context.lineTo(4, 16)
+                                            context.moveTo(15, 2)
+                                            context.lineTo(6, 9)
+                                            context.lineTo(15, 16)
+                                            context.closePath()
+                                            context.fill()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        ThemedToolButton {
+                            id: playPauseButton
+                            objectName: "playPauseButton"
+                            Layout.preferredWidth: 42
+                            Layout.preferredHeight: 42
+                            implicitWidth: 42
+                            implicitHeight: 42
+                            text: ""
+                            enabled: window.viewer.runCount > 0
+                                     && !window.viewer.manualDriving
+                            palette.buttonText:
+                                AppTheme.viewerOverlayText
+                            ToolTip.visible: hovered
+                            ToolTip.text: window.viewer.playing
+                                          ? qsTr("Pause")
+                                          : qsTr("Play")
+                            onClicked: window.viewer.togglePlayback()
+
+                            contentItem: Item {
+                                Canvas {
+                                    objectName: "playTransportIcon"
+                                    anchors.centerIn: parent
+                                    width: 18
+                                    height: 18
+                                    visible: !window.viewer.playing
+                                    property color iconColor:
+                                        playPauseButton.effectiveTextColor
+                                    antialiasing: true
+                                    onIconColorChanged: requestPaint()
+                                    onPaint: {
+                                        const context = getContext("2d")
+                                        context.clearRect(0, 0,
+                                                          width, height)
+                                        context.fillStyle = iconColor
+                                        context.beginPath()
+                                        context.moveTo(4, 2)
+                                        context.lineTo(16, 9)
+                                        context.lineTo(4, 16)
+                                        context.closePath()
+                                        context.fill()
+                                    }
+                                }
+
+                                Item {
+                                    objectName: "pauseTransportIcon"
+                                    anchors.centerIn: parent
+                                    width: 18
+                                    height: 18
+                                    visible: window.viewer.playing
+
+                                    Rectangle {
+                                        x: 3
+                                        y: 2
+                                        width: 4
+                                        height: 14
+                                        radius: 1
+                                        color:
+                                            playPauseButton.effectiveTextColor
+                                    }
+
+                                    Rectangle {
+                                        x: 11
+                                        y: 2
+                                        width: 4
+                                        height: 14
+                                        radius: 1
+                                        color:
+                                            playPauseButton.effectiveTextColor
+                                    }
+                                }
+                            }
+                        }
+
+                        ThemedToolButton {
+                            id: jumpEndButton
+                            objectName: "jumpEndButton"
+                            Layout.preferredWidth: 42
+                            Layout.preferredHeight: 42
+                            implicitWidth: 42
+                            implicitHeight: 42
+                            text: ""
+                            enabled: window.viewer.runCount > 0
+                                     && !window.viewer.manualDriving
+                            palette.buttonText: AppTheme.viewerOverlayText
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Go to end")
+                            onClicked: window.viewer.jumpToEnd()
+
+                            contentItem: Item {
+                                Item {
+                                    objectName: "jumpEndTransportIcon"
+                                    anchors.centerIn: parent
+                                    width: 18
+                                    height: 18
+
+                                    Canvas {
+                                        anchors.fill: parent
+                                        property color iconColor:
+                                            jumpEndButton.effectiveTextColor
+                                        antialiasing: true
+                                        onIconColorChanged: requestPaint()
+                                        onPaint: {
+                                            const context = getContext("2d")
+                                            context.clearRect(0, 0,
+                                                              width, height)
+                                            context.fillStyle = iconColor
+                                            context.beginPath()
+                                            context.moveTo(3, 2)
+                                            context.lineTo(12, 9)
+                                            context.lineTo(3, 16)
                                             context.closePath()
                                             context.fill()
                                         }
                                     }
 
-                                    Item {
-                                        objectName: "pauseTransportIcon"
-                                        anchors.centerIn: parent
-                                        width: 18
-                                        height: 18
-                                        visible: window.viewer.playing
-
-                                        Rectangle {
-                                            x: 3
-                                            y: 2
-                                            width: 4
-                                            height: 14
-                                            radius: 1
-                                            color:
-                                                playPauseButton.effectiveTextColor
-                                        }
-
-                                        Rectangle {
-                                            x: 11
-                                            y: 2
-                                            width: 4
-                                            height: 14
-                                            radius: 1
-                                            color:
-                                                playPauseButton.effectiveTextColor
-                                        }
+                                    Rectangle {
+                                        x: 13
+                                        y: 2
+                                        width: 3
+                                        height: 14
+                                        radius: 1
+                                        color:
+                                            jumpEndButton.effectiveTextColor
                                     }
                                 }
                             }
+                        }
 
-                            ThemedToolButton {
-                                id: jumpEndButton
-                                objectName: "jumpEndButton"
-                                Layout.preferredWidth: 42
-                                Layout.preferredHeight: 42
-                                implicitWidth: 42
-                                implicitHeight: 42
-                                text: ""
-                                enabled: window.viewer.runCount > 0
-                                         && !window.viewer.manualDriving
-                                palette.buttonText: AppTheme.viewerOverlayText
-                                ToolTip.visible: hovered
-                                ToolTip.text: qsTr("Go to end")
-                                onClicked: window.viewer.jumpToEnd()
-
-                                contentItem: Item {
-                                    Item {
-                                        objectName: "jumpEndTransportIcon"
-                                        anchors.centerIn: parent
-                                        width: 18
-                                        height: 18
-
-                                        Canvas {
-                                            anchors.fill: parent
-                                            property color iconColor:
-                                                jumpEndButton.effectiveTextColor
-                                            antialiasing: true
-                                            onIconColorChanged: requestPaint()
-                                            onPaint: {
-                                                const context = getContext("2d")
-                                                context.clearRect(0, 0,
-                                                                  width, height)
-                                                context.fillStyle = iconColor
-                                                context.beginPath()
-                                                context.moveTo(3, 2)
-                                                context.lineTo(12, 9)
-                                                context.lineTo(3, 16)
-                                                context.closePath()
-                                                context.fill()
-                                            }
-                                        }
-
-                                        Rectangle {
-                                            x: 13
-                                            y: 2
-                                            width: 3
-                                            height: 14
-                                            radius: 1
-                                            color:
-                                                jumpEndButton.effectiveTextColor
-                                        }
-                                    }
-                                }
-                            }
-
-                            ThemedButton {
-                                id: manualDriveButton
-                                objectName: "manualDriveButton"
-                                Layout.preferredWidth: 84
-                                Layout.preferredHeight: 42
-                                text: window.viewer.manualDriving
-                                      ? qsTr("Stop")
-                                      : qsTr("Drive")
-                                enabled: window.viewer.manualDriving
-                                         || (window.viewer.loaded
-                                             && !window.viewer.loading
-                                             && !window.controller.running
-                                             && !window.controller.extractingReplayInputs)
-                                onClicked: {
-                                    if (window.viewer.manualDriving) {
-                                        window.viewer.stopManualDrive()
-                                    } else {
-                                        window.viewer.startManualDrive()
-                                        if (window.viewer.manualDriving) {
-                                            viewport.focusCurrentCar()
-                                            manualInputFocus.forceActiveFocus()
-                                        }
-                                    }
-                                }
-
-                            }
-
-                            ThemedCheckBox {
-                                id: takeOverOnInputCheckBox
-                                objectName: "takeOverOnInputCheckBox"
-                                Layout.preferredWidth: 156
-                                Layout.preferredHeight: 42
-                                Layout.columnSpan: viewport.width < 470 ? 4 : 1
-                                Layout.alignment: Qt.AlignHCenter
-                                text: qsTr("Take Over on Input")
-                                checked: window.viewer.takeOverOnInput
-                                enabled: window.viewer.loaded
+                        ThemedButton {
+                            id: manualDriveButton
+                            objectName: "manualDriveButton"
+                            Layout.preferredWidth: 84
+                            Layout.preferredHeight: 42
+                            text: window.viewer.manualDriving
+                                  ? qsTr("Stop")
+                                  : qsTr("Drive")
+                            enabled: window.viewer.manualDriving
+                                     || (window.viewer.loaded
                                          && !window.viewer.loading
-                                         && !window.viewer.manualDriving
                                          && !window.controller.running
-                                         && !window.controller.extractingReplayInputs
-                                onToggled:
-                                    window.viewer.takeOverOnInput = checked
+                                         && !window.controller.extractingReplayInputs)
+                            onClicked: {
+                                if (window.viewer.manualDriving) {
+                                    window.viewer.stopManualDrive()
+                                } else {
+                                    window.viewer.startManualDrive()
+                                    if (window.viewer.manualDriving) {
+                                        viewport.focusCurrentCar()
+                                        manualInputFocus.forceActiveFocus()
+                                    }
+                                }
+                            }
 
-                                font.pixelSize: 11
+                        }
+
+                        ThemedCheckBox {
+                            id: takeOverOnInputCheckBox
+                            objectName: "takeOverOnInputCheckBox"
+                            Layout.preferredWidth: 156
+                            Layout.preferredHeight: 42
+                            Layout.columnSpan: playbackDock.compact ? 4 : 1
+                            Layout.alignment: Qt.AlignHCenter
+                            text: qsTr("Take Over on Input")
+                            checked: window.viewer.takeOverOnInput
+                            enabled: window.viewer.loaded
+                                     && !window.viewer.loading
+                                     && !window.viewer.manualDriving
+                                     && !window.controller.running
+                                     && !window.controller.extractingReplayInputs
+                            onToggled:
+                                window.viewer.takeOverOnInput = checked
+
+                            font.pixelSize: 11
+                        }
+                    }
+                }
+            }
+
+            DockPanel {
+                id: manualDrivePanel
+                objectName: "manualDrivePanel"
+                panelId: "manualDrive"
+                title: qsTr("Manual driving")
+                available: window.controller.viewerVisible
+                           && window.viewer.manualDriving
+
+                Rectangle {
+                    id: manualDriveStatus
+                    objectName: "manualDriveStatus"
+                    anchors.fill: parent
+                    color: "transparent"
+
+                    RowLayout {
+                        anchors.fill: parent
+                        anchors.leftMargin: 10
+                        anchors.rightMargin: 8
+                        spacing: 6
+
+                        Label {
+                            Layout.fillWidth: true
+                            text: qsTr("Manual")
+                            color: AppTheme.viewerOverlayText
+                            font.pixelSize: 11
+                            font.weight: Font.DemiBold
+                        }
+
+                        Repeater {
+                            model: [
+                                { "symbol": "←",
+                                  "active": window.viewer.manualLeft },
+                                { "symbol": "↑",
+                                  "active":
+                                      window.viewer.manualAccelerate },
+                                { "symbol": "↓",
+                                  "active": window.viewer.manualBrake },
+                                { "symbol": "→",
+                                  "active": window.viewer.manualRight }
+                            ]
+
+                            delegate: Rectangle {
+                                required property string symbol
+                                required property bool active
+                                Layout.preferredWidth: 26
+                                Layout.preferredHeight: 24
+                                radius: 4
+                                color: active ? AppTheme.accent
+                                              : AppTheme.viewerOverlayControl
+                                border.width: 1
+                                border.color:
+                                    active ? AppTheme.accentBorder
+                                           : AppTheme.viewerOverlayBorder
+
+                                Label {
+                                    anchors.centerIn: parent
+                                    text: symbol
+                                    color: active ? AppTheme.textOnAccent
+                                                  : AppTheme.viewerOverlayMuted
+                                    font.pixelSize: 13
+                                    font.weight: Font.DemiBold
+                                }
                             }
                         }
                     }
+                }
+            }
 
-                    Rectangle {
-                        id: checkpointSplitOverlay
-                        objectName: "checkpointSplitOverlay"
+            DockPanel {
+                id: whiteboardPanel
+                objectName: "whiteboardPanel"
+                panelId: "whiteboard"
+                title: qsTr("Whiteboard")
+                available: window.controller.viewerVisible && window.viewer.loaded
+
+                Item {
+                    id: whiteboardToolbarHost
+                    objectName: "whiteboardToolbarHost"
+                    anchors.fill: parent
+                }
+            }
+
+            DockPanel {
+                id: drawingsPanel
+                objectName: "drawingsPanel"
+                panelId: "drawings"
+                title: qsTr("Drawings")
+                available: window.controller.viewerVisible
+                           && whiteboardOverlay.drawingListOpen
+                closeHandler: function() { whiteboardOverlay.drawingListOpen = false }
+
+                Item {
+                    id: whiteboardDrawingListHost
+                    objectName: "whiteboardDrawingListHost"
+                    anchors.fill: parent
+                }
+            }
+
+            DockPanel {
+                id: bruteforcePanel
+                objectName: "bruteforcePanel"
+                panelId: "bruteforce"
+                title: qsTr("Bruteforce")
+
+                Rectangle {
+                    id: settingsPanel
+
+                    objectName: "settingsPanel"
+                    anchors.fill: parent
+                    color: AppTheme.panel
+
+                    ColumnLayout {
+                        id: settingsNavigation
+                        anchors.top: parent.top
+                        anchors.left: parent.left
                         anchors.right: parent.right
-                        anchors.rightMargin: 14
-                        anchors.top: scriptedTelemetry.bottom
-                        anchors.topMargin: 8
-                        z: 3
-                        width: 198
-                        height: Math.max(
-                                    0,
-                                    Math.min(
-                                        310,
-                                        playbackDock.y - y - 12,
-                                        Math.max(
-                                            74,
-                                            checkpointSplitHeader.height
-                                            + checkpointSplitList
-                                                  .contentHeight)))
-                        visible: window.viewer.checkpointSplits.length > 0
-                                 && !viewport.exportingWhiteboardImage
-                        color: AppTheme.viewerOverlay
-                        border.width: 1
-                        border.color: AppTheme.viewerOverlayBorder
-                        radius: 6
-                        clip: true
+                        anchors.margins: 20
+                        spacing: 8
 
-                        Rectangle {
-                            id: checkpointSplitHeader
-                            objectName: "checkpointSplitHeader"
-                            anchors.top: parent.top
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            height: 38
-                            color: AppTheme.viewerOverlayControl
-
-                            Label {
-                                anchors.left: parent.left
-                                anchors.leftMargin: 12
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: qsTr("Splits")
-                                color: AppTheme.viewerOverlayText
-                                font.pixelSize: 12
-                                font.weight: Font.DemiBold
-                            }
+                        TabBar {
+                            id: bruteforceSettingsTabs
+                            objectName: "bruteforceSettingsTabs"
+                            Layout.fillWidth: true
+                            background: Item {}
+                            ThemedTabButton { text: qsTr("Base") }
+                            ThemedTabButton { text: qsTr("Target") }
+                            ThemedTabButton { text: qsTr("Passes") }
+                            ThemedTabButton { text: qsTr("Search") }
                         }
 
-                        ListView {
-                            id: checkpointSplitList
-                            objectName: "checkpointSplitList"
-                            anchors.top: checkpointSplitHeader.bottom
-                            anchors.left: parent.left
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            model: window.viewer.checkpointSplits
-                            boundsBehavior: Flickable.StopAtBounds
-                            clip: true
+                        ModifierPassControls {
+                            Layout.fillWidth: true
+                            visible: bruteforceSettingsTabs.currentIndex === 2
+                            composition: modifierComposition
+                        }
+                    }
 
-                            onCountChanged: {
-                                if (count > 0)
-                                    positionViewAtEnd()
+                    ScrollView {
+                        id: settingsScroll
+
+                        objectName: "settingsScroll"
+                        property var tabOffsets: ({})
+                        property string activeScrollKey: ""
+                        property bool restoringScroll: false
+                        readonly property string scrollKey:
+                            "search-" + bruteforceSettingsTabs.currentIndex
+                        function restoreTabScroll() {
+                            restoringScroll = true
+                            Qt.callLater(function() {
+                                const content = settingsScroll.contentItem
+                                const saved = settingsScroll.tabOffsets[settingsScroll.scrollKey]
+                                const offset = saved !== undefined ? saved : 0
+                                content.contentY = Math.max(0, Math.min(offset,
+                                    content.contentHeight - content.height))
+                                settingsScroll.activeScrollKey = settingsScroll.scrollKey
+                                settingsScroll.restoringScroll = false
+                            })
+                        }
+                        onScrollKeyChanged: restoreTabScroll()
+                        Connections {
+                            target: settingsScroll.contentItem
+                            function onContentYChanged() {
+                                if (!settingsScroll.restoringScroll
+                                    && settingsScroll.activeScrollKey === settingsScroll.scrollKey) {
+                                    settingsScroll.tabOffsets[settingsScroll.scrollKey] =
+                                        settingsScroll.contentItem.contentY
+                                }
+                            }
+                        }
+                        anchors.top: settingsNavigation.bottom
+                        anchors.topMargin: 12
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        PanelWheelRedirector {
+                            id: settingsWheelRedirector
+                            objectName: "settingsWheelRedirector"
+                            parent: settingsScroll.parent
+                            anchors.fill: parent
+                            flickable: settingsScroll.contentItem
+                        }
+
+                        ColumnLayout {
+                            width: settingsScroll.availableWidth
+                            spacing: 14
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 12
+                                visible: bruteforceSettingsTabs.currentIndex === 0
                             }
 
-                            ScrollBar.vertical: ScrollBar {
-                                policy: checkpointSplitList.contentHeight
-                                        > checkpointSplitList.height
-                                        ? ScrollBar.AsNeeded
-                                        : ScrollBar.AlwaysOff
-                            }
+                            ColumnLayout {
+                                id: replaySection
 
-                            delegate: Rectangle {
-                                required property int index
-                                required property var modelData
-                                objectName: "checkpointSplitRow_" + index
-                                width: checkpointSplitList.width
-                                height: 36
-                                color: modelData.isFinish
-                                       ? (AppTheme.dark
-                                          ? "#244b34" : "#d8f2e1")
-                                       : "transparent"
+                                objectName: "replayInputStatusSection"
+                                visible: bruteforceSettingsTabs.currentIndex === 0
+                                         && (!!window.controller.replayInputFailure.reason
+                                             || window.controller.replayInputStatusText.length > 0)
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                spacing: 6
 
-                                Rectangle {
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.bottom: parent.bottom
-                                    height: 1
-                                    color: AppTheme.viewerOverlayBorder
-                                    opacity: 0.5
+                                FailureNotice {
+                                    id: replayInputFailureNotice
+                                    objectName: "replayInputFailure"
+                                    Layout.fillWidth: true
+                                    title: qsTr("Input extraction failed")
+                                    failure: window.controller.replayInputFailure
                                 }
 
+                                Label {
+                                    id: replayInputStatusLabel
+                                    objectName: "replayInputStatusLabel"
+                                    Layout.fillWidth: true
+                                    visible: text.length > 0
+                                             && !(window.controller.replayInputFailure.reason)
+                                    text: window.controller.replayInputStatusText
+                                    color: text.indexOf(qsTr("failed")) >= 0
+                                           || text.indexOf(qsTr("discarded")) >= 0
+                                           ? AppTheme.error
+                                           : AppTheme.success
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                }
+                            }
+
+
+                            ConfigurationSection {
+                                objectName: "baseInputScriptSection"
+                                visible: bruteforceSettingsTabs.currentIndex === 0
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                title: qsTr("Base input script")
+
                                 RowLayout {
-                                    anchors.left: parent.left
-                                    anchors.right: parent.right
-                                    anchors.leftMargin: 12
-                                    anchors.rightMargin: 12
-                                    anchors.verticalCenter: parent.verticalCenter
+                                    Layout.fillWidth: true
+                                    spacing: 8
+
+                                    Item {
+                                        Layout.fillWidth: true
+                                    }
+
+                                    ThemedButton {
+                                        id: copyCurrentRaceInputsButton
+                                        objectName: "copyCurrentRaceInputsButton"
+                                        text: qsTr("Copy current race")
+                                        enabled: window.viewer.canCopyCurrentInputs
+                                                 && !window.controller.running
+                                                 && !window.controller.extractingReplayInputs
+                                        onClicked: {
+                                            window.controller.baseInputScript =
+                                                window.viewer.currentInputScript()
+                                            baseInputScriptArea.forceActiveFocus()
+                                        }
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: qsTr(
+                                            "Replace the base input with the selected race through its current time")
+                                    }
+                                }
+
+                                ScrollView {
+                                    id: baseInputScriptScroll
+
+                                    objectName: "baseInputScriptScrollView"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 220
+                                    clip: true
+                                    ScrollBar.horizontal.policy:
+                                        ScrollBar.AsNeeded
+                                    ScrollBar.vertical.policy:
+                                        ScrollBar.AsNeeded
+
+                                    TextArea {
+                                        id: baseInputScriptArea
+
+                                        objectName: "baseInputScriptTextArea"
+                                        width: Math.max(
+                                            baseInputScriptScroll.availableWidth,
+                                            contentWidth + leftPadding + rightPadding)
+                                        text: window.controller.baseInputScript
+                                        enabled: !window.controller.running
+                                                 && !window.controller.extractingReplayInputs
+                                        selectByMouse: true
+                                        wrapMode: TextEdit.NoWrap
+                                        textFormat: TextEdit.PlainText
+                                        font.family: "monospace"
+                                        font.pixelSize: 12
+                                        color: enabled ? AppTheme.text
+                                                       : AppTheme.disabledText
+                                        placeholderText: qsTr("0.00 press up")
+                                        onActiveFocusChanged: {
+                                            if (!activeFocus)
+                                                window.commitBaseInputScript()
+                                        }
+                                        background: Rectangle {
+                                            color: enabled ? AppTheme.surface
+                                                           : AppTheme.disabledSurface
+                                            border.width: 1
+                                            border.color:
+                                                window.controller.baseInputScriptError.length
+                                                > 0 ? AppTheme.error
+                                                    : baseInputScriptArea.activeFocus
+                                                      ? AppTheme.focus : AppTheme.border
+                                            radius: 6
+                                        }
+                                    }
+                                }
+
+                                Label {
+                                    objectName: "baseInputScriptErrorLabel"
+                                    Layout.fillWidth: true
+                                    visible: text.length > 0
+                                    text: window.controller.baseInputScriptError
+                                    color: AppTheme.error
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                }
+                            }
+
+                            ColumnLayout {
+                                id: appearanceControls
+
+                                objectName: "appearanceControls"
+                                visible: bruteforceSettingsTabs.currentIndex === 0
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                spacing: 8
+
+                                RowLayout {
+                                    Layout.fillWidth: true
                                     spacing: 8
 
                                     Label {
-                                        objectName:
-                                            "checkpointSplitLabel_" + index
                                         Layout.fillWidth: true
-                                        text: modelData.label
-                                        color: modelData.isFinish
-                                               ? (AppTheme.dark
-                                                  ? "#8ee1ac" : "#23683b")
-                                               : AppTheme.viewerOverlayText
-                                        elide: Text.ElideRight
+                                        text: qsTr("Preferences")
+                                        color: AppTheme.textMuted
                                         font.pixelSize: 11
-                                        font.weight: modelData.isFinish
-                                                     ? Font.DemiBold
-                                                     : Font.Normal
-                                    }
-
-                                    Label {
-                                        objectName:
-                                            "checkpointSplitTime_" + index
-                                        Layout.alignment: Qt.AlignRight
-                                        text: modelData.time
-                                        color: modelData.isFinish
-                                               ? (AppTheme.dark
-                                                  ? "#8ee1ac" : "#23683b")
-                                               : AppTheme.viewerOverlayMuted
-                                        font.family: "monospace"
-                                        font.pixelSize: 11
-                                        font.weight: Font.DemiBold
                                     }
                                 }
+
+                                SteeringUnits {}
+                                TimeUnits {}
                             }
-                        }
-                    }
 
-                    Rectangle {
-                        id: manualDriveStatus
-                        objectName: "manualDriveStatus"
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        anchors.bottom: playbackDock.top
-                        anchors.bottomMargin: 8
-                        z: 3
-                        width: 238
-                        height: 36
-                        radius: 6
-                        visible: window.viewer.manualDriving
-                                 && !viewport.exportingWhiteboardImage
-                        color: AppTheme.viewerOverlay
-                        border.width: 1
-                        border.color: AppTheme.viewerOverlayBorder
+                            ColumnLayout {
+                                id: bruteforceTabContent
 
-                        RowLayout {
-                            anchors.fill: parent
-                            anchors.leftMargin: 10
-                            anchors.rightMargin: 8
-                            spacing: 6
+                                objectName: "bruteforceTabContent"
+                                Layout.fillWidth: true
+                                spacing: 14
+
+                            ColumnLayout {
+                                visible: bruteforceSettingsTabs.currentIndex ===
+                                         3
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                spacing: 6
+
+                                Label {
+                                    text: qsTr("Physics backend")
+                                    font.weight: Font.Medium
+                                }
+
+                                StyledComboBox {
+                                    id: simulationBackendCombo
+
+                                    objectName: "simulationBackendCombo"
+                                    Layout.fillWidth: true
+                                    model: window.controller.simulationBackendOptions
+                                    textRole: "label"
+                                    valueRole: "id"
+                                    enabled: !window.controller.running
+                                             && !window.viewer.loading
+
+                                    function synchronizeSelection() {
+                                        const selected = indexOfValue(
+                                            window.controller.simulationBackendId)
+                                        if (selected >= 0 && currentIndex !== selected)
+                                            currentIndex = selected
+                                    }
+
+                                    Component.onCompleted: synchronizeSelection()
+                                    onModelChanged: Qt.callLater(synchronizeSelection)
+                                    onActivated: selectedIndex =>
+                                        window.controller.simulationBackendId =
+                                            valueAt(selectedIndex)
+
+                                    Connections {
+                                        target: window.controller
+
+                                        function onSimulationBackendIdChanged() {
+                                            simulationBackendCombo.synchronizeSelection()
+                                        }
+                                    }
+                                }
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: window.controller.simulationBackendId
+                                          === "cuda"
+                                          ? qsTr("NVIDIA CUDA for Stadium; compute capability 5.0+ is supported, with Fast CUDA on 7.5+")
+                                          : window.controller.simulationBackendId === "hip"
+                                            ? qsTr("HIP Compute for Stadium on compatible GPUs")
+                                          : window.controller.simulationBackendId === "vulkan"
+                                            ? qsTr("Vulkan Compute for Stadium on compatible GPUs")
+                                          : window.controller.simulationBackendId
+                                            === "optimized-cpu"
+                                            ? qsTr("Faster runtime optimized for Stadium, may break compatibility in other environments")
+                                            : window.controller.simulationBackendId
+                                              === "multi-threaded-cpu"
+                                              ? qsTr("Runs independent optimized CPU simulations across multiple worker threads")
+                                            : qsTr("Broadest compatibility")
+                                    color: AppTheme.textMuted
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                }
+
+                                ThemedButton {
+                                    objectName: "changeComputePackageButton"
+                                    Layout.fillWidth: true
+                                    text: qsTr("Change compute package…")
+                                    enabled: window.updater && window.updater.supported
+                                    onClicked: {
+                                        updateDialog.open()
+                                        window.updater.checkForUpdates()
+                                    }
+                                }
+
+                                Label {
+                                    objectName: "cudaCompatibilityStatus"
+                                    Layout.fillWidth: true
+                                    visible: window.controller.simulationBackendId
+                                             === "cuda"
+                                    text: window.controller.cudaStatusText
+                                    color: !window.controller.cudaAvailable
+                                           ? AppTheme.error
+                                           : !window.controller.cudaFastModeAvailable
+                                             ? AppTheme.warning
+                                             : AppTheme.success
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                }
+
+                                Label {
+                                    objectName: "hipCompatibilityStatus"
+                                    Layout.fillWidth: true
+                                    visible: window.controller.simulationBackendId
+                                             === "hip"
+                                    text: window.controller.hipStatusText
+                                    color: window.controller.hipAvailable
+                                           ? AppTheme.success : AppTheme.error
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                }
+
+                                Label {
+                                    objectName: "vulkanCompatibilityStatus"
+                                    Layout.fillWidth: true
+                                    visible: window.controller.simulationBackendId
+                                             === "vulkan"
+                                    text: window.controller.vulkanStatusText
+                                    color: window.controller.vulkanAvailable
+                                           ? AppTheme.success : AppTheme.error
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    DurationField {
+                                        Layout.fillWidth: true
+                                        objectName: "simulationHorizonSettings"
+                                        fieldObjectName: "simulationHorizonField"
+                                        label: qsTr("Search end")
+                                        value: window.controller.simulationHorizonMs
+                                        running: window.controller.running
+                                        minimum: 10
+                                        captureVisible: true
+                                        captureEnabled: window.viewer.loaded
+                                        captureValue: String(Math.max(
+                                            window.viewer.tickDurationMs,
+                                            window.viewer.currentTick
+                                            * window.viewer.tickDurationMs))
+                                        captureToolTip: qsTr("Set horizon to now (10 ms tick)")
+                                        maximum: 2147481040
+                                        dragStep: 1000
+                                        liveScrub: false
+                                        onEdited: value =>
+                                            window.controller.simulationHorizonMs = value
+                                    }
+                                    WindowChainButton {
+                                        Layout.alignment: Qt.AlignTop
+                                        controller: window.controller
+                                        chainKey: "searchEnd"
+                                        label: qsTr("Search end")
+                                        running: window.controller.running
+                                    }
+                                }
+
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    DurationField {
+                                        Layout.fillWidth: true
+                                        objectName: "previewExtentSettings"
+                                        fieldObjectName: "previewExtentField"
+                                        label: qsTr("Preview extent")
+                                        info: qsTr("How far the viewer simulates your inputs, "
+                                                   + "including history and best runs. It does "
+                                                   + "not change how far the search simulates "
+                                                   + "(Search end).")
+                                        value: window.controller.previewExtentMs
+                                        minimum: 10
+                                        maximum: 2147481040
+                                        dragStep: 1000
+                                        liveScrub: false
+                                        onEdited: value =>
+                                            window.controller.previewExtentMs = value
+                                    }
+                                    WindowChainButton {
+                                        Layout.alignment: Qt.AlignTop
+                                        controller: window.controller
+                                        chainKey: "previewExtent"
+                                        label: qsTr("Preview extent")
+                                        running: window.controller.running
+                                    }
+                                }
+                                ThemedButton {
+                                    objectName: "extendSearchHorizonButton"
+                                    Layout.fillWidth: true
+                                    visible: window.controller.requiredSimulationHorizonMs >
+                                             Number(window.controller.simulationHorizonMs)
+                                    enabled: !window.controller.running
+                                    text: qsTr("Extend search to %1").arg(
+                                              DurationDisplay.text(window.controller.requiredSimulationHorizonMs))
+                                    onClicked: window.controller.extendSimulationHorizon()
+                                }
+
+                                ThemedCheckBox {
+                                    objectName: "randomizeSeedsOnStartCheckBox"
+                                    text: qsTr("Randomize modifier seeds on Start")
+                                    checked: window.controller.randomizeSeedsOnStart
+                                    enabled: !window.controller.running
+                                    onToggled:
+                                        window.controller.randomizeSeedsOnStart =
+                                            checked
+                                }
+
+                                SettingTextField {
+                                    objectName: "cpuWorkerSettings"
+                                    visible: window.controller.simulationBackendId
+                                             === "multi-threaded-cpu"
+                                    fieldObjectName: "cpuWorkerCountField"
+                                    label: qsTr("Worker threads")
+                                    value: window.controller.cpuWorkerCount
+                                    running: window.controller.running
+                                    minimum: 1
+                                    maximum: 256
+                                    onEdited: value =>
+                                        window.controller.cpuWorkerCount = value
+                                }
+
+                                SettingTextField {
+                                    objectName: "cudaParallelSampleSettings"
+                                    visible: window.controller.simulationBackendId
+                                             === "cuda"
+                                    fieldObjectName: "cudaParallelSampleCountField"
+                                    label: qsTr("Parallel samples at a time")
+                                    value: window.controller.cudaParallelSampleCount
+                                    running: window.controller.running
+                                    minimum: 1
+                                    onEdited: value =>
+                                        window.controller.cudaParallelSampleCount = value
+                                }
+
+                                SettingTextField {
+                                    objectName: "hipParallelSampleSettings"
+                                    visible: window.controller.simulationBackendId
+                                             === "hip"
+                                    fieldObjectName: "hipParallelSampleCountField"
+                                    label: qsTr("Parallel samples at a time")
+                                    value: window.controller.hipParallelSampleCount
+                                    running: window.controller.running
+                                    minimum: 1
+                                    onEdited: value =>
+                                        window.controller.hipParallelSampleCount = value
+                                }
+
+                                SettingTextField {
+                                    objectName: "vulkanParallelSampleSettings"
+                                    visible: window.controller.simulationBackendId
+                                             === "vulkan"
+                                    fieldObjectName: "vulkanParallelSampleCountField"
+                                    label: qsTr("Parallel samples at a time")
+                                    value: window.controller.vulkanParallelSampleCount
+                                    running: window.controller.running
+                                    minimum: 1
+                                    onEdited: value =>
+                                        window.controller.vulkanParallelSampleCount = value
+                                }
+
+                                ThemedCheckBox {
+                                    objectName: "cudaCalibrationCheckBox"
+                                    visible: window.controller.simulationBackendId
+                                             === "cuda"
+                                    text: qsTr("Calibrate for maximum throughput")
+                                    checked: window.controller.cudaCalibrationEnabled
+                                    enabled: !window.controller.running
+                                    onToggled:
+                                        window.controller.cudaCalibrationEnabled =
+                                            checked
+                                }
+
+                                ThemedCheckBox {
+                                    objectName: "hipCalibrationCheckBox"
+                                    visible: window.controller.simulationBackendId
+                                             === "hip"
+                                    text: qsTr("Calibrate for maximum throughput")
+                                    checked: window.controller.hipCalibrationEnabled
+                                    enabled: !window.controller.running
+                                    onToggled:
+                                        window.controller.hipCalibrationEnabled =
+                                            checked
+                                }
+
+                                ThemedCheckBox {
+                                    objectName: "vulkanCalibrationCheckBox"
+                                    visible: window.controller.simulationBackendId
+                                             === "vulkan"
+                                    text: qsTr("Calibrate for maximum throughput")
+                                    checked: window.controller.vulkanCalibrationEnabled
+                                    enabled: !window.controller.running
+                                    onToggled:
+                                        window.controller.vulkanCalibrationEnabled =
+                                            checked
+                                }
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 1
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                color: AppTheme.border
+                                visible: bruteforceSettingsTabs.currentIndex === 3
+                            }
+
+                            ConfigurationSection {
+                                objectName: "conditionsSection"
+                                visible: bruteforceSettingsTabs.currentIndex ===
+                                         3
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                title: qsTr("Conditions")
+
+                                ScrollView {
+                                    id: conditionScriptScroll
+                                    objectName: "conditionScriptScrollView"
+                                    Layout.fillWidth: true
+                                    Layout.preferredHeight: 110
+                                    clip: true
+                                    ScrollBar.horizontal.policy: ScrollBar.AsNeeded
+                                    ScrollBar.vertical.policy: ScrollBar.AsNeeded
+
+                                    TextArea {
+                                        id: conditionScriptArea
+                                        objectName: "conditionScriptTextArea"
+                                        width: Math.max(
+                                            conditionScriptScroll.availableWidth,
+                                            contentWidth + leftPadding + rightPadding)
+                                        text: window.controller.conditionScript
+                                        enabled: !window.controller.running
+                                        selectByMouse: true
+                                        wrapMode: TextEdit.NoWrap
+                                        textFormat: TextEdit.PlainText
+                                        font.family: "monospace"
+                                        font.pixelSize: 12
+                                        color: enabled ? AppTheme.text
+                                                       : AppTheme.disabledText
+                                        placeholderText: enabled ? qsTr("No conditions") : ""
+                                        Keys.onPressed: event => {
+                                            if (event.key === Qt.Key_Space && (event.modifiers & Qt.ControlModifier)) {
+                                                conditionReference.complete()
+                                                event.accepted = true
+                                            }
+                                        }
+                                        onTextChanged: {
+                                            if (window.controller.conditionScript !== text)
+                                                window.controller.conditionScript = text
+                                        }
+                                        background: Rectangle {
+                                            color: enabled ? AppTheme.surface
+                                                           : AppTheme.disabledSurface
+                                            border.width: 1
+                                            border.color: conditionScriptArea.activeFocus
+                                                          ? AppTheme.focus
+                                                          : AppTheme.border
+                                            radius: 6
+                                        }
+                                    }
+                                }
+                                Label {
+                                    objectName: "emptyConditionsStatus"
+                                    visible: !conditionScriptArea.enabled
+                                             && conditionScriptArea.text.trim().length === 0
+                                    text: qsTr("No conditions")
+                                    color: AppTheme.textMuted
+                                }
+                                ConditionReference {
+                                    id: conditionReference
+                                    objectName: "conditionReference"
+                                    controller: window.controller
+                                    editor: conditionScriptArea
+                                }
+                            }
+
+                            ConfigurationSection {
+                                objectName: "evaluationSection"
+                                visible: bruteforceSettingsTabs.currentIndex === 1
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                title: qsTr("Evaluation")
+
+                                AlgorithmSelector {
+                                    objectName: "evaluationTargetSelector"
+                                    Layout.fillWidth: true
+                                    title: qsTr("Target")
+                                    comboObjectName: "evaluationTargetCombo"
+                                    iconMode: true
+                                    options: window.controller.evaluationTargetOptions
+                                    selectedId: window.controller.evaluationTargetId
+                                    controller: window.controller
+                                    viewer: window.viewer
+                                    viewport: viewport
+                                    onSelectionRequested: id =>
+                                        window.controller.evaluationTargetId = id
+                                }
+                            }
+
+                            ConfigurationSection {
+                                objectName: "modifierSection"
+                                visible: bruteforceSettingsTabs.currentIndex === 2
+                                         && window.controller.modifierPasses.length > 0
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                title: qsTr("Pass settings")
+
+                                ModifierComposition {
+                                    id: modifierComposition
+                                    Layout.fillWidth: true
+                                    onPassActivated: settingsScroll.contentItem.contentY = 0
+                                    controller: window.controller
+                                    viewer: window.viewer
+                                    options: window.controller.modifierOptions
+                                    passes: window.controller.modifierPasses
+                                }
+                            }
+
+                            ConfigurationSection {
+                                objectName: "searchSection"
+                                visible: bruteforceSettingsTabs.currentIndex ===
+                                         3
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                title: qsTr("Search")
+
+                                AlgorithmSelector {
+                                    objectName: "searchAlgorithmSelector"
+                                    Layout.fillWidth: true
+                                    title: qsTr("Algorithm")
+                                    comboObjectName: "searchAlgorithmCombo"
+                                    options: window.controller.searchAlgorithmOptions
+                                    selectedId: window.controller.searchAlgorithmId
+                                    controller: window.controller
+                                    onSelectionRequested: id =>
+                                        window.controller.searchAlgorithmId = id
+                                }
+
+                                Label {
+                                    text: qsTr("Autorestart")
+                                    font.weight: Font.Medium
+                                }
+
+                                StyledComboBox {
+                                    id: autoRestartModeCombo
+                                    objectName: "autoRestartModeCombo"
+                                    Layout.fillWidth: true
+                                    model: [
+                                        { "id": "off", "label": qsTr("Off") },
+                                        { "id": "duration", "label": qsTr("Duration") },
+                                        { "id": "attempts", "label": qsTr("Attempts") }
+                                    ]
+                                    textRole: "label"
+                                    valueRole: "id"
+                                    enabled: !window.controller.running
+                                    selectedValue: window.controller.autoRestartMode
+                                    onActivated: selectedIndex =>
+                                        window.controller.autoRestartMode =
+                                            valueAt(selectedIndex)
+                                }
+
+                                TextField {
+                                    objectName: "autoRestartDurationField"
+                                    Layout.fillWidth: true
+                                    visible: window.controller.autoRestartMode
+                                             === "duration"
+                                    enabled: !window.controller.running
+                                    text: window.controller.autoRestartDuration
+                                    placeholderText: qsTr("HH:MM:SS")
+                                    onTextEdited:
+                                        window.controller.autoRestartDuration = text
+                                }
+
+                                TextField {
+                                    objectName: "autoRestartAttemptsField"
+                                    Layout.fillWidth: true
+                                    visible: window.controller.autoRestartMode
+                                             === "attempts"
+                                    enabled: !window.controller.running
+                                    text: window.controller.autoRestartAttempts
+                                    placeholderText: qsTr("Individual attempts")
+                                    inputMethodHints: Qt.ImhDigitsOnly
+                                    onTextEdited:
+                                        window.controller.autoRestartAttempts = text
+                                }
+                            }
+
+                            ConfigurationSection {
+                                objectName: "cudaSessionSpecializationSection"
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                visible: bruteforceSettingsTabs.currentIndex ===
+                                         3
+                                         && window.controller.simulationBackendId
+                                            === "cuda"
+                                title: qsTr("CUDA fast mode")
+
+                                ThemedSwitch {
+                                    objectName: "cudaSessionSpecializationSwitch"
+                                    Layout.fillWidth: true
+                                    text: qsTr("Use the faster CUDA kernel")
+                                    checked: window.controller
+                                                 .cudaSessionSpecializationEnabled
+                                             && window.controller
+                                                 .cudaFastModeAvailable
+                                    enabled: !window.controller.running
+                                             && window.controller
+                                                 .cudaFastModeAvailable
+                                    onToggled: window.controller
+                                        .cudaSessionSpecializationEnabled = checked
+                                    Accessible.name: text
+                                }
+
+                                Label {
+                                    objectName: "cudaSessionSpecializationWarning"
+                                    Layout.fillWidth: true
+                                    text: !window.controller.cudaAvailable
+                                          ? qsTr("Fast CUDA is unavailable because CUDA is not available on this system.")
+                                          : !window.controller.cudaFastModeAvailable
+                                            ? qsTr("Fast CUDA is unavailable on this GPU because it requires compute capability 7.5 or newer. Regular CUDA will be used automatically.")
+                                            : (window.controller
+                                                 .cudaSessionSpecializationEnabled
+                                               ? qsTr("Fast mode is on. Its kernel is built once for this map. ")
+                                               : qsTr("Fast mode is off. Its kernel will not be built. "))
+                                              + qsTr("Fast mode is for normal Stadium runs. It can give wrong results or fail when the run uses stunts, respawns, car resets, or unusual map physics. Turn it off for those runs. Regular CUDA is safer, but slower.")
+                                    color: AppTheme.textMuted
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                }
+                            }
 
                             Label {
                                 Layout.fillWidth: true
-                                text: qsTr("Manual")
-                                color: AppTheme.viewerOverlayText
-                                font.pixelSize: 11
-                                font.weight: Font.DemiBold
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                visible: text.length > 0 && !window.controller.running
+                                text: window.controller.validationMessage
+                                color: AppTheme.error
+                                wrapMode: Text.WordWrap
+                                font.pixelSize: 12
                             }
 
-                            Repeater {
-                                model: [
-                                    { "symbol": "←",
-                                      "active": window.viewer.manualLeft },
-                                    { "symbol": "↑",
-                                      "active":
-                                          window.viewer.manualAccelerate },
-                                    { "symbol": "↓",
-                                      "active": window.viewer.manualBrake },
-                                    { "symbol": "→",
-                                      "active": window.viewer.manualRight }
-                                ]
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                spacing: 8
 
-                                delegate: Rectangle {
-                                    required property string symbol
-                                    required property bool active
-                                    Layout.preferredWidth: 26
-                                    Layout.preferredHeight: 24
-                                    radius: 4
-                                    color: active ? AppTheme.accent
-                                                  : AppTheme.viewerOverlayControl
-                                    border.width: 1
-                                    border.color:
-                                        active ? AppTheme.accentBorder
-                                               : AppTheme.viewerOverlayBorder
+                                ThemedButton {
+                                    objectName: "startSearchButton"
+                                    Layout.fillWidth: true
+                                    text: qsTr("Start")
+                                    highlighted: true
+                                    enabled: window.controller.canStart
+                                             && !window.viewer.manualDriving
+                                    onClicked: window.controller.startSearch()
+                                }
 
-                                    Label {
-                                        anchors.centerIn: parent
-                                        text: symbol
-                                        color: active ? AppTheme.textOnAccent
-                                                      : AppTheme.viewerOverlayMuted
-                                        font.pixelSize: 13
-                                        font.weight: Font.DemiBold
+                                ThemedButton {
+                                    objectName: "stopSearchButton"
+                                    Layout.fillWidth: true
+                                    text: window.controller.stopping
+                                          ? qsTr("Stopping...")
+                                          : qsTr("Stop")
+                                    enabled: window.controller.running
+                                             && !window.controller.stopping
+                                    onClicked: window.controller.stopSearch()
+                                }
+
+                                ThemedButton {
+                                    objectName: "abortSearchButton"
+                                    visible: window.controller.running && window.controller.stopping
+                                    text: window.controller.aborting ? qsTr("Aborting...") : qsTr("Abort")
+                                    enabled: !window.controller.aborting
+                                    onClicked: window.controller.abortSearch()
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                ThemedButton {
+                                    objectName: "evaluateBaseButton"
+                                    text: qsTr("Evaluate base")
+                                    icon.source: "qrc:/icons/gauge.svg"
+                                    enabled: window.controller.canEvaluateBase
+                                    onClicked: window.controller.evaluateBase()
+                                }
+                                ThemedButton {
+                                    visible: window.controller.evaluatingBase
+                                    text: qsTr("Cancel")
+                                    onClicked: window.controller.cancelBaseEvaluation()
+                                }
+                            }
+                            FailureNotice {
+                                objectName: "baseEvaluationFailure"
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                title: qsTr("Base evaluation failed")
+                                failure: window.controller.baseEvaluationResult.failure
+                                         ?? ({})
+                            }
+
+                            TextArea {
+                                objectName: "baseEvaluationResult"
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                visible: text.length > 0
+                                         && !window.controller.baseEvaluationResult.failure
+                                readOnly: true
+                                selectByMouse: true
+                                wrapMode: TextEdit.Wrap
+                                textFormat: TextEdit.PlainText
+                                text: window.controller.baseEvaluationText
+                                color: AppTheme.text
+                                font.pixelSize: 12
+                            }
+
+                            Rectangle {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 1
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                color: AppTheme.border
+                            }
+
+                            ColumnLayout {
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                spacing: 8
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: window.controller.statusText
+                                    font.weight: Font.Medium
+                                    wrapMode: Text.WordWrap
+                                }
+
+                                RowLayout {
+                                    id: searchMetricsRow
+
+                                    objectName: "searchMetricsRow"
+                                    Layout.fillWidth: true
+                                    visible: window.controller.liveMetricsVisible
+                                    spacing: 6
+
+                                    Rectangle {
+                                        objectName: "iterationsMetricCard"
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        Layout.preferredHeight: 58
+                                        radius: 7
+                                        color: AppTheme.surfaceRaised
+                                        border.width: 1
+                                        border.color: AppTheme.border
+                                        clip: true
+
+                                        ToolTip.visible: iterationCountMouse.containsMouse
+                                        ToolTip.text: window.controller.iterationCountExactText
+                                        MouseArea {
+                                            id: iterationCountMouse
+                                            anchors.fill: parent
+                                            acceptedButtons: Qt.RightButton
+                                            hoverEnabled: true
+                                            onClicked: iterationCountMenu.popup()
+                                        }
+                                        GlassMenu {
+                                            id: iterationCountMenu
+                                            ThemedMenuItem {
+                                                text: qsTr("Copy exact count")
+                                                onTriggered: {
+                                                    iterationCountClipboard.selectAll()
+                                                    iterationCountClipboard.copy()
+                                                }
+                                            }
+                                        }
+                                        TextEdit {
+                                            id: iterationCountClipboard
+                                            visible: false
+                                            text: window.controller.iterationCountRawText
+                                        }
+
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 8
+                                            spacing: 2
+
+                                            Label {
+                                                Layout.fillWidth: true
+                                                text: qsTr("Iterations")
+                                                color: AppTheme.textMuted
+                                                font.pixelSize: 10
+                                                horizontalAlignment: Text.AlignHCenter
+                                            }
+
+                                            Label {
+                                                objectName: "iterationsMetricValue"
+                                                Layout.fillWidth: true
+                                                text: window.controller.iterationCountText
+                                                color: AppTheme.text
+                                                font.family: "monospace"
+                                                font.pixelSize: 13
+                                                font.weight: Font.DemiBold
+                                                horizontalAlignment: Text.AlignHCenter
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        objectName: "throughputMetricCard"
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        Layout.preferredHeight: 58
+                                        radius: 7
+                                        color: AppTheme.surfaceRaised
+                                        border.width: 1
+                                        border.color: AppTheme.border
+                                        clip: true
+
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 8
+                                            spacing: 2
+
+                                            Label {
+                                                Layout.fillWidth: true
+                                                text: qsTr("Throughput")
+                                                color: AppTheme.textMuted
+                                                font.pixelSize: 10
+                                                horizontalAlignment: Text.AlignHCenter
+                                            }
+
+                                            Label {
+                                                objectName: "throughputMetricValue"
+                                                Layout.fillWidth: true
+                                                text: window.controller.throughputText.length > 0
+                                                      ? window.controller.throughputText
+                                                            + qsTr(" /s")
+                                                      : ""
+                                                color: AppTheme.text
+                                                font.family: "monospace"
+                                                font.pixelSize: 13
+                                                font.weight: Font.DemiBold
+                                                horizontalAlignment: Text.AlignHCenter
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                    }
+
+                                    Rectangle {
+                                        objectName: "elapsedMetricCard"
+                                        Layout.fillWidth: true
+                                        Layout.preferredWidth: 1
+                                        Layout.preferredHeight: 58
+                                        radius: 7
+                                        color: AppTheme.surfaceRaised
+                                        border.width: 1
+                                        border.color: AppTheme.border
+                                        clip: true
+
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 8
+                                            spacing: 2
+
+                                            Label {
+                                                Layout.fillWidth: true
+                                                text: qsTr("Elapsed")
+                                                color: AppTheme.textMuted
+                                                font.pixelSize: 10
+                                                horizontalAlignment: Text.AlignHCenter
+                                            }
+
+                                            Label {
+                                                objectName: "elapsedMetricValue"
+                                                Layout.fillWidth: true
+                                                text: window.controller.elapsedText
+                                                color: AppTheme.text
+                                                font.family: "monospace"
+                                                font.pixelSize: 12
+                                                font.weight: Font.DemiBold
+                                                horizontalAlignment: Text.AlignHCenter
+                                                elide: Text.ElideRight
+                                            }
+                                        }
+                                    }
+                                }
+
+                                ProgressBar {
+                                    Layout.fillWidth: true
+                                    from: 0
+                                    to: 1
+                                    value: window.controller.progressValue
+                                    indeterminate:
+                                        window.controller.progressIndeterminate
+                                }
+
+                                TextArea {
+                                    objectName: "searchResultText"
+                                    Layout.fillWidth: true
+                                    visible: text.length > 0 &&
+                                             window.controller.running
+                                    text: window.controller.resultText
+                                    readOnly: true
+                                    selectByMouse: true
+                                    wrapMode: Text.WordWrap
+                                    color: AppTheme.text
+                                    background: null
+                                }
+
+                                FailureNotice {
+                                    objectName: "searchFailure"
+                                    Layout.fillWidth: true
+                                    failure: window.controller.statusText
+                                                     === qsTr("Search failed")
+                                             ? window.controller.failureDiagnostic
+                                             : ({})
+                                }
+
+                                SearchInputs {
+                                    id: searchInputs
+                                    Layout.fillWidth: true
+                                    controller: window.controller
+
+                                    SearchSessionHistory {
+                                        Layout.fillWidth: true
+                                        controller: window.controller
+                                        viewer: window.viewer
+                                        onInputsSelected: searchInputs.selectedSource = 1
                                     }
                                 }
                             }
+
+                            }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 16
+                            }
                         }
                     }
+                }
+            }
 
-                    Column {
-                        anchors.centerIn: parent
-                        width: Math.min(parent.width - 60, 430)
-                        spacing: 12
-                        visible: !window.viewer.loaded
-                                 && !viewport.exportingWhiteboardImage
+            DockPanel {
+                id: codePanel
+                objectName: "codePanel"
+                panelId: "code"
+                title: qsTr("Code")
+                onOnTopChanged: window.updateSimulationDebugger()
 
-                        BusyIndicator {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            running: window.viewer.loading
-                            visible: running
-                        }
+                // Same wheel steps in the source tree and code as in the
+                // other panels; elsewhere the wheel does nothing.
+                PanelWheelRedirector {
+                    objectName: "codeWheelRedirector"
+                    anchors.fill: parent
+                    flickable: codeWheelSink
+                }
+                Flickable {
+                    id: codeWheelSink
+                    width: 0
+                    height: 0
+                    interactive: false
+                }
 
-                        Label {
-                            width: parent.width
-                            horizontalAlignment: Text.AlignHCenter
-                            text: window.viewer.loading
-                                  ? window.viewer.statusText
-                                  : qsTr("Select a replay or challenge and load its map from the settings panel.")
-                            color: AppTheme.viewerOverlayText
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 16
-                        }
-
-                        Label {
-                            width: parent.width
-                            visible: !window.viewer.loading
-                                     && window.viewer.statusText
-                                        !== qsTr("No map loaded")
-                                     && !mapFailure.visible
-                            horizontalAlignment: Text.AlignHCenter
-                            text: window.viewer.statusText
-                            color: AppTheme.dark ? "#f0a19e" : "#e19b9b"
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 12
-                        }
-
-                        FailureNotice {
-                            id: mapFailure
-                            objectName: "viewerFailure"
-                            width: parent.width
-                            visible: !window.viewer.loading
-                                     && reason.length > 0
-                            failure: window.viewer.statusFailure
-                            textColor: AppTheme.viewerOverlayText
-                            detailsColor: AppTheme.viewerOverlayMuted
-                        }
-
+                SimulationDebuggerPanel {
+                    id: simulationDebuggerPanel
+                    objectName: "simulationDebuggerPanel"
+                    anchors.fill: parent
+                    anchors.margins: 12
+                    expanded: window.codeEditorExpanded
+                    viewer: window.viewer
+                    onExpansionRequested: function(expanded) {
+                        window.codeEditorExpanded = expanded
                     }
                 }
             }
         }
 
-        Rectangle {
-            id: settingsPanel
+        GlassMenuBar {
+            id: menuBar
+            objectName: "mainMenuBar"
+            width: parent.width
+            height: window.menuBarHeight
+            backdropOrigin: Qt.point(-raceBackdrop.x, -raceBackdrop.y)
 
-            objectName: "settingsPanel"
-            SplitView.fillWidth: !workspaceContent.visible
-            SplitView.preferredWidth: 390
-            SplitView.minimumWidth: !workspaceContent.visible ? 0 : 340
-            SplitView.maximumWidth: !workspaceContent.visible
-                                    ? window.width : 480
-            color: AppTheme.panel
+            GlassMenu {
+                id: fileMenu
+                objectName: "fileMenu"
+                title: qsTr("File")
 
-            ColumnLayout {
-                id: settingsNavigation
-                anchors.top: parent.top
-                anchors.left: parent.left
-                anchors.right: parent.right
-                anchors.margins: 20
-                spacing: 8
-
-                ThemedCheckBox {
-                    objectName: "showViewerToggle"
-                    text: qsTr("Show viewer")
-                    checked: window.controller.viewerVisible
-                    enabled: !window.viewer.manualDriving
-                    onToggled: window.controller.viewerVisible = checked
+                ThemedMenuItem {
+                    objectName: "openMapMenuItem"
+                    text: window.viewer.loading ? qsTr("Loading map...")
+                                                : qsTr("Open map or replay...")
+                    shortcutText: "Ctrl+O"
+                    enabled: window.canOpenMap
+                    onTriggered: window.openMapOrReplay()
                 }
-
-                TabBar {
-                    id: toolTabs
-                    objectName: "toolTabs"
-                    Layout.fillWidth: true
-                    onCurrentIndexChanged: {
-                        if (currentIndex === 1) {
-                            if (window.viewer.loaded)
-                                window.viewer.startSimulationDebugger()
-                        } else {
-                            window.codeEditorExpanded = false
-                            window.viewer.stopSimulationDebugger()
-                        }
-                    }
-
-                    ThemedTabButton {
-                        id: bruteforceTabButton
-                        objectName: "bruteforceTab"
-                        text: qsTr("Bruteforce")
-                    }
-                    ThemedTabButton {
-                        id: codeTabButton
-                        objectName: "codeDebuggerTab"
-                        text: qsTr("Code")
-                    }
+                ThemedMenuItem {
+                    objectName: "packsFolderMenuItem"
+                    text: qsTr("Set packs folder...")
+                    enabled: !window.controller.running
+                             && !window.controller.extractingReplayInputs
+                    onTriggered: packsDialog.open()
                 }
-
-                TabBar {
-                    id: bruteforceSettingsTabs
-                    objectName: "bruteforceSettingsTabs"
-                    Layout.fillWidth: true
-                    visible: toolTabs.currentIndex === 0
-                    ThemedTabButton { text: qsTr("Base") }
-                    ThemedTabButton { text: qsTr("Target") }
-                    ThemedTabButton { text: qsTr("Passes") }
-                    ThemedTabButton { text: qsTr("Search") }
+                ThemedMenuItem {
+                    objectName: "extractInputsMenuItem"
+                    text: window.controller.extractingReplayInputs
+                          ? qsTr("Extracting...")
+                          : qsTr("Extract inputs from replay")
+                    enabled: window.canExtractInputs
+                    onTriggered: window.extractInputs()
                 }
-
-                ModifierPassControls {
-                    Layout.fillWidth: true
-                    visible: toolTabs.currentIndex === 0
-                             && bruteforceSettingsTabs.currentIndex === 2
-                    composition: modifierComposition
+                ThemedMenuItem {
+                    objectName: "exportVideoMenuItem"
+                    visible: videoExportDialog.exporter.available
+                    height: visible ? implicitHeight : 0
+                    text: videoExportDialog.exporter.running
+                          ? qsTr("Exporting to MP4...")
+                          : qsTr("Export to MP4...")
+                    enabled: window.viewer.loaded
+                    onTriggered: videoExportDialog.open()
+                }
+                MenuSeparator {}
+                ThemedMenuItem {
+                    objectName: "gamepadMenuItem"
+                    text: qsTr("Gamepad settings...")
+                    onTriggered: gamepadDialog.open()
+                }
+                MenuSeparator {}
+                ThemedMenuItem {
+                    objectName: "quitMenuItem"
+                    text: qsTr("Quit")
+                    shortcutText: "Ctrl+Q"
+                    onTriggered: window.close()
                 }
             }
 
-            ScrollView {
-                id: settingsScroll
+            GlassMenu {
+                id: editMenu
+                objectName: "editMenu"
+                title: qsTr("Edit")
 
-                objectName: "settingsScroll"
-                property var tabOffsets: ({})
-                property string activeScrollKey: ""
-                property bool restoringScroll: false
-                readonly property string scrollKey: toolTabs.currentIndex === 1
-                    ? "code" : "search-" + bruteforceSettingsTabs.currentIndex
-                function restoreTabScroll() {
-                    restoringScroll = true
-                    Qt.callLater(function() {
-                        const content = settingsScroll.contentItem
-                        const saved = settingsScroll.tabOffsets[settingsScroll.scrollKey]
-                        const offset = saved !== undefined ? saved
-                            : settingsScroll.scrollKey === "code"
-                              ? simulationDebuggerPanelHost.y : 0
-                        content.contentY = Math.max(0, Math.min(offset,
-                            content.contentHeight - content.height))
-                        settingsScroll.activeScrollKey = settingsScroll.scrollKey
-                        settingsScroll.restoringScroll = false
-                    })
+                ThemedMenuItem {
+                    objectName: "undoMenuItem"
+                    text: qsTr("Undo")
+                    shortcutText: "Ctrl+Z"
+                    enabled: window.canUndoEdit
+                    onTriggered: window.undoEdit()
                 }
-                onScrollKeyChanged: restoreTabScroll()
-                Connections {
-                    target: settingsScroll.contentItem
-                    function onContentYChanged() {
-                        if (!settingsScroll.restoringScroll
-                            && settingsScroll.activeScrollKey === settingsScroll.scrollKey) {
-                            settingsScroll.tabOffsets[settingsScroll.scrollKey] =
-                                settingsScroll.contentItem.contentY
-                        }
-                    }
+                ThemedMenuItem {
+                    objectName: "redoMenuItem"
+                    text: qsTr("Redo")
+                    shortcutText: "Ctrl+Shift+Z"
+                    enabled: window.canRedoEdit
+                    onTriggered: window.redoEdit()
                 }
-                anchors.top: settingsNavigation.bottom
-                anchors.topMargin: 12
-                anchors.bottom: parent.bottom
-                anchors.left: parent.left
+                MenuSeparator {}
+                ThemedMenuItem {
+                    text: qsTr("Cut")
+                    shortcutText: "Ctrl+X"
+                    enabled: window.lastTextEditor !== null
+                    onTriggered: window.editText("cut")
+                }
+                ThemedMenuItem {
+                    text: qsTr("Copy")
+                    shortcutText: "Ctrl+C"
+                    enabled: window.lastTextEditor !== null
+                    onTriggered: window.editText("copy")
+                }
+                ThemedMenuItem {
+                    text: qsTr("Paste")
+                    shortcutText: "Ctrl+V"
+                    enabled: window.lastTextEditor !== null
+                    onTriggered: window.editText("paste")
+                }
+                ThemedMenuItem {
+                    text: qsTr("Select all")
+                    shortcutText: "Ctrl+A"
+                    enabled: window.lastTextEditor !== null
+                    onTriggered: window.editText("selectAll")
+                }
+            }
+
+            GlassMenu {
+                id: viewMenu
+                objectName: "viewMenu"
+                title: qsTr("View")
+
+                PanelMenuItem { panelId: "inputs"; text: qsTr("Inputs") }
+                PanelMenuItem { panelId: "graphics"; text: qsTr("Graphics") }
+                PanelMenuItem { panelId: "bruteforce"; text: qsTr("Bruteforce") }
+                PanelMenuItem { panelId: "code"; text: qsTr("Code") }
+                PanelMenuItem { panelId: "race"; text: qsTr("Race viewer") }
+                PanelMenuItem { panelId: "camera"; text: qsTr("Camera") }
+                PanelMenuItem { panelId: "telemetry"; text: qsTr("Scripted telemetry") }
+                PanelMenuItem { panelId: "splits"; text: qsTr("Splits") }
+                PanelMenuItem { panelId: "playback"; text: qsTr("Playback") }
+                PanelMenuItem { panelId: "manualDrive"; text: qsTr("Manual driving") }
+                PanelMenuItem { panelId: "whiteboard"; text: qsTr("Whiteboard") }
+                ThemedMenuItem {
+                    text: qsTr("Drawings")
+                    showMark: true
+                    marked: whiteboardOverlay.drawingListOpen
+                    onTriggered: whiteboardOverlay.drawingListOpen = !whiteboardOverlay.drawingListOpen
+                }
+                MenuSeparator {}
+                ThemedMenuItem {
+                    objectName: "hideAllPanelsMenuItem"
+                    text: qsTr("Hide all panels")
+                    shortcutText: "Tab"
+                    showMark: true
+                    marked: dockSpace.hideAll
+                    onTriggered: dockSpace.hideAll = !dockSpace.hideAll
+                }
+                ThemedMenuItem {
+                    objectName: "showViewerMenuItem"
+                    text: qsTr("Show viewer")
+                    showMark: true
+                    marked: window.controller.viewerVisible
+                    enabled: !window.viewer.manualDriving
+                    onTriggered: window.controller.viewerVisible = !window.controller.viewerVisible
+                }
+                MenuSeparator {}
+                ThemedMenuItem {
+                    text: qsTr("Zoom in")
+                    shortcutText: "Ctrl++"
+                    enabled: AppTheme.zoom < 1.6
+                    onTriggered: window.setZoom(AppTheme.zoom + 0.1)
+                }
+                ThemedMenuItem {
+                    text: qsTr("Zoom out")
+                    shortcutText: "Ctrl+-"
+                    enabled: AppTheme.zoom > 0.7
+                    onTriggered: window.setZoom(AppTheme.zoom - 0.1)
+                }
+                ThemedMenuItem {
+                    text: qsTr("Reset zoom (%1%)").arg(Math.round(AppTheme.zoom * 100))
+                    shortcutText: "Ctrl+0"
+                    onTriggered: window.setZoom(1.0)
+                }
+                MenuSeparator {}
+                ThemedMenuItem {
+                    objectName: "glassLookMenuItem"
+                    text: qsTr("Glass look...")
+                    onTriggered: glassLookPopup.open()
+                }
+                ThemedMenuItem {
+                    objectName: "resetLayoutMenuItem"
+                    text: qsTr("Reset layout")
+                    onTriggered: dockSpace.resetLayout()
+                }
+            }
+        }
+    }
+
+    // ---- File > Set packs folder (also offered when one is found) -------------
+    GlassDialog {
+        id: packsDialog
+        objectName: "packsDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, parent.width - 32)
+        title: qsTr("Packs directory")
+        modal: true
+        footer: Item {
+            implicitHeight: 56
+            ThemedButton {
+                objectName: "closePacksDialogButton"
                 anchors.right: parent.right
-                clip: true
-                contentWidth: availableWidth
-                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                PanelWheelRedirector {
-                    id: settingsWheelRedirector
-                    objectName: "settingsWheelRedirector"
-                    parent: settingsScroll.parent
-                    anchors.fill: parent
-                    flickable: settingsScroll.contentItem
-                }
+                anchors.rightMargin: 16
+                anchors.verticalCenter: parent.verticalCenter
+                text: qsTr("Close")
+                onClicked: packsDialog.close()
+            }
+        }
+        // Set when Open map or replay needed the packs folder first.
+        property bool loadAfter: false
+        onClosed: {
+            if (loadAfter)
+                window.loadMapIfReady()
+            loadAfter = false
+        }
+
+    ColumnLayout {
+        objectName: "packsDirectorySection"
+        width: parent ? parent.width : implicitWidth
+        spacing: 6
+
+        Label {
+            text: qsTr("Packs directory")
+            font.weight: Font.Medium
+        }
+
+        Rectangle {
+            objectName: "autoPacksSuggestion"
+            Layout.fillWidth: true
+            implicitHeight: autoPacksSuggestionLayout.implicitHeight
+                            + 16
+            radius: 8
+            color: AppTheme.accentSoft
+            border.width: 1
+            border.color: AppTheme.accentBorder
+            visible:
+                window.controller.autoDetectedPacksDirectory.length
+                > 0
+
+            RowLayout {
+                id: autoPacksSuggestionLayout
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 8
 
                 ColumnLayout {
-                    width: settingsScroll.availableWidth
-                    spacing: 14
+                    Layout.fillWidth: true
+                    spacing: 2
 
-                    Item {
+                    Label {
+                        objectName: "autoPacksSuggestionText"
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 12
-                        visible: toolTabs.currentIndex === 1
-                                 || bruteforceSettingsTabs.currentIndex === 0
-                    }
-
-                    ColumnLayout {
-                        objectName: "packsDirectorySection"
-                        visible: toolTabs.currentIndex === 1
-                                 || bruteforceSettingsTabs.currentIndex === 0
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        spacing: 6
-
-                        Label {
-                            text: qsTr("Packs directory")
-                            font.weight: Font.Medium
-                        }
-
-                        Rectangle {
-                            objectName: "autoPacksSuggestion"
-                            Layout.fillWidth: true
-                            implicitHeight: autoPacksSuggestionLayout.implicitHeight
-                                            + 16
-                            radius: 8
-                            color: AppTheme.accentSoft
-                            border.width: 1
-                            border.color: AppTheme.accentBorder
-                            visible:
-                                window.controller.autoDetectedPacksDirectory.length
-                                > 0
-
-                            RowLayout {
-                                id: autoPacksSuggestionLayout
-                                anchors.fill: parent
-                                anchors.margins: 8
-                                spacing: 8
-
-                                ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: 2
-
-                                    Label {
-                                        objectName: "autoPacksSuggestionText"
-                                        Layout.fillWidth: true
-                                        text: qsTr("This location was found automatically and should work. Apply?")
-                                        color: AppTheme.dark ? AppTheme.text
-                                                          : "#284d35"
-                                        wrapMode: Text.WordWrap
-                                        font.pixelSize: 11
-                                        font.weight: Font.Medium
-                                    }
-
-                                    Label {
-                                        Layout.fillWidth: true
-                                        text: window.controller.autoDetectedPacksDirectory
-                                        color: AppTheme.dark ? AppTheme.textMuted
-                                                          : "#42654c"
-                                        elide: Text.ElideMiddle
-                                        font.family: "monospace"
-                                        font.pixelSize: 9
-                                    }
-                                }
-
-                                ThemedButton {
-                                    objectName: "applyAutoPacksButton"
-                                    text: qsTr("Apply")
-                                    enabled: !window.controller.running
-                                             && !window.controller.extractingReplayInputs
-                                    onClicked:
-                                        window.controller.applyAutoDetectedPacksDirectory()
-                                }
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            TextField {
-                                Layout.fillWidth: true
-                                text: window.controller.packsDirectory
-                                enabled: !window.controller.running
-                                         && !window.controller.extractingReplayInputs
-                                placeholderText: qsTr("Select installed Packs directory")
-                                selectByMouse: true
-                                onTextEdited:
-                                    window.controller.packsDirectory = text
-                            }
-
-                            ThemedButton {
-                                text: qsTr("Browse")
-                                enabled: !window.controller.running
-                                         && !window.controller.extractingReplayInputs
-                                onClicked:
-                                    window.controller.browseForPacksDirectory()
-                            }
-                        }
-
-                    }
-
-                    ColumnLayout {
-                        id: replaySection
-
-                        objectName: "replaySection"
-                        visible: toolTabs.currentIndex === 1
-                                 || bruteforceSettingsTabs.currentIndex === 0
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        spacing: 6
-
-                        Label {
-                            text: qsTr("Map source")
-                            font.weight: Font.Medium
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            TextField {
-                                objectName: "replayPathField"
-                                Layout.fillWidth: true
-                                text: window.controller.replayPath
-                                enabled: !window.controller.running
-                                         && !window.controller.extractingReplayInputs
-                                placeholderText: qsTr("Select replay or challenge file")
-                                selectByMouse: true
-                                onTextEdited: window.controller.replayPath = text
-                            }
-
-                            ThemedButton {
-                                objectName: "browseReplayButton"
-                                text: qsTr("Browse")
-                                enabled: !window.controller.running
-                                         && !window.controller.extractingReplayInputs
-                                onClicked:
-                                    window.controller.browseForReplay()
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            ThemedButton {
-                                objectName: "loadMapButton"
-                                Layout.fillWidth: true
-                                text: window.viewer.loading
-                                      ? qsTr("Loading map...")
-                                      : qsTr("Load map")
-                                enabled: !window.viewer.loading
-                                         && !window.viewer.manualDriving
-                                         && !window.controller.running
-                                         && !window.controller.extractingReplayInputs
-                                         && window.controller.packsDirectory.length > 0
-                                         && window.controller.replayPath.length > 0
-                                highlighted: true
-                                onClicked: window.viewer.loadMap(
-                                    window.controller.packsDirectory,
-                                    window.controller.replayPath)
-                            }
-
-                            ThemedButton {
-                                objectName: "extractReplayInputsButton"
-                                Layout.fillWidth: true
-                                text: window.controller.extractingReplayInputs
-                                      ? qsTr("Extracting...")
-                                      : qsTr("Extract inputs to script")
-                                enabled: window.controller.canExtractReplayInputs
-                                         && !window.viewer.loading
-                                         && !window.viewer.manualDriving
-                                onClicked: {
-                                    if (window.controller.baseInputScript.trim().length > 0)
-                                        replaceBaseInputScriptDialog.open()
-                                    else
-                                        window.controller.extractReplayInputs()
-                                }
-                            }
-                        }
-
-                        FailureNotice {
-                            objectName: "replayInputFailure"
-                            Layout.fillWidth: true
-                            title: qsTr("Input extraction failed")
-                            failure: window.controller.replayInputFailure
-                        }
-
-                        Label {
-                            objectName: "replayInputStatusLabel"
-                            Layout.fillWidth: true
-                            visible: text.length > 0
-                                     && !(window.controller.replayInputFailure.reason)
-                            text: window.controller.replayInputStatusText
-                            color: text.indexOf(qsTr("failed")) >= 0
-                                   || text.indexOf(qsTr("discarded")) >= 0
-                                   ? AppTheme.error
-                                   : AppTheme.success
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                        }
-                    }
-
-
-                    ConfigurationSection {
-                        objectName: "baseInputScriptSection"
-                        visible: toolTabs.currentIndex === 0
-                                 && bruteforceSettingsTabs.currentIndex === 0
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        title: qsTr("Base input script")
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            Item {
-                                Layout.fillWidth: true
-                            }
-
-                            ThemedButton {
-                                id: copyCurrentRaceInputsButton
-                                objectName: "copyCurrentRaceInputsButton"
-                                text: qsTr("Copy current race")
-                                enabled: window.viewer.canCopyCurrentInputs
-                                         && !window.controller.running
-                                         && !window.controller.extractingReplayInputs
-                                onClicked: {
-                                    window.controller.baseInputScript =
-                                        window.viewer.currentInputScript()
-                                    baseInputScriptArea.forceActiveFocus()
-                                }
-                                ToolTip.visible: hovered
-                                ToolTip.text: qsTr(
-                                    "Replace the base input with the selected race through its current time")
-                            }
-                        }
-
-                        ScrollView {
-                            id: baseInputScriptScroll
-
-                            objectName: "baseInputScriptScrollView"
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 220
-                            clip: true
-                            ScrollBar.horizontal.policy:
-                                ScrollBar.AsNeeded
-                            ScrollBar.vertical.policy:
-                                ScrollBar.AsNeeded
-
-                            TextArea {
-                                id: baseInputScriptArea
-
-                                objectName: "baseInputScriptTextArea"
-                                width: Math.max(
-                                    baseInputScriptScroll.availableWidth,
-                                    contentWidth + leftPadding + rightPadding)
-                                text: window.controller.baseInputScript
-                                enabled: !window.controller.running
-                                         && !window.controller.extractingReplayInputs
-                                selectByMouse: true
-                                wrapMode: TextEdit.NoWrap
-                                textFormat: TextEdit.PlainText
-                                font.family: "monospace"
-                                font.pixelSize: 12
-                                color: enabled ? AppTheme.text
-                                               : AppTheme.disabledText
-                                placeholderText: qsTr("0.00 press up")
-                                onActiveFocusChanged: {
-                                    if (!activeFocus)
-                                        window.commitBaseInputScript()
-                                }
-                                background: Rectangle {
-                                    color: enabled ? AppTheme.surface
-                                                   : AppTheme.disabledSurface
-                                    border.width: 1
-                                    border.color:
-                                        window.controller.baseInputScriptError.length
-                                        > 0 ? AppTheme.error
-                                            : baseInputScriptArea.activeFocus
-                                              ? AppTheme.focus : AppTheme.border
-                                    radius: 6
-                                }
-                            }
-                        }
-
-                        Label {
-                            objectName: "baseInputScriptErrorLabel"
-                            Layout.fillWidth: true
-                            visible: text.length > 0
-                            text: window.controller.baseInputScriptError
-                            color: AppTheme.error
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                        }
-                    }
-
-                    ColumnLayout {
-                        id: appearanceControls
-
-                        objectName: "appearanceControls"
-                        visible: toolTabs.currentIndex === 1
-                                 || bruteforceSettingsTabs.currentIndex === 0
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        spacing: 8
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            spacing: 8
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: qsTr("Preferences")
-                                color: AppTheme.textMuted
-                                font.pixelSize: 11
-                            }
-
-                            ThemedButton {
-                                objectName: "gamepadSettingsButton"
-                                Layout.preferredWidth: 32
-                                Layout.preferredHeight: 32
-                                icon.source: "qrc:/icons/gamepad-2.svg"
-                                ToolTip.visible: hovered
-                                ToolTip.text: qsTr("Gamepad settings")
-                                Accessible.name: qsTr("Gamepad settings")
-                                onClicked: gamepadDialog.open()
-                            }
-                            ThemedSwitch {
-                                id: darkModeToggle
-                                objectName: "darkModeToggle"
-                                text: qsTr("Dark mode")
-                                checked: window.controller.darkMode
-                                onToggled:
-                                    window.controller.darkMode = checked
-                                Accessible.name: qsTr("Dark mode")
-                                ToolTip.visible: hovered
-                                ToolTip.text: checked
-                                              ? qsTr("Use the default light theme")
-                                              : qsTr("Use the dark theme")
-                            }
-                        }
-
-                        SteeringUnits {}
-                        TimeUnits {}
-                    }
-
-                    ColumnLayout {
-                        id: bruteforceTabContent
-
-                        objectName: "bruteforceTabContent"
-                        Layout.fillWidth: true
-                        visible: toolTabs.currentIndex === 0
-                        spacing: 14
-
-                    ColumnLayout {
-                        visible: bruteforceSettingsTabs.currentIndex ===
-                                 3
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        spacing: 6
-
-                        Label {
-                            text: qsTr("Physics backend")
-                            font.weight: Font.Medium
-                        }
-
-                        StyledComboBox {
-                            id: simulationBackendCombo
-
-                            objectName: "simulationBackendCombo"
-                            Layout.fillWidth: true
-                            model: window.controller.simulationBackendOptions
-                            textRole: "label"
-                            valueRole: "id"
-                            enabled: !window.controller.running
-                                     && !window.viewer.loading
-
-                            function synchronizeSelection() {
-                                const selected = indexOfValue(
-                                    window.controller.simulationBackendId)
-                                if (selected >= 0 && currentIndex !== selected)
-                                    currentIndex = selected
-                            }
-
-                            Component.onCompleted: synchronizeSelection()
-                            onModelChanged: Qt.callLater(synchronizeSelection)
-                            onActivated: selectedIndex =>
-                                window.controller.simulationBackendId =
-                                    valueAt(selectedIndex)
-
-                            Connections {
-                                target: window.controller
-
-                                function onSimulationBackendIdChanged() {
-                                    simulationBackendCombo.synchronizeSelection()
-                                }
-                            }
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: window.controller.simulationBackendId
-                                  === "cuda"
-                                  ? qsTr("NVIDIA CUDA for Stadium; compute capability 5.0+ is supported, with Fast CUDA on 7.5+")
-                                  : window.controller.simulationBackendId === "hip"
-                                    ? qsTr("HIP Compute for Stadium on compatible GPUs")
-                                  : window.controller.simulationBackendId === "vulkan"
-                                    ? qsTr("Vulkan Compute for Stadium on compatible GPUs")
-                                  : window.controller.simulationBackendId
-                                    === "optimized-cpu"
-                                    ? qsTr("Faster runtime optimized for Stadium, may break compatibility in other environments")
-                                    : window.controller.simulationBackendId
-                                      === "multi-threaded-cpu"
-                                      ? qsTr("Runs independent optimized CPU simulations across multiple worker threads")
-                                    : qsTr("Broadest compatibility")
-                            color: AppTheme.textMuted
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                        }
-
-                        ThemedButton {
-                            objectName: "changeComputePackageButton"
-                            Layout.fillWidth: true
-                            text: qsTr("Change compute package…")
-                            enabled: window.updater && window.updater.supported
-                            onClicked: {
-                                updateDialog.open()
-                                window.updater.checkForUpdates()
-                            }
-                        }
-
-                        Label {
-                            objectName: "cudaCompatibilityStatus"
-                            Layout.fillWidth: true
-                            visible: window.controller.simulationBackendId
-                                     === "cuda"
-                            text: window.controller.cudaStatusText
-                            color: !window.controller.cudaAvailable
-                                   ? AppTheme.error
-                                   : !window.controller.cudaFastModeAvailable
-                                     ? AppTheme.warning
-                                     : AppTheme.success
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                        }
-
-                        Label {
-                            objectName: "hipCompatibilityStatus"
-                            Layout.fillWidth: true
-                            visible: window.controller.simulationBackendId
-                                     === "hip"
-                            text: window.controller.hipStatusText
-                            color: window.controller.hipAvailable
-                                   ? AppTheme.success : AppTheme.error
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                        }
-
-                        Label {
-                            objectName: "vulkanCompatibilityStatus"
-                            Layout.fillWidth: true
-                            visible: window.controller.simulationBackendId
-                                     === "vulkan"
-                            text: window.controller.vulkanStatusText
-                            color: window.controller.vulkanAvailable
-                                   ? AppTheme.success : AppTheme.error
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                        }
-
-                        DurationField {
-                            objectName: "simulationHorizonSettings"
-                            fieldObjectName: "simulationHorizonField"
-                            label: qsTr("Search end")
-                            value: window.controller.simulationHorizonMs
-                            running: window.controller.running
-                            minimum: 10
-                            captureVisible: true
-                            captureEnabled: window.viewer.loaded
-                            captureValue: String(Math.max(
-                                window.viewer.tickDurationMs,
-                                window.viewer.currentTick
-                                * window.viewer.tickDurationMs))
-                            captureToolTip: qsTr("Set horizon to now (10 ms tick)")
-                            maximum: 2147481040
-                            dragStep: 1000
-                            liveScrub: false
-                            onEdited: value =>
-                                window.controller.simulationHorizonMs = value
-                        }
-
-                        DurationField {
-                            objectName: "previewExtentSettings"
-                            fieldObjectName: "previewExtentField"
-                            label: qsTr("Preview extent")
-                            info: qsTr("How far the viewer simulates your inputs, "
-                                       + "including history and best runs. It does "
-                                       + "not change how far the search simulates "
-                                       + "(Search end).")
-                            value: window.controller.previewExtentMs
-                            minimum: 10
-                            maximum: 2147481040
-                            dragStep: 1000
-                            liveScrub: false
-                            onEdited: value =>
-                                window.controller.previewExtentMs = value
-                        }
-                        ThemedButton {
-                            objectName: "extendSearchHorizonButton"
-                            Layout.fillWidth: true
-                            visible: window.controller.requiredSimulationHorizonMs >
-                                     Number(window.controller.simulationHorizonMs)
-                            enabled: !window.controller.running
-                            text: qsTr("Extend search to %1").arg(
-                                      DurationDisplay.text(window.controller.requiredSimulationHorizonMs))
-                            onClicked: window.controller.extendSimulationHorizon()
-                        }
-
-                        ThemedCheckBox {
-                            objectName: "randomizeSeedsOnStartCheckBox"
-                            text: qsTr("Randomize modifier seeds on Start")
-                            checked: window.controller.randomizeSeedsOnStart
-                            enabled: !window.controller.running
-                            onToggled:
-                                window.controller.randomizeSeedsOnStart =
-                                    checked
-                        }
-
-                        SettingTextField {
-                            objectName: "cpuWorkerSettings"
-                            visible: window.controller.simulationBackendId
-                                     === "multi-threaded-cpu"
-                            fieldObjectName: "cpuWorkerCountField"
-                            label: qsTr("Worker threads")
-                            value: window.controller.cpuWorkerCount
-                            running: window.controller.running
-                            minimum: 1
-                            maximum: 256
-                            onEdited: value =>
-                                window.controller.cpuWorkerCount = value
-                        }
-
-                        SettingTextField {
-                            objectName: "cudaParallelSampleSettings"
-                            visible: window.controller.simulationBackendId
-                                     === "cuda"
-                            fieldObjectName: "cudaParallelSampleCountField"
-                            label: qsTr("Parallel samples at a time")
-                            value: window.controller.cudaParallelSampleCount
-                            running: window.controller.running
-                            minimum: 1
-                            onEdited: value =>
-                                window.controller.cudaParallelSampleCount = value
-                        }
-
-                        SettingTextField {
-                            objectName: "hipParallelSampleSettings"
-                            visible: window.controller.simulationBackendId
-                                     === "hip"
-                            fieldObjectName: "hipParallelSampleCountField"
-                            label: qsTr("Parallel samples at a time")
-                            value: window.controller.hipParallelSampleCount
-                            running: window.controller.running
-                            minimum: 1
-                            onEdited: value =>
-                                window.controller.hipParallelSampleCount = value
-                        }
-
-                        SettingTextField {
-                            objectName: "vulkanParallelSampleSettings"
-                            visible: window.controller.simulationBackendId
-                                     === "vulkan"
-                            fieldObjectName: "vulkanParallelSampleCountField"
-                            label: qsTr("Parallel samples at a time")
-                            value: window.controller.vulkanParallelSampleCount
-                            running: window.controller.running
-                            minimum: 1
-                            onEdited: value =>
-                                window.controller.vulkanParallelSampleCount = value
-                        }
-
-                        ThemedCheckBox {
-                            objectName: "cudaCalibrationCheckBox"
-                            visible: window.controller.simulationBackendId
-                                     === "cuda"
-                            text: qsTr("Calibrate for maximum throughput")
-                            checked: window.controller.cudaCalibrationEnabled
-                            enabled: !window.controller.running
-                            onToggled:
-                                window.controller.cudaCalibrationEnabled =
-                                    checked
-                        }
-
-                        ThemedCheckBox {
-                            objectName: "hipCalibrationCheckBox"
-                            visible: window.controller.simulationBackendId
-                                     === "hip"
-                            text: qsTr("Calibrate for maximum throughput")
-                            checked: window.controller.hipCalibrationEnabled
-                            enabled: !window.controller.running
-                            onToggled:
-                                window.controller.hipCalibrationEnabled =
-                                    checked
-                        }
-
-                        ThemedCheckBox {
-                            objectName: "vulkanCalibrationCheckBox"
-                            visible: window.controller.simulationBackendId
-                                     === "vulkan"
-                            text: qsTr("Calibrate for maximum throughput")
-                            checked: window.controller.vulkanCalibrationEnabled
-                            enabled: !window.controller.running
-                            onToggled:
-                                window.controller.vulkanCalibrationEnabled =
-                                    checked
-                        }
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        color: AppTheme.border
-                        visible: bruteforceSettingsTabs.currentIndex === 3
-                    }
-
-                    ConfigurationSection {
-                        objectName: "conditionsSection"
-                        visible: bruteforceSettingsTabs.currentIndex ===
-                                 3
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        title: qsTr("Conditions")
-
-                        ScrollView {
-                            id: conditionScriptScroll
-                            objectName: "conditionScriptScrollView"
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: 110
-                            clip: true
-                            ScrollBar.horizontal.policy: ScrollBar.AsNeeded
-                            ScrollBar.vertical.policy: ScrollBar.AsNeeded
-
-                            TextArea {
-                                id: conditionScriptArea
-                                objectName: "conditionScriptTextArea"
-                                width: Math.max(
-                                    conditionScriptScroll.availableWidth,
-                                    contentWidth + leftPadding + rightPadding)
-                                text: window.controller.conditionScript
-                                enabled: !window.controller.running
-                                selectByMouse: true
-                                wrapMode: TextEdit.NoWrap
-                                textFormat: TextEdit.PlainText
-                                font.family: "monospace"
-                                font.pixelSize: 12
-                                color: enabled ? AppTheme.text
-                                               : AppTheme.disabledText
-                                placeholderText: enabled ? qsTr("No conditions") : ""
-                                Keys.onPressed: event => {
-                                    if (event.key === Qt.Key_Space && (event.modifiers & Qt.ControlModifier)) {
-                                        conditionReference.complete()
-                                        event.accepted = true
-                                    }
-                                }
-                                onTextChanged: {
-                                    if (window.controller.conditionScript !== text)
-                                        window.controller.conditionScript = text
-                                }
-                                background: Rectangle {
-                                    color: enabled ? AppTheme.surface
-                                                   : AppTheme.disabledSurface
-                                    border.width: 1
-                                    border.color: conditionScriptArea.activeFocus
-                                                  ? AppTheme.focus
-                                                  : AppTheme.border
-                                    radius: 6
-                                }
-                            }
-                        }
-                        Label {
-                            objectName: "emptyConditionsStatus"
-                            visible: !conditionScriptArea.enabled
-                                     && conditionScriptArea.text.trim().length === 0
-                            text: qsTr("No conditions")
-                            color: AppTheme.textMuted
-                        }
-                        ConditionReference {
-                            id: conditionReference
-                            objectName: "conditionReference"
-                            controller: window.controller
-                            editor: conditionScriptArea
-                        }
-                    }
-
-                    ConfigurationSection {
-                        objectName: "evaluationSection"
-                        visible: bruteforceSettingsTabs.currentIndex === 1
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        title: qsTr("Evaluation")
-
-                        AlgorithmSelector {
-                            objectName: "evaluationTargetSelector"
-                            Layout.fillWidth: true
-                            title: qsTr("Target")
-                            comboObjectName: "evaluationTargetCombo"
-                            iconMode: true
-                            options: window.controller.evaluationTargetOptions
-                            selectedId: window.controller.evaluationTargetId
-                            controller: window.controller
-                            viewer: window.viewer
-                            viewport: viewport
-                            onSelectionRequested: id =>
-                                window.controller.evaluationTargetId = id
-                        }
-                    }
-
-                    ConfigurationSection {
-                        objectName: "modifierSection"
-                        visible: bruteforceSettingsTabs.currentIndex === 2
-                                 && window.controller.modifierPasses.length > 0
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        title: qsTr("Pass settings")
-
-                        ModifierComposition {
-                            id: modifierComposition
-                            Layout.fillWidth: true
-                            onPassActivated: settingsScroll.contentItem.contentY = 0
-                            controller: window.controller
-                            viewer: window.viewer
-                            options: window.controller.modifierOptions
-                            passes: window.controller.modifierPasses
-                        }
-                    }
-
-                    ConfigurationSection {
-                        objectName: "searchSection"
-                        visible: bruteforceSettingsTabs.currentIndex ===
-                                 3
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        title: qsTr("Search")
-
-                        AlgorithmSelector {
-                            objectName: "searchAlgorithmSelector"
-                            Layout.fillWidth: true
-                            title: qsTr("Algorithm")
-                            comboObjectName: "searchAlgorithmCombo"
-                            options: window.controller.searchAlgorithmOptions
-                            selectedId: window.controller.searchAlgorithmId
-                            controller: window.controller
-                            onSelectionRequested: id =>
-                                window.controller.searchAlgorithmId = id
-                        }
-
-                        Label {
-                            text: qsTr("Autorestart")
-                            font.weight: Font.Medium
-                        }
-
-                        StyledComboBox {
-                            id: autoRestartModeCombo
-                            objectName: "autoRestartModeCombo"
-                            Layout.fillWidth: true
-                            model: [
-                                { "id": "off", "label": qsTr("Off") },
-                                { "id": "duration", "label": qsTr("Duration") },
-                                { "id": "attempts", "label": qsTr("Attempts") }
-                            ]
-                            textRole: "label"
-                            valueRole: "id"
-                            enabled: !window.controller.running
-                            selectedValue: window.controller.autoRestartMode
-                            onActivated: selectedIndex =>
-                                window.controller.autoRestartMode =
-                                    valueAt(selectedIndex)
-                        }
-
-                        TextField {
-                            objectName: "autoRestartDurationField"
-                            Layout.fillWidth: true
-                            visible: window.controller.autoRestartMode
-                                     === "duration"
-                            enabled: !window.controller.running
-                            text: window.controller.autoRestartDuration
-                            placeholderText: qsTr("HH:MM:SS")
-                            onTextEdited:
-                                window.controller.autoRestartDuration = text
-                        }
-
-                        TextField {
-                            objectName: "autoRestartAttemptsField"
-                            Layout.fillWidth: true
-                            visible: window.controller.autoRestartMode
-                                     === "attempts"
-                            enabled: !window.controller.running
-                            text: window.controller.autoRestartAttempts
-                            placeholderText: qsTr("Individual attempts")
-                            inputMethodHints: Qt.ImhDigitsOnly
-                            onTextEdited:
-                                window.controller.autoRestartAttempts = text
-                        }
-                    }
-
-                    ConfigurationSection {
-                        objectName: "cudaSessionSpecializationSection"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        visible: bruteforceSettingsTabs.currentIndex ===
-                                 3
-                                 && window.controller.simulationBackendId
-                                    === "cuda"
-                        title: qsTr("CUDA fast mode")
-
-                        ThemedSwitch {
-                            objectName: "cudaSessionSpecializationSwitch"
-                            Layout.fillWidth: true
-                            text: qsTr("Use the faster CUDA kernel")
-                            checked: window.controller
-                                         .cudaSessionSpecializationEnabled
-                                     && window.controller
-                                         .cudaFastModeAvailable
-                            enabled: !window.controller.running
-                                     && window.controller
-                                         .cudaFastModeAvailable
-                            onToggled: window.controller
-                                .cudaSessionSpecializationEnabled = checked
-                            Accessible.name: text
-                        }
-
-                        Label {
-                            objectName: "cudaSessionSpecializationWarning"
-                            Layout.fillWidth: true
-                            text: !window.controller.cudaAvailable
-                                  ? qsTr("Fast CUDA is unavailable because CUDA is not available on this system.")
-                                  : !window.controller.cudaFastModeAvailable
-                                    ? qsTr("Fast CUDA is unavailable on this GPU because it requires compute capability 7.5 or newer. Regular CUDA will be used automatically.")
-                                    : (window.controller
-                                         .cudaSessionSpecializationEnabled
-                                       ? qsTr("Fast mode is on. Its kernel is built once for this map. ")
-                                       : qsTr("Fast mode is off. Its kernel will not be built. "))
-                                      + qsTr("Fast mode is for normal Stadium runs. It can give wrong results or fail when the run uses stunts, respawns, car resets, or unusual map physics. Turn it off for those runs. Regular CUDA is safer, but slower.")
-                            color: AppTheme.textMuted
-                            wrapMode: Text.WordWrap
-                            font.pixelSize: 11
-                        }
+                        text: qsTr("This location was found automatically and should work. Apply?")
+                        color: AppTheme.text
+                        wrapMode: Text.WordWrap
+                        font.pixelSize: 11
+                        font.weight: Font.Medium
                     }
 
                     Label {
                         Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        visible: text.length > 0 && !window.controller.running
-                        text: window.controller.validationMessage
-                        color: AppTheme.error
-                        wrapMode: Text.WordWrap
-                        font.pixelSize: 12
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        spacing: 8
-
-                        ThemedButton {
-                            objectName: "startSearchButton"
-                            Layout.fillWidth: true
-                            text: qsTr("Start")
-                            highlighted: true
-                            enabled: window.controller.canStart
-                                     && !window.viewer.manualDriving
-                            onClicked: window.controller.startSearch()
-                        }
-
-                        ThemedButton {
-                            objectName: "stopSearchButton"
-                            Layout.fillWidth: true
-                            text: window.controller.stopping
-                                  ? qsTr("Stopping...")
-                                  : qsTr("Stop")
-                            enabled: window.controller.running
-                                     && !window.controller.stopping
-                            onClicked: window.controller.stopSearch()
-                        }
-
-                        ThemedButton {
-                            objectName: "abortSearchButton"
-                            visible: window.controller.running && window.controller.stopping
-                            text: window.controller.aborting ? qsTr("Aborting...") : qsTr("Abort")
-                            enabled: !window.controller.aborting
-                            onClicked: window.controller.abortSearch()
-                        }
-                    }
-
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        ThemedButton {
-                            objectName: "evaluateBaseButton"
-                            text: qsTr("Evaluate base")
-                            icon.source: "qrc:/icons/gauge.svg"
-                            enabled: window.controller.canEvaluateBase
-                            onClicked: window.controller.evaluateBase()
-                        }
-                        ThemedButton {
-                            visible: window.controller.evaluatingBase
-                            text: qsTr("Cancel")
-                            onClicked: window.controller.cancelBaseEvaluation()
-                        }
-                    }
-                    FailureNotice {
-                        objectName: "baseEvaluationFailure"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        title: qsTr("Base evaluation failed")
-                        failure: window.controller.baseEvaluationResult.failure
-                                 ?? ({})
-                    }
-
-                    TextArea {
-                        objectName: "baseEvaluationResult"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        visible: text.length > 0
-                                 && !window.controller.baseEvaluationResult.failure
-                        readOnly: true
-                        selectByMouse: true
-                        wrapMode: TextEdit.Wrap
-                        textFormat: TextEdit.PlainText
-                        text: window.controller.baseEvaluationText
-                        color: AppTheme.text
-                        font.pixelSize: 12
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 1
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        color: AppTheme.border
-                    }
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        spacing: 8
-
-                        Label {
-                            Layout.fillWidth: true
-                            text: window.controller.statusText
-                            font.weight: Font.Medium
-                            wrapMode: Text.WordWrap
-                        }
-
-                        RowLayout {
-                            id: searchMetricsRow
-
-                            objectName: "searchMetricsRow"
-                            Layout.fillWidth: true
-                            visible: window.controller.liveMetricsVisible
-                            spacing: 6
-
-                            Rectangle {
-                                objectName: "iterationsMetricCard"
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.preferredHeight: 58
-                                radius: 7
-                                color: AppTheme.surfaceRaised
-                                border.width: 1
-                                border.color: AppTheme.border
-                                clip: true
-
-                                ToolTip.visible: iterationCountMouse.containsMouse
-                                ToolTip.text: window.controller.iterationCountExactText
-                                MouseArea {
-                                    id: iterationCountMouse
-                                    anchors.fill: parent
-                                    acceptedButtons: Qt.RightButton
-                                    hoverEnabled: true
-                                    onClicked: iterationCountMenu.popup()
-                                }
-                                Menu {
-                                    id: iterationCountMenu
-                                    ThemedMenuItem {
-                                        text: qsTr("Copy exact count")
-                                        onTriggered: {
-                                            iterationCountClipboard.selectAll()
-                                            iterationCountClipboard.copy()
-                                        }
-                                    }
-                                }
-                                TextEdit {
-                                    id: iterationCountClipboard
-                                    visible: false
-                                    text: window.controller.iterationCountRawText
-                                }
-
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 8
-                                    spacing: 2
-
-                                    Label {
-                                        Layout.fillWidth: true
-                                        text: qsTr("Iterations")
-                                        color: AppTheme.textMuted
-                                        font.pixelSize: 10
-                                        horizontalAlignment: Text.AlignHCenter
-                                    }
-
-                                    Label {
-                                        objectName: "iterationsMetricValue"
-                                        Layout.fillWidth: true
-                                        text: window.controller.iterationCountText
-                                        color: AppTheme.text
-                                        font.family: "monospace"
-                                        font.pixelSize: 13
-                                        font.weight: Font.DemiBold
-                                        horizontalAlignment: Text.AlignHCenter
-                                        elide: Text.ElideRight
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                objectName: "throughputMetricCard"
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.preferredHeight: 58
-                                radius: 7
-                                color: AppTheme.surfaceRaised
-                                border.width: 1
-                                border.color: AppTheme.border
-                                clip: true
-
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 8
-                                    spacing: 2
-
-                                    Label {
-                                        Layout.fillWidth: true
-                                        text: qsTr("Throughput")
-                                        color: AppTheme.textMuted
-                                        font.pixelSize: 10
-                                        horizontalAlignment: Text.AlignHCenter
-                                    }
-
-                                    Label {
-                                        objectName: "throughputMetricValue"
-                                        Layout.fillWidth: true
-                                        text: window.controller.throughputText.length > 0
-                                              ? window.controller.throughputText
-                                                    + qsTr(" /s")
-                                              : ""
-                                        color: AppTheme.text
-                                        font.family: "monospace"
-                                        font.pixelSize: 13
-                                        font.weight: Font.DemiBold
-                                        horizontalAlignment: Text.AlignHCenter
-                                        elide: Text.ElideRight
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                objectName: "elapsedMetricCard"
-                                Layout.fillWidth: true
-                                Layout.preferredWidth: 1
-                                Layout.preferredHeight: 58
-                                radius: 7
-                                color: AppTheme.surfaceRaised
-                                border.width: 1
-                                border.color: AppTheme.border
-                                clip: true
-
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: 8
-                                    spacing: 2
-
-                                    Label {
-                                        Layout.fillWidth: true
-                                        text: qsTr("Elapsed")
-                                        color: AppTheme.textMuted
-                                        font.pixelSize: 10
-                                        horizontalAlignment: Text.AlignHCenter
-                                    }
-
-                                    Label {
-                                        objectName: "elapsedMetricValue"
-                                        Layout.fillWidth: true
-                                        text: window.controller.elapsedText
-                                        color: AppTheme.text
-                                        font.family: "monospace"
-                                        font.pixelSize: 12
-                                        font.weight: Font.DemiBold
-                                        horizontalAlignment: Text.AlignHCenter
-                                        elide: Text.ElideRight
-                                    }
-                                }
-                            }
-                        }
-
-                        ProgressBar {
-                            Layout.fillWidth: true
-                            from: 0
-                            to: 1
-                            value: window.controller.progressValue
-                            indeterminate:
-                                window.controller.progressIndeterminate
-                        }
-
-                        TextArea {
-                            objectName: "searchResultText"
-                            Layout.fillWidth: true
-                            visible: text.length > 0 &&
-                                     window.controller.running
-                            text: window.controller.resultText
-                            readOnly: true
-                            selectByMouse: true
-                            wrapMode: Text.WordWrap
-                            color: AppTheme.text
-                            background: null
-                        }
-
-                        FailureNotice {
-                            objectName: "searchFailure"
-                            Layout.fillWidth: true
-                            failure: window.controller.statusText
-                                             === qsTr("Search failed")
-                                     ? window.controller.failureDiagnostic
-                                     : ({})
-                        }
-
-                        SearchInputs {
-                            id: searchInputs
-                            Layout.fillWidth: true
-                            controller: window.controller
-
-                            SearchSessionHistory {
-                                Layout.fillWidth: true
-                                controller: window.controller
-                                viewer: window.viewer
-                                onInputsSelected: searchInputs.selectedSource = 1
-                            }
-                        }
-                    }
-
-                    }
-
-                    Item {
-                        id: simulationDebuggerPanelHost
-
-                        objectName: "simulationDebuggerPanelHost"
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 20
-                        Layout.rightMargin: 20
-                        Layout.preferredHeight: Math.max(
-                                                    simulationDebuggerPanel.implicitHeight,
-                                                    settingsScroll.height - 185)
-                        visible: toolTabs.currentIndex === 1
-                                 && !window.codeEditorExpanded
-
-                        SimulationDebuggerPanel {
-                            id: simulationDebuggerPanel
-
-                            objectName: "simulationDebuggerPanel"
-                            parent: window.codeEditorExpanded
-                                    ? settingsPanel
-                                    : simulationDebuggerPanelHost
-                            anchors.fill: parent
-                            z: window.codeEditorExpanded ? 10 : 0
-                            visible: toolTabs.currentIndex === 1
-                            expanded: window.codeEditorExpanded
-                            viewer: window.viewer
-                            onExpansionRequested: function(expanded) {
-                                window.codeEditorExpanded = expanded
-                                if (!expanded) {
-                                    Qt.callLater(function() {
-                                        settingsScroll.contentItem.contentY =
-                                            Math.max(
-                                                0,
-                                                simulationDebuggerPanelHost.y
-                                                - toolTabs.height - 18)
-                                    })
-                                }
-                            }
-                        }
-                    }
-
-                    Item {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 16
+                        text: window.controller.autoDetectedPacksDirectory
+                        color: AppTheme.textMuted
+                        elide: Text.ElideMiddle
+                        font.family: "monospace"
+                        font.pixelSize: 9
                     }
                 }
+
+                ThemedButton {
+                    objectName: "applyAutoPacksButton"
+                    text: qsTr("Apply")
+                    enabled: !window.controller.running
+                             && !window.controller.extractingReplayInputs
+                    onClicked:
+                        window.controller.applyAutoDetectedPacksDirectory()
+                }
             }
+        }
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 8
+
+            TextField {
+                Layout.fillWidth: true
+                text: window.controller.packsDirectory
+                enabled: !window.controller.running
+                         && !window.controller.extractingReplayInputs
+                placeholderText: qsTr("Select installed Packs directory")
+                selectByMouse: true
+                onTextEdited:
+                    window.controller.packsDirectory = text
+            }
+
+            ThemedButton {
+                text: qsTr("Browse")
+                enabled: !window.controller.running
+                         && !window.controller.extractingReplayInputs
+                onClicked:
+                    window.controller.browseForPacksDirectory()
+            }
+        }
+
+    }
+    }
+
+    Connections {
+        target: window.controller
+        function onAutoDetectedPacksDirectoryChanged() {
+            if (window.controller.autoDetectedPacksDirectory.length > 0
+                    && !packsDialog.visible)
+                packsDialog.open()
         }
     }
 }

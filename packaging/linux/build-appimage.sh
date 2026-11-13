@@ -160,6 +160,23 @@ fi
 rm -rf "${appdir}"
 DESTDIR="${appdir}" cmake --install "${build_dir}"
 
+# Optional libraries a build ships beside the executable (colon-separated
+# paths), such as an optional render module; plain builds have none.
+# linuxdeploy bundles what they need in turn.
+extra_deploy_args=()
+if [[ -n "${FOREVERTAS_EXTRA_LIBRARIES:-}" ]]; then
+    IFS=':' read -r -a extra_libraries <<<"${FOREVERTAS_EXTRA_LIBRARIES}"
+    for extra_library in "${extra_libraries[@]}"; do
+        if [[ ! -f "${extra_library}" ]]; then
+            echo "Extra library not found: ${extra_library}" >&2
+            exit 1
+        fi
+        extra_target="${appdir}/usr/lib/$(basename "${extra_library}")"
+        install -Dm755 "${extra_library}" "${extra_target}"
+        extra_deploy_args+=(--library "${extra_target}")
+    done
+fi
+
 desktop-file-validate \
     "${appdir}/usr/share/applications/dev.skycrafter.forevertas.desktop"
 appstreamcli validate --no-net \
@@ -359,7 +376,7 @@ if grep -q 'FOREVERTAS_ENABLE_VULKAN:BOOL=ON' "${build_dir}/CMakeCache.txt"; the
 fi
 
 "${linuxdeploy}" "${vulkan_deploy_args[@]}" "${hip_deploy_args[@]}" \
-    "${openssl_deploy_args[@]}" \
+    "${openssl_deploy_args[@]}" "${extra_deploy_args[@]}" \
     --appdir "${appdir}" \
     --desktop-file "${appdir}/usr/share/applications/dev.skycrafter.forevertas.desktop" \
     --icon-file "${appdir}/usr/share/icons/hicolor/256x256/apps/dev.skycrafter.forevertas.png" \

@@ -345,6 +345,71 @@ bool TestTargetVisibilityPersistence() {
                  "draw-through target rendering was not persisted");
 }
 
+// Windows chained in one color change together, as in TICK: a window that
+// joins takes the chain's window; Search end and Preview extent share only
+// the end; another color or an unlinked window stays as it is.
+bool TestWindowChains() {
+    QSettings().clear();
+    forevertas::app::SearchController controller;
+    controller.setEvaluationTargetId(QStringLiteral("velocity"));
+    controller.addModifierPass(QStringLiteral("input-deletion"));
+    const auto pass = [&](int index, const char *key) {
+        return controller.modifierPasses().value(index).toMap()
+                .value(QStringLiteral("settings")).toMap()
+                .value(QString::fromLatin1(key)).toString();
+    };
+    const auto target = [&](const char *key) {
+        return controller.evaluationTargetSettings()
+                .value(QString::fromLatin1(key)).toString();
+    };
+    bool okay = Check(!controller.windowChain(QStringLiteral("pass:0"))
+                               .value(QStringLiteral("linked")).toBool() &&
+                              controller.windowChain(QStringLiteral("pass:0"))
+                                      .value(QStringLiteral("color")) ==
+                                      QStringLiteral("white"),
+                      "a new window was already chained");
+    controller.setWindowChain(QStringLiteral("pass:0"), QStringLiteral("orange"), true);
+    controller.setModifierPassSetting(0, QStringLiteral("minTimeMs"), QStringLiteral("1500"));
+    controller.setModifierPassSetting(0, QStringLiteral("maxTimeMs"), QStringLiteral("3000"));
+    controller.setWindowChain(QStringLiteral("target"), QStringLiteral("orange"), true);
+    okay &= Check(target("minTimeMs") == QStringLiteral("1500") &&
+                          target("maxTimeMs") == QStringLiteral("3000"),
+                  "a window joining a chain did not take its window");
+    controller.setEvaluationTargetSetting(QStringLiteral("maxTimeMs"), QStringLiteral("4000"));
+    okay &= Check(pass(0, "maxTimeMs") == QStringLiteral("4000"),
+                  "a chained window did not follow an edit");
+    controller.setWindowChain(QStringLiteral("searchEnd"), QStringLiteral("orange"), true);
+    okay &= Check(controller.simulationHorizonMs() == QStringLiteral("4000"),
+                  "Search end did not take the chain's end");
+    controller.setSimulationHorizonMs(QStringLiteral("5000"));
+    okay &= Check(pass(0, "maxTimeMs") == QStringLiteral("5000") &&
+                          target("maxTimeMs") == QStringLiteral("5000") &&
+                          pass(0, "minTimeMs") == QStringLiteral("1500"),
+                  "Search end did not move only the chain's end");
+    controller.setWindowChain(QStringLiteral("pass:1"), QStringLiteral("lime"), true);
+    const QString separate = pass(1, "minTimeMs");
+    controller.setEvaluationTargetSetting(QStringLiteral("maxTimeMode"), QStringLiteral("horizon"));
+    okay &= Check(pass(0, "maxTimeMode") == QStringLiteral("horizon") &&
+                          pass(1, "minTimeMs") == separate &&
+                          pass(1, "maxTimeMode") != QStringLiteral("horizon"),
+                  "the End mode did not follow its chain only");
+    controller.setWindowChain(QStringLiteral("pass:0"), QStringLiteral("orange"), false);
+    controller.setEvaluationTargetSetting(QStringLiteral("minTimeMs"), QStringLiteral("2000"));
+    okay &= Check(pass(0, "minTimeMs") == QStringLiteral("1500") &&
+                          controller.windowChain(QStringLiteral("pass:0"))
+                                  .value(QStringLiteral("color")) ==
+                                  QStringLiteral("orange"),
+                  "an unlinked window followed its old chain or lost its color");
+    // Chains survive a restart.
+    forevertas::app::SearchController reloaded;
+    okay &= Check(reloaded.windowChain(QStringLiteral("pass:1"))
+                          .value(QStringLiteral("color")) == QStringLiteral("lime") &&
+                          reloaded.windowChain(QStringLiteral("target"))
+                                  .value(QStringLiteral("linked")).toBool(),
+                  "window chains were not saved");
+    return okay;
+}
+
 bool TestUntilHorizonMode() {
     QSettings().clear();
     forevertas::app::SearchConfigurationModel configuration;
@@ -1403,7 +1468,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
             "auto-promote search mode was unexpectedly enabled by default");
     okay &= Check(controller.modifierOptions().size() == 5,
                   "required modifier options were not exposed");
-    okay &= Check(controller.evaluationTargetOptions().size() == 10 &&
+    okay &= Check(controller.evaluationTargetOptions().size() == 11 &&
                           HasOption(controller.evaluationTargetOptions(),
                                     QStringLiteral("time"),
                                     QStringLiteral("TimeEvaluationSettings.qml")),
@@ -1740,10 +1805,6 @@ bool TestPersistence(const QString &packsDirectory,
     QSettings().clear();
     {
         SearchController controller;
-        if (!Check(!controller.darkMode(),
-                   "light appearance was not the default theme")) {
-            return false;
-        }
         SetValidPaths(controller, packsDirectory, replayPath);
         controller.setModifierPassSetting(
                 0, QStringLiteral("seed"), QStringLiteral("321"));
@@ -1759,7 +1820,7 @@ bool TestPersistence(const QString &packsDirectory,
         controller.setVulkanCalibrationEnabled(false);
         controller.setCudaCalibrationEnabled(true);
         controller.setCudaSessionSpecializationEnabled(false);
-        controller.setDarkMode(true);
+        controller.setUiSetting(QStringLiteral("zoom"), 1.25);
         controller.setViewerVisible(false);
         controller.setSearchAlgorithmSetting(
                 QStringLiteral("autoPromoteBest"),
@@ -1807,17 +1868,9 @@ bool TestPersistence(const QString &packsDirectory,
                   "CUDA calibration mode was not persisted");
     okay &= Check(!restored.cudaSessionSpecializationEnabled(),
                   "CUDA fast mode selection was not persisted");
-    okay &= Check(restored.darkMode(),
-                  "dark appearance mode was not persisted");
-    QSignalSpy darkModeSpy(&restored, &SearchController::darkModeChanged);
-    restored.setDarkMode(false);
-    restored.setDarkMode(false);
-    okay &= Check(!restored.darkMode() && darkModeSpy.count() == 1 &&
-                          !QSettings()
-                                   .value(QStringLiteral(
-                                           "appearance/darkMode"))
-                                   .toBool(),
-                  "dark appearance mode did not update atomically");
+    okay &= Check(restored.uiSetting(QStringLiteral("zoom"), 1.0).toDouble() == 1.25 &&
+                          restored.uiSetting(QStringLiteral("missing"), 7).toInt() == 7,
+                  "UI settings were not persisted");
     okay &= Check(restored.modifierPasses().size() == 2,
                   "modifier pass count was not persisted");
     okay &= Check(PassId(restored, 0) == QStringLiteral("input-deletion") &&
@@ -2995,6 +3048,7 @@ int main(int argc, char **argv) {
             TestAutomaticSeedRandomization() &&
             TestTargetVisibilityPersistence() &&
             TestUntilHorizonMode() &&
+            TestWindowChains() &&
             TestDisabledModifierPasses() &&
             TestExplicitHorizonExtension() &&
             TestAbsoluteTargetPlacement() &&

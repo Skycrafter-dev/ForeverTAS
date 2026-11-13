@@ -572,6 +572,118 @@ bool TestEvaluationTargets() {
     }
 
     {
+        // Fastest entry: the speed at the interpolated entry, and only a
+        // car seen entering counts.
+        OptionSettings settings =
+                forevertas::FindEvaluationTarget(
+                        forevertas::kVolumeEntryEvaluationId)->defaultSettings;
+        settings["sizeX"] = "2";
+        settings["sizeY"] = "2";
+        settings["sizeZ"] = "2";
+        settings["measure"] = "speed";
+        auto evaluator = Evaluator(
+                forevertas::kVolumeEntryEvaluationId, &settings);
+        PhysicsSandboxStateView previous;
+        previous.timeMs = 100u;
+        previous.car.position = {-10.0f, 0.0f, 0.0f};
+        previous.car.linearSpeed = {10.0f, 0.0f, 0.0f};
+        PhysicsSandboxStateView current = previous;
+        current.timeMs = 110u;
+        current.car.position = {0.0f, 0.0f, 0.0f};
+        current.car.linearSpeed = {20.0f, 0.0f, 0.0f};
+        auto session = evaluator->CreateSession();
+        const auto sample = session->Observe(previous, current);
+        okay &= Check(sample && std::abs(sample->score - 19.0) < 1e-6 &&
+                              std::abs(sample->timeMs - 109.0) < 1e-9,
+                      "volume entry speed was incorrect");
+        auto restored = evaluator->CreateSession();
+        okay &= Check(!restored->Observe(std::nullopt, current),
+                      "a car already inside counted as a fast entry");
+        okay &= Check(!restored->Observe(current, current),
+                      "a car staying inside counted as a fast entry");
+        if (sample) {
+            forevertas::EvaluationSample slower = *sample;
+            slower.score = 15.0;
+            okay &= Check(evaluator->IsBetter(*sample, slower) &&
+                                  !evaluator->LatestImprovingTimeMs(*sample),
+                          "a faster entry did not win");
+        }
+
+        OptionSettings custom =
+                forevertas::FindEvaluationTarget(
+                        forevertas::kCustomVolumeEntryEvaluationId)
+                        ->defaultSettings;
+        custom["measure"] = "speed";
+        auto customEvaluator = Evaluator(
+                forevertas::kCustomVolumeEntryEvaluationId, &custom);
+        PhysicsSandboxStateView inside;
+        inside.timeMs = 100u;
+        inside.car.position = {0.0f, 1.0f, 0.0f};
+        auto customSession = customEvaluator->CreateSession();
+        okay &= Check(!customSession->Observe(std::nullopt, inside),
+                      "a car already inside a custom volume counted as an "
+                      "entry");
+    }
+
+    {
+        // Velocity towards a point: the direction follows the car.
+        OptionSettings settings =
+                forevertas::FindEvaluationTarget(
+                        forevertas::kVelocityEvaluationId)->defaultSettings;
+        settings["mode"] = "projected";
+        settings["directionMode"] = "point";
+        settings["x"] = "10";
+        settings["y"] = "0";
+        settings["z"] = "10";
+        auto evaluator = Evaluator(
+                forevertas::kVelocityEvaluationId, &settings);
+        auto session = evaluator->CreateSession();
+        PhysicsSandboxStateView state;
+        state.timeMs = 1000u;
+        state.car.position = {10.0f, 0.0f, 0.0f};
+        state.car.linearSpeed = {6.0f, 0.0f, 8.0f};
+        const auto sample = session->Observe(std::nullopt, state);
+        okay &= Check(sample && std::abs(sample->score - 8.0) < 1e-6,
+                      "velocity towards a point was incorrect");
+    }
+
+    {
+        // Pose axis weights: 0 ignores an axis; all at 100 is the plain
+        // distance and angle.
+        OptionSettings settings =
+                forevertas::FindEvaluationTarget(
+                        forevertas::kPoseTargetEvaluationId)->defaultSettings;
+        settings["rotationWeightPercent"] = "50";
+        PhysicsSandboxStateView state;
+        state.timeMs = 1000u;
+        state.car.position = {3.0f, 4.0f, 0.0f};
+        // 20 degrees of yaw.
+        state.car.rotationY = 0.17364818f;
+        state.car.rotationW = 0.98480775f;
+        const auto score = [&](const OptionSettings &values) {
+            auto evaluator = Evaluator(
+                    forevertas::kPoseTargetEvaluationId, &values);
+            const auto sample =
+                    evaluator->CreateSession()->Observe(std::nullopt, state);
+            return sample ? sample->score : -1.0;
+        };
+        const double yaw = 20.0 * 3.14159265358979323846 / 180.0;
+        okay &= Check(std::abs(score(settings) - (0.5 * 5.0 + 0.5 * yaw)) < 1e-5,
+                      "default pose weights changed the pose error");
+        OptionSettings weighted = settings;
+        weighted["weightX"] = "0";
+        weighted["weightYaw"] = "0";
+        okay &= Check(std::abs(score(weighted) - 0.5 * 4.0) < 1e-5,
+                      "pose axis weights were not applied");
+        weighted["weightRoll"] = "101";
+        okay &= Check(forevertas::FindEvaluationTarget(
+                              forevertas::kPoseTargetEvaluationId)
+                              ->validateSettings(weighted, 10u)
+                              .has_value(),
+                      "a pose axis weight above 100 was accepted");
+    }
+
+    {
         OptionSettings settings =
                 forevertas::FindEvaluationTarget(
                         forevertas::kCustomVolumeEntryEvaluationId)
@@ -1725,7 +1837,7 @@ bool TestRegistries() {
                           tree->settingsComponent ==
                                   "TreeSearchSettings.qml",
                   "tree search registration is incomplete");
-    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 10u &&
+    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 11u &&
                           forevertas::FindEvaluationTarget(forevertas::kTimeEvaluationId) != nullptr,
                   "not all required evaluation targets are registered");
     return okay;

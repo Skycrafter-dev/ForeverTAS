@@ -299,8 +299,8 @@ public:
         return std::make_unique<CustomVolumeEntrySession>(*this);
     }
 
-    explicit CustomVolumeEntrySession(Prism prism)
-        : prism_(std::move(prism)) {}
+    CustomVolumeEntrySession(Prism prism, bool entrySpeed)
+        : prism_(std::move(prism)), entrySpeed_(entrySpeed) {}
     bool IsComplete() const override { return reported_; }
 
     std::optional<EvaluationSample> Observe(
@@ -312,7 +312,11 @@ public:
         if (reported_) return std::nullopt;
         const EvaluationVector3 currentPosition = PositionOf(current);
         if (!previous) {
-            if (!Contains(prism_, currentPosition)) return std::nullopt;
+            // Entry speed needs the car seen entering: one already inside
+            // when the window starts (a restored state) has not entered.
+            if (entrySpeed_ || !Contains(prism_, currentPosition)) {
+                return std::nullopt;
+            }
             reported_ = true;
             const double time = static_cast<double>(current.timeMs);
             return EvaluationSample{
@@ -330,6 +334,14 @@ public:
         const double time = static_cast<double>(previous->timeMs) +
                 *fraction * static_cast<double>(
                         current.timeMs - previous->timeMs);
+        if (entrySpeed_) {
+            const double speed =
+                    InterpolatedSpeed(*previous, current, *fraction);
+            return EvaluationSample{
+                    speed, time,
+                    MetricDescription("Custom volume entry speed", speed, "m/s",
+                                      time)};
+        }
         return EvaluationSample{
                 time,
                 time,
@@ -338,13 +350,14 @@ public:
 
 private:
     Prism prism_;
+    bool entrySpeed_ = false;
     bool reported_ = false;
 };
 
 class CustomVolumeEntryEvaluator final : public IterationEvaluator {
 public:
-    explicit CustomVolumeEntryEvaluator(Prism prism)
-        : prism_(std::move(prism)) {}
+    CustomVolumeEntryEvaluator(Prism prism, bool entrySpeed)
+        : prism_(std::move(prism)), entrySpeed_(entrySpeed) {}
 
     EvaluationPlan Plan(std::int64_t simulationHorizonMs,
                         std::int64_t earliestMutationTimeMs,
@@ -355,22 +368,26 @@ public:
 
     std::unique_ptr<IterationEvaluationSession> CreateSession()
             const override {
-        return std::make_unique<CustomVolumeEntrySession>(prism_);
+        return std::make_unique<CustomVolumeEntrySession>(prism_,
+                                                          entrySpeed_);
     }
 
     bool IsBetter(const EvaluationSample &iteration,
                   const EvaluationSample &incumbent) const override {
-        return iteration.score < incumbent.score;
+        return entrySpeed_ ? iteration.score > incumbent.score
+                           : iteration.score < incumbent.score;
     }
 
-    // Entry samples report their own entry time, so later attempts lose.
+    // Entry times: later attempts lose. Entry speeds: any entry may win.
     std::optional<double> LatestImprovingTimeMs(
             const EvaluationSample &incumbent) const override {
+        if (entrySpeed_) return std::nullopt;
         return incumbent.timeMs;
     }
 
 private:
     Prism prism_;
+    bool entrySpeed_ = false;
 };
 
 }  // namespace
@@ -381,7 +398,8 @@ OptionSettings DefaultCustomVolumeEntryOptionSettings() {
             {"originY", "0"},
             {"originZ", "0"},
             {"depth", "5"},
-            {"polygon", "-5,-5;5,-5;0,5"}};
+            {"polygon", "-5,-5;5,-5;0,5"},
+            {"measure", "time"}};
 }
 
 std::optional<std::string> ValidateCustomVolumeEntryOptionSettings(
@@ -396,6 +414,10 @@ std::optional<std::string> ValidateCustomVolumeEntryOptionSettings(
         return "custom volume requires a simple polygon, a valid plane, "
                "finite origin, and positive extrusion depth";
     }
+    if (const std::string &measure = settings.at("measure");
+        measure != "time" && measure != "speed") {
+        return "custom volume entry measure must be time or speed";
+    }
     return std::nullopt;
 }
 
@@ -407,7 +429,7 @@ std::unique_ptr<IterationEvaluator> CreateCustomVolumeEntryEvaluator(
         throw std::invalid_argument(*error);
     }
     return std::make_unique<CustomVolumeEntryEvaluator>(
-            *ParsePrism(settings));
+            *ParsePrism(settings), settings.at("measure") == "speed");
 }
 
 forevervalidator::experimental::PhysicsSandboxCudaCustomVolumeEntryEvaluator

@@ -42,7 +42,7 @@ ComboBox {
 
         required property int index
 
-        width: control.popup.width - 2
+        width: control.popup.availableWidth
         height: 36
         leftPadding: 11
         rightPadding: 11
@@ -108,7 +108,7 @@ ComboBox {
     }
 
     background: Rectangle {
-        radius: 7
+        radius: 7 * ThemeControls.AppTheme.cornerScale
         color: control.effectiveBackgroundColor
         border.width: control.popup.visible || control.activeFocus ? 2 : 1
         border.color: control.effectiveBorderColor
@@ -134,7 +134,7 @@ ComboBox {
         bottomMargin: 8
         leftMargin: 8
         rightMargin: 8
-        padding: 1
+        padding: 4
 
         contentItem: ListView {
             objectName: control.objectName.length > 0
@@ -151,11 +151,10 @@ ComboBox {
             }
         }
 
-        background: Rectangle {
-            color: ThemeControls.AppTheme.surface
-            border.width: 1
-            border.color: ThemeControls.AppTheme.borderStrong
-            radius: 6
+        background: ThemeControls.GlassPopupBackground {
+            radius: 10 * ThemeControls.AppTheme.cornerScale
+            shadowRadius: 18
+            shadowOffset: 8
         }
     }
 }
