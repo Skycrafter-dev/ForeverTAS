@@ -131,7 +131,8 @@ void ReportProgress(const SearchRunControl *control,
     }
 }
 
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+        FOREVERVALIDATOR_HAS_TWIN
 void ReportCudaBatchSize(const SearchRunControl *control,
                          std::uint32_t batchSize) {
     if (control != nullptr && control->cudaBatchSizeChanged) {
@@ -240,6 +241,7 @@ void ReportCudaBatchProfile(
 
 CudaCalibrationDeviceLimits QueryGpuCalibrationDeviceLimits(
         forevervalidator::SimulationBackend backend) {
+    static_cast<void>(backend);   // (a build without CUDA or HIP: the twin's CPU threads only)
 #if FOREVERVALIDATOR_HAS_HIP
     if (backend == forevervalidator::SimulationBackend::Hip) {
         return QueryHipCalibrationDeviceLimits();
@@ -372,11 +374,14 @@ void ReportCudaCalibrationSelection(
         const CudaBatchCalibrator &calibrator) {
     std::clog << "forevertas_cuda_calibration_selected"
               << " candidates="
-              << calibrator.BestBatchSize()
+              << calibrator.CurrentBatchSize()
+              << (calibrator.Confirming() ? " confirming=1" : "")
               << " sustained_iterations_per_second="
               << calibrator.BestThroughput()
-              << " reliable_candidates="
+              << " measured_sizes="
               << calibrator.ReliableMeasurementCount()
+              << " calibration_seconds="
+              << calibrator.SpentSeconds()
               << '\n'
               << std::flush;
 }
@@ -515,7 +520,8 @@ void ReportLive(
             std::nullopt});
 }
 
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+        FOREVERVALIDATOR_HAS_TWIN
 std::string CudaEvaluationDescription(
         const forevervalidator::experimental::
                 PhysicsSandboxCudaEvaluator &evaluator,
@@ -593,7 +599,7 @@ std::string CudaEvaluationDescription(
                     }
                     // 1e12 + 1e6 per checkpoint still before it + metres.
                     return MetricDescription(
-                            ("Distance to " + target).c_str(),
+                            ((configured.aroundWalls.empty() ? "Distance to " : "Distance around walls to ") + target).c_str(),
                             std::fmod(batch.bestScore - 1e12, 1e6), "m",
                             batch.bestTimeMs);
                 } else if constexpr (std::is_same_v<
@@ -624,6 +630,10 @@ std::string CudaEvaluationDescription(
                                     << batch.bestMetricValues[i];
                     }
                     return description.str();
+                } else if constexpr (std::is_same_v<
+                                             T,
+                                             PhysicsSandboxCudaConditionTimeEvaluator>) {
+                    return "Conditions first met at " + FormatRaceTimeMilliseconds(batch.bestTimeMs);
                 } else {
                     return "Precise finish time: " +
                             FormatHumanDurationNanoseconds(
@@ -847,11 +857,13 @@ SearchResult RunGpuBasicBruteForce(
     const auto queryLimits = [&]() {
         return QueryGpuCalibrationDeviceLimits(CandidateBackend(context));
     };
-    const auto initialLimits = queryLimits();
-    const auto headroom = std::max<std::uint64_t>(512ull * 1024 * 1024,
-            initialLimits.totalMemoryBytes / 100 * 15);
-    if (initialLimits.freeMemoryBytes <= headroom)
-        throw std::runtime_error("GPU search rejected before probe: insufficient memory headroom; reduce GPU memory use or choose Optimized CPU");
+    if (context.approximateCpuThreads == 0u) {
+        const auto initialLimits = queryLimits();
+        const auto headroom = std::max<std::uint64_t>(512ull * 1024 * 1024,
+                initialLimits.totalMemoryBytes / 100 * 15);
+        if (initialLimits.freeMemoryBytes <= headroom)
+            throw std::runtime_error("GPU search rejected before probe: insufficient memory headroom; reduce GPU memory use or choose Optimized CPU");
+    }
     PhysicsSandboxCudaSearchConfiguration configuration;
     configuration.maximumBatchSize = initialBatchSize;
     configuration.earliestMutationTimeMs = earliestMutationTimeMs;
@@ -923,9 +935,11 @@ SearchResult RunGpuBasicBruteForce(
         }
 #if FOREVERVALIDATOR_HAS_TWIN
         PhysicsSandboxTwinSearchOptions twin;
-        twin.gpu = true;
+        twin.gpu = context.approximateCpuThreads == 0u;
         twin.verifyWinners = false;
-        twin.threads = std::max(1u, std::thread::hardware_concurrency() / 2u);
+        twin.threads = context.approximateCpuThreads != 0u
+                ? context.approximateCpuThreads
+                : std::max(1u, std::thread::hardware_concurrency() / 2u);
         configuration.twin = twin;
 #endif
         configuration.maximumBatchSize = fixedBatchSize;
@@ -1218,12 +1232,27 @@ SearchResult RunGpuBasicBruteForce(
             baseline,
             timelineTickCount,
             std::chrono::steady_clock::now() - baselineStarted);
+    const auto baselineElapsed = std::chrono::steady_clock::now() - baselineStarted;
     calibrationSafety.Observe(CudaCalibrationProfile(baseline, sessionCapacity));
+    if (calibrator) {
+        // From the device's resident threads (one wave), the baseline's single candidate as the latency.
+        const CudaCalibrationBatchProfile profile = CudaCalibrationProfile(baseline, sessionCapacity);
+        const std::uint64_t resident = static_cast<std::uint64_t>(profile.simulationActiveBlocksPerMultiprocessor) *
+                profile.simulationThreadsPerBlock * queryLimits().multiprocessorCount;
+        std::uint32_t start = 1024u;
+        while (start < 65536u && start < resident) start *= 2u;
+        if (resident == 0u) start = 4096u;
+        CudaBatchCalibrator::Settings settings;
+        settings.startBatchSize = start;
+        settings.latencySeconds = std::chrono::duration<double>(baselineElapsed).count();
+        calibrator.emplace(settings);
+    }
     if (baseline.cancelled) {
         throw SearchCancelled();
     }
-    if (!calibrator && !context.approximatePhysics &&
-        baseline.metrics.reservationBytesPerCandidate == 0 && context.cudaBatchSize > 1u &&
+    // (calibration too: it starts at the device's resident threads, not at one candidate)
+    if (!context.approximatePhysics &&
+        baseline.metrics.reservationBytesPerCandidate == 0 && (calibrator || context.cudaBatchSize > 1u) &&
         (context.control == nullptr || !context.control->iterationLimit ||
          *context.control->iterationLimit > 1u)) {
         // A second bounded measurement separates fixed scene storage from
@@ -1260,6 +1289,7 @@ SearchResult RunGpuBasicBruteForce(
     }
 
     std::uint64_t iterationIndex = 0u;
+    bool sessionChanged = true;   // the next batch is the first since the session was made or grown
     while (!StopRequested(context.control) &&
            !IterationLimitReached(context.control, iterations)) {
         CheckCancellation(context.control);
@@ -1348,6 +1378,7 @@ SearchResult RunGpuBasicBruteForce(
                 continue;
             }
             sessionCapacity = reserved.Value();
+            sessionChanged = true;
         }
         if (context.control != nullptr &&
             context.control->iterationLimit) {
@@ -1458,8 +1489,22 @@ SearchResult RunGpuBasicBruteForce(
                                   std::chrono::duration<double, std::milli>(
                                           batch.metrics.kernelMilliseconds))
                         : batchElapsed;
+                // a new best's state capture runs one candidate again: not the batch size's cost
+                const auto capture = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                        std::chrono::duration<double, std::milli>(
+                                std::isfinite(batch.metrics.winnerStateCaptureKernelMilliseconds)
+                                        ? batch.metrics.winnerStateCaptureKernelMilliseconds
+                                        : 0.0));
                 calibrator->Observe(
-                        batch.candidateCount, calibrationElapsed);
+                        batch.candidateCount,
+                        capture < calibrationElapsed ? calibrationElapsed - capture : calibrationElapsed,
+                        batch.metrics.aroundWallsReruns != 0u ? CudaBatchCalibrator::Disturbance::Certain
+                        : sessionChanged                     ? CudaBatchCalibrator::Disturbance::Possible
+                                                             : CudaBatchCalibrator::Disturbance::None);
+                if (calibrator->Confirming()) {   // chosen: the search proper from here
+                    ReportCudaCalibrationSelection(*calibrator);
+                    ReportProgress(context.control, SearchProgressStage::Mutations, iterations);
+                }
             }
             if (calibrator->Complete() &&
                 !calibrator->HasReliableMeasurement()) {
@@ -1477,6 +1522,7 @@ SearchResult RunGpuBasicBruteForce(
                         iterations);
             }
         }
+        sessionChanged = false;
         if (promote) {
             session.reset();
             Require(context.sandbox.RestoreState(branch),
@@ -1487,7 +1533,7 @@ SearchResult RunGpuBasicBruteForce(
                     calibrator
                     ? (calibrator->Complete()
                                ? calibrator->BestBatchSize()
-                               : calibrationInitialBatchSize)
+                               : calibrator->CurrentBatchSize())
                     : sessionCapacity;
             if (!context.approximatePhysics) {
                 const CudaCalibrationSafetyDecision decision =
@@ -1529,6 +1575,7 @@ SearchResult RunGpuBasicBruteForce(
                     CreatePhysicsSandboxCudaSearchSession(
                             context.sandbox, configuration),
                     "recreating promoted GPU search session"));
+            sessionChanged = true;
             sessionCapacity = recreatedCapacity;
         }
         const bool rebuilt = adoptRebuilt();
@@ -1657,7 +1704,7 @@ BasicBruteForceSearch::BasicBruteForceSearch(TreeSearchSettings gpuTreeSettings)
 SearchResult BasicBruteForceSearch::Run(
         const SearchExecutionContext &context) const {
     const auto started = std::chrono::steady_clock::now();
-    if (gpuTreeSettings_ &&
+    if (gpuTreeSettings_ && !context.approximatePhysics &&
         CandidateBackend(context) != forevervalidator::SimulationBackend::Cuda &&
         CandidateBackend(context) != forevervalidator::SimulationBackend::Hip) {
         throw std::invalid_argument("GPU segment search requires CUDA or HIP");
@@ -1729,8 +1776,12 @@ SearchResult BasicBruteForceSearch::Run(
     const PhysicsSandboxState branch = Require(
             context.sandbox.CaptureState(), "capturing branch state");
 
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
-    if (IsGpuSimulationBackend(CandidateBackend(context)) &&
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+        FOREVERVALIDATOR_HAS_TWIN
+    // Approximate searches run as a session too (the twin's), on the GPU or
+    // on CPU threads.
+    if ((IsGpuSimulationBackend(CandidateBackend(context)) ||
+         context.approximatePhysics) &&
         context.cudaEvaluator != nullptr) {
         return RunGpuBasicBruteForce(
                 context,

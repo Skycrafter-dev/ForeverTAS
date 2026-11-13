@@ -2027,172 +2027,92 @@ bool TestRollingThroughput() {
 }
 
 bool TestCudaBatchCalibrationStrategy() {
-    const auto observe = [](
-                                 forevertas::CudaBatchCalibrator *calibrator,
-                                 double throughput) {
-        const std::uint32_t batchSize =
-                calibrator->CurrentBatchSize();
-        const auto elapsed =
-                std::chrono::duration_cast<
-                        std::chrono::steady_clock::duration>(
-                        std::chrono::duration<double>(
-                                static_cast<double>(batchSize) /
-                                throughput));
-        for (int sample = 0; sample < 7; ++sample) {
-            calibrator->Observe(batchSize, elapsed);
+    using Calibrator = forevertas::CudaBatchCalibrator;
+    // A device: a batch of n takes latency + n / rate, floored at one wave's latency.
+    struct Device {
+        double latency, rate;
+        std::uint32_t capacity;
+        double Seconds(std::uint32_t n) const {
+            return std::max(latency, static_cast<double>(n) / rate) + latency * 0.2;
         }
     };
-
-    const auto realisticThroughput = [](std::uint32_t batchSize) {
-        if (batchSize <= 7500u) {
-            constexpr double saturationScale = 1000.0;
-            constexpr double peakSize = 7500.0;
-            const double size = static_cast<double>(batchSize);
-            return 9100.0 *
-                    (size / (size + saturationScale)) /
-                    (peakSize / (peakSize + saturationScale));
-        }
-        const double distance = std::abs(
-                static_cast<double>(batchSize) - 7500.0);
-        return 9100.0 - distance * (950.0 / 5300.0);
-    };
-
-    const auto calibrate = [&observe](
-                                   const auto &throughputForSize,
-                                   std::uint32_t capacity) {
-        forevertas::CudaBatchCalibrator calibrator;
-        for (int measurement = 0;
-             measurement < 128 && !calibrator.Complete();
-             ++measurement) {
-            const std::uint32_t batchSize =
-                    calibrator.CurrentBatchSize();
-            if (batchSize > capacity) {
+    // Runs the search loop's calibration; the batches' total time and the pick's throughput.
+    const auto calibrate = [](const Device &device, Calibrator::Settings settings, double *spent) {
+        settings.latencySeconds = device.Seconds(1u);
+        Calibrator calibrator(settings);
+        *spent = 0.0;
+        for (int batch = 0; batch < 256 && !calibrator.Complete(); ++batch) {
+            const std::uint32_t n = calibrator.CurrentBatchSize();
+            if (n > device.capacity) {
                 calibrator.CapacityUnavailable();
-            } else {
-                observe(
-                        &calibrator,
-                        throughputForSize(batchSize));
+                continue;
             }
+            const double seconds = device.Seconds(n);
+            *spent += seconds;
+            calibrator.Observe(n, std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                          std::chrono::duration<double>(seconds)));
         }
         return calibrator;
     };
-
-    auto calibrator = calibrate(
-            realisticThroughput,
-            102400u);
-    const std::uint32_t calibratedSize =
-            calibrator.BestBatchSize();
-    bool okay = Check(
-            calibrator.Complete(),
-            "CUDA calibration did not converge");
-    okay &= Check(
-            calibratedSize >= 7000u &&
-                    calibratedSize <= 8000u,
-            "CUDA calibration missed the measured peak");
-    okay &= Check(
-            realisticThroughput(calibratedSize) >
-                    realisticThroughput(12800u),
-            "CUDA calibration retained the slower coarse batch");
-    okay &= Check(
-            calibrator.CurrentBatchSize() == calibratedSize,
-            "CUDA calibration did not restore its measured winner");
-
-    forevertas::CudaBatchCalibrator capacityLimited;
-    for (std::uint32_t batchSize = 1u;
-         batchSize <= 4096u;
-         batchSize *= 2u) {
-        observe(
-                &capacityLimited,
-                static_cast<double>(batchSize));
-    }
-    okay &= Check(
-            capacityLimited.CurrentBatchSize() == 8192u,
-            "CUDA calibration did not grow from the universal minimum");
-    capacityLimited.CapacityUnavailable();
-    okay &= Check(
-            capacityLimited.CurrentBatchSize() > 4096u &&
-                    capacityLimited.CurrentBatchSize() < 8192u,
-            "CUDA calibration discarded the allocation boundary");
-    for (int measurement = 0;
-         measurement < 64 && !capacityLimited.Complete();
-         ++measurement) {
-        observe(
-                &capacityLimited,
-                static_cast<double>(
-                        capacityLimited.CurrentBatchSize()));
-    }
-    okay &= Check(
-            capacityLimited.Complete() &&
-                    capacityLimited.BestBatchSize() > 4096u &&
-                    capacityLimited.BestBatchSize() < 8192u,
-            "CUDA calibration did not approach its measured capacity");
-
-    const auto slowlyIncreasing = [](std::uint32_t batchSize) {
-        return 1000.0 + std::log2(
-                                static_cast<double>(batchSize));
-    };
-    const auto boundaryMaximizer =
-            calibrate(slowlyIncreasing, 128u);
-    okay &= Check(
-            boundaryMaximizer.Complete() &&
-                    boundaryMaximizer.BestBatchSize() > 120u,
-            "CUDA calibration stopped on a throughput plateau instead "
-            "of maximizing the measured safe range");
-
-    forevertas::CudaBatchCalibrator isolatedFastPass;
-    const auto observeSamples = [](
-                                        forevertas::CudaBatchCalibrator
-                                                *candidate,
-                                        const std::vector<double>
-                                                &throughputs) {
-        const std::uint32_t size =
-                candidate->CurrentBatchSize();
-        for (double throughput : throughputs) {
-            const auto elapsed =
-                    std::chrono::duration_cast<
-                            std::chrono::steady_clock::duration>(
-                            std::chrono::duration<double>(
-                                    static_cast<double>(size) /
-                                    throughput));
-            candidate->Observe(size, elapsed);
+    // The best power of two the device holds (what tuning by hand finds).
+    const auto handTuned = [](const Device &device) {
+        double best = 0.0;
+        for (std::uint32_t n = 1u; n <= device.capacity; n *= 2u) {
+            best = std::max(best, n / device.Seconds(n));
         }
+        return best;
     };
-    observeSamples(
-            &isolatedFastPass,
-            {100.0, 100.0,
-             100.0, 100.0, 100.0, 100.0, 100.0});
-    observeSamples(
-            &isolatedFastPass,
-            {100.0, 100.0,
-             100.0, 100.0, 100.0, 100.0, 1000.0});
-    okay &= Check(
-            isolatedFastPass.BestBatchSize() == 1u,
-            "CUDA calibration selected an isolated fast pass");
+    bool okay = true;
+    const Device devices[] = {
+            {0.038, 105000.0, 65536u},   // short timeline (RTX 5060: 150 ticks)
+            {1.7, 6000.0, 65536u},       // long timeline (1700 ticks)
+            {0.3, 40000.0, 16384u},      // memory-bound
+            {0.01, 2000000.0, 1u << 22}, // tiny timeline, big device
+    };
+    for (const Device &device : devices) {
+        Calibrator::Settings settings;
+        settings.startBatchSize = 8192u;
+        double spent = 0.0;
+        const Calibrator calibrator = calibrate(device, settings, &spent);
+        const std::uint32_t picked = calibrator.CurrentBatchSize();
+        okay &= Check(calibrator.Complete(), "GPU calibration did not complete");
+        okay &= Check(picked <= device.capacity, "GPU calibration picked a batch the device cannot hold");
+        okay &= Check(picked / device.Seconds(picked) >= 0.9 * handTuned(device),
+                      "GPU calibration picked a batch under 90% of the best by hand");
+        okay &= Check(spent <= settings.budgetSeconds + device.Seconds(picked),
+                      "GPU calibration overran its time budget");
+    }
 
-    forevertas::CudaBatchCalibrator budgetLimited;
-    okay &= Check(
-            !budgetLimited.CompleteWithBestMeasurement(),
-            "CUDA calibration completed without a reliable measurement");
-    observe(&budgetLimited, 100.0);
-    observe(&budgetLimited, 200.0);
-    okay &= Check(
-            budgetLimited.CompleteWithBestMeasurement() &&
-                    budgetLimited.Complete() &&
-                    budgetLimited.BestBatchSize() == 2u &&
-                    budgetLimited.CurrentBatchSize() == 2u,
-            "CUDA calibration did not select its best measured batch "
-            "when the candidate budget was reached");
+    // Noise: one fast pass among short batches does not decide.
+    Calibrator noisy(Calibrator::Settings{1024u, 0.05, 10.0, 10.0});
+    const auto observeRate = [](Calibrator *c, double rate) {
+        const std::uint32_t n = c->CurrentBatchSize();
+        c->Observe(n, std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                              std::chrono::duration<double>(n / rate)));
+    };
+    for (double rate : {20000.0, 20000.0, 200000.0}) observeRate(&noisy, rate);   // 1024: median 20000
+    for (double rate : {21000.0, 21000.0, 21000.0}) observeRate(&noisy, rate);    // 2048: +5%
+    for (double rate : {21100.0, 21100.0, 21100.0}) observeRate(&noisy, rate);    // 4096: +0.5%: done
+    okay &= Check(noisy.Complete() && noisy.BestBatchSize() == 4096u,
+                  "GPU calibration followed an isolated fast pass");
 
-    forevertas::CudaBatchCalibrator unstable;
-    observeSamples(
-            &unstable,
-            {100.0, 100.0,
-             100.0, 1000.0, 100.0, 1000.0, 100.0,
-             1000.0, 100.0, 1000.0, 100.0});
-    okay &= Check(
-            unstable.Complete() &&
-                    !unstable.HasReliableMeasurement(),
-            "CUDA calibration accepted irrepeatable throughput");
+    // A disturbed short batch is measured again.
+    Calibrator disturbed(Calibrator::Settings{1024u, 0.05, 10.0, 10.0});
+    disturbed.Observe(1024u, std::chrono::milliseconds(500), Calibrator::Disturbance::Possible);
+    okay &= Check(!disturbed.HasReliableMeasurement(), "GPU calibration measured a disturbed batch");
+
+    // The candidate budget ends calibration with the best measurement, never without one.
+    Calibrator budget(Calibrator::Settings{1024u, 0.05, 10.0, 10.0});
+    okay &= Check(!budget.CompleteWithBestMeasurement(), "GPU calibration completed without a measurement");
+    for (int i = 0; i < 3; ++i) observeRate(&budget, 10000.0);
+    okay &= Check(budget.CompleteWithBestMeasurement() && budget.CurrentBatchSize() == 1024u,
+                  "GPU calibration did not keep its best measured batch");
+
+    // Nothing the device holds: halved until it does.
+    Calibrator small(Calibrator::Settings{4096u, 0.05, 10.0, 10.0});
+    small.CapacityUnavailable();
+    okay &= Check(!small.Complete() && small.CurrentBatchSize() == 2048u,
+                  "GPU calibration did not halve an unavailable first batch");
     return okay;
 }
 

@@ -17,7 +17,7 @@ option(FOREVERTAS_ENABLE_CUDA
 option(FOREVERTAS_ENABLE_HIP
     "Build ForeverTAS with the optional ForeverValidator HIP backend" OFF)
 option(FOREVERTAS_ENABLE_TWIN
-    "Build ForeverTAS with ForeverValidator's twin engine (Approximate physics on CUDA)" OFF)
+    "Build ForeverTAS with ForeverValidator's twin engine (Approximate physics: CPU threads, CUDA or HIP)" OFF)
 option(FOREVERTAS_QML_MODULE_EXTERNAL
     "Use the release's shared QML module instead of building it here" OFF)
 set(FOREVERTAS_COMMON_QML_DIR "" CACHE PATH
@@ -106,13 +106,16 @@ set(FOREVERVALIDATOR_ENABLE_HIP ${FOREVERTAS_ENABLE_HIP} CACHE BOOL
     "Enable the embedded ForeverValidator HIP backend" FORCE)
 set(FOREVERVALIDATOR_ENABLE_VULKAN ${FOREVERTAS_ENABLE_VULKAN} CACHE BOOL
     "Enable the embedded ForeverValidator Vulkan backend" FORCE)
-if(FOREVERTAS_ENABLE_TWIN AND NOT FOREVERTAS_ENABLE_CUDA)
-    message(FATAL_ERROR "FOREVERTAS_ENABLE_TWIN needs FOREVERTAS_ENABLE_CUDA (the twin searches on CUDA)")
-endif()
+# The twin runs on CPU threads in every build, and on the GPU with CUDA or HIP.
 set(FOREVERVALIDATOR_BUILD_TWIN ${FOREVERTAS_ENABLE_TWIN} CACHE BOOL
     "Build the embedded ForeverValidator twin engine" FORCE)
-set(FOREVERVALIDATOR_BUILD_TWIN_GPU ${FOREVERTAS_ENABLE_TWIN} CACHE BOOL
-    "Build the embedded ForeverValidator twin's CUDA engine" FORCE)
+if(FOREVERTAS_ENABLE_TWIN AND (FOREVERTAS_ENABLE_CUDA OR FOREVERTAS_ENABLE_HIP))
+    set(forevertas_twin_gpu ON)
+else()
+    set(forevertas_twin_gpu OFF)
+endif()
+set(FOREVERVALIDATOR_BUILD_TWIN_GPU ${forevertas_twin_gpu} CACHE BOOL
+    "Build the embedded ForeverValidator twin's GPU engine" FORCE)
 if(WIN32 AND FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "nvidia")
     set(CMAKE_HIP_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreaded
         -Xcompiler=-MT)
@@ -192,7 +195,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 798d7d4f1a9c95de85781be652a12dfd2906d518
+        GIT_TAG f83da1961653afd7bb9ac4589b4c02f955b920c2
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()

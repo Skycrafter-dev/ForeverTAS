@@ -5626,9 +5626,12 @@ ApplicationWindow {
 
                                     objectName: "physicsModeCombo"
                                     Layout.fillWidth: true
-                                    visible: window.controller.simulationBackendId
-                                             === "cuda"
-                                             && window.controller.approximatePhysicsAvailable
+                                    visible: (window.controller.simulationBackendId
+                                              === window.controller.approximatePhysicsBackendId
+                                              && window.controller.approximatePhysicsAvailable)
+                                             || (window.controller.simulationBackendId === "multi-threaded-cpu"
+                                                 && window.controller.approximatePhysicsCpuAvailable
+                                                 && Number(window.controller.cpuWorkerCount) >= 2)
                                     model: [
                                         { id: "exact", label: qsTr("Exact") },
                                         { id: "approximate", label: qsTr("Approximate") }
@@ -6149,14 +6152,6 @@ ApplicationWindow {
                                     enabled: window.controller.running
                                              && !window.controller.stopping
                                     onClicked: window.controller.stopSearch()
-                                }
-
-                                ThemedButton {
-                                    objectName: "abortSearchButton"
-                                    visible: window.controller.running && window.controller.stopping
-                                    text: window.controller.aborting ? qsTr("Aborting...") : qsTr("Abort")
-                                    enabled: !window.controller.aborting
-                                    onClicked: window.controller.abortSearch()
                                 }
                             }
 

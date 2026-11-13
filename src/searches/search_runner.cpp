@@ -30,6 +30,22 @@
 namespace forevertas {
 namespace {
 
+// Approximate physics on the multi-threaded CPU backend: every worker but one
+// runs the twin, the last rebuilds each new best on exact physics. 0 when the
+// twin runs on the GPU (or the search is exact).
+std::uint32_t ApproximateCpuThreads(const SearchRequest &request) {
+    return request.approximatePhysics &&
+                    request.backend == PhysicsBackend::MultiThreadedCpu &&
+                    request.parallelSampleCount >= 2u
+            ? request.parallelSampleCount - 1u
+            : 0u;
+}
+
+// The twin's batch on CPU threads: a quarter second's work or so.
+std::uint32_t ApproximateCpuBatchSize(std::uint32_t threads) {
+    return std::max(1024u, 512u * threads);
+}
+
 using forevervalidator::DiscriminatedResult;
 
 template<typename T, typename Error>
@@ -562,8 +578,10 @@ SearchResult RunLoadedSearch(
     std::vector<PhysicsSandboxCudaModifier> cudaModifiers;
     std::optional<PhysicsSandboxCudaEvaluator> cudaEvaluator;
     ReportProgress(control, SearchProgressStage::PreparingSearch, 0u, 0u);
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
-    if (IsGpuBackend(request.backend)) {
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+        FOREVERVALIDATOR_HAS_TWIN
+    // Approximate physics runs a session (the twin's) whatever the backend.
+    if (IsGpuBackend(request.backend) || request.approximatePhysics) {
         if (!searchRegistration.supportsGpuBackends) {
             throw std::invalid_argument(
                     "GPU backend does not support search algorithm: " +
@@ -585,9 +603,10 @@ SearchResult RunLoadedSearch(
             asyncImprovementSampler;
     std::uint64_t sampledImprovementCount = 0u;
     bool sampledBaseline = false;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+        FOREVERVALIDATOR_HAS_TWIN
     std::unique_ptr<OptimizedCpuWinnerWorker> cudaWinnerWorker;
-    if (IsGpuBackend(request.backend)) {
+    if (IsGpuBackend(request.backend) || request.approximatePhysics) {
         cudaWinnerWorker = std::make_unique<OptimizedCpuWinnerWorker>(
                 request, replay, identity);
     }
@@ -596,9 +615,10 @@ SearchResult RunLoadedSearch(
         control->sampleImprovementTimelines) {
         instrumentedControl = *control;
         const auto downstreamLiveChanged = control->liveChanged;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+        FOREVERVALIDATOR_HAS_TWIN
         const bool asynchronousCpuSampling =
-                IsGpuBackend(request.backend) &&
+                (IsGpuBackend(request.backend) || request.approximatePhysics) &&
                 static_cast<bool>(control->improvementTimelineSampled);
 #else
         constexpr bool asynchronousCpuSampling = false;
@@ -679,13 +699,17 @@ SearchResult RunLoadedSearch(
                     mutator,
                     *evaluator,
                     executionControl,
-                    request.parallelSampleCount,
-                    request.calibrateCudaParallelSampleCount,
+                    ApproximateCpuThreads(request) != 0u
+                            ? ApproximateCpuBatchSize(ApproximateCpuThreads(request))
+                            : request.parallelSampleCount,
+                    request.calibrateCudaParallelSampleCount &&
+                            ApproximateCpuThreads(request) == 0u,
                     PhysicsBackendId(request.backend) == "cuda" &&
                             request.useCudaSessionSpecialization,
                     cudaModifiers.empty() ? nullptr : &cudaModifiers,
                     cudaEvaluator ? &*cudaEvaluator : nullptr,
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+        FOREVERVALIDATOR_HAS_TWIN
                     cudaWinnerWorker
                             ? [worker = cudaWinnerWorker.get(), control](
                                       const std::vector<
@@ -716,7 +740,8 @@ SearchResult RunLoadedSearch(
                     request.simulationHorizonMs,
                     request.condition ? &*request.condition : nullptr,
                     searchStartedTimeSeconds,
-                    request.approximatePhysics
+                    request.approximatePhysics,
+                    ApproximateCpuThreads(request)
             });
             if (asyncImprovementSampler) {
                 const std::exception_ptr failure =
@@ -1573,7 +1598,8 @@ SearchResult RunSearch(const SearchRequest &request,
     SearchRequest executionRequest = request;
     executionRequest.modifiers = std::move(executionModifiers);
 
-    if (request.backend == PhysicsBackend::MultiThreadedCpu) {
+    if (request.backend == PhysicsBackend::MultiThreadedCpu &&
+        ApproximateCpuThreads(request) == 0u) {
         return RunMultiThreadedCpuSearch(
                 executionRequest,
                 *searchRegistration,

@@ -89,6 +89,11 @@ class SearchController final : public QObject {
                        setApproximatePhysics NOTIFY approximatePhysicsChanged)
     Q_PROPERTY(bool approximatePhysicsAvailable READ
                        approximatePhysicsAvailable CONSTANT)
+    Q_PROPERTY(QString approximatePhysicsBackendId READ
+                       approximatePhysicsBackendId CONSTANT)
+    // The twin on CPU threads (the multi-threaded CPU backend, two workers or more).
+    Q_PROPERTY(bool approximatePhysicsCpuAvailable READ
+                       approximatePhysicsCpuAvailable CONSTANT)
     Q_PROPERTY(bool cudaAvailable READ cudaAvailable CONSTANT)
     Q_PROPERTY(bool cudaFastModeAvailable READ cudaFastModeAvailable CONSTANT)
     Q_PROPERTY(QString cudaStatusText READ cudaStatusText CONSTANT)
@@ -136,7 +141,6 @@ class SearchController final : public QObject {
     Q_PROPERTY(bool canStart READ canStart NOTIFY canStartChanged)
     Q_PROPERTY(bool running READ running NOTIFY runningChanged)
     Q_PROPERTY(bool stopping READ stopping NOTIFY stoppingChanged)
-    Q_PROPERTY(bool aborting READ aborting NOTIFY stoppingChanged)
     Q_PROPERTY(bool progressIndeterminate READ progressIndeterminate NOTIFY
                        progressChanged)
     Q_PROPERTY(double progressValue READ progressValue NOTIFY progressChanged)
@@ -210,6 +214,8 @@ public:
     bool cudaSessionSpecializationEnabled() const;
     bool approximatePhysics() const;
     bool approximatePhysicsAvailable() const;
+    QString approximatePhysicsBackendId() const;
+    bool approximatePhysicsCpuAvailable() const;
     bool cudaAvailable() const;
     bool hipAvailable() const;
     bool vulkanAvailable() const;
@@ -244,7 +250,6 @@ public:
     QVariantMap baseEvaluationResult() const { return baseEvaluationResult_; }
     bool running() const;
     bool stopping() const;
-    bool aborting() const;
     bool progressIndeterminate() const;
     double progressValue() const;
     QString validationMessage() const;
@@ -343,7 +348,6 @@ public slots:
     Q_INVOKABLE void evaluateBase();
     Q_INVOKABLE void cancelBaseEvaluation();
     Q_INVOKABLE void stopSearch();
-    Q_INVOKABLE void abortSearch();
     Q_INVOKABLE void selectSession(int index);
     Q_INVOKABLE void selectCycle(int index);
     Q_INVOKABLE void changeCyclePage(bool older);

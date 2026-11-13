@@ -193,16 +193,26 @@ struct SearchExecutionContext {
     const ConditionProgram *condition = nullptr;
     double searchStartedTimeSeconds = 0.0;
     // Approximate physics: the sandbox is optimized CPU, the candidates run on
-    // the twin's CUDA engine and each new best is rebuilt on exact physics.
+    // the twin and each new best is rebuilt on exact physics. The twin runs on
+    // its GPU engine (CUDA, or HIP in builds without CUDA), or, with
+    // approximateCpuThreads, on that many CPU threads (the rebuild on one
+    // more: the multi-threaded CPU backend's last worker).
     bool approximatePhysics = false;
+    std::uint32_t approximateCpuThreads = 0u;
 };
 
 // The backend the search's candidates run on.
 inline forevervalidator::SimulationBackend CandidateBackend(
         const SearchExecutionContext &context) noexcept {
-    return context.approximatePhysics
-            ? forevervalidator::SimulationBackend::Cuda
-            : context.sandbox.Backend();
+#if FOREVERVALIDATOR_HAS_CUDA
+    constexpr auto twinBackend = forevervalidator::SimulationBackend::Cuda;
+#else
+    constexpr auto twinBackend = forevervalidator::SimulationBackend::Hip;
+#endif
+    if (!context.approximatePhysics) return context.sandbox.Backend();
+    return context.approximateCpuThreads != 0u
+            ? forevervalidator::SimulationBackend::OptimizedCpu
+            : twinBackend;
 }
 
 struct SearchResult {

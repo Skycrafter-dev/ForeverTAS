@@ -43,6 +43,10 @@ Get-ChildItem $DistDirectory -Filter "ForeverTAS-*-windows-*.zip*" |
     Remove-Item -Force
 
 $FlavorOptions = @()
+if ($env:FOREVERTAS_ENABLE_TWIN) {
+    # The twin engine (Approximate physics): CPU threads, and the GPU with CUDA or HIP.
+    $FlavorOptions += "-DFOREVERTAS_ENABLE_TWIN=$env:FOREVERTAS_ENABLE_TWIN"
+}
 if ($Flavor) {
     $FlavorOptions += "-DFOREVERTAS_DISTRIBUTION_FLAVOR=$Flavor"
     $FlavorOptions += "-DFOREVERTAS_ENABLE_VULKAN=ON"

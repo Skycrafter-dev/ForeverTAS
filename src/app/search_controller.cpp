@@ -37,6 +37,19 @@
 namespace forevertas::app {
 namespace {
 
+// Searches run deep with large frames (GPU search configurations are ~90 KB):
+// Windows gives a thread 1 MB, not enough; this is Linux's main stack and more.
+constexpr uint kSearchThreadStackBytes = 64u * 1024u * 1024u;
+
+// The backend Approximate physics runs on: the one the twin's GPU engine is built for.
+constexpr std::string_view ApproximatePhysicsBackendId() {
+#if FOREVERVALIDATOR_HAS_CUDA
+    return "cuda";
+#else
+    return "hip";
+#endif
+}
+
 constexpr char kPacksDirectoryKey[] = "paths/packsDirectory";
 constexpr char kReplayPathKey[] = "paths/replayPath";
 constexpr char kBaseInputScriptKey[] = "inputs/baseScript";
@@ -591,11 +604,27 @@ bool SearchController::approximatePhysics() const {
 }
 
 bool SearchController::approximatePhysicsAvailable() const {
+    // The twin's GPU engine is built for CUDA, or for HIP in builds without CUDA.
 #if FOREVERVALIDATOR_HAS_CUDA && FOREVERVALIDATOR_HAS_TWIN
     return cudaAvailable_;
+#elif FOREVERVALIDATOR_HAS_HIP && FOREVERVALIDATOR_HAS_TWIN
+    return hipAvailable_;
 #else
     return false;
 #endif
+}
+
+bool SearchController::approximatePhysicsCpuAvailable() const {
+#if FOREVERVALIDATOR_HAS_TWIN
+    return true;
+#else
+    return false;
+#endif
+}
+
+QString SearchController::approximatePhysicsBackendId() const {
+    const std::string_view id = ApproximatePhysicsBackendId();
+    return QString::fromLatin1(id.data(), static_cast<qsizetype>(id.size()));
 }
 
 bool SearchController::cudaAvailable() const {
@@ -716,7 +745,7 @@ void SearchController::evaluateBase() {
     const auto generation = baselineEvaluationGeneration_;
     baseEvaluationResult_.clear();
     baseEvaluationText_ = QStringLiteral("Evaluating base inputs...");
-    auto thread = QThread::create([this, request = *validation.request, cancelled, generation] {
+    QThread *const thread = QThread::create([this, request = *validation.request, cancelled, generation] {
         QVariantMap data{{QStringLiteral("backend"), QStringLiteral("optimized-cpu")},
                          {QStringLiteral("targetId"), QString::fromStdString(request.evaluationTarget.id)},
                          {QStringLiteral("horizonMs"), request.simulationHorizonMs}};
@@ -787,6 +816,7 @@ void SearchController::evaluateBase() {
     emit baseEvaluationChanged();
     emit canStartChanged();
     emit replayInputStateChanged();
+    thread->setStackSize(kSearchThreadStackBytes);
     thread->start();
 }
 
@@ -796,10 +826,6 @@ bool SearchController::running() const {
 
 bool SearchController::stopping() const {
     return stopping_;
-}
-
-bool SearchController::aborting() const {
-    return cancellationRequested_ && cancellationRequested_->load(std::memory_order_relaxed);
 }
 
 bool SearchController::progressIndeterminate() const {
@@ -1726,6 +1752,7 @@ void SearchController::startSearch() {
     }
     restartPolicy.randomizeSeeds = randomizeSeedsOnStart_;
     QThread *const thread = new QThread(this);
+    thread->setStackSize(kSearchThreadStackBytes);
     SearchWorker *const worker = new SearchWorker(
             *validation.request,
             ++searchSerial_,
@@ -1839,8 +1866,19 @@ void SearchController::startSearch() {
                 setStatusText(QStringLiteral("Search complete"));
                 emit searchCompleted(std::move(completion));
             });
+    connect(worker,
+            &SearchWorker::stopped,
+            this,
+            [this](SearchCompletionPtr completion) {
+                lastCompletion_ = completion;
+                setResultText(completion->summary);
+                setBestInputsText(completion->inputsText);
+                setProgress(false, progressValue_);
+                setStatusText(QStringLiteral("Search stopped"));
+                emit searchCompleted(std::move(completion));
+            });
     connect(worker, &SearchWorker::cancelled, this, [this]() {
-        setStatusText(QStringLiteral("Search aborted"));
+        setStatusText(QStringLiteral("Search stopped"));
         setProgress(false, progressValue_);
     });
     connect(worker,
@@ -1877,30 +1915,18 @@ void SearchController::startSearch() {
     thread->start();
 }
 
+// Stop shuts the search down at once: the running batch is dropped, the best
+// found so far stays the result.
 void SearchController::stopSearch() {
-    if (!running_ || stopping_ || !stopRequested_) {
+    if (!running_ || stopping_ || !stopRequested_ || !cancellationRequested_) {
         return;
     }
     setStopping(true);
-    if (iterationPhase_ != nullptr &&
-        TryCancelBeforeSearchIteration(iterationPhase_) &&
-        cancellationRequested_ != nullptr) {
-        cancellationRequested_->store(true, std::memory_order_relaxed);
-        emit stoppingChanged();
-        setStatusText(QStringLiteral("Aborting search startup..."));
-        return;
-    }
+    if (iterationPhase_ != nullptr) TryCancelBeforeSearchIteration(iterationPhase_);
     stopRequested_->store(true, std::memory_order_relaxed);
-    setStatusText(QStringLiteral("Stopping after current iteration..."));
-}
-
-void SearchController::abortSearch() {
-    if (!running_ || !cancellationRequested_ || aborting()) return;
-    if (stopRequested_) stopRequested_->store(true, std::memory_order_relaxed);
     cancellationRequested_->store(true, std::memory_order_relaxed);
-    setStopping(true);
     emit stoppingChanged();
-    setStatusText(QStringLiteral("Aborting at the next simulation checkpoint..."));
+    setStatusText(QStringLiteral("Stopping..."));
 }
 
 SearchController::ValidationResult SearchController::validate(bool baselineOnly) const {
@@ -2125,26 +2151,15 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     }
 #endif
 
+    // Approximate physics: the twin on the GPU, or on every multi-threaded CPU
+    // worker but the one that rebuilds.
+    const bool approximateOnCpu = approximatePhysicsCpuAvailable() &&
+            simulationBackend_ == PhysicsBackend::MultiThreadedCpu &&
+            parallelSampleCount >= 2u;
     const bool approximate = !baselineOnly && approximatePhysics_ &&
-            approximatePhysicsAvailable() &&
-            PhysicsBackendId(simulationBackend_) == "cuda";
-    if (approximate) {
-        const std::string &target = configuration.evaluationTarget.id;
-        if (target == kScriptedTargetEvaluationId ||
-            target == kCheckpointTimeEvaluationId ||
-            target == kDistanceTargetEvaluationId ||
-            target == kTimeEvaluationId) {
-            return {{}, QStringLiteral(
-                    "Approximate physics does not run this target yet. "
-                    "Choose Exact physics.")};
-        }
-        if (condition.program) {
-            return {{}, QStringLiteral(
-                    "Approximate physics does not run conditions yet. "
-                    "Choose Exact physics or remove the conditions.")};
-        }
-    }
-
+            ((approximatePhysicsAvailable() &&
+              PhysicsBackendId(simulationBackend_) == ApproximatePhysicsBackendId()) ||
+             approximateOnCpu);
     SearchRequest request{
             packsInfo.absoluteFilePath().toUtf8().toStdString(),
             replayInfo.absoluteFilePath().toUtf8().toStdString()};

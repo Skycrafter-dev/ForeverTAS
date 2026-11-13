@@ -2136,7 +2136,7 @@ bool TestStopAbortsBeforeFirstIteration(const QString &packsDirectory,
     bool okay = Check(
             controller.running() && controller.stopping() &&
                     controller.statusText() ==
-                            QStringLiteral("Aborting search startup..."),
+                            QStringLiteral("Stopping..."),
             "Stop did not request an immediate startup abort");
     okay &= Check(
             WaitUntil([&controller]() { return !controller.running(); }, 5000),
@@ -2144,7 +2144,7 @@ bool TestStopAbortsBeforeFirstIteration(const QString &packsDirectory,
     okay &= Check(
             elapsed.elapsed() < 5000 &&
                     controller.statusText() ==
-                            QStringLiteral("Search aborted") &&
+                            QStringLiteral("Search stopped") &&
                     completionSpy.isEmpty() &&
                     controller.resultText().isEmpty(),
             "startup abort ran or completed a search iteration");
@@ -2549,7 +2549,7 @@ bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath
     return okay;
 }
 
-bool TestAbortRetainsBest(const QString &packsDirectory, const QString &replayPath) {
+bool TestStopRetainsBest(const QString &packsDirectory, const QString &replayPath) {
     QSettings().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
@@ -2572,16 +2572,13 @@ bool TestAbortRetainsBest(const QString &packsDirectory, const QString &replayPa
     }, 10000), "hiding the viewer interrupted the search worker");
     controller.setViewerVisible(true);
     controller.stopSearch();
-    controller.abortSearch();
-    okay &= Check(controller.stopping() && controller.aborting(),
-                  "Stop could not escalate to Abort");
-    controller.abortSearch();
+    okay &= Check(controller.stopping(), "Stop did not begin stopping");
     okay &= Check(WaitUntil([&]() { return !controller.running(); }, 10000),
-                  "active abort did not finish cooperatively");
-    okay &= Check(controller.statusText() == "Search aborted" && completed.isEmpty() &&
+                  "Stop did not shut the search down");
+    okay &= Check(controller.statusText() == "Search stopped" && completed.size() == 1 &&
                           controller.baseInputScript() == "0.00 press up" &&
                           !controller.bestInputsText().isEmpty(),
-                  "abort promoted a partial result or discarded the retained best");
+                  "Stop promoted a partial result or discarded the best found so far");
     const auto rows = controller.cycleRows();
     okay &= Check(rows.size() == 1 && rows.front().toMap().value("aborted").toBool(),
                   "aborted cycle's completed best was not saved");
@@ -2648,7 +2645,7 @@ bool TestAutorestartWithoutEligibleResult(const QString &packsDirectory,
                                          const QString &replayPath) {
     bool okay = true;
     for (const QString &mode : {QStringLiteral("attempts"), QStringLiteral("duration")}) {
-        for (bool abort : {false, true}) {
+        {
             QSettings().clear();
             SearchController controller;
             SetValidPaths(controller, packsDirectory, replayPath);
@@ -2668,20 +2665,19 @@ bool TestAutorestartWithoutEligibleResult(const QString &packsDirectory,
                 if (controller.statusText() == QStringLiteral("Starting restart 1...")) restarts = 1;
                 if (controller.statusText() == QStringLiteral("Starting restart 2...")) {
                     restarts = 2;
-                    if (abort) controller.abortSearch();
-                    else controller.stopSearch();
+                    controller.stopSearch();
                 }
             });
             if (!Check(controller.canStart(), "empty autorestart fixture was invalid")) return false;
             controller.startSearch();
             const bool stopped = WaitUntil([&]() { return !controller.running(); }, 30000);
             if (!stopped) {
-                controller.abortSearch();
+                controller.stopSearch();
                 WaitUntil([&]() { return !controller.running(); }, 30000);
             }
             okay &= Check(stopped && restarts >= 2 && controller.cycleRows().isEmpty() &&
                           completions.isEmpty() && controller.statusText() != QStringLiteral("Search failed"),
-                          "empty cycles failed to restart, ignored Stop/Abort, or saved a fake result");
+                          "empty cycles failed to restart, ignored Stop, or saved a fake result");
         }
     }
     return okay;
@@ -3027,6 +3023,15 @@ int main(int argc, char **argv) {
     qputenv("FOREVERTAS_AUTORESTARTS_ROOT",
             savedSessions.path().toUtf8());
 
+    if (argc == 4 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--stop")) {
+        // Stop: at once, the best so far kept (with real packs and replay)
+        const QString packs = QString::fromLocal8Bit(argv[2]);
+        const QString replay = QString::fromLocal8Bit(argv[3]);
+        const bool okay = TestStopAbortsBeforeFirstIteration(packs, replay) && TestStopRetainsBest(packs, replay) &&
+                TestAutorestartWithoutEligibleResult(packs, replay);
+        std::cout << (okay ? "PASS" : "FAIL") << '\n';
+        return okay ? 0 : 1;
+    }
     if (argc == 4 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--session-fixes")) {
         const QString packs = QString::fromLocal8Bit(argv[2]);
         const QString replay = QString::fromLocal8Bit(argv[3]);
@@ -3089,7 +3094,7 @@ int main(int argc, char **argv) {
         const QString packs = QString::fromLocal8Bit(argv[2]);
         const QString replay = QString::fromLocal8Bit(argv[3]);
         okay = TestStateCompatibilityDiagnostics(packs, replay) && TestBaseEvaluation(packs, replay) &&
-                TestAbortRetainsBest(packs, replay) &&
+                TestStopRetainsBest(packs, replay) &&
                 TestAutorestartHistory(packs, replay) &&
                 TestAutorestartWithoutEligibleResult(packs, replay) &&
                 TestDurationAutorestartAndSaveFailure(packs, replay) &&

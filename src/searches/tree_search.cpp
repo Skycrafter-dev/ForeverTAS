@@ -1417,7 +1417,8 @@ SearchResult TreeSearch::Run(const SearchExecutionContext &context) const {
         throw std::invalid_argument(
                 "tick duration must be greater than zero");
     }
-    if (IsGpuSimulationBackend(CandidateBackend(context))) {
+    if (IsGpuSimulationBackend(CandidateBackend(context)) ||
+        context.approximatePhysics) {
         return BasicBruteForceSearch(settings_).Run(context);
     }
     TreeSearchRun run(context, settings_, started);

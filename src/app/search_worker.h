@@ -63,6 +63,8 @@ signals:
     void sessionCreated(const QString &mapKey, const QString &directory);
     void succeeded(forevertas::app::SearchCompletionPtr completion);
     void cancelled();
+    // Stopped after it had a best: that best as the result.
+    void stopped(forevertas::app::SearchCompletionPtr completion);
     void failed(const QString &message);
     void finished();
 

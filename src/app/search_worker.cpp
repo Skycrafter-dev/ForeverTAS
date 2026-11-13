@@ -363,6 +363,7 @@ void SearchWorker::run() {
             latestSource = live.winnerSource;
             latestIteration = live.winningIterationIndex;
             retainedResult = RetainedResult(live);
+            retainedResult->bestTimeline = live.bestTimeline;   // the result's preview when the search is stopped
         } else {
             retainedResult->iterations = live.iterations;
             retainedResult->elapsed = live.elapsed;
@@ -512,7 +513,23 @@ void SearchWorker::run() {
                 return;
             }
         }
-        emit cancelled();
+        if (retainedResult) {   // stopped: the best found so far is the result
+            auto completion = std::make_shared<SearchCompletion>();
+            completion->searchId = searchId_;
+            completion->summary = FormatLive(*retainedResult, QStringLiteral("Search stopped. Best"));
+            completion->inputsText = QString::fromStdString(FormatResultInputScript(
+                    retainedResult->bestInputs, request_.evaluationTarget.id, retainedResult->bestState));
+            completion->packsDirectory = FilePathFromUtf8(request_.packDirectory);
+            completion->replayPath = FilePathFromUtf8(request_.replayPath);
+            const std::string_view backendId = PhysicsBackendId(kAuxiliarySimulationBackend);
+            completion->simulationBackendId =
+                    QString::fromLatin1(backendId.data(), static_cast<qsizetype>(backendId.size()));
+            completion->bestInputs = std::move(retainedResult->bestInputs);
+            completion->bestTimeline = std::move(retainedResult->bestTimeline);
+            emit stopped(std::move(completion));
+        } else {
+            emit cancelled();
+        }
     } catch (const std::exception &error) {
         emit failed(QString::fromUtf8(error.what()));
     } catch (...) {
