@@ -140,6 +140,13 @@ cmake --build $BuildDirectory --parallel $BuildJobs
 $BuildExitCode = $LASTEXITCODE
 $ErrorActionPreference = "Stop"
 if ($BuildExitCode -ne 0) { throw "Build failed" }
+if ($HipPlatform -eq "amd") {
+    $Python = (Get-Command python -ErrorAction Stop).Source
+    & $Python (Join-Path $RepoRoot "packaging/release/verify_hip_targets.py") `
+        (Join-Path $BuildDirectory "bin/ForeverTAS.exe") `
+        --expect ($HipArchitectures -replace ';', ',')
+    if ($LASTEXITCODE -ne 0) { throw "HIP device images do not match their targets" }
+}
 if ($BuildOnly) { return }
 
 $ErrorActionPreference = "Continue"

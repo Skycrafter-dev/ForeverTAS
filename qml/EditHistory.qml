@@ -24,6 +24,7 @@ QtObject {
         "cudaCalibrationEnabled", "hipParallelSampleCount",
         "hipCalibrationEnabled", "vulkanParallelSampleCount",
         "vulkanCalibrationEnabled", "cudaSessionSpecializationEnabled",
+        "approximatePhysics",
         "randomizeSeedsOnStart", "drawTargetsThroughBlocks"
     ]
     readonly property var cuboidKeys:

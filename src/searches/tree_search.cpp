@@ -433,7 +433,8 @@ void TreeSearchRun::ReportLive(bool force) {
             lastImprovementElapsed_,
             {},
             best_.evaluation->objectiveScores,
-            best_.evaluation->metricValues});
+            best_.evaluation->metricValues,
+            std::nullopt});
 }
 
 void TreeSearchRun::RecordBest(const EvaluationSample &sample,
@@ -1162,7 +1163,8 @@ SearchResult TreeSearchRun::Execute() {
             lastImprovementElapsed_,
             *best_.snapshot,
             best_.evaluation->objectiveScores,
-            best_.evaluation->metricValues};
+            best_.evaluation->metricValues,
+            std::nullopt};
 }
 
 }  // namespace
@@ -1415,7 +1417,7 @@ SearchResult TreeSearch::Run(const SearchExecutionContext &context) const {
         throw std::invalid_argument(
                 "tick duration must be greater than zero");
     }
-    if (IsGpuSimulationBackend(context.sandbox.Backend())) {
+    if (IsGpuSimulationBackend(CandidateBackend(context))) {
         return BasicBruteForceSearch(settings_).Run(context);
     }
     TreeSearchRun run(context, settings_, started);

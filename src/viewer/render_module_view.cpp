@@ -2,6 +2,7 @@
 
 #include "viewer/race_viewer_controller.h"
 #include "viewer/render_module_library.h"
+#include "viewer/return_freed_memory.h"
 
 #include <QOpenGLContext>
 #include <QOpenGLExtraFunctions>
@@ -13,6 +14,7 @@
 #include <QSGTextureProvider>
 #include <QtQuick/qsgtexture_platform.h>
 #include <QThread>
+#include <QTimer>
 #include <QtMath>
 #include <rhi/qrhi.h>
 
@@ -832,6 +834,8 @@ void RenderModuleView::frameDrawn(quint64 source) {
     frameSize_ = pixelSize();
     setStatus(QString());
     setReady(true);
+    // The map is in: what preparing it and the previous map used goes back.
+    QTimer::singleShot(0, this, [] { ReturnFreedMemory(); });
 }
 
 void RenderModuleView::frameFailed(quint64 source, const QString &error) {

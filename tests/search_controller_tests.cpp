@@ -2622,17 +2622,22 @@ bool TestFinishTimeHistoryDisplay() {
                       "finish history changed the stored score units");
     for (bool legacy : {false, true}) {
         if (legacy) {
+            // a record saved before rows carried their columns
+            metadata.remove("columns");
             metadata.insert("metricLabels", QJsonArray{QStringLiteral("Finish upper bound (ns)")});
             if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
             file.write(QJsonDocument(metadata).toJson());
             file.close();
         }
         const auto row = SearchSessionStore::Cycle(directory.path(), 0);
-        okay &= Check(row.value("metricLabels").toList() == QVariantList{QStringLiteral("Finish time")} &&
-                      row.value("metricTexts").toList() == QVariantList{QStringLiteral("24.630000123 s")} &&
-                      row.value("metrics").toList().first().toDouble() == result.bestScore / 1e9 &&
+        const QVariantList columns = row.value("columns").toList();
+        okay &= Check(columns.size() == 1 &&
+                      columns.first().toMap().value("label").toString() == QStringLiteral("Finish time") &&
+                      columns.first().toMap().value("kind").toString() == QStringLiteral("finishTime") &&
+                      columns.first().toMap().value("better").toString() == QStringLiteral("lower") &&
+                      row.value("metrics").toList().first().toDouble() == result.bestScore &&
                       row.value("score").toDouble() == result.bestScore,
-                      "finish session row did not display seconds with the plain label");
+                      "finish session row lost its finish time column or its nanoseconds");
         okay &= Check(SearchSessionStore::Cycle(directory.path(), 0) == row,
                       "rereading history converted finish time twice");
     }
@@ -2747,14 +2752,18 @@ bool TestAutorestartHistory(const QString &packsDirectory,
                                       .value(QStringLiteral("modifierSeeds")),
                       "disabled seed randomization changed cycle seeds");
         const QVariantMap first = rows[0].toMap();
-        const QVariantList labels = first.value(
-                QStringLiteral("metricLabels")).toList();
+        const QVariantList columns = first.value(
+                QStringLiteral("columns")).toList();
         const QVariantList values = first.value(
                 QStringLiteral("metrics")).toList();
-        okay &= Check(labels.size() == values.size() &&
-                              labels.size() == 2 &&
-                              labels[0].toString() ==
-                                      QStringLiteral("Speed (m/s)"),
+        okay &= Check(columns.size() == values.size() &&
+                              columns.size() == 2 &&
+                              columns[0].toMap().value(QStringLiteral("label")).toString() ==
+                                      QStringLiteral("Speed") &&
+                              columns[0].toMap().value(QStringLiteral("kind")).toString() ==
+                                      QStringLiteral("speed") &&
+                              columns[1].toMap().value(QStringLiteral("label")).toString() ==
+                                      QStringLiteral("At"),
                       "saved cycle did not expose target-specific numeric metrics");
     }
     const QString metadataPath = controller.selectedSessionDirectory() +

@@ -16,6 +16,8 @@ ApplicationWindow {
     property var shutdown: null
     onClosing: close => {
         dockSpace.flushState()
+        if (windowSaveTimer.running)
+            window.saveWindow()
         if (lookSaveTimer.running)
             window.saveLook()
         if (shutdown && !shutdown.requestClose()) {
@@ -66,50 +68,6 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(440, window.width - 32)
         viewer: window.viewer
-    }
-    GlassDialog {
-        id: gamepadDialog
-        objectName: "gamepadDialog"
-        parent: Overlay.overlay
-        anchors.centerIn: parent
-        width: Math.min(420, window.width - 32)
-        title: qsTr("Gamepad")
-        modal: true
-        contentItem: ColumnLayout {
-            Label { text: qsTr("Device") }
-            StyledComboBox {
-                objectName: "gamepadDeviceSelector"
-                Layout.fillWidth: true
-                model: [{id: 0, name: qsTr("None")}].concat(window.viewer.gamepad.devices)
-                textRole: "name"
-                valueRole: "id"
-                currentIndex: indexOfValue(window.viewer.gamepad.selectedId)
-                onActivated: window.viewer.gamepad.selectedId = currentValue
-            }
-            Label {
-                Layout.fillWidth: true
-                text: window.viewer.gamepad.status
-                wrapMode: Text.Wrap
-            }
-            RowLayout {
-                Label { text: qsTr("Steering deadzone") }
-                ThemedSlider {
-                    objectName: "gamepadDeadzone"
-                    Layout.fillWidth: true
-                    from: 0
-                    to: 0.5
-                    stepSize: 0.01
-                    value: window.viewer.gamepad.deadzone
-                    onMoved: window.viewer.gamepad.deadzone = value
-                }
-                Label { text: Math.round(window.viewer.gamepad.deadzone * 100) + "%" }
-            }
-            ThemedButton {
-                Layout.alignment: Qt.AlignRight
-                text: qsTr("Close")
-                onClicked: gamepadDialog.close()
-            }
-        }
     }
     property bool codeEditorExpanded: false
     readonly property bool rayTracingEnabled:
@@ -272,68 +230,6 @@ ApplicationWindow {
         return false
     }
 
-    function stepViewerTick(delta) {
-        if (!window.viewer.loaded) {
-            return
-        }
-        window.viewer.pause()
-        window.viewer.currentTick = window.viewer.currentTick + delta
-    }
-
-    function manualControlForKey(key) {
-        if (key === Qt.Key_Left || key === Qt.Key_A || key === Qt.Key_Q)
-            return "left"
-        if (key === Qt.Key_Right || key === Qt.Key_D)
-            return "right"
-        if (key === Qt.Key_Up || key === Qt.Key_W || key === Qt.Key_Z)
-            return "accelerate"
-        if (key === Qt.Key_Down || key === Qt.Key_S)
-            return "brake"
-        return ""
-    }
-
-    function manualActionForKey(key) {
-        if (key === Qt.Key_Delete)
-            return "give-up"
-        if (key === Qt.Key_Return || key === Qt.Key_Enter
-                || key === Qt.Key_Backspace)
-            return "respawn"
-        return ""
-    }
-
-    function handleManualActionKey(key, active, autoRepeat) {
-        if (!window.viewer.manualDriving)
-            return false
-        const action = manualActionForKey(key)
-        if (action.length === 0)
-            return false
-        if (active && !autoRepeat) {
-            if (action === "give-up")
-                window.viewer.giveUpManualDrive()
-            else
-                window.viewer.respawnManualDrive()
-        }
-        return true
-    }
-
-    function handleManualKey(event, active) {
-        if (!window.viewer.manualDriving
-            && !(window.viewer.takeOverOnInput
-                 && window.viewer.playing))
-            return
-        if (handleManualActionKey(
-                    event.key, active, event.isAutoRepeat)) {
-            event.accepted = true
-            return
-        }
-        const control = manualControlForKey(event.key)
-        if (control.length === 0)
-            return
-        event.accepted = true
-        if (!event.isAutoRepeat)
-            window.viewer.setManualInput(control, active)
-    }
-
     function commitBaseInputScript() {
         if (window.controller.baseInputScript !== baseInputScriptArea.text)
             window.controller.baseInputScript = baseInputScriptArea.text
@@ -385,19 +281,25 @@ ApplicationWindow {
         property: "active"
         value: window.active && window.controller.viewerVisible &&
                (!window.shutdown || !window.shutdown.closing) &&
-               !gamepadDialog.visible &&
+               !preferencesDialog.visible &&
                (window.viewer.manualDriving ||
                 (window.viewer.takeOverOnInput && window.viewer.playing))
     }
 
-    Component.onCompleted: Qt.callLater(function() {
-        if (window.viewer.loaded)
-            viewport.resetCameraFocus()
-        else if (!window.viewer.loading && window.controller.packsDirectory.length
-                 && window.controller.replayPath.length)
-            window.viewer.loadMap(window.controller.packsDirectory,
-                                  window.controller.replayPath)
-    })
+    Component.onCompleted: {
+        // Some window systems place a new window themselves: put it back
+        // once it is up too.
+        window.placeSavedWindow()
+        Qt.callLater(window.placeSavedWindow)
+        Qt.callLater(function() {
+            if (window.viewer.loaded)
+                viewport.resetCameraFocus()
+            else if (!window.viewer.loading && window.controller.packsDirectory.length
+                     && window.controller.replayPath.length)
+                window.viewer.loadMap(window.controller.packsDirectory,
+                                      window.controller.replayPath)
+        })
+    }
 
     Connections {
         target: window.viewer
@@ -407,11 +309,92 @@ ApplicationWindow {
         }
     }
 
-    width: 1420
-    height: 820
+    // The window opens as it was last closed: its size and place when not
+    // maximized, and whether it was maximized or full screen.
+    readonly property var savedWindow: {
+        try {
+            const saved = JSON.parse(String(window.controller.uiSetting("window", "")))
+            return saved && saved.width > 0 && saved.height > 0 ? saved : null
+        } catch (error) {
+            return null
+        }
+    }
+    property rect normalGeometry: savedWindow
+        ? Qt.rect(savedWindow.x, savedWindow.y, savedWindow.width, savedWindow.height)
+        : Qt.rect(0, 0, 1420, 820)
+    property string windowState: savedWindow && savedWindow.state ? savedWindow.state : "normal"
+    // What View > Full screen goes back to.
+    property string stateBeforeFullScreen: savedWindow && savedWindow.before === "maximized"
+                                           ? "maximized" : "normal"
+    function toggleFullScreen() {
+        if (visibility === Window.FullScreen) {
+            visibility = stateBeforeFullScreen === "maximized" ? Window.Maximized : Window.Windowed
+        } else {
+            stateBeforeFullScreen = visibility === Window.Maximized ? "maximized" : "normal"
+            visibility = Window.FullScreen
+        }
+    }
+    width: normalGeometry.width
+    height: normalGeometry.height
     minimumWidth: window.controller.viewerVisible ? 1240 : 390
     minimumHeight: 580
     visible: true
+    visibility: windowState === "maximized" ? Window.Maximized
+                : windowState === "fullscreen" ? Window.FullScreen
+                : Window.Windowed
+    // Puts the window back where it was, if a screen is still there (a
+    // monitor may be gone; screens of unknown size count as there).
+    function placeSavedWindow() {
+        if (!savedWindow || window.visibility !== Window.Windowed && window.visible)
+            return
+        const r = savedWindow
+        let known = false
+        for (const screen of Qt.application.screens) {
+            if (screen.width <= 0 || screen.height <= 0)
+                continue
+            known = true
+            if (r.x + 40 < screen.virtualX + screen.width && r.x + r.width - 40 > screen.virtualX
+                    && r.y >= screen.virtualY - 8 && r.y + 40 < screen.virtualY + screen.height) {
+                known = false
+                break
+            }
+        }
+        if (known)
+            return
+        window.x = r.x
+        window.y = r.y
+    }
+    onXChanged: windowSaveTimer.restart()
+    onYChanged: windowSaveTimer.restart()
+    onVisibilityChanged: windowSaveTimer.restart()
+    // Saved once the window settles (while it maximizes, its size can
+    // change before its state does), and each save rewrites the settings
+    // file.
+    Timer {
+        id: windowSaveTimer
+        interval: 500
+        onTriggered: window.saveWindow()
+    }
+    function saveWindow() {
+        windowSaveTimer.stop()
+        if (visibility === Window.Windowed) {
+            if (width < minimumWidth || height < minimumHeight)
+                return
+            normalGeometry = Qt.rect(x, y, width, height)
+            windowState = "normal"
+        } else if (visibility === Window.Maximized) {
+            windowState = "maximized"
+        } else if (visibility === Window.FullScreen) {
+            windowState = "fullscreen"
+        } else {
+            return
+        }
+        const r = normalGeometry
+        window.controller.setUiSetting("window", JSON.stringify({
+            x: r.x, y: r.y, width: r.width, height: r.height, state: windowState,
+            before: stateBeforeFullScreen
+        }))
+    }
     title: qsTr("ForeverTAS")
     color: AppTheme.window
 
@@ -818,32 +801,6 @@ ApplicationWindow {
     }
 
     Shortcut {
-        objectName: "stepBackwardShortcut"
-        sequence: "Left"
-        context: Qt.ApplicationShortcut
-        autoRepeat: true
-        enabled: window.viewer.runCount > 0
-                 && !window.viewer.manualDriving
-                 && !viewport.freeCamera
-                 && !(window.viewer.takeOverOnInput
-                      && window.viewer.playing)
-        onActivated: window.stepViewerTick(-1)
-    }
-
-    Shortcut {
-        objectName: "stepForwardShortcut"
-        sequence: "Right"
-        context: Qt.ApplicationShortcut
-        autoRepeat: true
-        enabled: window.viewer.runCount > 0
-                 && !window.viewer.manualDriving
-                 && !viewport.freeCamera
-                 && !(window.viewer.takeOverOnInput
-                      && window.viewer.playing)
-        onActivated: window.stepViewerTick(1)
-    }
-
-    Shortcut {
         objectName: "saveBaseInputScriptShortcut"
         sequences: [StandardKey.Save]
         context: Qt.ApplicationShortcut
@@ -977,7 +934,7 @@ ApplicationWindow {
             root: {
                 type: "split", id: "g1", dir: "row", ratio: left / Math.max(1, w - g), size: left,
                 a: { type: "split", id: "g2", dir: "column", ratio: 0.5,
-                     a: tabs("g3", ["inputs"]), b: tabs("g4", ["graphics"]) },
+                     a: tabs("g3", ["inputs", "attempts"]), b: tabs("g4", ["graphics"]) },
                 b: { type: "split", id: "g5", dir: "row",
                      ratio: (w - left - right - 2 * g) / Math.max(1, w - left - 2 * g),
                      size: right,
@@ -1063,8 +1020,14 @@ ApplicationWindow {
         window.controller.setUiSetting("glassShadowSize", AppTheme.shadowSize)
         window.controller.setUiSetting("glassCornerRadius", AppTheme.cornerRadius)
     }
-    onWidthChanged: Qt.callLater(window.fitOverlay)
-    onHeightChanged: Qt.callLater(window.fitOverlay)
+    onWidthChanged: {
+        Qt.callLater(window.fitOverlay)
+        windowSaveTimer.restart()
+    }
+    onHeightChanged: {
+        Qt.callLater(window.fitOverlay)
+        windowSaveTimer.restart()
+    }
 
     Shortcut {
         objectName: "openMapShortcut"
@@ -1072,6 +1035,13 @@ ApplicationWindow {
         context: Qt.ApplicationShortcut
         enabled: window.canOpenMap
         onActivated: window.openMapOrReplay()
+    }
+
+    Shortcut {
+        objectName: "fullScreenShortcut"
+        sequence: "F11"
+        context: Qt.ApplicationShortcut
+        onActivated: window.toggleFullScreen()
     }
 
     Shortcut {
@@ -1143,6 +1113,30 @@ ApplicationWindow {
 
     // The glass look, as a settings dialog in the middle of the window; it
     // does not darken the window, so changes show as they are made.
+    RaceControls {
+        id: raceControls
+        controller: window.controller
+        viewer: window.viewer
+    }
+
+    PreferencesDialog {
+        id: preferencesDialog
+        objectName: "preferencesDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(560, window.width - 32)
+        raceControls: raceControls
+        gamepad: window.viewer.gamepad
+    }
+
+    // m:ss.cc
+    function raceTimeText(ms) {
+        const centis = Math.max(0, Math.round(ms / 10))
+        const minutes = Math.floor(centis / 6000)
+        const seconds = Math.floor(centis / 100) % 60
+        return minutes + ":" + String(seconds).padStart(2, "0") + "." + String(centis % 100).padStart(2, "0")
+    }
+
     GlassDialog {
         id: glassLookPopup
         objectName: "glassLookPopup"
@@ -3009,7 +3003,7 @@ ApplicationWindow {
                     packsDirectory: window.viewer.loadedPacksDirectory
                     mapPath: window.viewer.loadedReplayPath
                     viewer: window.viewer
-                    raceTimeMs: window.viewer.timeMs
+                    raceTimeMs: window.viewer.presentationTimeMs
                     showCar: window.moduleGameCar
                     // The 3D view's map meshes show this frame: draw them
                     // again with it.
@@ -3524,16 +3518,19 @@ ApplicationWindow {
                                 window.viewer.runPoses[index]
                             readonly property int runIndex: index
                             readonly property var layerStyle:
-                                window.visualStyle("car:" + runPose.id,
-                                                   { color: window.runColor(index),
+                                window.visualStyle("car:" + (runPose?.styleId ?? ""),
+                                                   { color: window.runColor(runPose?.colorIndex ?? index),
                                                      opacity: 1 })
 
                             objectName: "runCarRoot"
-                            visible: !runPose.selected
+                            // runPose is briefly missing while runs change.
+                            visible: !!runPose
+                                     && !runPose.selected
+                                     && !runPose.hidden
                                      && layerStyle.visible
                                      && !layerStyle.throughBlocks
-                            position: runPose.position
-                            rotation: runPose.rotation
+                            position: runPose ? runPose.position : Qt.vector3d(0, 0, 0)
+                            rotation: runPose ? runPose.rotation : Qt.quaternion(1, 0, 0, 0)
 
                             Repeater3D {
                                 model: window.viewer.carEllipsoids.length
@@ -3555,7 +3552,7 @@ ApplicationWindow {
                                                  "wireframe"
                                         geometry: window.viewer
                                             .ellipsoidFilledGeometries[
-                                                runCarRoot.runIndex %
+                                                (runCarRoot.runPose?.colorIndex ?? runCarRoot.runIndex) %
                                                 window.viewer
                                                     .ellipsoidFilledGeometries
                                                     .length]
@@ -3594,9 +3591,9 @@ ApplicationWindow {
                         id: selectedRunCarRoot
                         readonly property var layerStyle:
                             window.visualStyle(
-                                "car:" + window.viewer.selectedRunId,
+                                "car:" + window.viewer.selectedRunStyleId,
                                 { color: window.runColor(
-                                    window.viewer.selectedRunIndex),
+                                    window.viewer.selectedRunColorIndex),
                                   opacity: 1 })
 
                         objectName: "selectedRunCarRoot"
@@ -3775,22 +3772,25 @@ ApplicationWindow {
                             readonly property var modelData:
                                 window.viewer.runPoses[index]
                             readonly property var layerStyle:
-                                window.visualStyle("car:" + modelData.id,
-                                                   { color: window.runColor(index),
+                                window.visualStyle("car:" + (modelData?.styleId ?? ""),
+                                                   { color: window.runColor(modelData?.colorIndex ?? index),
                                                      opacity: 1 })
                             objectName: "throughRunCarRoot"
                             visible: layerStyle.visible
                                      && (window.rayTracingEnabled
                                          || layerStyle.throughBlocks)
+                                     && !!modelData
                                      && !(modelData.selected
                                           && viewport.carCameraActive
                                           && window.viewer.hideSelectedCar)
                                      && !(modelData.selected
                                           && window.moduleCarShown)
-                            position: modelData.selected
+                            position: !modelData ? Qt.vector3d(0, 0, 0)
+                                : modelData.selected
                                 ? window.viewer.carPosition
                                 : modelData.position
-                            rotation: modelData.selected
+                            rotation: !modelData ? Qt.quaternion(1, 0, 0, 0)
+                                : modelData.selected
                                 ? window.viewer.carRotation
                                 : modelData.rotation
 
@@ -3917,14 +3917,14 @@ ApplicationWindow {
                         if (!event.accepted)
                             viewport.handleFreeCameraKey(event, true)
                         if (!event.accepted)
-                            window.handleManualKey(event, true)
+                            raceControls.handle(event, true)
                     }
                     Keys.onReleased: event => {
                         viewport.handleCameraPresetKey(event, false)
                         if (!event.accepted)
                             viewport.handleFreeCameraKey(event, false)
                         if (!event.accepted)
-                            window.handleManualKey(event, false)
+                            raceControls.handle(event, false)
                     }
                     onActiveFocusChanged: {
                         if (!activeFocus
@@ -4827,7 +4827,6 @@ ApplicationWindow {
                             implicitHeight: 42
                             text: ""
                             enabled: window.viewer.runCount > 0
-                                     && !window.viewer.manualDriving
                             palette.buttonText: AppTheme.viewerOverlayText
                             ToolTip.visible: hovered
                             ToolTip.text: qsTr("Go to start and focus car")
@@ -5004,51 +5003,91 @@ ApplicationWindow {
                             }
                         }
 
-                        ThemedButton {
-                            id: manualDriveButton
-                            objectName: "manualDriveButton"
-                            Layout.preferredWidth: 84
+                        // Held: the race runs backwards.
+                        ThemedToolButton {
+                            id: rewindButton
+                            objectName: "rewindButton"
+                            Layout.preferredWidth: 42
                             Layout.preferredHeight: 42
-                            text: window.viewer.manualDriving
-                                  ? qsTr("Stop")
-                                  : qsTr("Drive")
-                            enabled: window.viewer.manualDriving
-                                     || (window.viewer.loaded
-                                         && !window.viewer.loading
-                                         && !window.controller.running
-                                         && !window.controller.extractingReplayInputs)
-                            onClicked: {
-                                if (window.viewer.manualDriving) {
-                                    window.viewer.stopManualDrive()
-                                } else {
-                                    window.viewer.startManualDrive()
-                                    if (window.viewer.manualDriving) {
-                                        viewport.focusCurrentCar()
-                                        manualInputFocus.forceActiveFocus()
+                            implicitWidth: 42
+                            implicitHeight: 42
+                            text: ""
+                            enabled: window.viewer.runCount > 0
+                            down: window.viewer.rewinding
+                            palette.buttonText: AppTheme.viewerOverlayText
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Rewind while held (%1)").arg(raceControls.keyText("rewind"))
+                            onPressed: window.viewer.beginRewind()
+                            onReleased: window.viewer.endRewind()
+                            onCanceled: window.viewer.endRewind()
+
+                            contentItem: Item {
+                                Canvas {
+                                    objectName: "rewindTransportIcon"
+                                    anchors.centerIn: parent
+                                    width: 18
+                                    height: 18
+                                    property color iconColor:
+                                        rewindButton.effectiveTextColor
+                                    antialiasing: true
+                                    onIconColorChanged: requestPaint()
+                                    onPaint: {
+                                        const context = getContext("2d")
+                                        context.clearRect(0, 0, width, height)
+                                        context.fillStyle = iconColor
+                                        for (const x of [1, 9]) {
+                                            context.beginPath()
+                                            context.moveTo(x, 9)
+                                            context.lineTo(x + 8, 3)
+                                            context.lineTo(x + 8, 15)
+                                            context.closePath()
+                                            context.fill()
+                                        }
                                     }
                                 }
                             }
-
                         }
 
-                        ThemedCheckBox {
-                            id: takeOverOnInputCheckBox
-                            objectName: "takeOverOnInputCheckBox"
-                            Layout.preferredWidth: 156
-                            Layout.preferredHeight: 42
+                        RowLayout {
+                            objectName: "speedControls"
+                            spacing: 2
                             Layout.columnSpan: playbackDock.compact ? 4 : 1
                             Layout.alignment: Qt.AlignHCenter
-                            text: qsTr("Take Over on Input")
-                            checked: window.viewer.takeOverOnInput
-                            enabled: window.viewer.loaded
-                                     && !window.viewer.loading
-                                     && !window.viewer.manualDriving
-                                     && !window.controller.running
-                                     && !window.controller.extractingReplayInputs
-                            onToggled:
-                                window.viewer.takeOverOnInput = checked
 
-                            font.pixelSize: 11
+                            ThemedIconButton {
+                                objectName: "slowerButton"
+                                icon.source: "qrc:/icons/minus.svg"
+                                enabled: window.viewer.playbackSpeed > 0.011
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("Slower (%1)").arg(raceControls.keyText("slower"))
+                                onClicked: window.viewer.slower()
+                            }
+                            Label {
+                                objectName: "speedLabel"
+                                Layout.preferredWidth: 46
+                                horizontalAlignment: Text.AlignHCenter
+                                readonly property real speed: window.viewer.playbackSpeed
+                                text: speed >= 1 ? speed + "×" : "1/" + Math.round(1 / speed) + "×"
+                                color: speed === 1 ? AppTheme.viewerOverlayText : AppTheme.accent
+                                font.pixelSize: 12
+                                font.weight: Font.DemiBold
+                                ToolTip.visible: speedMouse.containsMouse
+                                ToolTip.text: qsTr("Race speed; click for real time")
+                                MouseArea {
+                                    id: speedMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    onClicked: window.viewer.playbackSpeed = 1
+                                }
+                            }
+                            ThemedIconButton {
+                                objectName: "fasterButton"
+                                icon.source: "qrc:/icons/plus.svg"
+                                enabled: window.viewer.playbackSpeed < 49.9
+                                ToolTip.visible: hovered
+                                ToolTip.text: qsTr("Faster (%1)").arg(raceControls.keyText("faster"))
+                                onClicked: window.viewer.faster()
+                            }
                         }
                     }
                 }
@@ -5118,6 +5157,103 @@ ApplicationWindow {
                                 }
                             }
                         }
+                    }
+                }
+            }
+
+            DockPanel {
+                id: attemptsPanel
+                objectName: "attemptsPanel"
+                panelId: "attempts"
+                title: qsTr("Attempts")
+                available: window.controller.viewerVisible
+                // The base inputs before the last Keep, for Undo.
+                property string inputsBeforeKeep: ""
+                property bool canUndoKeep: false
+                readonly property var shown: {
+                    const list = window.viewer.attempts
+                    for (const item of list) {
+                        if (item.id === window.viewer.selectedRunId)
+                            return item
+                    }
+                    return null
+                }
+
+                ColumnLayout {
+                    anchors.fill: parent
+                    anchors.margins: 8
+                    spacing: 6
+
+                    Label {
+                        Layout.fillWidth: true
+                        visible: attemptList.count === 0
+                        text: qsTr("Play the inputs (%1) and press a driving key to take over. Every race you drive is kept here; Keep makes one the base inputs.")
+                              .arg(raceControls.keyText("pause"))
+                        wrapMode: Text.WordWrap
+                        color: AppTheme.textMuted
+                        font.pixelSize: 11
+                    }
+
+                    ListView {
+                        id: attemptList
+                        objectName: "attemptList"
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        spacing: 2
+                        model: window.viewer.attempts
+                        delegate: ThemedItemDelegate {
+                            required property var modelData
+                            width: ListView.view.width
+                            highlighted: modelData.id === window.viewer.selectedRunId
+                            text: modelData.name
+                                  + " · " + qsTr("from %1").arg(window.raceTimeText(modelData.takeoverMs))
+                                  + " · " + (modelData.finished && modelData.finishTimeMs >= 0
+                                             ? qsTr("finished %1").arg(window.raceTimeText(modelData.finishTimeMs))
+                                             : window.raceTimeText(modelData.live ? window.viewer.durationMs : modelData.endMs))
+                                  + " · CP " + modelData.checkpoints
+                            font.pixelSize: 12
+                            ToolTip.visible: hovered && !modelData.live
+                            ToolTip.text: qsTr("Watch it from 2 s before its takeover")
+                            onClicked: {
+                                if (!modelData.live) {
+                                    window.viewer.watchAttempt(modelData.id)
+                                    manualInputFocus.forceActiveFocus()
+                                }
+                            }
+                        }
+                    }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: 6
+
+                        ThemedButton {
+                            objectName: "keepAttemptButton"
+                            text: qsTr("Keep")
+                            enabled: attemptsPanel.shown !== null
+                                     && !window.controller.running
+                                     && !window.controller.extractingReplayInputs
+                            ToolTip.visible: hovered
+                            ToolTip.text: qsTr("Make the selected attempt the base inputs")
+                            onClicked: {
+                                attemptsPanel.inputsBeforeKeep = window.controller.baseInputScript
+                                window.controller.baseInputScript =
+                                    window.viewer.attemptScript(attemptsPanel.shown.id)
+                                attemptsPanel.canUndoKeep = true
+                            }
+                        }
+                        ThemedButton {
+                            objectName: "undoKeepButton"
+                            text: qsTr("Undo keep")
+                            enabled: attemptsPanel.canUndoKeep
+                                     && !window.controller.running
+                            onClicked: {
+                                window.controller.baseInputScript = attemptsPanel.inputsBeforeKeep
+                                attemptsPanel.canUndoKeep = false
+                            }
+                        }
+                        Item { Layout.fillWidth: true }
                     }
                 }
             }
@@ -5474,6 +5610,46 @@ ApplicationWindow {
                                               === "multi-threaded-cpu"
                                               ? qsTr("Runs independent optimized CPU simulations across multiple worker threads")
                                             : qsTr("Broadest compatibility")
+                                    color: AppTheme.textMuted
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
+                                }
+
+                                Label {
+                                    visible: physicsModeCombo.visible
+                                    text: qsTr("Physics")
+                                    font.weight: Font.Medium
+                                }
+
+                                StyledComboBox {
+                                    id: physicsModeCombo
+
+                                    objectName: "physicsModeCombo"
+                                    Layout.fillWidth: true
+                                    visible: window.controller.simulationBackendId
+                                             === "cuda"
+                                             && window.controller.approximatePhysicsAvailable
+                                    model: [
+                                        { id: "exact", label: qsTr("Exact") },
+                                        { id: "approximate", label: qsTr("Approximate") }
+                                    ]
+                                    textRole: "label"
+                                    valueRole: "id"
+                                    selectedValue: window.controller.approximatePhysics
+                                                   ? "approximate" : "exact"
+                                    enabled: !window.controller.running
+                                             && !window.viewer.loading
+                                    onActivated: selectedIndex =>
+                                        window.controller.approximatePhysics =
+                                            valueAt(selectedIndex) === "approximate"
+                                }
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    visible: physicsModeCombo.visible
+                                    text: window.controller.approximatePhysics
+                                          ? qsTr("Searches with faster approximate physics and rebuilds each new best with exact physics. Results are the exact runs; History adds the approximate score and the drift between the two runs.")
+                                          : qsTr("Searches with the game's exact physics")
                                     color: AppTheme.textMuted
                                     wrapMode: Text.WordWrap
                                     font.pixelSize: 11
@@ -6208,19 +6384,6 @@ ApplicationWindow {
                                         window.controller.progressIndeterminate
                                 }
 
-                                TextArea {
-                                    objectName: "searchResultText"
-                                    Layout.fillWidth: true
-                                    visible: text.length > 0 &&
-                                             window.controller.running
-                                    text: window.controller.resultText
-                                    readOnly: true
-                                    selectByMouse: true
-                                    wrapMode: Text.WordWrap
-                                    color: AppTheme.text
-                                    background: null
-                                }
-
                                 FailureNotice {
                                     objectName: "searchFailure"
                                     Layout.fillWidth: true
@@ -6240,6 +6403,7 @@ ApplicationWindow {
                                         controller: window.controller
                                         viewer: window.viewer
                                         onInputsSelected: searchInputs.selectedSource = 1
+                                        onLiveSelected: searchInputs.selectedSource = 0
                                     }
                                 }
                             }
@@ -6337,12 +6501,6 @@ ApplicationWindow {
                 }
                 MenuSeparator {}
                 ThemedMenuItem {
-                    objectName: "gamepadMenuItem"
-                    text: qsTr("Gamepad settings...")
-                    onTriggered: gamepadDialog.open()
-                }
-                MenuSeparator {}
-                ThemedMenuItem {
                     objectName: "quitMenuItem"
                     text: qsTr("Quit")
                     shortcutText: "Ctrl+Q"
@@ -6394,6 +6552,12 @@ ApplicationWindow {
                     enabled: window.lastTextEditor !== null
                     onTriggered: window.editText("selectAll")
                 }
+                MenuSeparator {}
+                ThemedMenuItem {
+                    objectName: "preferencesMenuItem"
+                    text: qsTr("Preferences...")
+                    onTriggered: preferencesDialog.open()
+                }
             }
 
             GlassMenu {
@@ -6411,6 +6575,7 @@ ApplicationWindow {
                 PanelMenuItem { panelId: "splits"; text: qsTr("Splits") }
                 PanelMenuItem { panelId: "playback"; text: qsTr("Playback") }
                 PanelMenuItem { panelId: "manualDrive"; text: qsTr("Manual driving") }
+                PanelMenuItem { panelId: "attempts"; text: qsTr("Attempts") }
                 PanelMenuItem { panelId: "whiteboard"; text: qsTr("Whiteboard") }
                 ThemedMenuItem {
                     text: qsTr("Drawings")
@@ -6436,6 +6601,14 @@ ApplicationWindow {
                     onTriggered: window.controller.viewerVisible = !window.controller.viewerVisible
                 }
                 MenuSeparator {}
+                ThemedMenuItem {
+                    objectName: "fullScreenMenuItem"
+                    text: qsTr("Full screen")
+                    shortcutText: "F11"
+                    showMark: true
+                    marked: window.visibility === Window.FullScreen
+                    onTriggered: window.toggleFullScreen()
+                }
                 ThemedMenuItem {
                     text: qsTr("Zoom in")
                     shortcutText: "Ctrl++"

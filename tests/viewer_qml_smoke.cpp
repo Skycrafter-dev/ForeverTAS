@@ -654,7 +654,7 @@ int main(int argc, char **argv) {
     QObject *const extractInputsMenuItem =
             root->findChild<QObject *>(QStringLiteral("extractInputsMenuItem"));
     QObject *const gamepadMenuItem =
-            root->findChild<QObject *>(QStringLiteral("gamepadMenuItem"));
+            root->findChild<QObject *>(QStringLiteral("preferencesMenuItem"));
     QObject *const dockSpace =
             root->findChild<QObject *>(QStringLiteral("dockSpace"));
     QObject *const dockLayout =
@@ -1170,35 +1170,50 @@ int main(int argc, char **argv) {
     if (passManagementOnly) return passManagementValid ? 0 : 1;
     QObject *const sessionHistory = root->findChild<QObject *>(
             QStringLiteral("searchSessionHistory"));
-    bool sessionSorting = sessionHistory != nullptr;
+    // The result table: best result first, then any column either way.
+    QQmlComponent resultTableComponent(&engine);
+    resultTableComponent.setData(R"QML(
+        import QtQuick
+        import "."
+        ResultTable {}
+    )QML", QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_SOURCE_DIR "/qml/ResultTableProbe.qml")));
+    std::unique_ptr<QObject> resultTable(resultTableComponent.create());
+    bool sessionSorting = sessionHistory != nullptr && resultTable != nullptr;
     if (sessionSorting) {
+        const QVariantList columns{QVariantMap{{QStringLiteral("label"), QStringLiteral("Distance")},
+                                               {QStringLiteral("kind"), QStringLiteral("distance")},
+                                               {QStringLiteral("better"), QStringLiteral("lower")}}};
         const QVariantList rows{
                 QVariantMap{{QStringLiteral("restart"), 0},
                             {QStringLiteral("attempts"), 5},
                             {QStringLiteral("elapsedMs"), 300},
+                            {QStringLiteral("columns"), columns},
                             {QStringLiteral("metrics"), QVariantList{9.0}}},
                 QVariantMap{{QStringLiteral("restart"), 1},
                             {QStringLiteral("attempts"), 10},
                             {QStringLiteral("elapsedMs"), 200},
+                            {QStringLiteral("columns"), columns},
                             {QStringLiteral("metrics"), QVariantList{2.0}}}};
+        resultTable->setProperty("rows", rows);
         for (const auto &[column, ascending, expectedRestart] :
-             {std::tuple{0, true, 0}, std::tuple{1, false, 1},
-              std::tuple{2, true, 1}, std::tuple{3, true, 1}}) {
-            QVariant sorted;
-            sessionSorting &= QMetaObject::invokeMethod(
-                    sessionHistory, "sorted",
-                    Q_RETURN_ARG(QVariant, sorted),
-                    Q_ARG(QVariant, QVariant(rows)),
-                    Q_ARG(QVariant, QVariant(column)),
-                    Q_ARG(QVariant, QVariant(ascending)));
-            const QVariantList ordered = sorted.toList();
-            sessionSorting &= !ordered.isEmpty() &&
-                    ordered.front().toMap()
-                            .value(QStringLiteral("data"))
-                            .toMap()
-                            .value(QStringLiteral("restart"))
-                            .toInt() == expectedRestart;
+             {std::tuple{QString(), true, 1}, std::tuple{QStringLiteral("m0"), false, 0},
+              std::tuple{QStringLiteral("attempts"), true, 0},
+              std::tuple{QStringLiteral("elapsed"), true, 1},
+              std::tuple{QStringLiteral("restart"), false, 1}}) {
+            resultTable->setProperty("sortColumn", column);
+            resultTable->setProperty("sortAscending", ascending);
+            const QVariantList body = resultTable->property("body").toList();
+            sessionSorting &= body.size() == 2 &&
+                    body.front().toMap().value(QStringLiteral("row")).toMap()
+                            .value(QStringLiteral("restart")).toInt() == expectedRestart;
         }
+        // the best row is marked, and the result reads in its unit
+        resultTable->setProperty("sortColumn", QString());
+        const QVariantList body = resultTable->property("body").toList();
+        sessionSorting &= body.size() == 2 && body.front().toMap().value(QStringLiteral("best")).toBool() &&
+                body.front().toMap().value(QStringLiteral("cells")).toList().value(1).toString() == QStringLiteral("2") &&
+                body.back().toMap().value(QStringLiteral("cells")).toList().value(1).toString() == QStringLiteral("9");
+        if (!sessionSorting) std::cerr << "result table sorting regression\n";
     }
     QQmlComponent historyProbeComponent(&engine);
     historyProbeComponent.setData(R"QML(
@@ -1219,7 +1234,7 @@ int main(int argc, char **argv) {
                 function selectSession(index) {}
                 function addCycle() {
                     cycleRows = cycleRows.concat([{restart: cycleRows.length, attempts: 1,
-                        elapsedMs: 10, metricLabels: [], metrics: []}])
+                        elapsedMs: 10, columns: [], metrics: []}])
                     historyChanged()
                 }
             }
@@ -1696,14 +1711,12 @@ int main(int argc, char **argv) {
                     auto *const jumpEndIcon = qobject_cast<QQuickItem *>(
                             root->findChild<QObject *>(
                                     QStringLiteral("jumpEndTransportIcon")));
-                    QObject *const manualDriveButton =
+                    auto *const rewindButton = qobject_cast<QQuickItem *>(
                             root->findChild<QObject *>(
-                                    QStringLiteral("manualDriveButton"));
-                    auto *const takeOverOnInputCheckBox =
-                            qobject_cast<QQuickItem *>(
-                                    root->findChild<QObject *>(
-                                            QStringLiteral(
-                                                    "takeOverOnInputCheckBox")));
+                                    QStringLiteral("rewindButton")));
+                    auto *const speedControls = qobject_cast<QQuickItem *>(
+                            root->findChild<QObject *>(
+                                    QStringLiteral("speedControls")));
                     auto *const manualDriveStatus =
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(
@@ -1769,10 +1782,8 @@ int main(int argc, char **argv) {
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(QStringLiteral(
                                             "telemetryFieldComboPopupList")));
-                    QObject *const stepBackward = root->findChild<QObject *>(
-                            QStringLiteral("stepBackwardShortcut"));
-                    QObject *const stepForward = root->findChild<QObject *>(
-                            QStringLiteral("stepForwardShortcut"));
+                    QObject *const raceControls = root->findChild<QObject *>(
+                            QStringLiteral("raceControls"));
                     QObject *const autoPacksSuggestion =
                             root->findChild<QObject *>(
                                     QStringLiteral("autoPacksSuggestion"));
@@ -2048,53 +2059,35 @@ int main(int argc, char **argv) {
                     QObject *const elapsedMetricValue =
                             root->findChild<QObject *>(QStringLiteral(
                                     "elapsedMetricValue"));
+                    // The race's keys: one action each, TMTAS layout.
+                    const auto raceAction =
+                            [raceControls](Qt::Key key,
+                                           Qt::KeyboardModifiers modifiers =
+                                                   Qt::NoModifier) {
+                                QVariant result;
+                                const bool invoked =
+                                        raceControls != nullptr &&
+                                        QMetaObject::invokeMethod(
+                                                raceControls, "actionForKey",
+                                                Q_RETURN_ARG(QVariant, result),
+                                                Q_ARG(QVariant, QVariant::fromValue(static_cast<int>(key))),
+                                                Q_ARG(QVariant, QVariant::fromValue(static_cast<int>(modifiers))),
+                                                Q_ARG(QVariant, QVariant::fromValue(true)));
+                                return invoked ? result.toString()
+                                               : QStringLiteral("<invoke failed>");
+                            };
                     const bool keyboardStepping =
-                            stepBackward != nullptr &&
-                            stepForward != nullptr &&
-                            stepBackward->property("enabled").toBool() &&
-                            stepForward->property("enabled").toBool() &&
-                            stepBackward->property("sequence").toString() ==
-                                    QStringLiteral("Left") &&
-                            stepForward->property("sequence").toString() ==
-                                    QStringLiteral("Right");
-                    const auto manualMapping =
-                            [root](Qt::Key key) {
-                                QVariant result;
-                                const bool invoked =
-                                        QMetaObject::invokeMethod(
-                                                root,
-                                                "manualControlForKey",
-                                                Q_RETURN_ARG(
-                                                        QVariant, result),
-                                                Q_ARG(
-                                                        QVariant,
-                                                        QVariant::fromValue(
-                                                                static_cast<
-                                                                        int>(
-                                                                        key))));
-                                return invoked
-                                        ? result.toString()
-                                        : QStringLiteral("<invoke failed>");
-                            };
-                    const auto manualActionMapping =
-                            [root](Qt::Key key) {
-                                QVariant result;
-                                const bool invoked =
-                                        QMetaObject::invokeMethod(
-                                                root,
-                                                "manualActionForKey",
-                                                Q_RETURN_ARG(
-                                                        QVariant, result),
-                                                Q_ARG(
-                                                        QVariant,
-                                                        QVariant::fromValue(
-                                                                static_cast<
-                                                                        int>(
-                                                                        key))));
-                                return invoked
-                                        ? result.toString()
-                                        : QStringLiteral("<invoke failed>");
-                            };
+                            raceAction(Qt::Key_D) == QStringLiteral("stepBack") &&
+                            raceAction(Qt::Key_F) == QStringLiteral("stepForward") &&
+                            raceAction(Qt::Key_Space) == QStringLiteral("pause") &&
+                            raceAction(Qt::Key_R) == QStringLiteral("rewind") &&
+                            raceAction(controller.keyboardIsAzerty() ? Qt::Key_A : Qt::Key_Q) ==
+                                    QStringLiteral("slower") &&
+                            raceAction(Qt::Key_E) == QStringLiteral("faster") &&
+                            raceAction(Qt::Key_F1) == QStringLiteral("load1") &&
+                            raceAction(Qt::Key_F1, Qt::ShiftModifier) == QStringLiteral("save1") &&
+                            raceAction(Qt::Key_F4) == QStringLiteral("load4") &&
+                            raceAction(Qt::Key_Left, Qt::ShiftModifier) == QStringLiteral("left");
                     const auto sendMouseClick =
                             [root](QQuickItem *item) {
                                 auto *const quickWindow =
@@ -2133,6 +2126,7 @@ int main(int argc, char **argv) {
                                 return press.isAccepted() &&
                                         release.isAccepted();
                             };
+                    (void)sendMouseClick;
                     const auto sendMouseClickAt =
                             [root](QQuickItem *item, QPointF scenePosition) {
                                 auto *const quickWindow =
@@ -2170,49 +2164,19 @@ int main(int argc, char **argv) {
                                 ? space->mapToScene(center.center())
                                 : QPointF();
                     };
-                    auto *const manualDriveItem =
-                            qobject_cast<QQuickItem *>(manualDriveButton);
+                    // No Drive button or takeover box: a driving key
+                    // takes over the race that plays.
                     bool takeoverControlValid =
-                            takeOverOnInputCheckBox != nullptr &&
-                            manualDriveItem != nullptr &&
+                            root->findChild<QObject *>(QStringLiteral("manualDriveButton")) == nullptr &&
+                            root->findChild<QObject *>(QStringLiteral("takeOverOnInputCheckBox")) == nullptr &&
+                            rewindButton != nullptr && speedControls != nullptr &&
                             playbackDock != nullptr &&
                             playbackDock->width() >= 429.0 &&
-                            takeOverOnInputCheckBox->parentItem() ==
-                                    manualDriveItem->parentItem() &&
-                            takeOverOnInputCheckBox->x() >=
-                                    manualDriveItem->x() +
-                                            manualDriveItem->width() &&
-                            takeOverOnInputCheckBox
-                                            ->property("text")
-                                            .toString() ==
-                                    QStringLiteral("Take Over on Input") &&
-                            takeOverOnInputCheckBox
-                                    ->property("enabled")
-                                    .toBool() &&
-                            !takeOverOnInputCheckBox
-                                     ->property("checked")
-                                     .toBool() &&
-                            !viewer.takeOverOnInput();
+                            viewer.takeOverOnInput();
                     if (takeoverControlValid) {
-                        // The click must toggle the box; on a glass panel Qt
-                        // reports the synthetic press as unaccepted even
-                        // though the box receives it.
-                        sendMouseClick(takeOverOnInputCheckBox);
-                        takeoverControlValid &=
-                                viewer.takeOverOnInput() &&
-                                takeOverOnInputCheckBox
-                                        ->property("checked")
-                                        .toBool();
                         viewer.play();
                         QCoreApplication::processEvents();
-                        takeoverControlValid &=
-                                viewer.playing() &&
-                                !stepBackward
-                                         ->property("enabled")
-                                         .toBool() &&
-                                !stepForward
-                                         ->property("enabled")
-                                         .toBool();
+                        takeoverControlValid &= viewer.playing();
                         // The race view fills the window; click the free
                         // area between the panels.
                         takeoverControlValid &=
@@ -2222,19 +2186,7 @@ int main(int argc, char **argv) {
                                         ->property("activeFocus")
                                         .toBool();
                         viewer.pause();
-                        viewer.setTakeOverOnInput(false);
                         QCoreApplication::processEvents();
-                        takeoverControlValid &=
-                                !viewer.takeOverOnInput() &&
-                                !takeOverOnInputCheckBox
-                                         ->property("checked")
-                                         .toBool() &&
-                                stepBackward
-                                        ->property("enabled")
-                                        .toBool() &&
-                                stepForward
-                                        ->property("enabled")
-                                        .toBool();
                     }
                     bool freeCameraUiValid =
                             viewer.loaded() &&
@@ -2933,47 +2885,18 @@ int main(int argc, char **argv) {
                             playbackDock != nullptr &&
                             playbackDock->width() >= 285.0 &&
                             takeoverControlValid &&
-                            manualDriveButton != nullptr &&
-                            manualDriveButton->property("text").toString() ==
-                                    QStringLiteral("Drive") &&
-                            manualDriveButton
-                                    ->property("enabled")
-                                    .toBool() ==
-                                    (viewer.loaded() &&
-                                     !viewer.loading()) &&
                             manualDriveStatus != nullptr &&
                             !manualDriveStatus->isVisible() &&
                             manualInputFocus != nullptr &&
-                            manualMapping(Qt::Key_Left) ==
-                                    QStringLiteral("left") &&
-                            manualMapping(Qt::Key_A) ==
-                                    QStringLiteral("left") &&
-                            manualMapping(Qt::Key_Q) ==
-                                    QStringLiteral("left") &&
-                            manualMapping(Qt::Key_Right) ==
-                                    QStringLiteral("right") &&
-                            manualMapping(Qt::Key_D) ==
-                                    QStringLiteral("right") &&
-                            manualMapping(Qt::Key_Up) ==
-                                    QStringLiteral("accelerate") &&
-                            manualMapping(Qt::Key_W) ==
-                                    QStringLiteral("accelerate") &&
-                            manualMapping(Qt::Key_Z) ==
-                                    QStringLiteral("accelerate") &&
-                            manualMapping(Qt::Key_Down) ==
-                                    QStringLiteral("brake") &&
-                            manualMapping(Qt::Key_S) ==
-                                    QStringLiteral("brake") &&
-                            manualMapping(Qt::Key_Escape).isEmpty() &&
-                            manualActionMapping(Qt::Key_Delete) ==
-                                    QStringLiteral("give-up") &&
-                            manualActionMapping(Qt::Key_Return) ==
-                                    QStringLiteral("respawn") &&
-                            manualActionMapping(Qt::Key_Enter) ==
-                                    QStringLiteral("respawn") &&
-                            manualActionMapping(Qt::Key_Backspace) ==
-                                    QStringLiteral("respawn") &&
-                            manualActionMapping(Qt::Key_Escape).isEmpty() &&
+                            raceAction(Qt::Key_Left) == QStringLiteral("left") &&
+                            raceAction(Qt::Key_Right) == QStringLiteral("right") &&
+                            raceAction(Qt::Key_Up) == QStringLiteral("accelerate") &&
+                            raceAction(Qt::Key_Down) == QStringLiteral("brake") &&
+                            raceAction(Qt::Key_Escape).isEmpty() &&
+                            raceAction(Qt::Key_Delete) == QStringLiteral("restart") &&
+                            raceAction(Qt::Key_Return) == QStringLiteral("respawn") &&
+                            raceAction(Qt::Key_Enter) == QStringLiteral("respawn") &&
+                            raceAction(Qt::Key_Backspace) == QStringLiteral("respawn") &&
                             freeCameraUiValid;
                     const qreal originalWindowWidth =
                             root->property("width").toReal();
@@ -5887,14 +5810,8 @@ int main(int argc, char **argv) {
                                 << (playbackDock != nullptr
                                             ? playbackDock->width()
                                             : -1.0)
-                                << ", button="
-                                << (manualDriveButton != nullptr)
-                                << "/"
-                                << (manualDriveButton != nullptr
-                                            ? manualDriveButton
-                                                      ->property("enabled")
-                                                      .toBool()
-                                            : true)
+                                << ", keyboard=" << keyboardStepping
+                                << ", takeover=" << takeoverControlValid
                                 << ", status="
                                 << (manualDriveStatus != nullptr)
                                 << "/"
@@ -5904,25 +5821,9 @@ int main(int argc, char **argv) {
                                 << ", focus="
                                 << (manualInputFocus != nullptr)
                                 << ", map="
-                                << manualMapping(Qt::Key_Left)
-                                           .toStdString()
-                                << "/"
-                                << manualMapping(Qt::Key_A).toStdString()
-                                << "/"
-                                << manualMapping(Qt::Key_Q).toStdString()
-                                << "/"
-                                << manualMapping(Qt::Key_Right)
-                                           .toStdString()
-                                << "/"
-                                << manualMapping(Qt::Key_Up).toStdString()
-                                << "/"
-                                << manualMapping(Qt::Key_W).toStdString()
-                                << "/"
-                                << manualMapping(Qt::Key_Z).toStdString()
-                                << "/"
-                                << manualMapping(Qt::Key_Down).toStdString()
-                                << "/"
-                                << manualMapping(Qt::Key_S).toStdString()
+                                << raceAction(Qt::Key_Left).toStdString()
+                                << "/" << raceAction(Qt::Key_Delete).toStdString()
+                                << "/" << raceAction(Qt::Key_Backspace).toStdString()
                                 << ")"
                                 << '\n';
                     }
@@ -8618,14 +8519,18 @@ int main(int argc, char **argv) {
                                                     Qt::Key key,
                                                     bool active,
                                                     bool autoRepeat = false) {
-                                                if (currentRoot == nullptr) {
+                                                QObject *const keys = currentRoot == nullptr
+                                                        ? nullptr
+                                                        : currentRoot->findChild<QObject *>(
+                                                                  QStringLiteral("raceControls"));
+                                                if (keys == nullptr) {
                                                     return false;
                                                 }
                                                 QVariant handled;
                                                 const bool invoked =
                                                         QMetaObject::invokeMethod(
-                                                                currentRoot,
-                                                                "handleManualActionKey",
+                                                                keys,
+                                                                "handleKey",
                                                                 Q_RETURN_ARG(
                                                                         QVariant,
                                                                         handled),
@@ -8634,6 +8539,9 @@ int main(int argc, char **argv) {
                                                                         QVariant::fromValue(
                                                                                 static_cast<int>(
                                                                                         key))),
+                                                                Q_ARG(
+                                                                        QVariant,
+                                                                        QVariant::fromValue(0)),
                                                                 Q_ARG(
                                                                         QVariant,
                                                                         QVariant::fromValue(
@@ -8783,15 +8691,13 @@ int main(int argc, char **argv) {
                                         viewer.setTakeOverOnInput(savedTakeOver);
                                         viewer.whiteboard()->setActive(savedWhiteboardActive);
                                     }
-                                    QObject *const currentManualDriveButton =
-                                            currentRoot->findChild<QObject *>(
-                                                    QStringLiteral(
-                                                            "manualDriveButton"));
+                                    viewer.startManualDrive();
                                     const bool driveClicked =
-                                            currentManualDriveButton != nullptr &&
+                                            viewer.manualDriving() &&
+                                            currentViewport != nullptr &&
                                             QMetaObject::invokeMethod(
-                                                    currentManualDriveButton,
-                                                    "clicked");
+                                                    currentViewport,
+                                                    "focusCurrentCar");
                                     QCoreApplication::processEvents();
                                     const bool driveFocusedRealCar =
                                             driveClicked &&
@@ -9008,13 +8914,14 @@ int main(int argc, char **argv) {
                                     const bool deleteGaveUp =
                                             invokeCurrentManualKey(
                                                     Qt::Key_Delete, true) &&
-                                            viewer.manualDriving() &&
-                                            viewer.tickCount() == 1 &&
-                                            viewer.timeMs() == 0 &&
-                                            !viewer.currentInputScript()
-                                                     .contains(
-                                                             QStringLiteral(
-                                                                     "press enter"));
+                                            !viewer.manualDriving() &&
+                                            viewer.playing() &&
+                                            viewer.selectedRunId() ==
+                                                    QStringLiteral("preview") &&
+                                            viewer.timeMs() < 100;
+                                    viewer.pause();
+                                    viewer.startManualDrive();
+                                    QCoreApplication::processEvents();
                                     const bool backspaceRespawn =
                                             invokeCurrentManualKey(
                                                     Qt::Key_Backspace,

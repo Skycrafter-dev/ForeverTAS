@@ -1610,6 +1610,36 @@ bool TestInputScriptParsingAndBaseline() {
                       "clock input timestamp was not parsed exactly");
     }
 
+    // TMInterface's ranges: the command at the start, undone at the end.
+    {
+        const auto ranges = forevertas::ParseInputScript(
+                "0-1.50 press up\n1:02.00-1:02.50 press left\n2.00-2.30 steer -20000\n"
+                "3.00-3.10 gas 40000");
+        okay &= Check(ranges && ranges.commands.size() == 8u, "ranges were not parsed");
+        if (ranges && ranges.commands.size() == 8u) {
+            const auto &c = ranges.commands;
+            using forevervalidator::experimental::PhysicsSandboxSwitchState;
+            okay &= Check(c[0].userTimeMs == 0 && c[1].userTimeMs == 1500 &&
+                                  c[0].value.switchState == PhysicsSandboxSwitchState::Pressed &&
+                                  c[1].value.switchState == PhysicsSandboxSwitchState::Released &&
+                                  c[1].action == SandboxInputAction::Accelerate &&
+                                  c[2].userTimeMs == 62000 && c[3].userTimeMs == 62500 &&
+                                  c[3].action == SandboxInputAction::SteerLeft &&
+                                  c[3].value.switchState == PhysicsSandboxSwitchState::Released &&
+                                  c[4].value.analog == -20000 && c[5].userTimeMs == 2300 &&
+                                  c[5].value.analog == 0 && c[6].value.analog == 40000 &&
+                                  c[7].action == SandboxInputAction::Gas && c[7].value.analog == 0 &&
+                                  c[1].sourceLine == 1u && c[7].sourceLine == 4u,
+                          "a range did not give its start and end commands");
+        }
+    }
+    expectError("1.00-1.00 press up", "end after it starts");
+    expectError("1.00-0.50 press up", "end after it starts");
+    expectError("1.00-2.00 rel up", "range needs press");
+    expectError("1.00-2.00 press enter", "range needs press");
+    expectError("1.00-2.005 press up", "10 ms-aligned");
+    expectError("1.00- press up", "10 ms-aligned");
+
     const forevertas::InputScriptParseResult tooLate =
             forevertas::ParseInputScript("2.00 press up");
     const forevertas::InputScriptBaselineResult lateInput =

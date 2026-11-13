@@ -50,7 +50,7 @@ QString LastImprovementText(const SearchLiveUpdate &live) {
 }
 
 QString FormatLive(const SearchLiveUpdate &live, const QString &heading) {
-    return QStringLiteral(
+    QString text = QStringLiteral(
                    "%1: %2\n"
                    "%3\n"
                    "Improvements: %4\n"
@@ -62,6 +62,17 @@ QString FormatLive(const SearchLiveUpdate &live, const QString &heading) {
             .arg(FormatCompactNumber(static_cast<double>(
                     live.mutationImprovementCount)))
             .arg(LastImprovementText(live));
+    if (live.approximate) {
+        text += QStringLiteral("\nApproximate: %1")
+                        .arg(QString::fromStdString(
+                                live.approximate->description));
+        if (live.approximate->driftMeters) {
+            text += QStringLiteral("\nDrift: %1 mm")
+                            .arg(*live.approximate->driftMeters * 1000.0,
+                                 0, 'f', 3);
+        }
+    }
+    return text;
 }
 
 SearchLiveUpdate ToLiveUpdate(const SearchResult &result) {
@@ -82,7 +93,8 @@ SearchLiveUpdate ToLiveUpdate(const SearchResult &result) {
             result.lastImprovementElapsed,
             {},
             result.objectiveScores,
-            result.metricValues};
+            result.metricValues,
+            result.approximate};
 }
 
 QString FormatResult(const SearchResult &result) {
@@ -107,6 +119,7 @@ SearchLiveUpdate RetainedResult(const SearchLiveUpdate &live) {
     result.lastImprovementElapsed = live.lastImprovementElapsed;
     result.objectiveScores = live.objectiveScores;
     result.metricValues = live.metricValues;
+    result.approximate = live.approximate;
     return result;
 }
 
@@ -211,6 +224,8 @@ QString SearchStageStatus(SearchProgressStage stage,
                 : QStringLiteral("Preparing final best-run sampling...");
     case SearchProgressStage::FinalSampling:
         return QStringLiteral("Sampling best run...");
+    case SearchProgressStage::ExactRebuild:
+        return QStringLiteral("Rebuilding the best on exact physics...");
     }
     return QStringLiteral("Preparing search...");
 }
@@ -337,7 +352,7 @@ void SearchWorker::run() {
                            latestSource = SearchWinnerSource::Baseline,
                            latestIteration =
                                    std::optional<std::uint64_t>{},
-                           publishImprovement](
+                           publishImprovement, currentRestart](
                                   const SearchLiveUpdate &live) mutable {
         if (!retainedResult || latestInputsText.isEmpty() ||
             latestSource != live.winnerSource ||
@@ -357,6 +372,8 @@ void SearchWorker::run() {
         emit bestChanged(
                 FormatLive(live, QStringLiteral("Current best")),
                 latestInputsText);
+        emit liveRowChanged(SearchSessionStore::LiveRow(
+                request_, currentRestart->load(std::memory_order_relaxed), live));
     };
 #if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
     if (IsGpuBackend(request_.backend)) {

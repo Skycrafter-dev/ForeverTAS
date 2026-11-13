@@ -338,15 +338,12 @@ def build_linux(manifest: dict, selected: list[str]) -> None:
             if cubins != {cuda_arch}:
                 raise ValueError(f"{flavor} contains unexpected CUDA cubins: {cubins}")
         if amd:
-            inspection = command[:command.index(hip)] + [
-                hip, "bash", "-lc",
-                "cp /workspace/build/distribution-amd-rx7000-rx9000/bin/ForeverTAS "
-                "/tmp/ForeverTAS && cd /tmp && "
-                "/opt/rocm/lib/llvm/bin/llvm-objdump --offloading ForeverTAS"]
-            targets = set(re.findall(
-                r"hipv4-amdgcn-amd-amdhsa--(gfx[0-9]+)", run(*inspection)))
-            if targets != set(SUPPORTED_GFX):
-                raise ValueError(f"AMD package has unexpected HIP targets: {targets}")
+            # Bundle labels alone can look right while every slot holds one
+            # architecture's code; compare each slot with its code object.
+            subprocess.run((sys.executable, "-I",
+                            str(ROOT / "packaging/release/verify_hip_targets.py"),
+                            str(ROOT / "build" / f"distribution-{flavor}" / "bin/ForeverTAS"),
+                            "--expect", ",".join(SUPPORTED_GFX)), check=True)
         artifact = ROOT / "dist" / asset_name(manifest["release"]["version"],
                                               "linux", flavor)
         binary = ROOT / "build" / f"distribution-{flavor}" / "bin/ForeverTAS"

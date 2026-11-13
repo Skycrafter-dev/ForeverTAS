@@ -16,6 +16,8 @@ option(FOREVERTAS_ENABLE_CUDA
     "Build ForeverTAS with the optional ForeverValidator CUDA backend" OFF)
 option(FOREVERTAS_ENABLE_HIP
     "Build ForeverTAS with the optional ForeverValidator HIP backend" OFF)
+option(FOREVERTAS_ENABLE_TWIN
+    "Build ForeverTAS with ForeverValidator's twin engine (Approximate physics on CUDA)" OFF)
 option(FOREVERTAS_QML_MODULE_EXTERNAL
     "Use the release's shared QML module instead of building it here" OFF)
 set(FOREVERTAS_COMMON_QML_DIR "" CACHE PATH
@@ -104,6 +106,13 @@ set(FOREVERVALIDATOR_ENABLE_HIP ${FOREVERTAS_ENABLE_HIP} CACHE BOOL
     "Enable the embedded ForeverValidator HIP backend" FORCE)
 set(FOREVERVALIDATOR_ENABLE_VULKAN ${FOREVERTAS_ENABLE_VULKAN} CACHE BOOL
     "Enable the embedded ForeverValidator Vulkan backend" FORCE)
+if(FOREVERTAS_ENABLE_TWIN AND NOT FOREVERTAS_ENABLE_CUDA)
+    message(FATAL_ERROR "FOREVERTAS_ENABLE_TWIN needs FOREVERTAS_ENABLE_CUDA (the twin searches on CUDA)")
+endif()
+set(FOREVERVALIDATOR_BUILD_TWIN ${FOREVERTAS_ENABLE_TWIN} CACHE BOOL
+    "Build the embedded ForeverValidator twin engine" FORCE)
+set(FOREVERVALIDATOR_BUILD_TWIN_GPU ${FOREVERTAS_ENABLE_TWIN} CACHE BOOL
+    "Build the embedded ForeverValidator twin's CUDA engine" FORCE)
 if(WIN32 AND FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "nvidia")
     set(CMAKE_HIP_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreaded
         -Xcompiler=-MT)
@@ -170,10 +179,20 @@ if(FOREVERTAS_PREBUILT_VALIDATOR_DIR)
             HINTS "$ENV{HIP_PATH}/include" "$ENV{ROCM_PATH}/include" REQUIRED)
     endif()
 else()
+    if(WIN32 AND FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
+        # In cl driver mode, clang names every architecture's device image
+        # after the source when the object comes from /Fo, so each
+        # --offload-arch overwrites the previous image and every fat binary
+        # slot carries the last architecture's code. -o keeps one temporary
+        # image per architecture; the Validator inherits this rule.
+        enable_language(HIP)
+        string(REPLACE "/Fo<OBJECT>" "-o <OBJECT>"
+            CMAKE_HIP_COMPILE_OBJECT "${CMAKE_HIP_COMPILE_OBJECT}")
+    endif()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 7391ec7982cb394a22ea9fef67cd18207e0b654a
+        GIT_TAG 798d7d4f1a9c95de85781be652a12dfd2906d518
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -199,6 +218,8 @@ add_library(forevertas_core STATIC
     src/evaluators/precise_finish_time_evaluator.cpp
     src/evaluators/precise_finish_time_evaluator.h
     src/evaluators/checkpoint_time_evaluator.cpp
+    src/evaluators/around_walls_distance.cpp
+    src/evaluators/around_walls_distance.h
     src/evaluators/distance_target_evaluator.cpp
     src/evaluators/checkpoint_time_evaluator.h
     src/evaluators/distance_target_evaluator.h
@@ -297,6 +318,7 @@ add_library(forevertas_gui STATIC
     src/viewer/render_module_library.cpp
     src/viewer/render_module_library.h
     src/viewer/render_module_view.cpp
+    src/viewer/return_freed_memory.h
     src/viewer/render_module_view.h
     src/viewer/video_export_controller.cpp
     src/viewer/video_export_controller.h
@@ -331,6 +353,8 @@ add_library(forevertas_gui STATIC
     src/app/pose_target_model.cpp
     src/app/pose_target_model.h
     src/app/search_completion.h
+    src/app/keyboard_layout.cpp
+    src/app/keyboard_layout.h
     src/app/input_preview_binding.cpp
     src/app/input_preview_binding.h
     src/app/search_controller.cpp
@@ -534,7 +558,11 @@ qt_add_qml_module(forevertas_qml
         qml/GraphicsInspector.qml
         qml/VideoExportDialog.qml
         qml/Main.qml
+        qml/PreferencesDialog.qml
+        qml/RaceControls.qml
         qml/SearchSessionHistory.qml
+        qml/ResultFormat.js
+        qml/ResultTable.qml
         qml/SearchInputs.qml
         qml/SimulationDebuggerPanel.qml
         qml/SliderValueField.qml
@@ -1122,6 +1150,13 @@ if(BUILD_TESTING)
         "Replay paired with FOREVERTAS_TEST_CHALLENGE")
     set(FOREVERTAS_TEST_CHALLENGE "" CACHE FILEPATH
         "Standalone Challenge.Gbx used by optional scenario tests")
+    if(FOREVERTAS_ENABLE_TWIN)
+        # forevertas-approximate-search PACKS REPLAY BRANCH_MS WINDOW_MS [ATTEMPTS]
+        add_executable(forevertas-approximate-search
+            tests/approximate_search_tests.cpp)
+        target_link_libraries(forevertas-approximate-search PRIVATE
+            forevertas_core)
+    endif()
     if(FOREVERTAS_TEST_PACK_DIRECTORY AND FOREVERTAS_TEST_REPLAY)
         add_executable(forevertas-search-smoke
             tests/search_smoke.cpp)
@@ -1279,6 +1314,15 @@ if(BUILD_TESTING)
                  "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-gamepad PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
+        add_executable(forevertas-live-race-tests tests/live_race_tests.cpp)
+        target_link_libraries(forevertas-live-race-tests PRIVATE forevertas_gui Qt6::Gui)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-live-race-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-live-race COMMAND forevertas-live-race-tests
+                 "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-live-race PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
         add_executable(forevertas-live-retention-tests tests/live_retention_tests.cpp)
         target_link_libraries(forevertas-live-retention-tests PRIVATE forevertas_gui Qt6::Gui)
         if(FOREVERTAS_WARNING_OPTIONS)
@@ -1314,6 +1358,15 @@ if(BUILD_TESTING)
                  COMMAND forevertas-checkpoint-time-tests
                      "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-checkpoint-time PROPERTIES TIMEOUT 240)
+        add_executable(forevertas-distance-around-walls-tests tests/distance_around_walls_tests.cpp)
+        target_link_libraries(forevertas-distance-around-walls-tests PRIVATE forevertas_core)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-distance-around-walls-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-distance-around-walls
+                 COMMAND forevertas-distance-around-walls-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-distance-around-walls PROPERTIES TIMEOUT 60)
         if(FOREVERTAS_ENABLE_CUDA)
             # Both compare CPU results with CUDA sessions, whose memory
             # headroom check fails while other tests use the GPU.

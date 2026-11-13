@@ -44,6 +44,10 @@ struct DockFloatingGroup {
     QString current;
     QRectF rect;
     bool collapsed = false;
+    // Where it was put and the area it was put in: area changes place it
+    // from there, so a window shrunk and grown back finds it where it was.
+    QRectF placed;
+    QRectF placedArea;
 };
 
 // A group that is being moved: the panels and which one is on top.
@@ -128,7 +132,9 @@ public:
     bool setCurrent(const QString &group, const QString &panel);
     bool setCollapsed(const QString &floatingGroup, bool collapsed);
     // The area grew or shrank: floating panels keep their place from the
-    // nearest edges (a panel in the middle third stays centred).
+    // nearest edges of the area they were put in (a panel in the middle
+    // third stays centred). Those put since the last change are taken as
+    // put in from.
     void followArea(const QRectF &from, const QRectF &to);
     bool setFloatingRect(const QString &floatingGroup, const QRectF &rect);
     // Where a docked group would go back to if it were taken out now.

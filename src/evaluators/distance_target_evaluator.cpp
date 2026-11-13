@@ -1,5 +1,6 @@
 #include "evaluators/distance_target_evaluator.h"
 
+#include "evaluators/around_walls_distance.h"
 #include "evaluators/evaluator_utils.h"
 #include "searches/option_settings_utils.h"
 #include "time_format.h"
@@ -7,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
 #include <sstream>
 #include <stdexcept>
 
@@ -20,6 +22,8 @@ namespace sandbox = forevervalidator::experimental;
 constexpr double kNotReached = 1e12;
 // Each checkpoint still to come before the target outweighs any distance.
 constexpr double kPerEvent = 1e6;
+// Around walls: walls count up to this many metres from the trigger.
+constexpr std::uint32_t kMaximumReach = 256u;
 // Beyond this gap between the car's bounding sphere and a trigger's box,
 // the box distance stands in for the exact one.
 constexpr double kExactRange = 4.0;
@@ -142,6 +146,11 @@ struct CarShape {
     std::vector<Shape> shapes;
     // Bounding sphere around the car origin.
     double radius = 0.0;
+    // Around walls, the car is a sphere at the centre of its shapes' box,
+    // as wide as the box's smallest half size: it never closes a gap the
+    // car fits through.
+    Vec bodyCenter;
+    double bodyRadius = 0.0;
 };
 
 CarShape MakeCarShape(const std::vector<sandbox::PhysicsSandboxEllipsoid> &ellipsoids) {
@@ -164,6 +173,29 @@ CarShape MakeCarShape(const std::vector<sandbox::PhysicsSandboxEllipsoid> &ellip
                         std::max({shape.radii.x, shape.radii.y,
                                   shape.radii.z}));
         car.shapes.push_back(shape);
+    }
+    Vec low{std::numeric_limits<double>::max(), std::numeric_limits<double>::max(),
+            std::numeric_limits<double>::max()};
+    Vec high = low * -1.0;
+    for (const Shape &shape : car.shapes) {
+        // Half extents of a rotated ellipsoid's box along each axis.
+        const Vec ex = Rotate(shape.rotation, {shape.radii.x, 0.0, 0.0});
+        const Vec ey = Rotate(shape.rotation, {0.0, shape.radii.y, 0.0});
+        const Vec ez = Rotate(shape.rotation, {0.0, 0.0, shape.radii.z});
+        const Vec half{std::sqrt(ex.x * ex.x + ey.x * ey.x + ez.x * ez.x),
+                       std::sqrt(ex.y * ex.y + ey.y * ey.y + ez.y * ez.y),
+                       std::sqrt(ex.z * ex.z + ey.z * ey.z + ez.z * ez.z)};
+        low = {std::min(low.x, shape.center.x - half.x),
+               std::min(low.y, shape.center.y - half.y),
+               std::min(low.z, shape.center.z - half.z)};
+        high = {std::max(high.x, shape.center.x + half.x),
+                std::max(high.y, shape.center.y + half.y),
+                std::max(high.z, shape.center.z + half.z)};
+    }
+    if (!car.shapes.empty()) {
+        car.bodyCenter = (low + high) * 0.5;
+        const Vec half = (high - low) * 0.5;
+        car.bodyRadius = std::min({half.x, half.y, half.z});
     }
     return car;
 }
@@ -207,6 +239,20 @@ double ExactDistance(const CarShape &car, const Surface &surface,
     return best;
 }
 
+// How far the car's shapes reach from its body centre along a unit
+// direction (support function of the ellipsoids).
+double Reach(const CarShape &car, Quat rotation, Vec direction) {
+    const Vec local = InverseRotate(rotation, direction);
+    double farthest = 0.0;
+    for (const Shape &shape : car.shapes) {
+        const Vec inShape = InverseRotate(shape.rotation, local);
+        const Vec scaled = Scale(inShape, shape.radii);
+        farthest = std::max(farthest, Dot(shape.center - car.bodyCenter, local) +
+                                              std::sqrt(Dot(scaled, scaled)));
+    }
+    return farthest;
+}
+
 double DistanceToSurface(const CarShape &car, const Surface &surface,
                          Vec position, Quat rotation) {
     if (surface.triangles.empty()) return std::numeric_limits<double>::max();
@@ -220,11 +266,28 @@ double DistanceToSurface(const CarShape &car, const Surface &surface,
 struct TargetSurface {
     std::optional<std::uint32_t> slot;
     Surface surface;
+    std::vector<sandbox::PhysicsSandboxCollisionTriangle> triangles;
+    // Around walls: built the first time a run needs it.
+    std::shared_ptr<std::once_flag> routeBuilt = std::make_shared<std::once_flag>();
+    std::shared_ptr<std::shared_ptr<const AroundWallsDistance>> route =
+            std::make_shared<std::shared_ptr<const AroundWallsDistance>>();
 };
 
 struct Geometry {
     CarShape car;
     std::vector<TargetSurface> targets;
+    // Around walls only: the map's walls, and every trigger (not walls).
+    double reach = 0.0;
+    std::vector<sandbox::PhysicsSandboxCollisionTriangle> walls;
+    std::vector<sandbox::PhysicsSandboxCollisionTriangle> triggers;
+
+    const AroundWallsDistance &Route(const TargetSurface &target) const {
+        std::call_once(*target.routeBuilt, [&] {
+            *target.route = AroundWallsDistance::Shared(
+                    walls, target.triangles, triggers, car.bodyRadius, reach);
+        });
+        return **target.route;
+    }
 };
 
 // The same selectors as the Checkpoint time target.
@@ -236,6 +299,8 @@ struct DistanceSettings {
     std::uint32_t lap = 1u;
     std::optional<std::uint32_t> checkpointSlot;
     std::uint64_t eventIndex = 0u;
+    // Around walls within this many metres of the trigger; 0 = straight.
+    std::uint32_t reach = 0u;
 };
 
 std::string TargetName(const DistanceSettings &settings) {
@@ -300,15 +365,51 @@ public:
         for (const TargetSurface &target : geometry_->targets) {
             anyOpen |= !target.slot || !SlotPassed(current, *target.slot);
         }
-        double distance = std::numeric_limits<double>::max();
-        for (const TargetSurface &target : geometry_->targets) {
+        // Straight distances first: the way around walls is never shorter,
+        // so only targets straight-nearer than the best way so far are
+        // measured around walls (and have their graph built).
+        thread_local std::vector<std::pair<double, std::size_t>> straight;
+        straight.clear();
+        for (std::size_t i = 0; i < geometry_->targets.size(); ++i) {
+            const TargetSurface &target = geometry_->targets[i];
             if (anyOpen && target.slot && !settings_.checkpointSlot &&
                 SlotPassed(current, *target.slot)) {
                 continue;
             }
-            distance = std::min(distance,
-                                DistanceToSurface(geometry_->car, target.surface,
-                                                  position, rotation));
+            straight.push_back({DistanceToSurface(geometry_->car, target.surface,
+                                                  position, rotation),
+                                i});
+        }
+        double distance = std::numeric_limits<double>::max();
+        if (settings_.reach == 0u) {
+            for (const auto &[length, index] : straight) distance = std::min(distance, length);
+        } else {
+            std::sort(straight.begin(), straight.end());
+            const Vec body = position + Rotate(rotation, geometry_->car.bodyCenter);
+            memories_.resize(geometry_->targets.size());
+            for (const auto &[length, index] : straight) {
+                if (length >= distance) break;
+                const auto path = geometry_->Route(geometry_->targets[index])
+                                          .PathTo({static_cast<float>(body.x),
+                                                   static_cast<float>(body.y),
+                                                   static_cast<float>(body.z)},
+                                                  memories_[index]);
+                // Near a trigger in plain sight, the exact distance.
+                if (path.inSight && length <= kExactRange) {
+                    distance = std::min(distance, length);
+                    continue;
+                }
+                // The path starts at the sphere; the car's body reaches
+                // farther towards where it first bends (or the trigger).
+                const Vec toward = Of(path.via) - body;
+                const double span = std::sqrt(Dot(toward, toward));
+                const double reach = span > 1e-9
+                        ? Reach(geometry_->car, rotation, toward * (1.0 / span))
+                        : geometry_->car.bodyRadius;
+                const double around = path.length -
+                        std::min(span, std::max(0.0, reach - geometry_->car.bodyRadius));
+                distance = std::min(distance, std::max(length, around));
+            }
         }
         distance = std::max(0.0, distance);
         const std::uint32_t before = EventsBeforeTarget(settings_, current);
@@ -319,7 +420,9 @@ public:
         const double time = static_cast<double>(current.timeMs);
         std::ostringstream description;
         description.precision(6);
-        description << "Distance to " << TargetName(settings_) << ": "
+        description << (settings_.reach != 0u ? "Distance around walls to "
+                                              : "Distance to ")
+                    << TargetName(settings_) << ": "
                     << distance << " m";
         if (before > 1u) {
             description << " (" << before - 1u << " checkpoints before it)";
@@ -356,6 +459,8 @@ private:
 
     DistanceSettings settings_;
     std::shared_ptr<const Geometry> geometry_;
+    // Around walls: what each target's last query leaves the next.
+    std::vector<AroundWallsDistance::Memory> memories_;
     double best_ = std::numeric_limits<double>::infinity();
     bool reached_ = false;
 };
@@ -381,16 +486,38 @@ public:
                  trigger.checkpointSlot != *settings_.checkpointSlot)) {
                 continue;
             }
-            geometry->targets.push_back(
-                    {finishLine ? std::nullopt
-                                : std::optional<std::uint32_t>(trigger.checkpointSlot),
-                     MakeSurface(trigger.triangles)});
+            TargetSurface target;
+            target.slot = finishLine ? std::nullopt
+                                     : std::optional<std::uint32_t>(trigger.checkpointSlot);
+            target.surface = MakeSurface(trigger.triangles);
+            if (settings_.reach != 0u) target.triangles = trigger.triangles;
+            geometry->targets.push_back(std::move(target));
+        }
+        if (settings_.reach != 0u) {
+            geometry->reach = settings_.reach;
+            geometry->walls = view.Value().collisionTriangles;
+            for (const auto &trigger : view.Value().checkpointTriggers) {
+                geometry->triggers.insert(geometry->triggers.end(),
+                                          trigger.triangles.begin(),
+                                          trigger.triangles.end());
+            }
         }
         if (geometry->targets.empty()) {
             throw std::invalid_argument(
                     "this map has no " + TargetName(settings_));
         }
         geometry_ = std::move(geometry);
+    }
+
+    void CompleteGpuEvaluator(sandbox::PhysicsSandboxCudaEvaluator &gpu) const override {
+        auto *distance = std::get_if<sandbox::PhysicsSandboxCudaDistanceEvaluator>(&gpu);
+        if (distance == nullptr || settings_.reach == 0u || !geometry_) return;
+        // One table per target trigger, in the map's order, as the GPU
+        // lists them.
+        distance->aroundWalls.clear();
+        for (const TargetSurface &target : geometry_->targets) {
+            distance->aroundWalls.push_back(geometry_->Route(target).GpuTable());
+        }
     }
 
     EvaluationPlan Plan(std::int64_t simulationHorizonMs,
@@ -434,13 +561,18 @@ std::optional<DistanceSettings> ParseSettings(const OptionSettings &settings) {
     const auto slot = slotText == "-1" ? std::optional<std::uint32_t>()
                                        : ParseUnsignedDecimal32(slotText);
     const auto eventIndex = ParseUnsignedDecimal64(settings.at("eventIndex"));
+    const std::string &route = settings.at("route");
+    const auto reach = ParseUnsignedDecimal32(settings.at("reach"));
     if (!minimum || !maximum || !ordinal || *ordinal == 0u || !lap ||
         *lap == 0u || (slotText != "-1" && !slot) || !eventIndex ||
-        (type != "finish" && type != "checkpoint")) {
+        (type != "finish" && type != "checkpoint") ||
+        (route != "straight" && route != "around") || !reach ||
+        *reach == 0u || *reach > kMaximumReach) {
         return std::nullopt;
     }
     return DistanceSettings{*minimum, *maximum, type == "finish",
-                            *ordinal - 1u, *lap, slot, *eventIndex};
+                            *ordinal - 1u, *lap, slot, *eventIndex,
+                            route == "around" ? *reach : 0u};
 }
 
 }  // namespace
@@ -463,7 +595,9 @@ OptionSettings DefaultDistanceTargetOptionSettings() {
             {"checkpointIndex", "1"},
             {"lap", "1"},
             {"checkpointSlot", "-1"},
-            {"eventIndex", "0"}};
+            {"eventIndex", "0"},
+            {"route", "straight"},
+            {"reach", "32"}};
 }
 
 std::optional<std::string> ValidateDistanceTargetOptionSettings(

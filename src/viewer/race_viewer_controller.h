@@ -86,6 +86,11 @@ struct RaceViewerRun {
     QQuaternion rotation{};
     std::vector<RaceViewerSplit> checkpointSplits;
     std::shared_ptr<ManualDriveRuntime> runtime;
+    // Attempts (a race driven from a takeover): their number (0 for other
+    // runs), the first driven input's time and the line taken over.
+    int attemptNumber = 0;
+    std::optional<std::int32_t> takeoverTimeMs;
+    QString sourceRunId;
 };
 
 struct RaceViewerMeshBuffers {
@@ -182,6 +187,12 @@ class RaceViewerController final : public QObject {
                        NOTIFY selectedRunChanged)
     Q_PROPERTY(int selectedRunIndex READ selectedRunIndex NOTIFY
                        selectedRunChanged)
+    // The selected car's color and style follow the line it was driven
+    // from: the race being driven and its attempts look like that line.
+    Q_PROPERTY(int selectedRunColorIndex READ selectedRunColorIndex NOTIFY
+                       selectedRunChanged)
+    Q_PROPERTY(QString selectedRunStyleId READ selectedRunStyleId NOTIFY
+                       selectedRunChanged)
     Q_PROPERTY(QVector3D carPosition READ carPosition NOTIFY poseChanged)
     Q_PROPERTY(QQuaternion carRotation READ carRotation NOTIFY poseChanged)
     Q_PROPERTY(QVector3D carVelocity READ carVelocity NOTIFY poseChanged)
@@ -205,6 +216,9 @@ class RaceViewerController final : public QObject {
                        CONSTANT)
     Q_PROPERTY(qint64 durationMs READ durationMs NOTIFY timelineChanged)
     Q_PROPERTY(qint64 timeMs READ timeMs WRITE setTimeMs NOTIFY timeChanged)
+    // The race time shown, fractions of a millisecond included (timeMs is
+    // its whole milliseconds): cars and cameras blend between ticks.
+    Q_PROPERTY(double presentationTimeMs READ presentationTimeMs NOTIFY timeChanged)
     Q_PROPERTY(qint64 currentTick READ currentTick WRITE setCurrentTick NOTIFY
                        timeChanged)
     Q_PROPERTY(qint64 tickCount READ tickCount NOTIFY timelineChanged)
@@ -215,6 +229,19 @@ class RaceViewerController final : public QObject {
     Q_PROPERTY(bool playing READ playing NOTIFY playbackChanged)
     Q_PROPERTY(bool takeOverOnInput READ takeOverOnInput WRITE
                        setTakeOverOnInput NOTIFY takeOverOnInputChanged)
+    // The race clock's speed for playing, driving and rewinding (1: real
+    // time).
+    Q_PROPERTY(double playbackSpeed READ playbackSpeed WRITE setPlaybackSpeed
+                       NOTIFY playbackSpeedChanged)
+    Q_PROPERTY(bool rewinding READ rewinding NOTIFY playbackChanged)
+    // Each takeover's race, newest first (the one being driven too): id,
+    // name, takeoverMs, endMs, checkpoints, finished, finishTimeMs, live.
+    Q_PROPERTY(QVariantList attempts READ attempts NOTIFY attemptsChanged)
+    Q_PROPERTY(int savestateCount READ savestateCount WRITE setSavestateCount
+                       NOTIFY savestatesChanged)
+    // Per slot: saved (bool), timeMs, driving (bool).
+    Q_PROPERTY(QVariantList savestates READ savestates NOTIFY
+                       savestatesChanged)
     Q_PROPERTY(bool manualDriving READ manualDriving NOTIFY
                        manualDrivingChanged)
     Q_PROPERTY(forevertas::viewer::GamepadInput* gamepad READ gamepad CONSTANT)
@@ -303,6 +330,8 @@ public:
     qint64 runCount() const;
     QString selectedRunId() const;
     int selectedRunIndex() const;
+    int selectedRunColorIndex() const;
+    QString selectedRunStyleId() const;
     QVector3D carPosition() const;
     QQuaternion carRotation() const;
     QVector3D carVelocity() const;
@@ -337,6 +366,12 @@ public:
     QVariantList checkpointSplits() const;
     bool playing() const;
     bool takeOverOnInput() const;
+    double playbackSpeed() const;
+    double presentationTimeMs() const;
+    bool rewinding() const;
+    QVariantList attempts() const;
+    int savestateCount() const;
+    QVariantList savestates() const;
     bool manualDriving() const;
     bool manualSteeringTakenOver() const;
     bool manualLongitudinalTakenOver() const;
@@ -415,6 +450,26 @@ public slots:
     void setPreviewingHistory(bool value);
     void setSimulationHorizonMs(qint64 value);
     void setTakeOverOnInput(bool value);
+    void setPlaybackSpeed(double value);
+    void setPresentationTime(double value);
+    void setSavestateCount(int value);
+    // The next slower / faster of 1/100, 1/20, 1/5, 1/2, 1, 2, 5, 20, 50.
+    Q_INVOKABLE void slower();
+    Q_INVOKABLE void faster();
+    // A held rewind: the race runs backwards until it ends. Then, or on
+    // play after a seek, a race driven past its takeover is driven on
+    // from there (a new attempt); otherwise its line plays again.
+    Q_INVOKABLE void beginRewind();
+    Q_INVOKABLE void endRewind();
+    // One tick back or forward, paused (forward on a race being driven
+    // steps it with the controls held).
+    Q_INVOKABLE void stepTick(int delta);
+    // The base inputs again from the start, playing.
+    Q_INVOKABLE void restartRun();
+    Q_INVOKABLE void watchAttempt(const QString &id);
+    Q_INVOKABLE QString attemptScript(const QString &id) const;
+    Q_INVOKABLE void saveState(int slot);
+    Q_INVOKABLE void loadState(int slot);
     void setCameraPreset(int value);
     void setTelemetryScript(const QString &value);
     Q_INVOKABLE void play();
@@ -469,6 +524,9 @@ signals:
     void timeChanged();
     void playbackChanged();
     void takeOverOnInputChanged();
+    void playbackSpeedChanged();
+    void attemptsChanged();
+    void savestatesChanged();
     void manualDrivingChanged();
     void manualInputChanged();
     void stateChanged();
@@ -522,6 +580,34 @@ private:
     void waitForInputPreviewWorker();
     void clearInputPreview();
     bool beginManualTakeover(const QString &input, bool active);
+    // Runs inputs live from tick, the race so far shown by prefix, to be
+    // taken over axis by axis (sourceRunId: the line it plays).
+    // rootRunId: the line under all takeovers so far; chainTakeoverMs: the
+    // earliest of them (none when the race has not been driven yet).
+    bool goLive(const QString &rootRunId,
+                std::optional<std::int32_t> chainTakeoverMs, qint64 tick,
+                std::vector<SandboxInputEvent> inputs,
+                std::vector<RaceViewerFrame> prefix);
+    bool goLiveFrom(const RaceViewerRun &source, qint64 tick,
+                    std::vector<SandboxInputEvent> inputs,
+                    std::vector<RaceViewerFrame> prefix);
+    // Takes over every axis now, with the controls as held.
+    bool takeAllAxes();
+    // Runs the race being driven; applyHeld: with the controls held while
+    // it stood still.
+    void resumeLive(bool applyHeld = true);
+    // Ends the race being driven: kept as an attempt when it was driven.
+    // Returns the attempt's id (empty when not kept).
+    QString endLive();
+    // After a seek or rewind of the race being driven.
+    void resolveLiveSeek();
+    bool stepLive(qint64 ticks);
+    void applyHeldInputs();
+    std::optional<std::int32_t> liveTakeoverTimeMs() const;
+    const RaceViewerRun *findRun(const QString &id) const;
+    // The run whose color and style a run wears (the line under it).
+    QString styleRunId(const RaceViewerRun &run) const;
+    int colorIndex(const RaceViewerRun &run) const;
     bool applyManualInput(const QString &input, bool active);
     std::vector<SandboxInputEvent> inputHistoryForRun(
             const RaceViewerRun &run) const;
@@ -644,6 +730,8 @@ private:
     double carCameraFieldOfView_ = 75.0;
     int cameraPreset_ = 1;
     bool carCameraAvailable_ = false;
+    // The car camera is the driver's view (the selected car is hidden).
+    bool carCameraInternal_ = false;
     QString telemetryScript_;
     QString statusText_ = QStringLiteral("No map loaded");
     QVariantMap statusFailure_;
@@ -654,6 +742,32 @@ private:
     bool previewingHistory_ = false;
     bool selectNextInputPreview_ = false;
     qint64 simulationHorizonMs_ = 6000;
+    struct Savestate {
+        bool saved = false;
+        qint64 timeMs = 0;
+        std::vector<SandboxInputEvent> inputs;
+        std::vector<RaceViewerFrame> frames;
+        std::optional<std::int32_t> takeoverTimeMs;
+        QString runId;
+    };
+    std::vector<Savestate> savestates_ = std::vector<Savestate>(4);
+    double playbackSpeed_ = 1.0;
+    double playbackStartMs_ = 0.0;
+    // The race time shown (see presentationTimeMs).
+    double presentationMs_ = 0.0;
+    bool rewinding_ = false;
+    bool rewindWasPlaying_ = false;
+    qint64 rewindStartMs_ = 0;
+    QTimer rewindTimer_;
+    QElapsedTimer rewindClock_;
+    int attemptCounter_ = 0;
+    std::optional<std::int32_t> liveChainTakeoverMs_;
+    QString liveRootRunId_;
+    // The driving controls as held now, applied while the race runs.
+    bool heldLeft_ = false;
+    bool heldRight_ = false;
+    bool heldAccelerate_ = false;
+    bool heldBrake_ = false;
     std::vector<SandboxInputEvent> takeoverSourceInputs_;
     QString takeoverSourceRunId_;
     std::optional<std::int32_t> steeringTakeoverTimeMs_;
@@ -675,7 +789,7 @@ private:
     bool loaded_ = false;
     bool loading_ = false;
     bool playing_ = false;
-    bool takeOverOnInput_ = false;
+    bool takeOverOnInput_ = true;
     bool manualDriving_ = false;
     bool manualTakeover_ = false;
     bool inputPreviewVisible_ = false;

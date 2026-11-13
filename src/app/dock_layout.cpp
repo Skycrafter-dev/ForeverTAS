@@ -622,11 +622,17 @@ void DockTree::followArea(const QRectF &from, const QRectF &to) {
                           std::max(toStart, toStart + toLength - size));
     };
     for (DockFloatingGroup &floating : floating_) {
-        QRectF &rect = floating.rect;
-        rect.moveTo(follow(rect.x(), rect.width(), from.x(), from.width(),
-                           to.x(), to.width()),
-                    follow(rect.y(), rect.height(), from.y(), from.height(),
-                           to.y(), to.height()));
+        if (floating.placedArea.isEmpty() || floating.placed.size() != floating.rect.size()) {
+            floating.placed = floating.rect;
+            floating.placedArea = from;
+        }
+        const QRectF &placed = floating.placed;
+        const QRectF &area = floating.placedArea;
+        floating.rect.moveTo(
+                follow(placed.x(), placed.width(), area.x(), area.width(),
+                       to.x(), to.width()),
+                follow(placed.y(), placed.height(), area.y(), area.height(),
+                       to.y(), to.height()));
     }
 }
 
@@ -645,6 +651,7 @@ bool DockTree::setFloatingRect(const QString &floatingGroup,
     for (DockFloatingGroup &floating : floating_) {
         if (floating.id == floatingGroup) {
             floating.rect = rect;
+            floating.placedArea = QRectF();
             return true;
         }
     }
@@ -975,6 +982,11 @@ QString DockLayoutModel::state() const {
                                   {QStringLiteral("size"), it->size}});
     }
     json.insert(QStringLiteral("places"), places);
+    // The area the floating panels were placed in, so a restore into a
+    // different one moves them as a resize would.
+    json.insert(QStringLiteral("area"),
+                QJsonArray{area_.x(), area_.y(), area_.width(),
+                           area_.height()});
     return QString::fromUtf8(
             QJsonDocument(json).toJson(QJsonDocument::Compact));
 }
@@ -989,6 +1001,17 @@ void DockLayoutModel::restoreFromJson(const QString &json) {
         tree = fallback.value_or(DockTree());
     }
     tree->reconcile(order_, fallback.value_or(DockTree()));
+    const QJsonArray saved = object.value(QStringLiteral("area")).toArray();
+    if (saved.size() == 4) {
+        const QRectF savedArea(saved.at(0).toDouble(), saved.at(1).toDouble(),
+                               saved.at(2).toDouble(), saved.at(3).toDouble());
+        if (area_.isEmpty()) {
+            // Placed once the area is known.
+            area_ = savedArea;
+        } else {
+            tree->followArea(savedArea, area_);
+        }
+    }
     tree_ = std::move(*tree);
     places_.clear();
     const QJsonObject places = object.value(QStringLiteral("places")).toObject();

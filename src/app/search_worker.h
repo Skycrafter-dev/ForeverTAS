@@ -5,6 +5,7 @@
 #include "searches/search_runner.h"
 
 #include <QObject>
+#include <QVariantMap>
 #include <QString>
 
 #include <atomic>
@@ -53,6 +54,8 @@ signals:
     void iterationCountChanged(qulonglong count);
     void cudaBatchSizeChanged(std::uint32_t batchSize);
     void bestChanged(const QString &summary, const QString &inputsText);
+    // The running restart's best as a History row (SearchSessionStore::LiveRow).
+    void liveRowChanged(const QVariantMap &row);
     void improvementFound(
             forevertas::app::SearchImprovementPtr improvement);
     void cycleSaved(const QString &mapKey, const QString &directory,

@@ -340,8 +340,10 @@ if [[ "${FOREVERTAS_ENABLE_HIP:-OFF}" == "ON" &&
     cp "${hip_root}/share/doc/hsa-rocr/LICENSE.md" "${license_dir}/AMD-ROCr-LICENSE.txt"
     cp "${hip_root}/share/doc/rocprofiler-register/LICENSE.md" \
         "${license_dir}/AMD-rocprofiler-register-LICENSE.txt"
-    cp /usr/share/doc/libdrm-amdgpu1/copyright \
-        "${license_dir}/libdrm-amdgpu-copyright.txt"
+    # The host's libdrm_amdgpu, never ours: Mesa's AMD drivers load the copy
+    # already in the process, and an older one (missing amdgpu_va_manager_*
+    # for Mesa 26.2) leaves both Vulkan and EGL without a driver.
+    hip_deploy_args+=(--exclude-library 'libdrm_amdgpu.so*')
 fi
 
 if [[ "${FOREVERTAS_ENABLE_STRIP:-0}" == "1" ]]; then
@@ -420,6 +422,12 @@ fi
 
 if [[ ${#vulkan_deploy_args[@]} -ne 0 ]]; then
     test -f "${extracted_appdir}/usr/lib/libvulkan.so.1"
+fi
+if find "${extracted_appdir}" \
+        \( -type f -o -type l \) \
+        -name 'libdrm_amdgpu.so*' -print -quit | grep -q .; then
+    echo "AppImage must not bundle libdrm_amdgpu (the GPU drivers use the host's)." >&2
+    exit 1
 fi
 
 if find "${extracted_appdir}" \

@@ -23,6 +23,11 @@ Base-input timestamps accept decimal seconds, `mm:ss.mmm`, and `hh:mm:ss.mmm`
 must align to the 10 ms input tick. Non-leading clock components are in
 `0..59`. Export remains decimal seconds for compatibility.
 
+A timestamp can also be a TMInterface range, `<start>-<end>`: the command at
+the start and its undoing at the end (`0-1.50 press up` presses then
+releases; `2.00-2.30 steer -20000` returns the steering to 0 at 2.30, `gas`
+likewise). `rel` and `press enter` take no range.
+
 Volume entry times use six fractional second digits in results and stored
 result descriptions; preview overlays keep the same precision in the chosen
 time unit. These are interpolated crossing estimates,

@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -235,7 +236,9 @@ bool CheckParity(const char *packs,
                  double *cudaSeconds = nullptr,
                  std::optional<std::int64_t>
                          evaluationEndTimeLimitMs = std::nullopt,
-                 const std::string &conditionScript = {}) {
+                 const std::string &conditionScript = {},
+                 std::uint32_t simulationHorizonMs =
+                         forevertas::kDefaultSimulationHorizonMs) {
     const auto started = std::chrono::steady_clock::now();
     std::cout << "checking " << label << std::endl;
     std::future<SearchResult> reference = std::async(
@@ -257,7 +260,7 @@ bool CheckParity(const char *packs,
                         false,
                         true,
                         false,
-                        forevertas::kDefaultSimulationHorizonMs,
+                        simulationHorizonMs,
                         conditionScript);
             });
     const auto cudaStarted = std::chrono::steady_clock::now();
@@ -266,7 +269,7 @@ bool CheckParity(const char *packs,
             batchSize, iterations, modifiers, evaluator,
             false, nullptr, false, evaluationEndTimeLimitMs,
             nullptr, false, true, false,
-            forevertas::kDefaultSimulationHorizonMs,
+            simulationHorizonMs,
             conditionScript);
     const SearchResult authoritative = reference.get();
     if (cudaSeconds != nullptr) {
@@ -503,6 +506,47 @@ bool CheckCancellation(const char *packs, const char *replay) {
     }
     std::cerr << "running CUDA batch ignored cancellation\n";
     return false;
+}
+
+// The Distance target around walls on the GPU (tables built on the CPU,
+// queried in the kernel) against the optimized CPU: the same winners and
+// scores, to a checkpoint the window reaches or to the finish.
+bool CheckDistanceAroundWallsParity(const char *packs, const char *replay,
+                                    const std::string &event) {
+    OptionConfiguration insertion = DefaultModifier(
+            forevertas::kInputInsertionModifierId);
+    insertion.settings["minTimeMs"] = "2000";
+    insertion.settings["maxTimeMs"] = "6000";
+    insertion.settings["steerMinCount"] = "1";
+    insertion.settings["steerMaxCount"] = "2";
+    OptionConfiguration distance = DefaultEvaluator(
+            forevertas::kDistanceTargetEvaluationId);
+    distance.settings["route"] =
+            std::getenv("FTAS_DISTANCE_ROUTE") ? std::getenv("FTAS_DISTANCE_ROUTE") : "around";
+    distance.settings["eventType"] = event;
+    distance.settings["checkpointIndex"] = "2";
+    distance.settings["minTimeMs"] = "1000";
+    const std::uint32_t horizon = event == "finish" ? 70000u : 12000u;
+    distance.settings["maxTimeMs"] = std::to_string(horizon);
+    const auto run = [&](forevertas::PhysicsBackend backend, std::uint32_t batch) {
+        const char *count = std::getenv("FTAS_DISTANCE_ITERATIONS");
+        return Run(packs, replay, backend, batch, count ? std::stoull(count) : 6u, {insertion},
+                   distance, false, nullptr,
+                   false, std::nullopt, nullptr, false, true, false, horizon);
+    };
+    const auto started = std::chrono::steady_clock::now();
+    const SearchResult cpu = run(forevertas::PhysicsBackend::OptimizedCpu, 1u);
+    const auto cudaStarted = std::chrono::steady_clock::now();
+    std::cout << "CPU done in " << std::chrono::duration<double>(cudaStarted - started).count()
+              << " s, score " << cpu.bestScore << std::endl;
+    const SearchResult cuda = run(forevertas::PhysicsBackend::Cuda, 4u);
+    std::cout << "distance around walls to " << event << ": score " << cuda.bestScore
+              << " (CPU " << cpu.bestScore << "), CPU "
+              << std::chrono::duration<double>(cudaStarted - started).count() << " s, CUDA "
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - cudaStarted)
+                         .count()
+              << " s" << std::endl;
+    return SameAuthoritativeResult(cpu, cuda, "distance around walls to " + event);
 }
 
 bool CheckCalibration(const char *packs, const char *replay) {
@@ -1089,6 +1133,10 @@ int main(int argc, char **argv) {
     const bool calibrationOnly =
             argc == 4 &&
             std::string(argv[1]) == "--calibration-only";
+    const bool distanceOnly =
+            argc == 4 &&
+            (std::string(argv[1]) == "--distance-around-walls" ||
+             std::string(argv[1]) == "--distance-around-walls-finish");
     const bool preciseFinishOnly =
             argc == 4 &&
             std::string(argv[1]) == "--precise-finish-only";
@@ -1096,14 +1144,14 @@ int main(int argc, char **argv) {
             argc == 3 ||
             (argc == 4 && std::string_view(argv[1]).find("--") != 0u);
     if ((!scriptParity && !mutationParity && !mutationBackend &&
-         !calibrationOnly &&
+         !calibrationOnly && !distanceOnly &&
          !preciseFinishOnly &&
          !ordinaryParity) ||
-        ((calibrationOnly || preciseFinishOnly) && argc != 4)) {
+        ((calibrationOnly || preciseFinishOnly || distanceOnly) && argc != 4)) {
         std::cerr << "expected Packs directory and replay path\n";
         return 2;
     }
-    const bool focusedMode = calibrationOnly || preciseFinishOnly;
+    const bool focusedMode = calibrationOnly || preciseFinishOnly || distanceOnly;
     const char *const packs = argv[focusedMode ? 2 : 1];
     const char *const replay = argv[focusedMode ? 3 : 2];
     try {
@@ -1124,6 +1172,13 @@ int main(int argc, char **argv) {
         }
         if (calibrationOnly) {
             return CheckCalibration(packs, replay) ? 0 : 1;
+        }
+        if (distanceOnly) {
+            return CheckDistanceAroundWallsParity(
+                           packs, replay,
+                           std::string(argv[1]) == "--distance-around-walls-finish"
+                                   ? "finish" : "checkpoint")
+                    ? 0 : 1;
         }
         if (preciseFinishOnly) {
             return CheckPreciseFinishParity(packs, replay) ? 0 : 1;

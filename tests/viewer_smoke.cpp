@@ -1147,8 +1147,8 @@ int main(int argc, char **argv) {
                         viewer.setSelectedRunId(
                                 QStringLiteral("preview"));
                         viewer.setCurrentTick(1);
-                        viewer.setTakeOverOnInput(false);
                         viewer.play();
+                        // A key let go takes nothing over: only a press does.
                         viewer.setManualInput(
                                 QStringLiteral("left"), false);
                         const bool disabledTakeoverIgnored =
@@ -1159,14 +1159,15 @@ int main(int argc, char **argv) {
                                 !viewer.manualLongitudinalTakenOver() &&
                                 viewer.selectedRunId() ==
                                         QStringLiteral("preview");
-                        viewer.pause();
-                        viewer.setTakeOverOnInput(true);
-                        viewer.play();
+                        // A steering key takes over the steering only, and
+                        // the race runs on.
+                        viewer.setManualInput(
+                                QStringLiteral("left"), true);
                         viewer.setManualInput(
                                 QStringLiteral("left"), false);
                         const bool releaseStartedSteeringTakeover =
                                 viewer.manualDriving() &&
-                                !viewer.playing() &&
+                                viewer.playing() &&
                                 viewer.manualSteeringTakenOver() &&
                                 !viewer.manualLongitudinalTakenOver() &&
                                 !viewer.manualLeft() &&
@@ -1195,6 +1196,8 @@ int main(int argc, char **argv) {
                                             viewer.manualDriving() &&
                                             viewer.manualSteeringTakenOver() &&
                                             !viewer.manualLongitudinalTakenOver();
+                                    viewer.setManualInput(
+                                            QStringLiteral("brake"), true);
                                     viewer.setManualInput(
                                             QStringLiteral("brake"), false);
                                     const bool releaseStartedLongitudinalTakeover =
@@ -1357,6 +1360,9 @@ int main(int argc, char **argv) {
                                                                     QStringLiteral("best"));
                                                             viewer.setCurrentTick(1);
                                                             viewer.play();
+                                                            viewer.setManualInput(
+                                                                    QStringLiteral("left"),
+                                                                    true);
                                                             viewer.setManualInput(
                                                                     QStringLiteral("left"),
                                                                     false);

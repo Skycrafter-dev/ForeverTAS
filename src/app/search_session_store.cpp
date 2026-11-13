@@ -19,6 +19,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QLocale>
 #include <QSaveFile>
 #include <QStandardPaths>
 #include <QUuid>
@@ -70,20 +71,91 @@ QJsonObject ReadObject(const QString &path) {
             ? document.object() : QJsonObject{};
 }
 
+QJsonObject Column(const QString &label, const char *kind, const char *better) {
+    return {{"label", label}, {"kind", kind}, {"better", better}};
+}
+
+// A target's result columns: the label, how the value is shown ("speed" m/s,
+// "time" ms, "finishTime" ns, "distance" m, "number", "integer") and which way
+// is better ("lower", "higher", or "" for a column that only says when).
+// Saved with every restart; the values are the matching Metrics entries.
+QJsonArray ColumnsFor(const std::string &targetId, const OptionSettings &settings) {
+    const auto setting = [&settings](const char *key) {
+        const auto found = settings.find(key);
+        return found == settings.end() ? std::string() : found->second;
+    };
+    const QJsonObject at = Column(QStringLiteral("At"), "time", "");
+    if (targetId == kScriptedTargetEvaluationId) {
+        QJsonArray columns;
+        const QStringList lines = QString::fromStdString(setting("script"))
+                                          .split(QLatin1Char('\n'));
+        for (const QString &source : lines) {
+            const QString line = source.trimmed();
+            if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
+            QJsonObject column = Column(
+                    QStringLiteral("Objective %1").arg(columns.size() + 1), "number", "higher");
+            column.insert("tooltip", line);
+            column.insert("objective", columns.size());
+            columns.append(column);
+        }
+        return columns;
+    }
+    if (targetId == kVelocityEvaluationId) {
+        return {Column(setting("mode") == "projected" ? QStringLiteral("Projection")
+                                                      : QStringLiteral("Speed"),
+                       "speed", "higher"),
+                at};
+    }
+    if (targetId == kPointTargetEvaluationId || targetId == kDistanceTargetEvaluationId) {
+        return {Column(QStringLiteral("Distance"), "distance", "lower"), at};
+    }
+    if (targetId == kPoseTargetEvaluationId) {
+        return {Column(QStringLiteral("Pose error"), "number", "lower"), at};
+    }
+    if (targetId == kVolumeEntryEvaluationId || targetId == kCustomVolumeEntryEvaluationId) {
+        if (setting("measure") == "speed") {
+            return {Column(QStringLiteral("Entry speed"), "speed", "higher"), at};
+        }
+        return {Column(QStringLiteral("Entry time"), "time", "lower")};
+    }
+    if (targetId == kStuntPointsEvaluationId) {
+        return {Column(QStringLiteral("Stunt points"), "integer", "higher")};
+    }
+    if (targetId == kPreciseFinishTimeEvaluationId) {
+        return {Column(QStringLiteral("Finish time"), "finishTime", "lower")};
+    }
+    if (targetId == kCheckpointTimeEvaluationId) {
+        return {Column(QStringLiteral("Checkpoint time"), "time", "lower")};
+    }
+    if (targetId == kTimeEvaluationId) {
+        return {Column(QStringLiteral("Time"), "time",
+                       setting("goal") == "latest" ? "higher" : "lower")};
+    }
+    return {Column(QStringLiteral("Score"), "number", "")};
+}
+
+// What a session searched, for its name: the result's label (a script's
+// target is named as such).
+QString TargetLabel(const std::string &targetId, const QJsonArray &columns) {
+    if (targetId == kScriptedTargetEvaluationId) return QStringLiteral("Script");
+    return columns.isEmpty() ? QString() : columns.first().toObject().value("label").toString();
+}
+
+QJsonArray Columns(const SearchRequest &request) {
+    return ColumnsFor(request.evaluationTarget.id, request.evaluationTarget.settings);
+}
+
 template<typename Result>
 QJsonArray Metrics(const SearchRequest &request,
                    const Result &result) {
     QJsonArray metrics;
-    const std::string &targetId = request.evaluationTarget.id;
-    if (targetId == kScriptedTargetEvaluationId) {
+    if (request.evaluationTarget.id == kScriptedTargetEvaluationId) {
         for (double value : result.metricValues) metrics.append(value);
         return metrics;
     }
-    metrics.append(result.bestScore);
-    if (targetId == kVelocityEvaluationId ||
-        targetId == kPointTargetEvaluationId ||
-        targetId == kPoseTargetEvaluationId) {
-        metrics.append(result.bestEvaluationTimeMs);
+    for (const QJsonValue &column : Columns(request)) {
+        metrics.append(column.toObject().value("label").toString() == QStringLiteral("At")
+                               ? result.bestEvaluationTimeMs : result.bestScore);
     }
     return metrics;
 }
@@ -93,49 +165,6 @@ QJsonArray ObjectiveScores(const Result &result) {
     QJsonArray scores;
     for (double score : result.objectiveScores) scores.append(score);
     return scores;
-}
-
-QJsonArray MetricLabels(const SearchRequest &request) {
-    QJsonArray labels;
-    const std::string &targetId = request.evaluationTarget.id;
-    if (targetId != kScriptedTargetEvaluationId) {
-        if (targetId == kVelocityEvaluationId) {
-            const auto mode = request.evaluationTarget.settings.find("mode");
-            labels.append(mode != request.evaluationTarget.settings.end() &&
-                                  mode->second == "projected"
-                                  ? QStringLiteral("Projection (m/s)")
-                                  : QStringLiteral("Speed (m/s)"));
-        } else if (targetId == kStuntPointsEvaluationId) {
-            labels.append(QStringLiteral("Stunt points"));
-        } else if (targetId == kPreciseFinishTimeEvaluationId) {
-            labels.append(QStringLiteral("Finish time"));
-        } else if (targetId == kVolumeEntryEvaluationId ||
-                   targetId == kCustomVolumeEntryEvaluationId) {
-            labels.append(QStringLiteral("Entry time (ms)"));
-        } else if (targetId == kPointTargetEvaluationId) {
-            labels.append(QStringLiteral("Distance (m)"));
-        } else if (targetId == kPoseTargetEvaluationId) {
-            labels.append(QStringLiteral("Pose error"));
-        } else {
-            labels.append(QStringLiteral("Score"));
-        }
-        if (targetId == kVelocityEvaluationId ||
-            targetId == kPointTargetEvaluationId ||
-            targetId == kPoseTargetEvaluationId) {
-            labels.append(QStringLiteral("At (ms)"));
-        }
-        return labels;
-    }
-    const auto script = request.evaluationTarget.settings.find("script");
-    if (script == request.evaluationTarget.settings.end()) return labels;
-    const QStringList lines = QString::fromStdString(script->second)
-                                      .split(QLatin1Char('\n'));
-    for (const QString &source : lines) {
-        const QString line = source.trimmed();
-        if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
-        labels.append(line);
-    }
-    return labels;
 }
 
 QJsonArray ModifierSeeds(const SearchRequest &request) {
@@ -187,6 +216,9 @@ SearchSessionLocation SearchSessionStore::Create(
                                                request.simulationHorizonMs)},
                          {"targetId", QString::fromStdString(
                                                   request.evaluationTarget.id)},
+                         {"targetLabel", TargetLabel(request.evaluationTarget.id,
+                                                     Columns(request))},
+                         {"approximate", request.approximatePhysics},
                          {"createdUtc", QDateTime::currentDateTimeUtc()
                                                 .toString(Qt::ISODateWithMs)}};
     AtomicWrite(location.directory + QStringLiteral("/session.json"),
@@ -225,6 +257,71 @@ SearchSessionLocation SearchSessionStore::Identify(
 
 namespace {
 
+// A restart's record (restart-N.json), also the live row's source.
+template<typename Result>
+QJsonObject CycleMetadata(const SearchRequest &request,
+                          std::uint64_t restartNumber,
+                          const Result &result,
+                          bool aborted,
+                          const QString &inputName) {
+    QJsonObject metadata{
+            {"format", 1},
+            {"aborted", aborted},
+            {"restart", static_cast<qint64>(restartNumber)},
+            {"attempts", static_cast<qint64>(result.iterations)},
+            {"attemptsExact", QString::number(static_cast<qulonglong>(result.iterations))},
+            {"elapsedMs", static_cast<qint64>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                            result.elapsed).count())},
+            {"inputFile", inputName},
+            {"score", result.bestScore},
+            {"evaluationTimeMs", result.bestEvaluationTimeMs},
+            {"summary", QString::fromStdString(
+                                result.bestEvaluationDescription)},
+            {"targetId", QString::fromStdString(
+                                 request.evaluationTarget.id)},
+            {"modifierSeeds", ModifierSeeds(request)},
+            {"metrics", Metrics(request, result)},
+            {"objectiveScores", ObjectiveScores(result)},
+            {"columns", Columns(request)}};
+    if (result.approximate) {
+        metadata.insert("approximate", QJsonObject{
+                {"score", result.approximate->score},
+                {"description", QString::fromStdString(
+                                        result.approximate->description)},
+                {"driftMm", result.approximate->driftMeters
+                                    ? QJsonValue(*result.approximate->driftMeters * 1000.0)
+                                    : QJsonValue()}});
+    }
+    return metadata;
+}
+
+// A record as a table row: the columns of records saved before they were
+// stored, the attempt counts as text.
+QVariantMap RowFromMetadata(const QJsonObject &metadata) {
+    auto row = metadata.toVariantMap();
+    if (!metadata.contains("columns")) {
+        const std::string targetId = metadata.value("targetId").toString().toStdString();
+        const EvaluationTargetRegistration *registration = FindEvaluationTarget(targetId);
+        OptionSettings settings = registration != nullptr ? registration->defaultSettings
+                                                          : OptionSettings{};
+        const QString first = metadata.value("metricLabels").toArray().first().toString();
+        if (first.startsWith(QStringLiteral("Projection"))) settings["mode"] = "projected";
+        if (targetId == kScriptedTargetEvaluationId) {
+            QStringList lines;
+            for (const QJsonValue &label : metadata.value("metricLabels").toArray())
+                lines.append(label.toString());
+            settings["script"] = lines.join(QLatin1Char('\n')).toStdString();
+        }
+        row.insert(QStringLiteral("columns"), ColumnsFor(targetId, settings).toVariantList());
+    }
+    const auto count = row.value(QStringLiteral("attemptsExact"), row.value(QStringLiteral("attempts"))).toULongLong();
+    row.insert(QStringLiteral("attemptsExact"), QString::number(count));
+    row.insert(QStringLiteral("attemptsText"), FormatCompactNumber(static_cast<double>(count)));
+    row.insert(QStringLiteral("attemptsExactText"), FormatExactCount(count));
+    return row;
+}
+
 template<typename Result>
 void SaveCycleResult(
         const SearchSessionLocation &session,
@@ -246,26 +343,7 @@ void SaveCycleResult(
             result.bestInputs, request.evaluationTarget.id, result.bestState);
     AtomicWrite(inputPath, QByteArray(inputScript.data(),
                                       static_cast<qsizetype>(inputScript.size())));
-    QJsonObject metadata{
-            {"format", 1},
-            {"aborted", aborted},
-            {"restart", static_cast<qint64>(restartNumber)},
-            {"attempts", static_cast<qint64>(result.iterations)},
-            {"attemptsExact", QString::number(static_cast<qulonglong>(result.iterations))},
-            {"elapsedMs", static_cast<qint64>(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                            result.elapsed).count())},
-            {"inputFile", inputName},
-            {"score", result.bestScore},
-            {"evaluationTimeMs", result.bestEvaluationTimeMs},
-            {"summary", QString::fromStdString(
-                                result.bestEvaluationDescription)},
-            {"targetId", QString::fromStdString(
-                                 request.evaluationTarget.id)},
-            {"modifierSeeds", ModifierSeeds(request)},
-            {"metrics", Metrics(request, result)},
-            {"objectiveScores", ObjectiveScores(result)},
-            {"metricLabels", MetricLabels(request)}};
+    const QJsonObject metadata = CycleMetadata(request, restartNumber, result, aborted, inputName);
     AtomicWrite(metadataPath, QJsonDocument(metadata).toJson());
 }
 
@@ -312,7 +390,30 @@ QVariantList SearchSessionStore::Cycles(const QString &directory) {
 
 QVariantMap SearchSessionStore::Session(const QString &directory) {
     const auto metadata = ReadObject(directory + QStringLiteral("/session.json"));
-    return {{"directory", directory}, {"label", metadata.value("createdUtc").toString()},
+    // "13 Nov 06:10 · Speed · Approximate": local time (the year when not this
+    // one), what was searched, and the physics when it was not exact
+    const QDateTime created = QDateTime::fromString(
+            metadata.value("createdUtc").toString(), Qt::ISODateWithMs).toLocalTime();
+    QStringList parts;
+    if (created.isValid()) {
+        parts.append(QLocale(QLocale::English).toString(
+                created, created.date().year() == QDate::currentDate().year()
+                                 ? QStringLiteral("d MMM HH:mm")
+                                 : QStringLiteral("d MMM yyyy HH:mm")));
+    } else {
+        parts.append(metadata.value("createdUtc").toString());
+    }
+    const std::string targetId = metadata.value("targetId").toString().toStdString();
+    QString target = metadata.value("targetLabel").toString();
+    if (target.isEmpty()) {
+        const EvaluationTargetRegistration *registration = FindEvaluationTarget(targetId);
+        target = TargetLabel(targetId, ColumnsFor(targetId, registration != nullptr
+                                                                    ? registration->defaultSettings
+                                                                    : OptionSettings{}));
+    }
+    if (!target.isEmpty()) parts.append(target);
+    if (metadata.value("approximate").toBool()) parts.append(QStringLiteral("Approximate"));
+    return {{"directory", directory}, {"label", parts.join(QStringLiteral(" \u00b7 "))},
             {"packsDirectory", metadata.value("packsDirectory").toString()},
             {"replayPath", metadata.value("replayPath").toString()},
             {"horizonMs", metadata.value("horizonMs").toInt()},
@@ -323,24 +424,21 @@ QVariantMap SearchSessionStore::Cycle(const QString &directory, std::uint64_t re
     const auto metadata = ReadObject(directory + QStringLiteral("/restart-%1.json")
             .arg(static_cast<qulonglong>(restart), 6, 10, QLatin1Char('0')));
     if (metadata.isEmpty()) return {};
-    auto row = metadata.toVariantMap();
-    if (metadata.value("targetId").toString() ==
-            QString::fromLatin1(kPreciseFinishTimeEvaluationId)) {
-        // Persisted scores remain in nanoseconds, including older sessions.
-        auto metrics = row.value(QStringLiteral("metrics")).toList();
-        if (!metrics.isEmpty()) {
-            const double seconds = metrics.front().toDouble() / 1000000000.0;
-            metrics.front() = seconds;
-            row.insert(QStringLiteral("metrics"), metrics);
-            row.insert(QStringLiteral("metricLabels"), QVariantList{QStringLiteral("Finish time")});
-            row.insert(QStringLiteral("metricTexts"), QVariantList{
-                    QString::number(seconds, 'f', 9) + QStringLiteral(" s")});
-        }
+    return RowFromMetadata(metadata);
+}
+
+QVariantMap SearchSessionStore::LiveRow(const SearchRequest &request,
+                                        std::uint64_t restart,
+                                        const SearchLiveUpdate &live) {
+    QVariantMap row = RowFromMetadata(CycleMetadata(request, restart, live, false, {}));
+    row.insert(QStringLiteral("running"), true);
+    row.insert(QStringLiteral("improvements"),
+               static_cast<qulonglong>(live.mutationImprovementCount));
+    if (live.lastImprovementElapsed) {
+        row.insert(QStringLiteral("lastImprovementMs"),
+                   static_cast<qint64>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           *live.lastImprovementElapsed).count()));
     }
-    const auto count = row.value(QStringLiteral("attemptsExact"), row.value(QStringLiteral("attempts"))).toULongLong();
-    row.insert(QStringLiteral("attemptsExact"), QString::number(count));
-    row.insert(QStringLiteral("attemptsText"), FormatCompactNumber(static_cast<double>(count)));
-    row.insert(QStringLiteral("attemptsExactText"), FormatExactCount(count));
     return row;
 }
 

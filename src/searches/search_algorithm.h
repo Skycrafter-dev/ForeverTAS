@@ -44,6 +44,8 @@ enum class SearchProgressStage : std::uint8_t {
     Mutations,
     FinalSamplingSetup,
     FinalSampling,
+    // Approximate physics: the last best rebuilt on exact physics.
+    ExactRebuild,
 };
 
 struct SearchProgress {
@@ -86,6 +88,16 @@ struct SearchTimelineFrame {
     std::optional<std::uint32_t> stuntsScore = std::nullopt;
 };
 
+// Approximate physics: what the twin (the faster copy of the physics the
+// candidates ran on) scored for the best, before the bridge rebuilt it on exact
+// physics, and how far the exact run strayed from the twin's path.
+struct ApproximateResult {
+    double score = 0.0;
+    std::string description;
+    // Unset for the baseline: its inputs are not rebuilt.
+    std::optional<double> driftMeters;
+};
+
 struct SearchLiveUpdate {
     SearchWinnerSource winnerSource = SearchWinnerSource::Baseline;
     std::optional<std::uint64_t> winningIterationIndex;
@@ -105,6 +117,7 @@ struct SearchLiveUpdate {
     std::vector<SearchTimelineFrame> bestTimeline;
     std::vector<double> objectiveScores;
     std::vector<double> metricValues;
+    std::optional<ApproximateResult> approximate;
 };
 
 struct SearchStatisticsUpdate {
@@ -179,7 +192,18 @@ struct SearchExecutionContext {
     std::uint32_t simulationHorizonMs = 6000u;
     const ConditionProgram *condition = nullptr;
     double searchStartedTimeSeconds = 0.0;
+    // Approximate physics: the sandbox is optimized CPU, the candidates run on
+    // the twin's CUDA engine and each new best is rebuilt on exact physics.
+    bool approximatePhysics = false;
 };
+
+// The backend the search's candidates run on.
+inline forevervalidator::SimulationBackend CandidateBackend(
+        const SearchExecutionContext &context) noexcept {
+    return context.approximatePhysics
+            ? forevervalidator::SimulationBackend::Cuda
+            : context.sandbox.Backend();
+}
 
 struct SearchResult {
     SearchWinnerSource winnerSource = SearchWinnerSource::Baseline;
@@ -201,6 +225,7 @@ struct SearchResult {
     forevervalidator::experimental::PhysicsSandboxState bestSnapshot;
     std::vector<double> objectiveScores;
     std::vector<double> metricValues;
+    std::optional<ApproximateResult> approximate;
 };
 
 class SearchAlgorithm {

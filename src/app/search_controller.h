@@ -84,6 +84,11 @@ class SearchController final : public QObject {
                        cudaSessionSpecializationEnabled WRITE
                        setCudaSessionSpecializationEnabled NOTIFY
                        cudaSessionSpecializationEnabledChanged)
+    // CUDA: "Exact" (false) or "Approximate" (true) physics for the search.
+    Q_PROPERTY(bool approximatePhysics READ approximatePhysics WRITE
+                       setApproximatePhysics NOTIFY approximatePhysicsChanged)
+    Q_PROPERTY(bool approximatePhysicsAvailable READ
+                       approximatePhysicsAvailable CONSTANT)
     Q_PROPERTY(bool cudaAvailable READ cudaAvailable CONSTANT)
     Q_PROPERTY(bool cudaFastModeAvailable READ cudaFastModeAvailable CONSTANT)
     Q_PROPERTY(QString cudaStatusText READ cudaStatusText CONSTANT)
@@ -160,6 +165,9 @@ class SearchController final : public QObject {
     Q_PROPERTY(QString selectedSessionDirectory READ
                        selectedSessionDirectory NOTIFY historyChanged)
     Q_PROPERTY(QVariantList cycleRows READ cycleRows NOTIFY historyChanged)
+    // The current search's best as a table row (SearchSessionStore::LiveRow);
+    // "running" turns false when the search ends. Empty before a search.
+    Q_PROPERTY(QVariantMap liveRow READ liveRow NOTIFY liveRowChanged)
     Q_PROPERTY(bool evaluatingBase READ evaluatingBase NOTIFY baseEvaluationChanged)
     Q_PROPERTY(bool canEvaluateBase READ canEvaluateBase NOTIFY baseEvaluationChanged)
     Q_PROPERTY(QString baseEvaluationText READ baseEvaluationText NOTIFY baseEvaluationChanged)
@@ -200,6 +208,8 @@ public:
     bool hipCalibrationEnabled() const;
     bool vulkanCalibrationEnabled() const;
     bool cudaSessionSpecializationEnabled() const;
+    bool approximatePhysics() const;
+    bool approximatePhysicsAvailable() const;
     bool cudaAvailable() const;
     bool hipAvailable() const;
     bool vulkanAvailable() const;
@@ -255,6 +265,7 @@ public:
     QVariantList sessionOptions() const;
     QString selectedSessionDirectory() const;
     QVariantList cycleRows() const;
+    QVariantMap liveRow() const;
     bool historyHasOlder() const { return historyHasOlder_; }
     bool historyHasNewer() const { return historyHasNewer_; }
     qint64 selectedCycleRestart() const { return selectedCycleRestart_; }
@@ -276,6 +287,7 @@ public slots:
     void setHipCalibrationEnabled(bool value);
     void setVulkanCalibrationEnabled(bool value);
     void setCudaSessionSpecializationEnabled(bool value);
+    void setApproximatePhysics(bool value);
     void setRandomizeSeedsOnStart(bool value);
     void setAutoRestartMode(const QString &value);
     void setAutoRestartDuration(const QString &value);
@@ -294,6 +306,8 @@ public slots:
     Q_INVOKABLE QVariant uiSetting(const QString &key,
                                    const QVariant &fallback) const;
     Q_INVOKABLE void setUiSetting(const QString &key, const QVariant &value);
+    // Whether the keyboard's letters sit like AZERTY's (for default keys).
+    Q_INVOKABLE bool keyboardIsAzerty() const;
     Q_INVOKABLE QString formatCompactNumber(double value) const;
     Q_INVOKABLE bool extendSimulationHorizon();
     Q_INVOKABLE void previewBaseInputs();
@@ -354,6 +368,7 @@ signals:
     void hipCalibrationEnabledChanged();
     void vulkanCalibrationEnabledChanged();
     void cudaSessionSpecializationEnabledChanged();
+    void approximatePhysicsChanged();
     void randomizeSeedsOnStartChanged();
     void drawTargetsThroughBlocksChanged();
     void viewerVisibleChanged();
@@ -374,6 +389,7 @@ signals:
     void resultChanged();
     void autoRestartChanged();
     void historyChanged();
+    void liveRowChanged();
     void searchSessionReset();
     void searchStarted(std::uint64_t searchId);
     void basePreviewRequested();
@@ -463,6 +479,7 @@ private:
     bool cudaCalibrationEnabled_ = false;
     bool hipCalibrationEnabled_ = false;
     bool cudaSessionSpecializationEnabled_ = true;
+    bool approximatePhysics_ = false;
     bool cudaAvailable_ = false;
     bool cudaFastModeAvailable_ = false;
     QString cudaStatusText_;
@@ -495,6 +512,7 @@ private:
     QString autoRestartAttempts_ = QStringLiteral("1000");
     QVariantList sessionOptions_;
     QVariantList cycleRows_;
+    QVariantMap liveRow_;
     bool historyHasOlder_ = false;
     bool historyHasNewer_ = false;
     bool historySelectionExplicit_ = false;

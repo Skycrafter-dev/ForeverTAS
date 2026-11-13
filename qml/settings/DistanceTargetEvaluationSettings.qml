@@ -31,6 +31,32 @@ ColumnLayout {
     }
 
     SettingCombo {
+        label: qsTr("Measure")
+        info: qsTr("Straight line: the gap between the car and the trigger, "
+                   + "through walls. Around walls: the shortest way to the "
+                   + "trigger that goes around the walls near it, ignoring "
+                   + "gravity. Not on Vulkan yet.")
+        comboObjectName: "distanceRouteField"
+        options: [{ label: qsTr("Straight line"), value: "straight" },
+                  { label: qsTr("Around walls"), value: "around" }]
+        value: root.settings["route"] ?? "straight"
+        running: root.controller.running
+        onSelected: value => root.controller.setEvaluationTargetSetting("route", value)
+    }
+    SettingTextField {
+        label: qsTr("Walls within (m)")
+        info: qsTr("Only walls this close to the trigger count. Farther out, "
+                   + "the way is a straight line. Larger takes longer to "
+                   + "prepare and to measure.")
+        fieldObjectName: "distanceReachField"
+        visible: root.settings["route"] === "around"
+        value: root.settings["reach"] ?? "32"
+        running: root.controller.running
+        minimum: 1
+        maximum: 256
+        onEdited: value => root.controller.setEvaluationTargetSetting("reach", value)
+    }
+    SettingCombo {
         label: qsTr("Event")
         comboObjectName: "distanceEventTypeField"
         options: [{ label: qsTr("Checkpoint"), value: "checkpoint" },

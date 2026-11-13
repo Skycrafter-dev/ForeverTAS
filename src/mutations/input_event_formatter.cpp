@@ -245,13 +245,26 @@ InputScriptParseResult ParseInputScript(std::string_view script) {
                         "expected '<time> <command> <value>'.");
                 return result;
             }
-            const std::optional<std::int64_t> time =
-                    ParseScriptTime(tokens[0]);
-            if (!time) {
+            // A time or, as TMInterface writes them, a range
+            // '<start>-<end>': the command at start, undone at end.
+            const std::size_t dash = tokens[0].find('-');
+            const bool range = dash != std::string_view::npos && dash != 0u;
+            const std::optional<std::int64_t> time = ParseScriptTime(
+                    range ? tokens[0].substr(0u, dash) : tokens[0]);
+            const std::optional<std::int64_t> endTime = range
+                    ? ParseScriptTime(tokens[0].substr(dash + 1u))
+                    : std::nullopt;
+            if (!time || (range && !endTime)) {
                 result.error = LineError(
                         lineNumber,
                         "time must be non-negative and 10 ms-aligned: "
-                        "seconds, mm:ss.mmm or hh:mm:ss.mmm.");
+                        "seconds, mm:ss.mmm or hh:mm:ss.mmm, or a range "
+                        "<start>-<end>.");
+                return result;
+            }
+            if (range && *endTime <= *time) {
+                result.error = LineError(
+                        lineNumber, "a range must end after it starts.");
                 return result;
             }
 
@@ -302,10 +315,29 @@ InputScriptParseResult ParseInputScript(std::string_view script) {
                         "command must be press, rel, release, steer, or gas.");
                 return result;
             }
-            if (result.commands.size() >= forevervalidator::experimental::kMaximumSearchInputEvents)
+            if (range && command.value.kind == PhysicsSandboxInputValueKind::Switch &&
+                (command.action == SandboxInputAction::Respawn ||
+                 command.value.switchState != PhysicsSandboxSwitchState::Pressed)) {
+                result.error = LineError(
+                        lineNumber, "a range needs press, steer, or gas.");
+                return result;
+            }
+            if (result.commands.size() + (range ? 2u : 1u) >
+                forevervalidator::experimental::kMaximumSearchInputEvents)
                 return {{}, LineError(lineNumber,
                         "input script exceeds the 1048576-command limit; reduce input density.")};
             result.commands.push_back(command);
+            if (range) {
+                // Released, or the analog value back to 0, at the end.
+                ParsedInputCommand undo = command;
+                undo.userTimeMs = *endTime;
+                if (undo.value.kind == PhysicsSandboxInputValueKind::Switch) {
+                    undo.value.switchState = PhysicsSandboxSwitchState::Released;
+                } else {
+                    undo.value.analog = 0;
+                }
+                result.commands.push_back(undo);
+            }
         }
 
         if (newline == std::string_view::npos) break;

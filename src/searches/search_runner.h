@@ -50,6 +50,9 @@ struct SearchRequest {
             DefaultEvaluationTargetConfiguration();
     std::vector<ParsedInputCommand> baseInputCommands = {};
     bool useCudaSessionSpecialization = true;
+    // CUDA only: candidates on the twin's GPU engine, each new best rebuilt on
+    // exact physics (optimized CPU) before it is reported ("Approximate").
+    bool approximatePhysics = false;
     std::uint32_t simulationHorizonMs = kDefaultSimulationHorizonMs;
     std::optional<ConditionProgram> condition;
 };

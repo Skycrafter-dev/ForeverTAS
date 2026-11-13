@@ -8,9 +8,11 @@
 #include "mutations/input_event_formatter.h"
 #include "mutations/input_event_utils.h"
 #include "replay_file_io.h"
+#include "searches/search_runner.h"
 #include "time_format.h"
 #include "viewer/material_classifier.h"
 #include "viewer/map_identity.h"
+#include "viewer/return_freed_memory.h"
 
 #include <forevervalidator/camera.h>
 #include <forevervalidator/experimental/physics_sandbox.h>
@@ -28,6 +30,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QThread>
+#include <QTimer>
 #include <QVariantMap>
 #include <QtEndian>
 #include <QtConcurrentRun>
@@ -572,6 +575,10 @@ public:
     std::optional<forevervalidator::camera::RaceCameraEnvironment>
             sharedFarEnvironment;
     QVector3D hoodLocalPosition{0.0f, 1.1f, 0.75f};
+    // A copy of the map's sandbox, for the game's collision casts of the
+    // race cameras (the close camera keeps above the ground with them).
+    std::shared_ptr<const forevervalidator::experimental::PhysicsSandbox>
+            collision;
 };
 
 class RaceCameraRuntime {
@@ -582,21 +589,24 @@ public:
 
     bool Evaluate(const RaceViewerRun &run,
                   int preset,
-                  qint64 timeMs,
+                  double timeMs,
                   QVector3D *position,
                   QQuaternion *rotation,
                   QVector3D *target,
-                  double *fieldOfView) {
+                  double *fieldOfView,
+                  bool *internal) {
         if (resources_ == nullptr || run.frames.empty() ||
             position == nullptr || rotation == nullptr ||
-            target == nullptr || fieldOfView == nullptr) {
+            target == nullptr || fieldOfView == nullptr ||
+            internal == nullptr) {
             return false;
         }
-        const qint64 clampedTime = std::clamp<qint64>(
-                timeMs, run.frames.front().timeMs,
-                run.frames.back().timeMs);
-        const RaceViewerFrame sampled = SampleFrame(run.frames, clampedTime);
-        if (preset == 3) {
+        const double clampedTime = std::clamp<double>(
+                timeMs, static_cast<double>(run.frames.front().timeMs),
+                static_cast<double>(run.frames.back().timeMs));
+        if (preset == 3 && !SelectSession(preset)) {
+            const RaceViewerFrame sampled = SampleFrame(
+                    run.frames, static_cast<qint64>(std::llround(clampedTime)));
             // RaceViewerFrame::rotation is already the Qt local-to-world
             // rotation used by the rendered car. A Qt camera looks down its
             // local -Z axis while the car faces local +Z, so the only required
@@ -610,40 +620,52 @@ public:
             *target = *position +
                     rotation->rotatedVector(QVector3D(0.0f, 0.0f, -10.0f));
             *fieldOfView = 75.0;
+            *internal = true;
             session_.reset();
             runId_ = run.id;
             preset_ = preset;
-            lastTimeMs_ = clampedTime;
+            lastTimeMs_ = std::numeric_limits<qint64>::min();
             nextFrameIndex_ = 0u;
             return true;
         }
 
+        // The camera runs tick by tick, as the game's does; a time between
+        // two ticks shows it blended between them.
+        const qint64 upper = std::min<qint64>(
+                static_cast<qint64>(std::ceil(clampedTime / kCountdownTickMs)) *
+                        kCountdownTickMs,
+                run.frames.back().timeMs);
         if (preset != preset_ || run.id != runId_ ||
-            !session_ || clampedTime < lastTimeMs_) {
+            !session_ || upper < lastTimeMs_) {
             if (!Reset(run, preset)) {
                 return false;
             }
         }
-        if (clampedTime == lastTimeMs_ && outputValid_) {
-            WriteOutput(position, rotation, target, fieldOfView);
-            return true;
-        }
+        *internal = internal_;
         while (nextFrameIndex_ < run.frames.size() &&
-               run.frames[nextFrameIndex_].timeMs <= clampedTime) {
-            EvaluateFrame(run.frames[nextFrameIndex_]);
+               run.frames[nextFrameIndex_].timeMs <= upper) {
+            EvaluateFrame(run.frames, run.frames[nextFrameIndex_]);
             ++nextFrameIndex_;
-        }
-        if (lastTimeMs_ < clampedTime) {
-            EvaluateFrame(sampled);
         }
         if (!outputValid_) {
             return false;
         }
-        WriteOutput(position, rotation, target, fieldOfView);
+        const double behind = static_cast<double>(lastTimeMs_) - clampedTime;
+        if (behind > 0.0 && previousValid_ &&
+            previousTimeMs_ == lastTimeMs_ - kCountdownTickMs) {
+            WriteOutput(Blend(previous_, output_,
+                              1.0 - behind / kCountdownTickMs),
+                        position, rotation, target, fieldOfView);
+        } else {
+            WriteOutput(output_, position, rotation, target, fieldOfView);
+        }
         return true;
     }
 
 private:
+    static constexpr std::uint32_t kCountdownMs = 2600u;
+    static constexpr std::uint32_t kCountdownTickMs = 10u;
+
     struct SessionSelection {
         const forevervalidator::camera::RaceCameraEnvironment *environment =
                 nullptr;
@@ -716,6 +738,16 @@ private:
         using forevervalidator::VehicleModel;
         using forevervalidator::camera::RaceCameraProfile;
         const auto &vehicle = resources_->vehicleEnvironment;
+        // The game's keys 1, 2 and 3 pick the car's camera slots 0, 1 and
+        // 2 (StadiumCar: Race2 behind, Race3 close, Internal).
+        if (const auto slot = vehicle.ResourceForCollectorIndex(
+                    static_cast<std::uint32_t>(preset - 1))) {
+            return SessionSelection{
+                    &vehicle, slot->profile, slot->resourceIndex};
+        }
+        if (preset == 3) {
+            return std::nullopt;
+        }
         if (preset == 2) {
             if (vehicle.HasProfile(RaceCameraProfile::Race2)) {
                 return SessionSelection{
@@ -766,9 +798,10 @@ private:
             const RaceViewerFrame &frame) {
         forevervalidator::camera::RaceCameraVehicleState result;
         result.targetId = 1u;
+        // The camera's clock starts with the countdown.
         result.timeMs = static_cast<std::uint32_t>(
                 std::clamp<std::int64_t>(
-                        frame.timeMs, std::int64_t{0},
+                        frame.timeMs + kCountdownMs, std::int64_t{0},
                         static_cast<std::int64_t>(
                                 std::numeric_limits<std::uint32_t>::max())));
         result.transform.position = {
@@ -814,37 +847,113 @@ private:
                     forevervalidator::camera::RaceCameraSession>(
                     *selection->environment, selection->profile);
         }
-        const forevervalidator::camera::RaceCameraVehicleState initial =
+        // The game runs the race camera through the countdown with the car
+        // held at its start, no controls and every wheel down, so it starts
+        // the race settled behind the car.
+        forevervalidator::camera::RaceCameraVehicleState initial =
                 ToCameraState(run.frames.front());
+        initial.steering = initial.accelerate = initial.brake =
+                initial.turbo = initial.cameraFlightTransition = 0.0f;
+        initial.burning = initial.gearChanged = false;
+        initial.wheelContact.fill(true);
+        initial.wheelHasSurface.fill(true);
+        initial.linearSpeed = {};
+        initial.signedSpeed = 0.0f;
+        initial.timeMs = 0u;
         session_->Reset(initial);
+        for (std::uint32_t clock = kCountdownTickMs;
+             clock <= kCountdownMs; clock += kCountdownTickMs) {
+            forevervalidator::camera::RaceCameraQuery query;
+            query.vehicle = initial;
+            query.vehicle.timeMs = clock;
+            session_->Evaluate(query);
+        }
+        internal_ = selection->profile ==
+                forevervalidator::camera::RaceCameraProfile::Internal;
         runId_ = run.id;
         preset_ = preset;
         lastTimeMs_ = std::numeric_limits<qint64>::min();
         nextFrameIndex_ = 0u;
         outputValid_ = false;
+        previousValid_ = false;
         return true;
     }
 
-    void EvaluateFrame(const RaceViewerFrame &frame) {
+    // The game draws the car a tick behind the race clock, and its camera
+    // follows that drawn pose while reading the rest of the car (speed,
+    // controls, wheels) at the race clock, a tick later. So the camera for
+    // the car drawn at frame.timeMs runs a tick later on the newer state.
+    void EvaluateFrame(const std::vector<RaceViewerFrame> &frames,
+                       const RaceViewerFrame &frame) {
+        const RaceViewerFrame next = SampleFrame(
+                frames, std::min<qint64>(frame.timeMs + kCountdownTickMs,
+                                         frames.back().timeMs));
         forevervalidator::camera::RaceCameraQuery query;
-        query.vehicle = ToCameraState(frame);
+        query.vehicle = ToCameraState(next);
+        const forevervalidator::camera::RaceCameraVehicleState drawn =
+                ToCameraState(frame);
+        query.vehicle.resetTransform = query.vehicle.transform;
+        query.vehicle.transform = drawn.transform;
+        query.vehicle.timeMs = drawn.timeMs + kCountdownTickMs;
+        if (const auto *collision = resources_->collision.get()) {
+            query.segmentCollision =
+                    [collision](const forevervalidator::camera::SegmentQuery
+                                        &segment)
+                    -> std::optional<forevervalidator::camera::SegmentHit> {
+                const std::optional<float> fraction =
+                        collision->IntersectStaticSegment(
+                                {segment.start.x, segment.start.y,
+                                 segment.start.z},
+                                {segment.end.x, segment.end.y,
+                                 segment.end.z});
+                if (!fraction) {
+                    return std::nullopt;
+                }
+                return forevervalidator::camera::SegmentHit{*fraction};
+            };
+        }
+        previous_ = output_;
+        previousValid_ = outputValid_;
+        previousTimeMs_ = lastTimeMs_;
         output_ = session_->Evaluate(query);
         outputValid_ = true;
         lastTimeMs_ = frame.timeMs;
     }
 
-    void WriteOutput(QVector3D *position,
-                     QQuaternion *rotation,
-                     QVector3D *target,
-                     double *fieldOfView) const {
-        *position = QVector3D(output_.transform.position.x,
-                              output_.transform.position.y,
-                              output_.transform.position.z);
+    // a and b part of the way from a to b.
+    static forevervalidator::camera::RaceCameraOutput Blend(
+            const forevervalidator::camera::RaceCameraOutput &a,
+            const forevervalidator::camera::RaceCameraOutput &b, double weight) {
+        const float w = static_cast<float>(std::clamp(weight, 0.0, 1.0));
+        forevervalidator::camera::RaceCameraOutput result = b;
+        const auto &pa = a.transform.position;
+        const auto &pb = b.transform.position;
+        result.transform.position = {pa.x + (pb.x - pa.x) * w, pa.y + (pb.y - pa.y) * w,
+                                     pa.z + (pb.z - pa.z) * w};
+        const auto &ra = a.transform.rotation;
+        const auto &rb = b.transform.rotation;
+        const QQuaternion rotation = QQuaternion::slerp(
+                QQuaternion(ra.w, ra.x, ra.y, ra.z), QQuaternion(rb.w, rb.x, rb.y, rb.z), w);
+        result.transform.rotation = {rotation.scalar(), rotation.x(), rotation.y(),
+                                     rotation.z()};
+        result.lens.fieldOfViewDegrees = a.lens.fieldOfViewDegrees +
+                (b.lens.fieldOfViewDegrees - a.lens.fieldOfViewDegrees) * w;
+        return result;
+    }
+
+    static void WriteOutput(const forevervalidator::camera::RaceCameraOutput &output,
+                            QVector3D *position,
+                            QQuaternion *rotation,
+                            QVector3D *target,
+                            double *fieldOfView) {
+        *position = QVector3D(output.transform.position.x,
+                              output.transform.position.y,
+                              output.transform.position.z);
         const QQuaternion validatorRotation(
-                output_.transform.rotation.w,
-                output_.transform.rotation.x,
-                output_.transform.rotation.y,
-                output_.transform.rotation.z);
+                output.transform.rotation.w,
+                output.transform.rotation.x,
+                output.transform.rotation.y,
+                output.transform.rotation.z);
         // Validator preserves the game camera basis-row convention. Qt uses
         // basis columns; conjugation performs the required transpose.
         *rotation = validatorRotation.conjugated().normalized() *
@@ -852,7 +961,7 @@ private:
         *target = *position +
                 rotation->rotatedVector(QVector3D(0.0f, 0.0f, -10.0f));
         *fieldOfView = std::clamp<double>(
-                output_.lens.fieldOfViewDegrees, 20.0, 150.0);
+                output.lens.fieldOfViewDegrees, 20.0, 150.0);
     }
 
     std::shared_ptr<const RaceCameraResources> resources_;
@@ -863,6 +972,11 @@ private:
     std::size_t nextFrameIndex_ = 0u;
     forevervalidator::camera::RaceCameraOutput output_{};
     bool outputValid_ = false;
+    // The output a tick before output_, to blend between them.
+    forevervalidator::camera::RaceCameraOutput previous_{};
+    bool previousValid_ = false;
+    qint64 previousTimeMs_ = 0;
+    bool internal_ = false;
 };
 
 namespace {
@@ -948,7 +1062,8 @@ QVector3D HoodCameraPosition(
 std::shared_ptr<const RaceCameraResources> LoadCameraResources(
         const QString &packsDirectory,
         forevervalidator::VehicleModel vehicleModel,
-        const forevervalidator::experimental::PhysicsSandboxSceneView &scene) {
+        const forevervalidator::experimental::PhysicsSandboxSceneView &scene,
+        const forevervalidator::experimental::PhysicsSandbox &sandbox) {
     const std::string packName = VehicleCameraPackName(vehicleModel);
     if (packName.empty()) {
         return {};
@@ -962,6 +1077,12 @@ std::shared_ptr<const RaceCameraResources> LoadCameraResources(
     resources->vehicleModel = vehicleModel;
     resources->vehicleEnvironment = std::move(loaded).Value();
     resources->hoodLocalPosition = HoodCameraPosition(scene);
+    if (auto copy = forevervalidator::experimental::ClonePhysicsSandbox(
+                sandbox)) {
+        resources->collision = std::make_shared<
+                const forevervalidator::experimental::PhysicsSandbox>(
+                std::move(copy).Value());
+    }
     using forevervalidator::camera::RaceCameraProfile;
     if (!resources->vehicleEnvironment.HasProfile(
                 RaceCameraProfile::Race)) {
@@ -1519,7 +1640,7 @@ RaceViewerLoadResult LoadMapData(const QString &packsDirectory,
         PhysicsSandboxSceneView scene = Require(
                 sandbox.ReadScene(), "reading scenario scene failed");
         result.cameraResources = LoadCameraResources(
-                packsDirectory, initialState.vehicleModel, scene);
+                packsDirectory, initialState.vehicleModel, scene, sandbox);
         result.mapKey = CollisionSceneKey(scene);
         result.mapName = QString::fromUtf8(Require(
                 sandbox.ReadMapName(),
@@ -2051,7 +2172,7 @@ std::vector<RaceViewerSplit> BuildCheckpointSplits(
     return splits;
 }
 
-void UpdateRunPose(RaceViewerRun &run, qint64 timeMs) {
+void UpdateRunPose(RaceViewerRun &run, double timeMs) {
     // A run waiting for its first frame keeps its last pose; the world origin
     // is usually far outside the map.
     if (run.frames.empty()) {
@@ -2061,8 +2182,8 @@ void UpdateRunPose(RaceViewerRun &run, qint64 timeMs) {
             run.frames.begin(),
             run.frames.end(),
             timeMs,
-            [](const RaceViewerFrame &frame, qint64 time) {
-                return frame.timeMs < time;
+            [](const RaceViewerFrame &frame, double time) {
+                return static_cast<double>(frame.timeMs) < time;
             });
     if (upper == run.frames.begin()) {
         run.position = upper->position;
@@ -2078,8 +2199,8 @@ void UpdateRunPose(RaceViewerRun &run, qint64 timeMs) {
     const RaceViewerFrame &before = *(upper - 1);
     const qint64 interval = after.timeMs - before.timeMs;
     const float blend = interval > 0
-            ? static_cast<float>(timeMs - before.timeMs) /
-                    static_cast<float>(interval)
+            ? static_cast<float>((timeMs - static_cast<double>(before.timeMs)) /
+                                 static_cast<double>(interval))
             : 0.0f;
     run.position = before.position * (1.0f - blend) +
             after.position * blend;
@@ -2146,6 +2267,18 @@ RaceViewerController::RaceViewerController(QObject *parent)
             &QTimer::timeout,
             this,
             &RaceViewerController::advanceManualDrive);
+    rewindTimer_.setInterval(5);
+    rewindTimer_.setTimerType(Qt::PreciseTimer);
+    connect(&rewindTimer_, &QTimer::timeout, this, [this]() {
+        const double back = static_cast<double>(rewindClock_.elapsed()) *
+                playbackSpeed_;
+        const qint64 target = std::max<qint64>(
+                0, rewindStartMs_ - static_cast<qint64>(std::llround(back)));
+        setTimeMs(target);
+        if (target == 0) {
+            rewindTimer_.stop();
+        }
+    });
     connect(&simulationDebugger_,
             &SimulationDebuggerModel::frameProduced,
             this,
@@ -2242,7 +2375,7 @@ QQuick3DGeometry *RaceViewerController::ellipsoidFilledGeometry() {
 }
 
 QQuick3DGeometry *RaceViewerController::selectedEllipsoidFilledGeometry() {
-    return ellipsoidFilledGeometryForRun(selectedRunIndex());
+    return ellipsoidFilledGeometryForRun(selectedRunColorIndex());
 }
 
 QVariantList RaceViewerController::ellipsoidFilledGeometries() const {
@@ -2476,6 +2609,11 @@ QVariantList RaceViewerController::runPoses() const {
         pose.insert(QStringLiteral("rotation"), run.rotation);
         pose.insert(QStringLiteral("selected"),
                     run.id == selectedRunId_);
+        // Attempts show only their own car, when watched.
+        pose.insert(QStringLiteral("hidden"), run.attemptNumber > 0);
+        pose.insert(QStringLiteral("colorIndex"),
+                    static_cast<qint64>(colorIndex(run)));
+        pose.insert(QStringLiteral("styleId"), styleRunId(run));
         poses.push_back(std::move(pose));
     }
     return poses;
@@ -2497,6 +2635,31 @@ int RaceViewerController::selectedRunIndex() const {
     return selected == runs_.end()
             ? -1
             : static_cast<int>(selected - runs_.begin());
+}
+
+QString RaceViewerController::styleRunId(const RaceViewerRun &run) const {
+    const QString root = run.id == QStringLiteral("manual") && manualDriving_
+            ? liveRootRunId_
+            : run.attemptNumber > 0 ? run.sourceRunId : run.id;
+    return !root.isEmpty() && findRun(root) != nullptr ? root : run.id;
+}
+
+int RaceViewerController::colorIndex(const RaceViewerRun &run) const {
+    const QString id = styleRunId(run);
+    for (std::size_t index = 0u; index < runs_.size(); ++index) {
+        if (runs_[index].id == id) return static_cast<int>(index);
+    }
+    return 0;
+}
+
+int RaceViewerController::selectedRunColorIndex() const {
+    const RaceViewerRun *const run = selectedRun();
+    return run == nullptr ? -1 : colorIndex(*run);
+}
+
+QString RaceViewerController::selectedRunStyleId() const {
+    const RaceViewerRun *const run = selectedRun();
+    return run == nullptr ? selectedRunId_ : styleRunId(*run);
 }
 
 QVector3D RaceViewerController::carPosition() const {
@@ -2886,7 +3049,7 @@ double RaceViewerController::carCameraFieldOfView() const {
 }
 
 bool RaceViewerController::hideSelectedCar() const {
-    return carCameraAvailable_ && cameraPreset_ == 3;
+    return carCameraAvailable_ && carCameraInternal_;
 }
 
 QString RaceViewerController::telemetryScript() const {
@@ -3041,7 +3204,8 @@ bool RaceViewerController::playing() const {
 }
 
 bool RaceViewerController::takeOverOnInput() const {
-    return takeOverOnInput_;
+    // A driving control always takes over the race that plays.
+    return true;
 }
 
 bool RaceViewerController::manualDriving() const {
@@ -3587,7 +3751,7 @@ void RaceViewerController::updateImprovementCars() {
                       static_cast<std::size_t>(carEllipsoids_.size()));
     for (std::size_t index = 0; index < improvementPreviews_.size(); ++index) {
         ImprovementPreview &preview = improvementPreviews_[index];
-        UpdateRunPose(preview.run, timeMs_);
+        UpdateRunPose(preview.run, presentationMs_);
         QMatrix4x4 car;
         car.translate(preview.run.position);
         car.rotate(preview.run.rotation);
@@ -3689,16 +3853,35 @@ void RaceViewerController::refreshStyledTrajectory(const QString &runId) {
 }
 
 void RaceViewerController::setTimeMs(qint64 value) {
-    if (manualDriving_) {
+    // The race being driven is shown earlier only while it stands still;
+    // play goes on from there (resolveLiveSeek).
+    if (manualDriving_ && playing_) {
         return;
     }
     const qint64 clamped = std::clamp<qint64>(value, 0, durationMs_);
-    if (timeMs_ == clamped) {
+    if (timeMs_ == clamped &&
+        presentationMs_ == static_cast<double>(clamped)) {
         return;
     }
     timeMs_ = clamped;
+    presentationMs_ = static_cast<double>(clamped);
     updatePose();
     emit timeChanged();
+}
+
+void RaceViewerController::setPresentationTime(double value) {
+    const double clamped = std::clamp(value, 0.0, static_cast<double>(durationMs_));
+    if (presentationMs_ == clamped) {
+        return;
+    }
+    presentationMs_ = clamped;
+    timeMs_ = static_cast<qint64>(std::floor(clamped));
+    updatePose();
+    emit timeChanged();
+}
+
+double RaceViewerController::presentationTimeMs() const {
+    return presentationMs_;
 }
 
 void RaceViewerController::setCurrentTick(qint64 tick) {
@@ -3715,7 +3898,10 @@ void RaceViewerController::setCurrentTick(qint64 tick) {
 
 void RaceViewerController::setSelectedRunId(const QString &value) {
     if (manualDriving_) {
-        return;
+        if (value == QStringLiteral("manual")) {
+            return;
+        }
+        endLive();
     }
     if (simulationDebugger_.active() && value != QStringLiteral("debug")) {
         stopSimulationDebugger();
@@ -3819,17 +4005,30 @@ void RaceViewerController::play() {
         simulationDebugger_.play();
         return;
     }
+    if (playing_ || rewinding_) {
+        return;
+    }
+    if (manualDriving_) {
+        if (timeMs_ < durationMs_) {
+            resolveLiveSeek();
+        }
+        if (manualDriving_) {
+            resumeLive();
+            return;
+        }
+        if (playing_) {
+            return;
+        }
+    }
     const RaceViewerRun *const run = selectedRun();
     if (!loaded_ || manualDriving_ || run == nullptr ||
-        run->frames.empty() || playing_) {
+        run->frames.empty()) {
         return;
     }
     if (timeMs_ >= durationMs_) {
         setCurrentTick(0);
-    } else {
-        setCurrentTick(currentTick());
     }
-    playbackStartTick_ = currentTick();
+    playbackStartMs_ = presentationMs_;
     playbackClock_.restart();
     playbackTimer_.start();
     setPlaying(true);
@@ -3837,6 +4036,14 @@ void RaceViewerController::play() {
 
 void RaceViewerController::pause() {
     playbackTimer_.stop();
+    manualDriveTimer_.stop();
+    if (manualDriving_ && playing_ && timeMs_ != durationMs_) {
+        // Paused, the race being driven shows its newest tick.
+        timeMs_ = durationMs_;
+        presentationMs_ = static_cast<double>(durationMs_);
+        updatePose();
+        emit timeChanged();
+    }
     if (simulationDebugger_.active()) {
         simulationDebugger_.pause();
     }
@@ -3933,9 +4140,12 @@ bool RaceViewerController::resetManualDriveSession(
             true);
     manualDriveStartTick_ =
             static_cast<qint64>(manualRuntime_->state.tick);
+    liveChainTakeoverMs_ = 0;
+    liveRootRunId_ = QStringLiteral("preview");
     setStatusText(status);
     manualDriveClock_.restart();
     manualDriveTimer_.start();
+    setPlaying(true);
     return true;
 }
 
@@ -3961,11 +4171,8 @@ bool RaceViewerController::giveUpManualDrive() {
             return false;
         }
         const QString sourceName = source->name;
-        manualDriveTimer_.stop();
-        manualDriving_ = false;
-        resetManualInputState();
-        resetManualTakeoverState();
-        emit manualDrivingChanged();
+        pause();
+        endLive();
         setSelectedRunId(sourceRunId);
         setCurrentTick(0);
         play();
@@ -4095,12 +4302,18 @@ void RaceViewerController::setManualInput(const QString &input,
     if (manualRuntime_ == nullptr) {
         return;
     }
+    if (input == QStringLiteral("left")) heldLeft_ = active;
+    else if (input == QStringLiteral("right")) heldRight_ = active;
+    else if (input == QStringLiteral("accelerate")) heldAccelerate_ = active;
+    else if (input == QStringLiteral("brake")) heldBrake_ = active;
+    // Paused, the controls do nothing; held ones apply once it runs.
+    if (!playing_) {
+        return;
+    }
     if (!manualDriving_) {
-        if (takeOverOnInput_ && playing_) {
-            if (beginManualTakeover(input, active)) {
-                if (input == QStringLiteral("accelerate")) keyboardAccelerate_ = active;
-                if (input == QStringLiteral("brake")) keyboardBrake_ = active;
-            }
+        if (active && beginManualTakeover(input, active)) {
+            if (input == QStringLiteral("accelerate")) keyboardAccelerate_ = active;
+            if (input == QStringLiteral("brake")) keyboardBrake_ = active;
         }
         return;
     }
@@ -4126,6 +4339,9 @@ void RaceViewerController::setManualInput(const QString &input,
 void RaceViewerController::setGamepadInput(int steering, bool accelerate, bool brake) {
     if (!manualRuntime_) return;
     steering = std::clamp(steering, -65536, 65536);
+    if (!playing_) {
+        return;
+    }
     if (!manualDriving_) {
         if (!takeOverOnInput_ || !playing_ || (!steering && !accelerate && !brake)) return;
         if (!beginManualTakeover(steering ? QStringLiteral("left") :
@@ -4166,8 +4382,7 @@ void RaceViewerController::setGamepadInput(int steering, bool accelerate, bool b
 
 bool RaceViewerController::beginManualTakeover(const QString &input,
                                                bool active) {
-    if (!takeOverOnInput_ || !playing_ || manualRuntime_ == nullptr ||
-        !loaded_ || loading_) {
+    if (!playing_ || manualRuntime_ == nullptr || !loaded_ || loading_) {
         return false;
     }
     const RaceViewerRun *const sourceRun = selectedRun();
@@ -4180,192 +4395,582 @@ bool RaceViewerController::beginManualTakeover(const QString &input,
         input != QStringLiteral("brake")) {
         return false;
     }
-
     const qint64 sourceTick = currentTick();
-    const std::size_t prefixCount = static_cast<std::size_t>(
-            std::clamp<qint64>(
-                    sourceTick + 1,
-                    1,
-                    static_cast<qint64>(sourceRun->frames.size())));
-    std::vector<RaceViewerFrame> prefix(
-            sourceRun->frames.begin(),
-            sourceRun->frames.begin() +
-                    static_cast<std::ptrdiff_t>(prefixCount));
-    std::vector<SandboxInputEvent> sourceInputs =
-            inputHistoryForRun(*sourceRun);
-
-    auto captured = manualRuntime_->sandbox.CaptureState();
-    auto previousInputsResult = manualRuntime_->sandbox.ReadInputs();
-    if (!captured || !previousInputsResult) {
-        setStatusText(QStringLiteral(
-                "Manual takeover failed while saving the current simulation."));
+    std::vector<RaceViewerFrame> prefix;
+    for (const RaceViewerFrame &frame : sourceRun->frames) {
+        if (frame.timeMs > sourceTick * kViewerTickDurationMs) break;
+        prefix.push_back(frame);
+    }
+    const QString sourceId = sourceRun->id;
+    pause();
+    if (!goLiveFrom(*sourceRun, sourceTick, inputHistoryForRun(*sourceRun),
+                    std::move(prefix))) {
+        play();
         return false;
     }
-    PhysicsSandboxState previousState =
-            std::move(captured).Value();
-    std::vector<SandboxInputEvent> previousInputs =
-            std::move(previousInputsResult).Value();
-    const bool resumePlayback = playing_;
-    pause();
+    if (!applyManualInput(input, active)) {
+        const QString status = statusText_;
+        endLive();
+        setSelectedRunId(sourceId);
+        setStatusText(status);
+        play();
+        return false;
+    }
+    setStatusText(QStringLiteral("Driving"));
+    // The key pressed takes over its axis only.
+    resumeLive(false);
+    return true;
+}
 
-    const auto restorePreviousRuntime = [this,
-                                         &previousState,
-                                         &previousInputs]() {
-        auto restored =
-                manualRuntime_->sandbox.RestoreState(previousState);
-        if (!restored) {
-            setStatusText(
-                    QStringLiteral("Restoring playback after a failed "
-                                   "takeover failed: %1")
-                            .arg(SandboxErrorText(restored.Error())));
-            return false;
-        }
-        auto replaced =
-                manualRuntime_->sandbox.ReplaceInputs(previousInputs);
-        if (!replaced) {
-            setStatusText(
-                    QStringLiteral("Restoring playback inputs after a failed "
-                                   "takeover failed: %1")
-                            .arg(SandboxErrorText(replaced.Error())));
-            return false;
-        }
-        auto state = manualRuntime_->sandbox.ReadState();
-        if (!state) {
-            setStatusText(
-                    QStringLiteral("Reading restored playback after a failed "
-                                   "takeover failed: %1")
-                            .arg(SandboxErrorText(state.Error())));
-            return false;
-        }
-        manualRuntime_->state = state.Value();
-        return true;
-    };
-    const auto fail = [this,
-                       resumePlayback,
-                       &restorePreviousRuntime](
-                              const QString &message) {
+const RaceViewerRun *RaceViewerController::findRun(const QString &id) const {
+    const auto found = std::find_if(
+            runs_.begin(), runs_.end(),
+            [&id](const RaceViewerRun &run) { return run.id == id; });
+    return found == runs_.end() ? nullptr : &*found;
+}
+
+bool RaceViewerController::goLiveFrom(const RaceViewerRun &source,
+                                      qint64 tick,
+                                      std::vector<SandboxInputEvent> inputs,
+                                      std::vector<RaceViewerFrame> prefix) {
+    // Driving over an attempt carries on its race: its takeover stays the
+    // race's first.
+    const bool attempt = source.attemptNumber > 0;
+    return goLive(attempt ? source.sourceRunId : source.id,
+                  attempt ? source.takeoverTimeMs : std::nullopt, tick,
+                  std::move(inputs), std::move(prefix));
+}
+
+bool RaceViewerController::goLive(const QString &rootRunId,
+                                  std::optional<std::int32_t> chainTakeoverMs,
+                                  qint64 tick,
+                                  std::vector<SandboxInputEvent> inputs,
+                                  std::vector<RaceViewerFrame> prefix) {
+    if (manualRuntime_ == nullptr) {
+        return false;
+    }
+    const auto fail = [this](const QString &message) {
         setStatusText(message);
-        if (restorePreviousRuntime() && resumePlayback) {
-            play();
-        }
         return false;
     };
-
     auto restored = manualRuntime_->sandbox.RestoreState(
             manualRuntime_->initialState);
     if (!restored) {
-        return fail(
-                QStringLiteral("Manual takeover failed: %1")
-                        .arg(SandboxErrorText(restored.Error())));
+        return fail(QStringLiteral("Manual takeover failed: %1")
+                            .arg(SandboxErrorText(restored.Error())));
     }
-    auto resized = manualRuntime_->sandbox.SetSimulationHorizonMs(
-            static_cast<std::uint32_t>(simulationHorizonMs_));
+    const std::uint32_t horizon = static_cast<std::uint32_t>(std::min<qint64>(
+            std::max<qint64>(simulationHorizonMs_,
+                             (tick + 1000) * kViewerTickDurationMs),
+            kMaximumSimulationHorizonMs));
+    auto resized = manualRuntime_->sandbox.SetSimulationHorizonMs(horizon);
     if (!resized) {
-        return fail(
-                QStringLiteral("Manual takeover failed: %1")
-                        .arg(SandboxErrorText(resized.Error())));
+        return fail(QStringLiteral("Manual takeover failed: %1")
+                            .arg(SandboxErrorText(resized.Error())));
     }
     manualRuntime_->state = resized.Value();
-    manualRuntime_->simulationHorizonMs =
-            static_cast<std::uint32_t>(simulationHorizonMs_);
-    auto replaced = manualRuntime_->sandbox.ReplaceInputs(sourceInputs);
+    manualRuntime_->simulationHorizonMs = horizon;
+    auto replaced = manualRuntime_->sandbox.ReplaceInputs(inputs);
     if (!replaced) {
-        return fail(
-                QStringLiteral("Manual takeover failed: %1")
-                        .arg(SandboxErrorText(replaced.Error())));
+        return fail(QStringLiteral("Manual takeover failed: %1")
+                            .arg(SandboxErrorText(replaced.Error())));
     }
     const std::uint64_t targetTick =
-            static_cast<std::uint64_t>(std::max<qint64>(0, sourceTick));
+            static_cast<std::uint64_t>(std::max<qint64>(0, tick));
     if (targetTick > manualRuntime_->state.tick) {
-        const std::uint64_t remaining =
-                targetTick - manualRuntime_->state.tick;
-        if (remaining >
-            static_cast<std::uint64_t>(
-                    std::numeric_limits<std::uint32_t>::max())) {
-            return fail(QStringLiteral(
-                    "Manual takeover failed because the selected time is "
-                    "outside the supported race range."));
-        }
         auto advanced = manualRuntime_->sandbox.AdvanceTicks(
-                static_cast<std::uint32_t>(remaining));
+                static_cast<std::uint32_t>(targetTick -
+                                           manualRuntime_->state.tick));
         if (!advanced) {
-            return fail(
-                    QStringLiteral("Manual takeover failed: %1")
-                            .arg(SandboxErrorText(advanced.Error())));
+            return fail(QStringLiteral("Manual takeover failed: %1")
+                                .arg(SandboxErrorText(advanced.Error())));
         }
         manualRuntime_->state = advanced.Value();
     }
-
-    std::vector<SandboxInputEvent> previousTakeoverSource =
-            std::move(takeoverSourceInputs_);
-    std::vector<SandboxInputEvent> previousDriverInputs =
-            std::move(manualRuntime_->driverInputs);
-    const std::optional<std::int32_t> previousSteeringTakeover =
-            steeringTakeoverTimeMs_;
-    const std::optional<std::int32_t> previousLongitudinalTakeover =
-            longitudinalTakeoverTimeMs_;
-    const bool previousManualTakeover = manualTakeover_;
-    const QString previousTakeoverSourceRunId = takeoverSourceRunId_;
-    const bool previousLeft = manualLeft_;
-    const bool previousRight = manualRight_;
-    const bool previousAccelerate = manualAccelerate_;
-    const bool previousBrake = manualBrake_;
-
-    takeoverSourceInputs_ = std::move(sourceInputs);
-    takeoverSourceRunId_ = sourceRun->id;
+    if (simulationDebugger_.active()) {
+        simulationDebugger_.stopSession();
+    }
+    takeoverSourceInputs_ = std::move(inputs);
+    takeoverSourceRunId_ = rootRunId;
+    liveRootRunId_ = rootRunId;
+    liveChainTakeoverMs_ = chainTakeoverMs;
     manualRuntime_->driverInputs.clear();
     steeringTakeoverTimeMs_.reset();
     longitudinalTakeoverTimeMs_.reset();
     manualTakeover_ = true;
-    manualLeft_ = false;
-    manualRight_ = false;
-    manualAccelerate_ = false;
-    manualBrake_ = false;
-    if (!applyManualInput(input, active)) {
-        takeoverSourceInputs_ = std::move(previousTakeoverSource);
-        manualRuntime_->driverInputs =
-                std::move(previousDriverInputs);
-        steeringTakeoverTimeMs_ = previousSteeringTakeover;
-        longitudinalTakeoverTimeMs_ =
-                previousLongitudinalTakeover;
-        manualTakeover_ = previousManualTakeover;
-        takeoverSourceRunId_ = previousTakeoverSourceRunId;
-        manualLeft_ = previousLeft;
-        manualRight_ = previousRight;
-        manualAccelerate_ = previousAccelerate;
-        manualBrake_ = previousBrake;
-        if (restorePreviousRuntime() && resumePlayback) {
-            play();
-        }
-        return false;
-    }
+    manualLeft_ = manualRight_ = manualAccelerate_ = manualBrake_ = false;
+    appliedAnalogSteering_ = 0;
 
-    if (simulationDebugger_.active()) {
-        simulationDebugger_.stopSession();
-    }
-    const RaceViewerFrame takeoverFrame =
-            ToViewerFrame(manualRuntime_->state);
-    if (!prefix.empty() &&
-        prefix.back().timeMs == takeoverFrame.timeMs) {
+    const RaceViewerFrame takeoverFrame = ToViewerFrame(manualRuntime_->state);
+    if (!prefix.empty() && prefix.back().timeMs == takeoverFrame.timeMs) {
         prefix.back() = takeoverFrame;
     } else {
         prefix.push_back(takeoverFrame);
     }
-    upsertRun(
-            QStringLiteral("manual"),
-            QStringLiteral("Manual"),
-            std::move(prefix),
-            {},
-            true);
+    upsertRun(QStringLiteral("manual"), QStringLiteral("Driving"),
+              std::move(prefix), {}, true);
     manualDriving_ = true;
-    manualDriveStartTick_ =
-            static_cast<qint64>(manualRuntime_->state.tick);
-    setStatusText(QStringLiteral("Manual takeover"));
-    manualDriveClock_.restart();
-    manualDriveTimer_.start();
+    timeMs_ = durationMs_;
+    manualDriveStartTick_ = static_cast<qint64>(manualRuntime_->state.tick);
     emit manualDrivingChanged();
     emit manualInputChanged();
+    emit attemptsChanged();
+    emit timeChanged();
     return true;
+}
+
+bool RaceViewerController::takeAllAxes() {
+    return applyManualInput(QStringLiteral("left"), heldLeft_) &&
+            applyManualInput(QStringLiteral("right"), heldRight_) &&
+            applyManualInput(QStringLiteral("accelerate"),
+                             heldAccelerate_ || gamepadAccelerate_) &&
+            applyManualInput(QStringLiteral("brake"),
+                             heldBrake_ || gamepadBrake_);
+}
+
+void RaceViewerController::resumeLive(bool applyHeld) {
+    if (!manualDriving_ || manualRuntime_ == nullptr) {
+        return;
+    }
+    timeMs_ = durationMs_;
+    manualDriveStartTick_ = static_cast<qint64>(manualRuntime_->state.tick);
+    manualDriveClock_.restart();
+    manualDriveTimer_.start();
+    setPlaying(true);
+    if (applyHeld) applyHeldInputs();
+}
+
+void RaceViewerController::applyHeldInputs() {
+    if (!manualDriving_ || manualRuntime_ == nullptr) {
+        return;
+    }
+    const std::array<std::pair<QString, std::pair<bool, bool>>, 4> controls{{
+            {QStringLiteral("left"), {heldLeft_, manualLeft_}},
+            {QStringLiteral("right"), {heldRight_, manualRight_}},
+            {QStringLiteral("accelerate"),
+             {heldAccelerate_ || gamepadAccelerate_, manualAccelerate_}},
+            {QStringLiteral("brake"),
+             {heldBrake_ || gamepadBrake_, manualBrake_}},
+    }};
+    bool changed = false;
+    for (const auto &[control, state] : controls) {
+        const auto [held, applied] = state;
+        if (held == applied) continue;
+        if (control == QStringLiteral("accelerate")) keyboardAccelerate_ = heldAccelerate_;
+        if (control == QStringLiteral("brake")) keyboardBrake_ = heldBrake_;
+        if (!applyManualInput(control, held)) {
+            finishManualDrive(statusText_, false);
+            return;
+        }
+        changed = true;
+    }
+    if (changed) emit manualInputChanged();
+}
+
+std::optional<std::int32_t> RaceViewerController::liveTakeoverTimeMs() const {
+    std::optional<std::int32_t> earliest = liveChainTakeoverMs_;
+    for (const auto &time : {steeringTakeoverTimeMs_,
+                             longitudinalTakeoverTimeMs_}) {
+        if (time && (!earliest || *time < *earliest)) earliest = time;
+    }
+    if (!manualTakeover_ && !earliest) earliest = 0;
+    return earliest;
+}
+
+QString RaceViewerController::endLive() {
+    if (!manualDriving_) {
+        return {};
+    }
+    manualDriveTimer_.stop();
+    setPlaying(false);
+    const std::optional<std::int32_t> takeover = liveTakeoverTimeMs();
+    const QString root = liveRootRunId_;
+    auto live = std::find_if(runs_.begin(), runs_.end(),
+                             [](const RaceViewerRun &run) {
+                                 return run.id == QStringLiteral("manual");
+                             });
+    QString kept;
+    if (live != runs_.end()) {
+        if (takeover) {
+            live->inputs = effectiveManualInputs();
+            live->attemptNumber = ++attemptCounter_;
+            live->id = QStringLiteral("attempt-%1").arg(live->attemptNumber);
+            live->name = QStringLiteral("Attempt %1").arg(live->attemptNumber);
+            live->takeoverTimeMs = takeover;
+            live->sourceRunId = root;
+            kept = live->id;
+        } else {
+            runs_.erase(live);
+        }
+    }
+    if (selectedRunId_ == QStringLiteral("manual")) {
+        selectedRunId_ = !kept.isEmpty() ? kept
+                : findRun(root) != nullptr ? root
+                : findRun(QStringLiteral("preview")) != nullptr
+                        ? QStringLiteral("preview")
+                        : runs_.empty() ? QString{} : runs_.front().id;
+        emit selectedRunChanged();
+    }
+    // Only the newest attempts are kept.
+    constexpr int kAttemptsKept = 30;
+    for (;;) {
+        int count = 0;
+        auto oldest = runs_.end();
+        for (auto it = runs_.begin(); it != runs_.end(); ++it) {
+            if (it->attemptNumber == 0) continue;
+            ++count;
+            if (it->id != selectedRunId_ &&
+                (oldest == runs_.end() || it->attemptNumber < oldest->attemptNumber)) {
+                oldest = it;
+            }
+        }
+        if (count <= kAttemptsKept || oldest == runs_.end()) break;
+        runs_.erase(oldest);
+    }
+    manualDriving_ = false;
+    resetManualInputState();
+    resetManualTakeoverState();
+    liveChainTakeoverMs_.reset();
+    liveRootRunId_.clear();
+    ++runGeometryRevision_;
+    emit runsChanged();
+    emit manualDrivingChanged();
+    emit attemptsChanged();
+    refreshSelectedRun();
+    emit timelineChanged();
+    emit timeChanged();
+    scheduleInputPreviewRebuild();
+    scheduleStoredRunRebuilds();
+    return kept;
+}
+
+void RaceViewerController::resolveLiveSeek() {
+    if (!manualDriving_) {
+        return;
+    }
+    const RaceViewerRun *const live = findRun(QStringLiteral("manual"));
+    if (live == nullptr) {
+        endLive();
+        return;
+    }
+    const qint64 tick = timeMs_ / kViewerTickDurationMs;
+    const qint64 time = tick * kViewerTickDurationMs;
+    std::vector<RaceViewerFrame> prefix;
+    for (const RaceViewerFrame &frame : live->frames) {
+        if (frame.timeMs > time) break;
+        prefix.push_back(frame);
+    }
+    const std::optional<std::int32_t> takeover = liveTakeoverTimeMs();
+    if (!takeover) {
+        // Nothing was driven: the same line plays on from there.
+        std::vector<SandboxInputEvent> inputs = takeoverSourceInputs_;
+        const QString root = liveRootRunId_;
+        endLive();
+        goLive(root, std::nullopt, tick, std::move(inputs), std::move(prefix));
+        return;
+    }
+    if (time >= *takeover) {
+        // Driven before here: driven on from here, as a new attempt.
+        const QString kept = endLive();
+        const RaceViewerRun *const attempt = findRun(kept);
+        if (attempt == nullptr) return;
+        const RaceViewerRun source = *attempt;
+        if (goLiveFrom(source, tick, source.inputs, std::move(prefix))) {
+            takeAllAxes();
+        }
+        return;
+    }
+    // Before the race was first driven: its line plays again.
+    const QString root = liveRootRunId_;
+    endLive();
+    setSelectedRunId(findRun(root) != nullptr ? root : QStringLiteral("preview"));
+    setTimeMs(time);
+}
+
+void RaceViewerController::setPlaybackSpeed(double value) {
+    value = std::clamp(value, 0.01, 50.0);
+    if (playbackSpeed_ == value) {
+        return;
+    }
+    playbackSpeed_ = value;
+    if (playing_ && !manualDriving_) {
+        playbackStartMs_ = presentationMs_;
+        playbackClock_.restart();
+    }
+    if (playing_ && manualDriving_ && manualRuntime_ != nullptr) {
+        manualDriveStartTick_ = static_cast<qint64>(manualRuntime_->state.tick);
+        manualDriveClock_.restart();
+    }
+    if (rewinding_) {
+        rewindStartMs_ = timeMs_;
+        rewindClock_.restart();
+    }
+    emit playbackSpeedChanged();
+}
+
+double RaceViewerController::playbackSpeed() const { return playbackSpeed_; }
+
+namespace {
+constexpr std::array<double, 9> kPlaybackSpeeds{
+        {0.01, 0.05, 0.2, 0.5, 1.0, 2.0, 5.0, 20.0, 50.0}};
+}
+
+void RaceViewerController::slower() {
+    for (auto it = kPlaybackSpeeds.rbegin(); it != kPlaybackSpeeds.rend(); ++it) {
+        if (*it < playbackSpeed_ - 1e-9) {
+            setPlaybackSpeed(*it);
+            return;
+        }
+    }
+}
+
+void RaceViewerController::faster() {
+    for (const double speed : kPlaybackSpeeds) {
+        if (speed > playbackSpeed_ + 1e-9) {
+            setPlaybackSpeed(speed);
+            return;
+        }
+    }
+}
+
+bool RaceViewerController::rewinding() const { return rewinding_; }
+
+void RaceViewerController::beginRewind() {
+    if (rewinding_ || !loaded_ || selectedRun() == nullptr) {
+        return;
+    }
+    rewindWasPlaying_ = playing_;
+    pause();
+    rewinding_ = true;
+    rewindStartMs_ = timeMs_;
+    rewindClock_.restart();
+    rewindTimer_.start();
+    emit playbackChanged();
+}
+
+void RaceViewerController::endRewind() {
+    if (!rewinding_) {
+        return;
+    }
+    rewindTimer_.stop();
+    rewinding_ = false;
+    emit playbackChanged();
+    if (rewindWasPlaying_) {
+        play();
+    }
+}
+
+void RaceViewerController::stepTick(int delta) {
+    if (!loaded_ || selectedRun() == nullptr || delta == 0) {
+        return;
+    }
+    if (playing_) {
+        pause();
+    }
+    if (manualDriving_) {
+        if (delta > 0 && timeMs_ >= durationMs_) {
+            // Frame advance: the race being driven moves on with the
+            // controls as held.
+            applyHeldInputs();
+            if (manualDriving_) stepLive(delta);
+            return;
+        }
+        const qint64 tick = timeMs_ / kViewerTickDurationMs;
+        setTimeMs((tick + delta) * kViewerTickDurationMs);
+        return;
+    }
+    setCurrentTick(currentTick() + delta);
+}
+
+void RaceViewerController::restartRun() {
+    pause();
+    if (manualDriving_) {
+        endLive();
+    }
+    if (findRun(QStringLiteral("preview")) != nullptr) {
+        setSelectedRunId(QStringLiteral("preview"));
+    }
+    setCurrentTick(0);
+    play();
+}
+
+QVariantList RaceViewerController::attempts() const {
+    QVariantList list;
+    const auto describe = [](const RaceViewerRun &run, bool live,
+                             std::optional<std::int32_t> takeover) {
+        QVariantMap item;
+        item.insert(QStringLiteral("id"), run.id);
+        item.insert(QStringLiteral("name"), run.name);
+        item.insert(QStringLiteral("live"), live);
+        item.insert(QStringLiteral("takeoverMs"),
+                    takeover ? static_cast<qint64>(*takeover) : qint64{0});
+        const RaceViewerFrame &last = run.frames.back();
+        item.insert(QStringLiteral("endMs"), static_cast<qint64>(last.timeMs));
+        item.insert(QStringLiteral("checkpoints"),
+                    QStringLiteral("%1/%2").arg(last.checkpointsCollected)
+                            .arg(last.checkpointsTotal));
+        item.insert(QStringLiteral("finished"), last.raceCompleted);
+        item.insert(QStringLiteral("finishTimeMs"),
+                    last.finishTimeMs ? static_cast<qint64>(*last.finishTimeMs)
+                                      : qint64{-1});
+        return item;
+    };
+    if (manualDriving_) {
+        const RaceViewerRun *const live = findRun(QStringLiteral("manual"));
+        const auto takeover = liveTakeoverTimeMs();
+        if (live != nullptr && !live->frames.empty() && takeover) {
+            list.push_back(describe(*live, true, takeover));
+        }
+    }
+    std::vector<const RaceViewerRun *> kept;
+    for (const RaceViewerRun &run : runs_) {
+        if (run.attemptNumber > 0 && !run.frames.empty()) kept.push_back(&run);
+    }
+    std::sort(kept.begin(), kept.end(), [](const auto *a, const auto *b) {
+        return a->attemptNumber > b->attemptNumber;
+    });
+    for (const RaceViewerRun *run : kept) {
+        list.push_back(describe(*run, false, run->takeoverTimeMs));
+    }
+    return list;
+}
+
+void RaceViewerController::watchAttempt(const QString &id) {
+    const RaceViewerRun *const run = findRun(id);
+    if (run == nullptr || run->attemptNumber == 0) {
+        return;
+    }
+    const qint64 from = std::max<qint64>(
+            0, static_cast<qint64>(run->takeoverTimeMs.value_or(0)) - 2000);
+    pause();
+    if (manualDriving_) {
+        endLive();
+    }
+    setSelectedRunId(id);
+    setTimeMs(from);
+    play();
+}
+
+QString RaceViewerController::attemptScript(const QString &id) const {
+    if (id == QStringLiteral("manual") && manualDriving_) {
+        return QString::fromStdString(FormatInputScript(effectiveManualInputs()));
+    }
+    const RaceViewerRun *const run = findRun(id);
+    return run == nullptr ? QString{}
+                          : QString::fromStdString(FormatInputScript(run->inputs));
+}
+
+int RaceViewerController::savestateCount() const {
+    return static_cast<int>(savestates_.size());
+}
+
+void RaceViewerController::setSavestateCount(int value) {
+    value = std::clamp(value, 1, 12);
+    if (value == savestateCount()) {
+        return;
+    }
+    savestates_.resize(static_cast<std::size_t>(value));
+    emit savestatesChanged();
+}
+
+QVariantList RaceViewerController::savestates() const {
+    QVariantList list;
+    for (const Savestate &state : savestates_) {
+        QVariantMap item;
+        item.insert(QStringLiteral("saved"), state.saved);
+        item.insert(QStringLiteral("timeMs"), state.timeMs);
+        item.insert(QStringLiteral("driving"),
+                    state.takeoverTimeMs && state.timeMs >= *state.takeoverTimeMs);
+        list.push_back(std::move(item));
+    }
+    return list;
+}
+
+void RaceViewerController::saveState(int slot) {
+    const RaceViewerRun *const run = selectedRun();
+    if (slot < 0 || slot >= savestateCount() || run == nullptr ||
+        run->frames.empty() || manualRuntime_ == nullptr) {
+        return;
+    }
+    Savestate state;
+    state.saved = true;
+    state.timeMs = (timeMs_ / kViewerTickDurationMs) * kViewerTickDurationMs;
+    const bool live = run->id == QStringLiteral("manual") && manualDriving_;
+    state.inputs = live ? effectiveManualInputs() : inputHistoryForRun(*run);
+    for (const RaceViewerFrame &frame : run->frames) {
+        if (frame.timeMs > state.timeMs) break;
+        state.frames.push_back(frame);
+    }
+    state.takeoverTimeMs = live ? liveTakeoverTimeMs()
+            : run->attemptNumber > 0 ? run->takeoverTimeMs
+            : std::nullopt;
+    state.runId = live ? liveRootRunId_
+            : run->attemptNumber > 0 ? run->sourceRunId : run->id;
+    savestates_[static_cast<std::size_t>(slot)] = std::move(state);
+    setStatusText(QStringLiteral("Saved state %1 at %2")
+                          .arg(slot + 1)
+                          .arg(QString::fromStdString(FormatRaceTimeMilliseconds(static_cast<double>(savestates_[static_cast<std::size_t>(slot)].timeMs)))));
+    emit savestatesChanged();
+}
+
+void RaceViewerController::loadState(int slot) {
+    if (slot < 0 || slot >= savestateCount() || manualRuntime_ == nullptr) {
+        return;
+    }
+    const Savestate state = savestates_[static_cast<std::size_t>(slot)];
+    if (!state.saved || state.frames.empty()) {
+        return;
+    }
+    const bool wasPlaying = playing_;
+    pause();
+    if (manualDriving_) {
+        endLive();
+    }
+    const qint64 tick = state.timeMs / kViewerTickDurationMs;
+    if (state.takeoverTimeMs && state.timeMs >= *state.takeoverTimeMs) {
+        // Saved while driving: driven on from there, as a new attempt.
+        if (goLive(state.runId, state.takeoverTimeMs, tick, state.inputs,
+                   state.frames) &&
+            takeAllAxes() && wasPlaying) {
+            resumeLive();
+        }
+        return;
+    }
+    const RaceViewerRun *line = findRun(state.runId);
+    if (line == nullptr) line = findRun(QStringLiteral("preview"));
+    std::vector<SandboxInputEvent> lineInputs =
+            line != nullptr ? inputHistoryForRun(*line)
+                            : std::vector<SandboxInputEvent>{};
+    const auto upTo = [&state](const std::vector<SandboxInputEvent> &inputs) {
+        std::vector<SandboxInputEvent> result;
+        for (const SandboxInputEvent &event : inputs) {
+            if (event.timeMs <= state.timeMs) result.push_back(event);
+        }
+        return result;
+    };
+    const std::vector<SandboxInputEvent> saved = upTo(state.inputs);
+    const std::vector<SandboxInputEvent> current = upTo(lineInputs);
+    const bool same = saved.size() == current.size() &&
+            std::equal(saved.begin(), saved.end(), current.begin(),
+                       [](const SandboxInputEvent &a, const SandboxInputEvent &b) {
+                           return SameInputEvent(a, b);
+                       });
+    if (line != nullptr && same) {
+        setSelectedRunId(line->id);
+        setTimeMs(state.timeMs);
+        if (wasPlaying) play();
+        return;
+    }
+    // The line has changed since: the saved race, then the line from there.
+    std::vector<SandboxInputEvent> inputs = saved;
+    for (const SandboxInputEvent &event : lineInputs) {
+        if (event.timeMs > state.timeMs) inputs.push_back(event);
+    }
+    if (goLive(line != nullptr ? line->id : state.runId, std::nullopt, tick,
+               std::move(inputs), state.frames) &&
+        wasPlaying) {
+        resumeLive();
+    }
 }
 
 bool RaceViewerController::applyManualInput(const QString &input,
@@ -4498,10 +5103,14 @@ bool RaceViewerController::applyManualInput(const QString &input,
         takeoverTime = previousTakeoverTime;
         return false;
     }
+    if (firstInterference) {
+        emit attemptsChanged();
+    }
     return true;
 }
 
 void RaceViewerController::releaseManualInputs() {
+    heldLeft_ = heldRight_ = heldAccelerate_ = heldBrake_ = false;
     setGamepadInput(0, false, false);
     if (!manualDriving_) {
         resetManualInputState();
@@ -4678,10 +5287,12 @@ QString RaceViewerController::currentInputScript() const {
             foundRaceStart = true;
         }
     }
+    // Controls set on a driven race's last tick act on the next one: they
+    // belong to it (keys released when a drive stops, too).
+    const bool drivenEnd = run->id == QStringLiteral("manual") ||
+            (run->attemptNumber > 0 && timeMs_ >= durationMs_);
     const std::int64_t pendingManualTick =
-            run->id == QStringLiteral("manual")
-            ? kViewerTickDurationMs
-            : 0;
+            drivenEnd ? kViewerTickDurationMs : 0;
     const std::int64_t cutoffTimeMs = std::clamp<std::int64_t>(
             raceStartTimeMs + timeMs_ + pendingManualTick,
             std::numeric_limits<std::int32_t>::min(),
@@ -5017,8 +5628,10 @@ void RaceViewerController::startStoredRunRebuilds() {
     };
     std::vector<Job> jobs;
     for (const RaceViewerRun &run : runs_) {
+        // Attempts keep the race as it was driven.
         if (run.id == QStringLiteral("preview") ||
-            run.id == QStringLiteral("debug") || run.inputs.empty()) {
+            run.id == QStringLiteral("debug") || run.inputs.empty() ||
+            run.attemptNumber > 0) {
             continue;
         }
         jobs.push_back({run.id,
@@ -5324,6 +5937,8 @@ void RaceViewerController::applyLoadResult(
         RaceViewerLoadResult result) {
     if (loadSerial != loadSerial_) return;
     pause();
+    // Once this result and the map it replaces are gone.
+    QTimer::singleShot(0, this, [] { ReturnFreedMemory(); });
     if (!result.error.isEmpty()) {
         pendingRun_.reset();
         pendingImprovements_.clear();
@@ -5615,7 +6230,10 @@ void RaceViewerController::upsertRun(QString id,
                          {},
                          {},
                          std::move(checkpointSplits),
-                         std::move(runtime)});
+                         std::move(runtime),
+                         0,
+                         std::nullopt,
+                         {}});
     } else {
         existing->name = std::move(name);
         existing->frames = std::move(frames);
@@ -5659,6 +6277,10 @@ void RaceViewerController::waitForWorker() {
 }
 
 void RaceViewerController::updatePose() {
+    // Whatever set the whole milliseconds without the fraction.
+    if (static_cast<qint64>(std::floor(presentationMs_)) != timeMs_) {
+        presentationMs_ = static_cast<double>(timeMs_);
+    }
     updateImprovementCars();
     if (runs_.empty()) {
         carPosition_ = {};
@@ -5668,7 +6290,7 @@ void RaceViewerController::updatePose() {
         return;
     }
     for (RaceViewerRun &run : runs_) {
-        UpdateRunPose(run, timeMs_);
+        UpdateRunPose(run, presentationMs_);
     }
     const RaceViewerRun *const run = selectedRun();
     if (run != nullptr) {
@@ -5685,12 +6307,13 @@ void RaceViewerController::updateCarCamera() {
     QQuaternion rotation;
     QVector3D target;
     double fieldOfView = 75.0;
+    bool internal = false;
     bool available = false;
     if (cameraRuntime_ != nullptr && run != nullptr) {
         try {
             available = cameraRuntime_->Evaluate(
-                    *run, cameraPreset_, timeMs_, &position, &rotation,
-                    &target, &fieldOfView);
+                    *run, cameraPreset_, presentationMs_, &position, &rotation,
+                    &target, &fieldOfView, &internal);
         } catch (...) {
             cameraRuntime_ = cameraResources_
                     ? std::make_unique<RaceCameraRuntime>(cameraResources_)
@@ -5703,9 +6326,11 @@ void RaceViewerController::updateCarCamera() {
              (carCameraPosition_ != position ||
               carCameraRotation_ != rotation ||
               carCameraTarget_ != target ||
-              carCameraFieldOfView_ != fieldOfView));
+              carCameraFieldOfView_ != fieldOfView ||
+              carCameraInternal_ != internal));
     carCameraAvailable_ = available;
     if (available) {
+        carCameraInternal_ = internal;
         carCameraPosition_ = position;
         carCameraRotation_ = rotation;
         carCameraTarget_ = target;
@@ -5721,15 +6346,17 @@ void RaceViewerController::advancePlayback() {
     if (!playing_ || run == nullptr || run->frames.empty()) {
         return;
     }
-    const qint64 elapsedTicks = playbackClock_.elapsed() /
-            static_cast<qint64>(kViewerTickDurationMs);
-    const qint64 targetTick = playbackStartTick_ + elapsedTicks;
-    if (targetTick >= tickCount() - 1) {
+    // Fractions of a millisecond count: in slow motion the car moves on
+    // every frame, not once per tick or per millisecond.
+    const double target = static_cast<double>(playbackStartMs_) +
+            static_cast<double>(playbackClock_.nsecsElapsed()) * 1e-6 *
+                    playbackSpeed_;
+    if (target >= static_cast<double>(durationMs_)) {
         setTimeMs(durationMs_);
         pause();
         return;
     }
-    setCurrentTick(targetTick);
+    setPresentationTime(target);
 }
 
 void RaceViewerController::appendSimulationDebuggerFrame(
@@ -5806,6 +6433,9 @@ void RaceViewerController::appendSimulationDebuggerFrame(
                  {},
                  {},
                  std::move(checkpointSplits),
+                 {},
+                 0,
+                 std::nullopt,
                  {}});
         found = std::prev(runs_.end());
         emit runsChanged();
@@ -5850,32 +6480,66 @@ void RaceViewerController::appendSimulationDebuggerFrame(
 }
 
 void RaceViewerController::advanceManualDrive() {
-    if (!manualDriving_ || manualRuntime_ == nullptr) {
+    if (!manualDriving_ || manualRuntime_ == nullptr || !playing_) {
         return;
     }
+    const double targetMs =
+            static_cast<double>(manualDriveStartTick_ * kViewerTickDurationMs) +
+            static_cast<double>(manualDriveClock_.nsecsElapsed()) * 1e-6 * playbackSpeed_;
+    const qint64 targetTick = static_cast<qint64>(
+            std::floor(targetMs / static_cast<double>(kViewerTickDurationMs)));
+    const qint64 currentTick =
+            static_cast<qint64>(manualRuntime_->state.tick);
+    // At high speed a frame can owe many ticks; never more than a second's.
+    stepLive(std::min<qint64>(std::max<qint64>(0, targetTick - currentTick),
+                              100));
+    if (!manualDriving_) return;
+    // As the game does, the car is shown a tick behind the newest one and
+    // moves towards it: smooth however slow the race runs.
+    const double newest = static_cast<double>(durationMs_);
+    const double shown = std::clamp(targetMs - kViewerTickDurationMs,
+                                    newest - kViewerTickDurationMs, newest);
+    if (shown != presentationMs_) {
+        presentationMs_ = std::max(0.0, shown);
+        timeMs_ = static_cast<qint64>(std::floor(presentationMs_));
+        updatePose();
+        emit timeChanged();
+    }
+}
+
+bool RaceViewerController::stepLive(qint64 ticks) {
     RaceViewerRun *const run = selectedRun();
     if (run == nullptr || run->id != QStringLiteral("manual") ||
         run->frames.empty()) {
         finishManualDrive(
                 QStringLiteral("Manual drive stopped: run is unavailable."),
                 false);
-        return;
+        return false;
     }
-
-    const qint64 targetTick = manualDriveStartTick_ +
-            manualDriveClock_.elapsed() /
-                    static_cast<qint64>(kViewerTickDurationMs);
-    const qint64 currentTick =
-            static_cast<qint64>(manualRuntime_->state.tick);
-    const qint64 steps = std::min<qint64>(
-            std::max<qint64>(0, targetTick - currentTick), 32);
     bool changed = false;
-    for (qint64 step = 0; step < steps; ++step) {
-        if (manualRuntime_->state.timeMs >=
-            static_cast<std::uint64_t>(simulationHorizonMs_)) {
-            finishManualDrive(
-                    QStringLiteral("Manual drive complete"), true);
-            break;
+    for (qint64 step = 0; step < ticks; ++step) {
+        if (manualRuntime_->state.timeMs + kViewerTickDurationMs >=
+            static_cast<std::uint64_t>(manualRuntime_->simulationHorizonMs)) {
+            // The race runs on as long as it is driven.
+            const std::uint64_t longer = std::min<std::uint64_t>(
+                    std::uint64_t{2} * manualRuntime_->simulationHorizonMs,
+                    kMaximumSimulationHorizonMs);
+            if (longer <= manualRuntime_->simulationHorizonMs) {
+                finishManualDrive(
+                        QStringLiteral("Manual drive complete"), true);
+                break;
+            }
+            auto resized = manualRuntime_->sandbox.SetSimulationHorizonMs(
+                    static_cast<std::uint32_t>(longer));
+            if (!resized) {
+                finishManualDrive(
+                        QStringLiteral("Manual drive failed: %1")
+                                .arg(SandboxErrorText(resized.Error())),
+                        false);
+                break;
+            }
+            manualRuntime_->simulationHorizonMs =
+                    static_cast<std::uint32_t>(longer);
         }
         auto advanced = manualRuntime_->sandbox.AdvanceTicks(1u);
         if (!advanced) {
@@ -5910,6 +6574,7 @@ void RaceViewerController::advanceManualDrive() {
         emit timelineChanged();
         emit timeChanged();
     }
+    return changed;
 }
 
 bool RaceViewerController::replaceManualInputs() {
@@ -5954,30 +6619,13 @@ void RaceViewerController::appendHeldManualInputs(std::int32_t timeMs) {
 void RaceViewerController::finishManualDrive(
         const QString &status,
         bool releaseInputs) {
+    (void)releaseInputs;
     if (!manualDriving_) {
         return;
     }
-    if (releaseInputs) {
-        releaseManualInputs();
-        if (!manualDriving_) {
-            return;
-        }
-    }
-    manualDriveTimer_.stop();
-    manualDriving_ = false;
-    auto manualRun = std::find_if(
-            runs_.begin(), runs_.end(), [](const RaceViewerRun &run) {
-                return run.id == QStringLiteral("manual");
-            });
-    if (manualRun != runs_.end()) {
-        manualRun->inputs = effectiveManualInputs();
-        emit runsChanged();
-    }
-    resetManualInputState();
+    pause();
+    endLive();
     setStatusText(status);
-    emit manualDrivingChanged();
-    scheduleInputPreviewRebuild();
-    scheduleStoredRunRebuilds();
 }
 
 void RaceViewerController::resetManualInputState() {

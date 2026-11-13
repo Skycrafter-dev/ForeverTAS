@@ -512,6 +512,7 @@ std::shared_ptr<CachedSearchSandbox> CachedSandboxFor(
                            std::string,
                            PhysicsBackend,
                            std::uint32_t,
+                           bool,
                            bool>;
     static std::mutex cacheLock;
     static std::map<Key, std::shared_ptr<CachedSearchSandbox>> cache;
@@ -520,7 +521,8 @@ std::shared_ptr<CachedSearchSandbox> CachedSandboxFor(
             request.replayPath,
             request.backend,
             request.simulationHorizonMs,
-            request.useCudaSessionSpecialization};
+            request.useCudaSessionSpecialization,
+            request.approximatePhysics};
     std::lock_guard<std::mutex> guard(cacheLock);
     auto &entry = cache[key];
     if (!entry) {
@@ -573,6 +575,7 @@ SearchResult RunLoadedSearch(
                 {evaluationRegistration.id,
                  request.evaluationTarget.settings},
                 kSearchTickDurationMs);
+        if (cudaEvaluator) evaluator->CompleteGpuEvaluator(*cudaEvaluator);
     }
 #endif
     const SearchRunControl *executionControl = control;
@@ -712,7 +715,8 @@ SearchResult RunLoadedSearch(
 #endif
                     request.simulationHorizonMs,
                     request.condition ? &*request.condition : nullptr,
-                    searchStartedTimeSeconds
+                    searchStartedTimeSeconds,
+                    request.approximatePhysics
             });
             if (asyncImprovementSampler) {
                 const std::exception_ptr failure =
@@ -1579,12 +1583,17 @@ SearchResult RunSearch(const SearchRequest &request,
 
     CheckCancellation(control);
     const ReplayIdentity identity{request.replayPath};
+    // Approximate physics searches from an optimized CPU sandbox: the twin
+    // imports its state, the bridge simulates on it.
     PhysicsSandboxOptions options = CanonicalOptions(
-            request, ToForeverValidatorBackend(request.backend));
+            request, request.approximatePhysics
+                    ? ToForeverValidatorBackend(kAuxiliarySimulationBackend)
+                    : ToForeverValidatorBackend(request.backend));
 #if FOREVERVALIDATOR_HAS_CUDA
     options.prepareCudaSearchSpecialization =
             request.backend == PhysicsBackend::Cuda &&
-            request.useCudaSessionSpecialization;
+            request.useCudaSessionSpecialization &&
+            !request.approximatePhysics;
 #endif
     if (control != nullptr && control->reuseLoadedSandbox) {
         const std::shared_ptr<CachedSearchSandbox> cached =

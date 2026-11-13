@@ -1,6 +1,7 @@
 #include "app/search_controller.h"
 
 #include "app/compact_number_format.h"
+#include "app/keyboard_layout.h"
 #include "app/packs_directory_finder.h"
 #include "app/search_worker.h"
 #include "app/search_diagnostic.h"
@@ -58,6 +59,7 @@ constexpr char kVulkanCalibrationEnabledKey[] =
         "backends/vulkan/calibrationEnabled";
 constexpr char kCudaSessionSpecializationEnabledKey[] =
         "backends/cuda/sessionSpecializationEnabled";
+constexpr char kApproximatePhysicsKey[] = "backends/cuda/approximatePhysics";
 constexpr char kRandomizeSeedsOnStartKey[] =
         "search/randomizeSeedsOnStart";
 constexpr char kAutoRestartModeKey[] = "search/autoRestartMode";
@@ -265,6 +267,9 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             .value(QLatin1String(
                            kCudaSessionSpecializationEnabledKey),
                    true)
+            .toBool();
+    approximatePhysics_ = QSettings()
+            .value(QLatin1String(kApproximatePhysicsKey), false)
             .toBool();
 #if FOREVERVALIDATOR_HAS_CUDA
     const forevervalidator::CudaBackendDiagnostics cuda =
@@ -581,6 +586,18 @@ bool SearchController::cudaSessionSpecializationEnabled() const {
     return cudaSessionSpecializationEnabled_;
 }
 
+bool SearchController::approximatePhysics() const {
+    return approximatePhysics_;
+}
+
+bool SearchController::approximatePhysicsAvailable() const {
+#if FOREVERVALIDATOR_HAS_CUDA && FOREVERVALIDATOR_HAS_TWIN
+    return cudaAvailable_;
+#else
+    return false;
+#endif
+}
+
 bool SearchController::cudaAvailable() const {
     return cudaAvailable_;
 }
@@ -877,6 +894,10 @@ QVariantList SearchController::cycleRows() const {
     return cycleRows_;
 }
 
+QVariantMap SearchController::liveRow() const {
+    return liveRow_;
+}
+
 QString SearchController::selectedInputsText() const {
     return selectedInputsText_;
 }
@@ -1086,6 +1107,15 @@ void SearchController::setCudaSessionSpecializationEnabled(bool value) {
     QSettings().setValue(
             QLatin1String(kCudaSessionSpecializationEnabledKey), value);
     emit cudaSessionSpecializationEnabledChanged();
+}
+
+void SearchController::setApproximatePhysics(bool value) {
+    if (approximatePhysics_ == value) {
+        return;
+    }
+    approximatePhysics_ = value;
+    QSettings().setValue(QLatin1String(kApproximatePhysicsKey), value);
+    emit approximatePhysicsChanged();
 }
 
 void SearchController::setRandomizeSeedsOnStart(bool value) {
@@ -1570,6 +1600,10 @@ void SearchController::setUiSetting(const QString &key,
     QSettings().setValue(QStringLiteral("ui/") + key, value);
 }
 
+bool SearchController::keyboardIsAzerty() const {
+    return KeyboardLettersAreAzerty();
+}
+
 QString SearchController::formatCompactNumber(double value) const {
     return FormatCompactNumber(value);
 }
@@ -1664,6 +1698,8 @@ void SearchController::startSearch() {
     cycleRows_.clear();
     selectedInputsText_.clear();
     emit historyChanged();
+    liveRow_.clear();
+    emit liveRowChanged();
     setResultText({});
     failureDiagnostic_.clear();
     emit resultChanged();
@@ -1751,6 +1787,11 @@ void SearchController::startSearch() {
                 setResultText(summary);
                 setBestInputsText(inputsText);
             });
+    connect(worker, &SearchWorker::liveRowChanged, this,
+            [this](const QVariantMap &row) {
+                liveRow_ = row;
+                emit liveRowChanged();
+            });
     connect(worker,
             &SearchWorker::improvementFound,
             this,
@@ -1813,6 +1854,11 @@ void SearchController::startSearch() {
                 setStatusText(QStringLiteral("Search failed"));
                 setProgress(false, progressValue_);
             });
+    connect(worker, &SearchWorker::finished, this, [this]() {
+        if (liveRow_.isEmpty()) return;
+        liveRow_.insert(QStringLiteral("running"), false);
+        emit liveRowChanged();
+    });
     connect(worker, &SearchWorker::finished, thread, &QThread::quit);
     connect(worker, &SearchWorker::finished, worker, &QObject::deleteLater);
     connect(thread, &QThread::finished, this, [this, thread]() {
@@ -2079,10 +2125,31 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     }
 #endif
 
+    const bool approximate = !baselineOnly && approximatePhysics_ &&
+            approximatePhysicsAvailable() &&
+            PhysicsBackendId(simulationBackend_) == "cuda";
+    if (approximate) {
+        const std::string &target = configuration.evaluationTarget.id;
+        if (target == kScriptedTargetEvaluationId ||
+            target == kCheckpointTimeEvaluationId ||
+            target == kDistanceTargetEvaluationId ||
+            target == kTimeEvaluationId) {
+            return {{}, QStringLiteral(
+                    "Approximate physics does not run this target yet. "
+                    "Choose Exact physics.")};
+        }
+        if (condition.program) {
+            return {{}, QStringLiteral(
+                    "Approximate physics does not run conditions yet. "
+                    "Choose Exact physics or remove the conditions.")};
+        }
+    }
+
     SearchRequest request{
             packsInfo.absoluteFilePath().toUtf8().toStdString(),
             replayInfo.absoluteFilePath().toUtf8().toStdString()};
     request.backend = baselineOnly ? kAuxiliarySimulationBackend : simulationBackend_;
+    request.approximatePhysics = approximate;
     request.parallelSampleCount = parallelSampleCount;
     request.calibrateCudaParallelSampleCount =
             calibrateCudaParallelSampleCount;

@@ -229,12 +229,27 @@ an editable persisted template. The field picker inserts camera, car position,
 velocity, speed, input, race progress, timeline, tick, and run-name fields;
 numeric fields accept an optional zero-to-six digit precision suffix.
 
-After a map is loaded, **Drive** starts a live 100 Hz physics run in the viewer.
-Arrow keys and QWERTY `WASD` control full acceleration, braking, and steering;
-`ZQSD` provides the equivalent bindings on AZERTY layouts. Simultaneous
-digital inputs retain ForeverValidator's in-game priority rules, including
-left steering over right. Losing keyboard focus releases held controls, and a
-completed manual session remains available as the `Manual` viewer run.
+The race view is one live race, as in the game with TMInterface. **Space**
+plays the selected run (the base inputs by default); pressing a driving key
+while it plays takes over from that tick, steering and gas/brake each on its
+own, and the race goes on live at 100 Hz. Paused, the driving keys do
+nothing. **Delete** plays the base inputs again from the start and **Enter**
+or **Backspace** respawns. **R** held rewinds; **D** / **F** step one tick
+back / forward while paused (forward steps the race being driven, with the
+keys held); **Q** / **E** (A / E on AZERTY) go slower / faster through 1/100,
+1/20, 1/5, 1/2, 1, 2, 5, 20 and 50x, for playing, driving and rewinding
+alike. **F1-F4** load and **Shift+F1-F4** save savestates.
+
+After a rewind, a timeline seek or a savestate load, a race that had been
+driven before that moment is driven on from there; one rewound to before its
+first takeover plays its inputs again (with takeover still possible). Every
+race driven from a takeover is kept in the **Attempts** panel (newest first,
+the 30 latest), each with where it was taken over and how far it got; a click
+watches one from two seconds before its takeover, and **Keep** makes it the
+base inputs (**Undo keep** brings the previous ones back). The keys, and how
+many savestates there are, are set in **Edit > Preferences > Controls**;
+the first launch picks them for the keyboard layout (A / E on AZERTY). Losing keyboard
+focus releases held controls.
 
 **Copy current race** in the base-input section replaces the search input with
 the selected viewer run through its current timeline position. Events after
