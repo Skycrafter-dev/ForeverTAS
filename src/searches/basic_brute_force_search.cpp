@@ -3,6 +3,7 @@
 #include "searches/gpu_segment_escalation.h"
 
 #include "evaluators/evaluator_utils.h"
+#include "mutations/input_event_utils.h"
 #include "physics_backend.h"
 #include "searches/cuda_batch_calibrator.h"
 #include "searches/cuda_calibration_safety.h"
@@ -132,7 +133,7 @@ void ReportProgress(const SearchRunControl *control,
     }
 }
 
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP || \
         FOREVERVALIDATOR_HAS_TWIN
 void ReportCudaBatchSize(const SearchRunControl *control,
                          std::uint32_t batchSize) {
@@ -310,26 +311,6 @@ CudaCalibrationDeviceLimits QueryGpuCalibrationDeviceLimits(
         limits.multiprocessorCount =
                 static_cast<std::uint32_t>(
                         properties.multiProcessorCount);
-        return limits;
-    }
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    if (backend == forevervalidator::SimulationBackend::Vulkan) {
-        const auto diagnostics = forevervalidator::QueryVulkanBackendDiagnostics();
-        if (!diagnostics.IsReady() || diagnostics.deviceLocalMemoryBytes == 0u) {
-            throw std::runtime_error(
-                    "querying Vulkan calibration limits failed: " +
-                    diagnostics.diagnostic);
-        }
-        if (!diagnostics.memoryBudgetAvailable) {
-            throw std::runtime_error("Vulkan search requires VK_EXT_memory_budget for resource safety; use Optimized CPU on this device");
-        }
-        CudaCalibrationDeviceLimits limits;
-        limits.totalMemoryBytes = diagnostics.deviceLocalMemoryBytes;
-        limits.freeMemoryBytes = diagnostics.availableDeviceLocalMemoryBytes;
-        // Vulkan validates dispatch limits and bounds submissions in its runtime;
-        // CUDA register/occupancy counters are not available through Vulkan.
-        limits.requireCudaExecutionLimits = false;
         return limits;
     }
 #endif
@@ -543,7 +524,7 @@ void ReportLive(
             std::nullopt});
 }
 
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP || \
         FOREVERVALIDATOR_HAS_TWIN
 std::string CudaEvaluationDescription(
         const forevervalidator::experimental::
@@ -938,9 +919,6 @@ SearchResult RunGpuBasicBruteForce(
         configuration.condition->lastRestartTimeSeconds =
                 context.searchStartedTimeSeconds;
     }
-    configuration.useSessionSpecialization =
-            context.sandbox.Backend() == forevervalidator::SimulationBackend::Cuda &&
-            context.useCudaSessionSpecialization;
     configuration.captureBestState = !context.resolveCudaWinner;
     // Approximate physics: no batch calibration (its measurements and safety
     // limits are FV CUDA's); a calibrated batch takes a size the twin runs well
@@ -1318,9 +1296,43 @@ SearchResult RunGpuBasicBruteForce(
 
     std::uint64_t iterationIndex = 0u;
     bool sessionChanged = true;   // the next batch is the first since the session was made or grown
+    // What the session mutates: the base run, then each promoted best.
+    std::vector<PhysicsSandboxInputEvent> mutationBaseline = originalBaselineInputs;
+    // Several GPUs: this one's candidates, claimed from the shared sequence a block at a time.
+    std::uint64_t claimedNext = 0u;
+    std::uint64_t claimedEnd = 0u;
     while (!StopRequested(context.control) &&
            !IterationLimitReached(context.control, iterations)) {
         CheckCancellation(context.control);
+        // Several GPUs on one search: another GPU's better run becomes what
+        // this one mutates and has to beat. This GPU's own best stays what it
+        // reports, so the run is credited to the GPU that found it.
+        if (autoPromoteBest && !context.approximatePhysics && context.control != nullptr &&
+            context.control->promotedBaselineInputs) {
+            std::optional<std::vector<PhysicsSandboxInputEvent>> shared =
+                    context.control->promotedBaselineInputs();
+            if (shared && !std::equal(shared->begin(), shared->end(), mutationBaseline.begin(),
+                                      mutationBaseline.end(), SameInputEvent)) {
+                session.reset();
+                Require(context.sandbox.RestoreState(branch),
+                        "restoring GPU branch for a shared best");
+                Require(context.sandbox.ReplaceInputs(*shared),
+                        "taking another GPU's best as baseline");
+                configuration.maximumBatchSize = sessionCapacity;
+                configuration.incumbent.reset();
+                session.emplace(Require(
+                        CreatePhysicsSandboxCudaSearchSession(
+                                context.sandbox, configuration),
+                        "creating GPU search session from a shared best"));
+                const PhysicsSandboxCudaSearchBatch adopted = Require(
+                        session->EvaluateBaseline(cancelSubmission),
+                        "evaluating another GPU's best");
+                if (adopted.cancelled) throw SearchCancelled();
+                evaluatorCalls += adopted.evaluatorCalls;
+                mutationBaseline = std::move(*shared);
+                sessionChanged = true;
+            }
+        }
         if (calibrator && !calibrator->Complete() &&
             iterations >= calibrationCandidateBudget &&
             calibrator->CompleteWithBestMeasurement()) {
@@ -1416,6 +1428,21 @@ SearchResult RunGpuBasicBruteForce(
                             *context.control->iterationLimit -
                                     iterations));
         }
+        if (context.control != nullptr && context.control->claimIterations) {
+            // a block of batches at a time, taken in order: an approximate session runs the next batch
+            // ahead (the candidates after this batch's) and drops it when the next batch starts elsewhere
+            if (claimedEnd - claimedNext < batchSize) {
+                constexpr std::uint64_t batchesClaimed = 64u;
+                claimedNext = context.control->claimIterations(
+                        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                                std::uint64_t{batchSize} * batchesClaimed,
+                                std::numeric_limits<std::uint32_t>::max())));
+                claimedEnd = claimedNext + std::min<std::uint64_t>(std::uint64_t{batchSize} * batchesClaimed,
+                                                                   std::numeric_limits<std::uint32_t>::max());
+            }
+            iterationIndex = claimedNext;
+            claimedNext += batchSize;
+        }
         const bool exhaustsSequence =
                 batchSize != 0u &&
                 iterationIndex >
@@ -1507,16 +1534,7 @@ SearchResult RunGpuBasicBruteForce(
                 }
                 calibrator->RejectUnsafeCurrent();
             } else {
-                const auto calibrationElapsed =
-                        context.sandbox.Backend() ==
-                                forevervalidator::SimulationBackend::Vulkan &&
-                                batch.metrics.kernelMilliseconds > 0.0 &&
-                                std::isfinite(batch.metrics.kernelMilliseconds)
-                        ? std::chrono::duration_cast<
-                                  std::chrono::steady_clock::duration>(
-                                  std::chrono::duration<double, std::milli>(
-                                          batch.metrics.kernelMilliseconds))
-                        : batchElapsed;
+                const auto calibrationElapsed = batchElapsed;
                 // a new best's state capture runs one candidate again: not the batch size's cost
                 const auto capture = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                         std::chrono::duration<double, std::milli>(
@@ -1552,11 +1570,19 @@ SearchResult RunGpuBasicBruteForce(
         }
         sessionChanged = false;
         if (promote) {
+            const auto promoteStarted = std::chrono::steady_clock::now();
+            // an approximate session takes the new baseline in place (its world, threads and device
+            // buffers stay); an exact one is closed before it is made again
+            std::optional<PhysicsSandboxCudaSearchSession> previous;
+            if (context.approximatePhysics) previous.emplace(std::move(*session));
             session.reset();
+            const auto sessionClosed = std::chrono::steady_clock::now();
             Require(context.sandbox.RestoreState(branch),
                     "restoring GPU branch for promoted baseline");
             Require(context.sandbox.ReplaceInputs(best.inputs),
                     "promoting GPU best inputs to baseline");
+            const auto baselineReplaced = std::chrono::steady_clock::now();
+            mutationBaseline = best.inputs;
             const std::uint32_t recreatedCapacity =
                     calibrator
                     ? (calibrator->Complete()
@@ -1600,11 +1626,23 @@ SearchResult RunGpuBasicBruteForce(
                     best.evaluation->metricValues;
             configuration.incumbent = incumbent;
             session.emplace(Require(
-                    CreatePhysicsSandboxCudaSearchSession(
-                            context.sandbox, configuration),
+                    previous ? PromotePhysicsSandboxCudaSearchSession(
+                                       context.sandbox, std::move(*previous), configuration)
+                             : CreatePhysicsSandboxCudaSearchSession(
+                                       context.sandbox, configuration),
                     "recreating promoted GPU search session"));
             sessionChanged = true;
             sessionCapacity = recreatedCapacity;
+            if (CudaBatchProfilingEnabled()) {
+                const auto ms = [](auto from, auto to) {
+                    return std::chrono::duration<double, std::milli>(to - from).count();
+                };
+                const auto created = std::chrono::steady_clock::now();
+                std::clog << "forevertas_cuda_promote close_ms=" << ms(promoteStarted, sessionClosed)
+                          << " baseline_ms=" << ms(sessionClosed, baselineReplaced)
+                          << " create_ms=" << ms(baselineReplaced, created) << '\n'
+                          << std::flush;
+            }
         }
         const bool rebuilt = adoptRebuilt();
         if (batch.mutationImprovementCount != 0u) {
@@ -1804,7 +1842,7 @@ SearchResult BasicBruteForceSearch::Run(
     const PhysicsSandboxState branch = Require(
             context.sandbox.CaptureState(), "capturing branch state");
 
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP || \
         FOREVERVALIDATOR_HAS_TWIN
     // Approximate searches run as a session too (the twin's), on the GPU or
     // on CPU threads.

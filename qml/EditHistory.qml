@@ -22,8 +22,7 @@ QtObject {
         "simulationBackendId", "simulationHorizonMs",
         "conditionScript", "cpuWorkerCount", "cudaParallelSampleCount",
         "cudaCalibrationEnabled", "hipParallelSampleCount",
-        "hipCalibrationEnabled", "vulkanParallelSampleCount",
-        "vulkanCalibrationEnabled", "cudaSessionSpecializationEnabled",
+        "hipCalibrationEnabled",
         "approximatePhysics",
         "randomizeSeedsOnStart", "drawTargetsThroughBlocks"
     ]

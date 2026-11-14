@@ -1,5 +1,6 @@
 #include "app/search_controller.h"
 #include "app/app_settings.h"
+#include "app/compute_check.h"
 #include "app/diagnostics_startup.h"
 #include "app/stall_watch.h"
 #include "diagnostics/diagnostics_log.h"
@@ -27,6 +28,22 @@
 #include <cstdlib>
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-compute-module")) {
+        QCoreApplication checker(argc, argv);
+        return forevertas::app::CheckComputeModule(argc, argv);
+    }
+    // A release's In-game render module: found and loaded by this app, with what it calls
+    if (argc == 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-render-module")) {
+        QCoreApplication checker(argc, argv);
+        const forevertas::viewer::RenderModuleLibrary &module = forevertas::viewer::LoadedRenderModule();
+        if (!module.loaded || module.create == nullptr || module.render == nullptr || module.carState == nullptr) {
+            std::cerr << "the render module is missing, cannot be loaded, or is older than this app\n";
+            return 1;
+        }
+        std::cout << "render module: " << module.label.toStdString()
+                  << (module.exportVideo != nullptr ? ", video export" : "") << '\n';
+        return 0;
+    }
 #if defined(Q_OS_LINUX)
     if (argc == 4 && QString::fromLocal8Bit(argv[1]) ==
                              QStringLiteral("--apply-update")) {
@@ -139,6 +156,7 @@ int main(int argc, char **argv) {
     engine.loadFromModule(QStringLiteral("ForeverTAS"),
                           QStringLiteral("Main"));
     forevertas::diagnostics::Log("window loaded");
+    forevertas::app::LogQmlSetup(engine);
     forevertas::app::WatchWindow(
             qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)));
     if (!smokeTest) forevertas::app::StartStallWatch();
@@ -166,8 +184,12 @@ int main(int argc, char **argv) {
             QCoreApplication::exit(valid ? 0 : 1);
         });
     } else {
+        QObject::connect(&updates, &forevertas::app::UpdateController::computeModulesChanged,
+                         &controller, &forevertas::app::SearchController::refreshComputeBackends);
         QTimer::singleShot(0, &updates,
                            &forevertas::app::UpdateController::checkForUpdates);
+        QTimer::singleShot(0, &updates,
+                           &forevertas::app::UpdateController::installComputeModule);
     }
     const int exitCode = application.exec();
     forevertas::app::StopStallWatch();

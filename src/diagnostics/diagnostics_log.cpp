@@ -77,6 +77,14 @@ bool LogOpen() noexcept {
     return file.load(std::memory_order_relaxed) != nullptr;
 }
 
+std::FILE *LogFile() noexcept {
+    return file.load(std::memory_order_acquire);
+}
+
+void UseLogFile(std::FILE *stream) noexcept {
+    file.store(stream, std::memory_order_release);
+}
+
 const std::string &LogPath() noexcept {
     return path;
 }

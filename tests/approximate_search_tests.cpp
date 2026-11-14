@@ -4,6 +4,9 @@
 //
 //   forevertas-approximate-search PACKS REPLAY BRANCH_MS WINDOW_MS [ATTEMPTS [exact|cpu]]
 //
+// FTAS_PROMOTE=1 promotes every new best to the baseline; FTAS_CALIBRATE=0
+// keeps FTAS_BATCH (default 4096) for approximate searches too.
+//
 // Steer insertions in [BRANCH_MS, BRANCH_MS + WINDOW_MS], best speed over the
 // half second after the window. "exact": the same search on exact physics (FV
 // CUDA), for the timings only. "cpu": the twin on the multi-threaded CPU
@@ -140,7 +143,10 @@ int main(int argc, char **argv) {
         request.approximatePhysics = !exactOnly;
         // exact: batches of 4096 (calibration starts from one candidate a batch, too noisy for short searches)
         request.parallelSampleCount = static_cast<std::uint32_t>(std::stoul(env("FTAS_BATCH", "4096")));
-        request.calibrateCudaParallelSampleCount = !exactOnly || env("FTAS_CALIBRATE", "0") == "1";
+        // approximate calibrates unless FTAS_CALIBRATE=0 (fixed batches: the same search every run)
+        request.calibrateCudaParallelSampleCount = env("FTAS_CALIBRATE", exactOnly ? "0" : "1") == "1";
+        // FTAS_PROMOTE=1: every new best becomes the baseline (the session starts again from it)
+        request.searchAlgorithm.settings["autoPromoteBest"] = env("FTAS_PROMOTE", "0") == "1" ? "true" : "false";
         if (onCpu) {
             const char *workers = std::getenv("FTAS_CPU_WORKERS");
             request.backend = forevertas::PhysicsBackend::MultiThreadedCpu;

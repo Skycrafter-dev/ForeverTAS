@@ -8,18 +8,18 @@ native Qt runtime, and wrap it in the expected platform format.
 
 | Platform | Artifact | User workflow |
 | --- | --- | --- |
-| Linux | `ForeverTAS-<version>-linux-<flavor>-<arch>.AppImage` | Mark executable and run; choose or update the compute package in app |
-| Windows | `ForeverTAS-<version>-windows-<flavor>-<arch>-Setup.exe` | Install once; choose or update the compute package in app |
-| Windows portable | `ForeverTAS-<version>-windows-<arch>.zip` | Extract and run; no in-app self-update |
+| Linux | `ForeverTAS-<version>-linux-universal-<arch>.AppImage` | Mark executable and run; updates in app |
+| Windows | `ForeverTAS-<version>-windows-universal-<arch>-Setup.exe` | Install once; updates in app |
+| Both | `forevertas-compute-<os>-<module>-<hash>.tar.zst` | Downloaded by the app for its GPU |
 
 Each artifact is native to its operating system. The search and physics code is
 compiled directly for the target platform; Wine or another compatibility layer
 is not part of the release runtime.
 
 The public entry points are stable `ForeverTAS-Windows-Setup.exe` and
-`ForeverTAS-Linux.AppImage` aliases of the universal package. The full
-hardware-specific release matrix and its publication checks are documented
-in [UPDATES.md](UPDATES.md).
+`ForeverTAS-Linux.AppImage` copies of the app. GPU code is not in the app: it
+comes as modules ([UPDATES.md](UPDATES.md)); how a release is made and checked
+is in [RELEASES.md](RELEASES.md).
 
 macOS is not supported, and CMake rejects attempts to configure a macOS build.
 
@@ -88,52 +88,14 @@ supports. The produced executable cannot be more compatible than the glibc and
 other non-bundled system interfaces of its build environment. The release
 workflow currently uses Ubuntu 22.04 with Qt 6.9.3.
 
-## Windows installer and portable ZIP
+## Windows installer
 
-Run from PowerShell on a native Windows host with Qt and Ninja available:
-
-```powershell
-./packaging/windows/build-portable.ps1
-```
-
-CMake's Qt QML deployment script invokes the native Windows deployment tooling
-during installation. CPack then creates a ZIP containing the executable,
-compiler runtime, Qt DLLs, QML modules, plugins, icons, and licenses. No
-installer or registry write is required to launch it.
-The same script then wraps the ZIP in a per-user Inno Setup installer. Install
-Inno Setup 6 or 7 on the Windows build host; for a custom location, set
-`ISCC_PATH` to `ISCC.exe`. The installer creates shortcuts, an uninstall entry,
-and a marker used to enable in-app updates. Code signing is recommended for public
-downloads; sign the final installer before publishing it.
-
-## Reproducible local release builds
-
-`packaging/release/local-release.py` reads `packaging/release/manifest.json`
-and coordinates exact-source Linux and Windows builds. Run the two platform
-builds sequentially so they do not compete for host CPU and memory.
-
-The Linux build reuses a content-addressed toolchain image from
-`packaging/release/linux-toolchain.Dockerfile`. The image pins Ubuntu 22.04, CUDA
-12.8, Qt 6.9.3, CMake, and sccache instead of reinstalling them for every job.
-Prebuild the current image with:
-
-```sh
-./packaging/release/ensure-linux-toolchain.sh
-```
-
-The release cache stays under `.release-cache/`. sccache persistently stores
-regular C++ and CUDA compilations. The large CUDA search translation unit is
-stored separately only after `cuobjdump` confirms every required cubin and PTX
-image. Cache keys include the toolchain, compiler, complete architecture list,
-split-compile setting, and pinned ForeverValidator source.
-
-The Windows VM uses the same architecture and split-compile invariants. It
-assembles CUDA from pinned, checksummed NVIDIA redistributable archives, so no
-administrator-only installer is required. It keeps that toolkit, vcpkg
-binaries, sccache data, and the validated CUDA search object between builds.
-The Windows ZIP is checked for dependency closure and launched in QML smoke
-mode. CUDA 12.8 uses NVIDIA's host-version override with the VM's current Visual
-Studio 2022 toolset; the full build and portable smoke test are the check.
+`packaging/release/build-windows.ps1` (run by `release.py`) installs the
+build with `cmake --install` (Qt's deployment script runs during it) and
+wraps that tree in a per-user Inno Setup installer (`packaging/windows/
+ForeverTAS.iss`): shortcuts, an uninstall entry, and the marker that enables
+in-app updates. Code signing is recommended for public downloads; sign the
+installer before publishing it.
 
 ## Settings and writable data
 

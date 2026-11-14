@@ -13,15 +13,8 @@ enum class PhysicsBackend : std::uint8_t {
     Reference,
     OptimizedCpu,
     MultiThreadedCpu,
-#if FOREVERVALIDATOR_HAS_CUDA
     Cuda,
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
     Hip,
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    Vulkan,
-#endif
 };
 
 // Single-run reconstruction and viewer simulation are intentionally fixed to
@@ -37,18 +30,10 @@ constexpr std::string_view PhysicsBackendId(PhysicsBackend backend) noexcept {
         return "optimized-cpu";
     case PhysicsBackend::MultiThreadedCpu:
         return "multi-threaded-cpu";
-#if FOREVERVALIDATOR_HAS_CUDA
     case PhysicsBackend::Cuda:
         return "cuda";
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
     case PhysicsBackend::Hip:
         return "hip";
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    case PhysicsBackend::Vulkan:
-        return "vulkan";
-#endif
     }
     return "reference";
 }
@@ -64,21 +49,12 @@ inline std::optional<PhysicsBackend> ParsePhysicsBackend(
     if (id == PhysicsBackendId(PhysicsBackend::MultiThreadedCpu)) {
         return PhysicsBackend::MultiThreadedCpu;
     }
-#if FOREVERVALIDATOR_HAS_CUDA
     if (id == PhysicsBackendId(PhysicsBackend::Cuda)) {
         return PhysicsBackend::Cuda;
     }
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
     if (id == PhysicsBackendId(PhysicsBackend::Hip)) {
         return PhysicsBackend::Hip;
     }
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    if (id == PhysicsBackendId(PhysicsBackend::Vulkan)) {
-        return PhysicsBackend::Vulkan;
-    }
-#endif
     return std::nullopt;
 }
 
@@ -90,18 +66,10 @@ constexpr forevervalidator::SimulationBackend ToForeverValidatorBackend(
     case PhysicsBackend::OptimizedCpu:
     case PhysicsBackend::MultiThreadedCpu:
         return forevervalidator::SimulationBackend::OptimizedCpu;
-#if FOREVERVALIDATOR_HAS_CUDA
     case PhysicsBackend::Cuda:
         return forevervalidator::SimulationBackend::Cuda;
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
     case PhysicsBackend::Hip:
         return forevervalidator::SimulationBackend::Hip;
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    case PhysicsBackend::Vulkan:
-        return forevervalidator::SimulationBackend::Vulkan;
-#endif
     }
     return forevervalidator::SimulationBackend::Reference;
 }
@@ -109,8 +77,7 @@ constexpr forevervalidator::SimulationBackend ToForeverValidatorBackend(
 constexpr bool IsGpuSimulationBackend(
         forevervalidator::SimulationBackend backend) noexcept {
     return backend == forevervalidator::SimulationBackend::Cuda ||
-           backend == forevervalidator::SimulationBackend::Hip ||
-           backend == forevervalidator::SimulationBackend::Vulkan;
+           backend == forevervalidator::SimulationBackend::Hip;
 }
 
 constexpr bool IsGpuBackend(PhysicsBackend backend) noexcept {

@@ -8,6 +8,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QQmlContext>
+#include <QQmlApplicationEngine>
 #include <QImage>
 #include <QOpenGLContext>
 #include <QOpenGLFunctions>
@@ -604,6 +606,54 @@ void LogLoadedGpuRuntimes() {
         }
     }
 #endif
+}
+
+void LogQmlSetup(const QQmlApplicationEngine &engine) {
+    if (!diagnostics::LogOpen()) return;
+    Log("qml import paths: %s", qUtf8Printable(engine.importPathList().join(QStringLiteral("; "))));
+    static const char *const environment[] = {"QML_IMPORT_PATH", "QML2_IMPORT_PATH", "QT_QUICK_CONTROLS_STYLE",
+                                              "QML_DISABLE_DISK_CACHE", "QT_PLUGIN_PATH", nullptr};
+    LogEnvironment(environment);
+#if defined(_WIN32)
+    HMODULE modules[512];
+    DWORD needed = 0;
+    if (EnumProcessModules(GetCurrentProcess(), modules, sizeof modules, &needed)) {
+        for (DWORD index = 0; index < needed / sizeof(HMODULE) && index < 512; ++index) {
+            wchar_t name[MAX_PATH];
+            GetModuleFileNameW(modules[index], name, MAX_PATH);
+            std::wstring lower = name;
+            for (wchar_t &c : lower) c = static_cast<wchar_t>(towlower(c));
+            if (lower.find(L"forevertas_qml") != std::wstring::npos) {
+                Log("qml plugin loaded: %s, modified %s", Narrow(name).c_str(),
+                    qUtf8Printable(QFileInfo(QString::fromWCharArray(name))
+                                           .lastModified().toString(Qt::ISODate)));
+            }
+        }
+    }
+#else
+    QFile maps(QStringLiteral("/proc/self/maps"));
+    if (maps.open(QIODevice::ReadOnly)) {
+        QStringList seen;
+        for (const QByteArray &line : maps.readAll().split('\n')) {
+            const qsizetype slash = line.indexOf('/');
+            if (slash < 0) continue;
+            const QString file = QString::fromUtf8(line.mid(slash));
+            if (!file.contains(QLatin1String("forevertas_qml")) || seen.contains(file)) continue;
+            seen.append(file);
+            Log("qml plugin loaded: %s", qUtf8Printable(file));
+        }
+    }
+#endif
+    if (QObject *const root = engine.rootObjects().value(0)) {
+        const QQmlContext *const context = qmlContext(root);
+        Log("qml main: %s", context != nullptr ? qUtf8Printable(context->baseUrl().toString()) : "?");
+    }
+    const QString cache = QStandardPaths::writableLocation(QStandardPaths::CacheLocation) +
+            QStringLiteral("/qmlcache");
+    const QDir cacheDir(cache);
+    Log("qml cache %s: %s", qUtf8Printable(cache),
+        cacheDir.exists() ? qUtf8Printable(QStringLiteral("%1 files").arg(cacheDir.entryList(QDir::Files).size()))
+                          : "none");
 }
 
 void WatchWindow(QQuickWindow *window) {

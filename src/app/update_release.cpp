@@ -4,30 +4,32 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
-#include <QVersionNumber>
 
 namespace forevertas::app {
 namespace {
 
-bool ValidPackageId(const QString &id) {
-    static const QRegularExpression nvidia(
-            QStringLiteral("^nvidia-sm(50|52|53|60|61|62|70|72|75|80|86|87|89|90|100|101|120)$"));
-    return id == QStringLiteral("universal") ||
-           id == QStringLiteral("amd-rx7000-rx9000") ||
-           nvidia.match(id).hasMatch();
+QByteArray Digest(const QJsonObject &object) {
+    static const QRegularExpression digestPattern(QStringLiteral("^([0-9a-fA-F]{64})$"));
+    const auto digest = digestPattern.match(object.value(QStringLiteral("sha256")).toString());
+    return digest.hasMatch() ? QByteArray::fromHex(digest.captured(1).toLatin1()) : QByteArray();
+}
+
+// Downloads come from this repository's releases only.
+bool ReleaseAssetUrl(const QUrl &url) {
+    static const QRegularExpression path(
+            QStringLiteral("^/Skycrafter-dev/ForeverTAS/releases/download/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"));
+    return url.scheme() == QStringLiteral("https") && url.host() == QStringLiteral("github.com") &&
+           path.match(url.path()).hasMatch();
 }
 
 } // namespace
 
 std::optional<UpdateCatalog> ParseUpdateCatalog(
         const QByteArray &json,
-        const QString &installedVersion,
         const QString &platform,
         const QString &architecture) {
     static const QRegularExpression versionPattern(
             QStringLiteral("^v?([0-9]+\\.[0-9]+\\.[0-9]+)$"));
-    static const QRegularExpression digestPattern(
-            QStringLiteral("^([0-9a-fA-F]{64})$"));
     if (platform != QStringLiteral("linux") &&
         platform != QStringLiteral("windows")) {
         return std::nullopt;
@@ -49,11 +51,6 @@ std::optional<UpdateCatalog> ParseUpdateCatalog(
         return std::nullopt;
     UpdateCatalog catalog;
     catalog.version = match.captured(1);
-    const QVersionNumber latest = QVersionNumber::fromString(catalog.version);
-    const QVersionNumber installed = QVersionNumber::fromString(installedVersion);
-    if (installed.isNull() || QVersionNumber::compare(latest, installed) < 0)
-        return std::nullopt;
-
     catalog.releaseUrl = QUrl(
             release.value(QStringLiteral("release_url")).toString());
     if (catalog.releaseUrl.scheme() != QStringLiteral("https") ||
@@ -63,61 +60,84 @@ std::optional<UpdateCatalog> ParseUpdateCatalog(
                 .arg(catalog.version)) {
         return std::nullopt;
     }
-    const QString prefix = QStringLiteral("ForeverTAS-%1-%2-")
-                                   .arg(catalog.version, platform);
-    const QString extension = platform == QStringLiteral("windows")
-                                      ? QStringLiteral("-Setup.exe")
-                                      : QStringLiteral(".AppImage");
-    const QString suffix = QStringLiteral("-%1%2").arg(architecture, extension);
-    const QString downloadPrefix = QStringLiteral(
-            "/Skycrafter-dev/ForeverTAS/releases/download/v%1/")
-                                           .arg(catalog.version);
+
+    const QString appName = QStringLiteral("ForeverTAS-%1-%2-universal-%3%4")
+            .arg(catalog.version, platform, architecture,
+                 platform == QStringLiteral("windows") ? QStringLiteral("-Setup.exe")
+                                                       : QStringLiteral(".AppImage"));
     for (const QJsonValue &value : release.value(QStringLiteral("assets")).toArray()) {
         const QJsonObject asset = value.toObject();
-        const QString name = asset.value(QStringLiteral("name")).toString();
-        if (!name.startsWith(prefix) || !name.endsWith(suffix))
-            continue;
-        const QString id = name.mid(prefix.size(),
-                                    name.size() - prefix.size() - suffix.size());
-        if (!ValidPackageId(id))
-            continue;
-        const QUrl downloadUrl(QStringLiteral(
-                "https://github.com%1%2").arg(downloadPrefix, name));
-        const auto digest = digestPattern.match(
-                asset.value(QStringLiteral("sha256")).toString());
-        if (!digest.hasMatch()) {
+        if (asset.value(QStringLiteral("name")).toString() != appName) continue;
+        const QByteArray sha256 = Digest(asset);
+        if (sha256.isEmpty()) break;
+        catalog.app = UpdateRelease{
+                catalog.version, appName,
+                QUrl(QStringLiteral("https://github.com/Skycrafter-dev/ForeverTAS/releases/download/v%1/%2")
+                             .arg(catalog.version, appName)),
+                catalog.releaseUrl, sha256};
+        break;
+    }
+
+    const QJsonObject compute = release.value(QStringLiteral("compute")).toObject();
+    for (const QJsonValue &value : compute.value(platform).toArray()) {
+        const QJsonObject entry = value.toObject();
+        ComputeModuleRelease module;
+        module.id = entry.value(QStringLiteral("id")).toString();
+        module.backend = entry.value(QStringLiteral("backend")).toString();
+        module.sm = entry.value(QStringLiteral("sm")).toInt();
+        module.ptx = entry.value(QStringLiteral("ptx")).toBool();
+        module.abi = entry.value(QStringLiteral("abi")).toString();
+        module.downloadUrl = QUrl(entry.value(QStringLiteral("url")).toString());
+        module.sha256 = Digest(entry);
+        if (module.id.isEmpty() || module.abi.isEmpty() || module.sha256.isEmpty() ||
+            (module.backend != QStringLiteral("cuda") && module.backend != QStringLiteral("hip")) ||
+            (module.backend == QStringLiteral("cuda") && module.sm < 50) ||
+            !ReleaseAssetUrl(module.downloadUrl)) {
             continue;
         }
-        bool duplicate = false;
-        for (const auto &package : catalog.packages)
-            duplicate |= package.packageId == id;
-        if (duplicate)
-            continue;
-        catalog.packages.push_back(UpdateRelease{
-                catalog.version, id, name, downloadUrl, catalog.releaseUrl,
-                QByteArray::fromHex(digest.captured(1).toLatin1())});
+        catalog.modules.push_back(module);
     }
-    if (catalog.packages.isEmpty())
+    if (!catalog.app && catalog.modules.isEmpty())
         return std::nullopt;
     return catalog;
 }
 
-QString RecommendedPackageId(int nvidiaComputeCapability,
-                             bool amdRadeonRx7000Or9000,
-                             const QStringList &availablePackageIds) {
-    const QString nvidia = QStringLiteral("nvidia-sm%1")
-                                    .arg(nvidiaComputeCapability);
-    if (nvidiaComputeCapability >= 50 &&
-        availablePackageIds.contains(nvidia)) {
-        return nvidia;
+QVector<ComputeModuleRelease> ChooseComputeModules(const QVector<ComputeModuleRelease> &modules,
+                                                   const QString &abi,
+                                                   int nvidiaComputeCapability,
+                                                   bool amdRadeonRx7000Or9000) {
+    QVector<ComputeModuleRelease> chosen;
+    const ComputeModuleRelease *native = nullptr;
+    const ComputeModuleRelease *newest = nullptr;
+    const int major = nvidiaComputeCapability / 10;
+    for (const ComputeModuleRelease &module : modules) {
+        if (module.abi != abi || module.backend != QStringLiteral("cuda") ||
+            nvidiaComputeCapability < 50) {
+            continue;
+        }
+        if (module.sm / 10 == major && module.sm <= nvidiaComputeCapability &&
+            (native == nullptr || module.sm > native->sm)) {
+            native = &module;
+        }
+        if (module.ptx && module.sm <= nvidiaComputeCapability &&
+            (newest == nullptr || module.sm > newest->sm)) {
+            newest = &module;
+        }
     }
-    if (amdRadeonRx7000Or9000 &&
-        availablePackageIds.contains(QStringLiteral("amd-rx7000-rx9000"))) {
-        return QStringLiteral("amd-rx7000-rx9000");
+    if (native != nullptr) {
+        chosen.push_back(*native);
+    } else if (newest != nullptr) {
+        chosen.push_back(*newest);
     }
-    if (availablePackageIds.contains(QStringLiteral("universal")))
-        return QStringLiteral("universal");
-    return {};
+    if (amdRadeonRx7000Or9000) {
+        for (const ComputeModuleRelease &module : modules) {
+            if (module.abi == abi && module.backend == QStringLiteral("hip")) {
+                chosen.push_back(module);
+                break;
+            }
+        }
+    }
+    return chosen;
 }
 
 } // namespace forevertas::app

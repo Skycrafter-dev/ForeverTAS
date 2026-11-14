@@ -121,7 +121,7 @@ inline std::mt19937 ModifierRandom(std::uint32_t seed,
     return std::mt19937(sequence);
 }
 
-// Keep CPU mutation draws identical to the CUDA and Vulkan device samplers.
+// Keep CPU mutation draws identical to the CUDA and HIP device samplers.
 inline std::uint64_t RandomUnsigned(std::mt19937 &random,
                                     std::uint64_t minimum,
                                     std::uint64_t maximum) {

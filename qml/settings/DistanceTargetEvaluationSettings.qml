@@ -35,7 +35,7 @@ ColumnLayout {
         info: qsTr("Straight line: the gap between the car and the trigger, "
                    + "through walls. Around walls: the shortest way to the "
                    + "trigger that goes around the walls near it, ignoring "
-                   + "gravity. Not on Vulkan yet.")
+                   + "gravity.")
         comboObjectName: "distanceRouteField"
         options: [{ label: qsTr("Straight line"), value: "straight" },
                   { label: qsTr("Around walls"), value: "around" }]

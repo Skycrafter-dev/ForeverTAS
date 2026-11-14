@@ -20,10 +20,24 @@
 #include <future>
 #include <limits>
 #include <map>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
+#include <system_error>
 #include <thread>
+
+#if defined(_WIN32)
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#else
+#include <pthread.h>
+#endif
 #include <tuple>
 #include <utility>
 
@@ -528,7 +542,6 @@ std::shared_ptr<CachedSearchSandbox> CachedSandboxFor(
                            std::string,
                            PhysicsBackend,
                            std::uint32_t,
-                           bool,
                            bool>;
     static std::mutex cacheLock;
     static std::map<Key, std::shared_ptr<CachedSearchSandbox>> cache;
@@ -537,7 +550,6 @@ std::shared_ptr<CachedSearchSandbox> CachedSandboxFor(
             request.replayPath,
             request.backend,
             request.simulationHorizonMs,
-            request.useCudaSessionSpecialization,
             request.approximatePhysics};
     std::lock_guard<std::mutex> guard(cacheLock);
     auto &entry = cache[key];
@@ -578,7 +590,7 @@ SearchResult RunLoadedSearch(
     std::vector<PhysicsSandboxCudaModifier> cudaModifiers;
     std::optional<PhysicsSandboxCudaEvaluator> cudaEvaluator;
     ReportProgress(control, SearchProgressStage::PreparingSearch, 0u, 0u);
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP || \
         FOREVERVALIDATOR_HAS_TWIN
     // Approximate physics runs a session (the twin's) whatever the backend.
     if (IsGpuBackend(request.backend) || request.approximatePhysics) {
@@ -603,7 +615,7 @@ SearchResult RunLoadedSearch(
             asyncImprovementSampler;
     std::uint64_t sampledImprovementCount = 0u;
     bool sampledBaseline = false;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP || \
         FOREVERVALIDATOR_HAS_TWIN
     std::unique_ptr<OptimizedCpuWinnerWorker> cudaWinnerWorker;
     if (IsGpuBackend(request.backend) || request.approximatePhysics) {
@@ -615,7 +627,7 @@ SearchResult RunLoadedSearch(
         control->sampleImprovementTimelines) {
         instrumentedControl = *control;
         const auto downstreamLiveChanged = control->liveChanged;
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP || \
         FOREVERVALIDATOR_HAS_TWIN
         const bool asynchronousCpuSampling =
                 (IsGpuBackend(request.backend) || request.approximatePhysics) &&
@@ -704,11 +716,9 @@ SearchResult RunLoadedSearch(
                             : request.parallelSampleCount,
                     request.calibrateCudaParallelSampleCount &&
                             ApproximateCpuThreads(request) == 0u,
-                    PhysicsBackendId(request.backend) == "cuda" &&
-                            request.useCudaSessionSpecialization,
                     cudaModifiers.empty() ? nullptr : &cudaModifiers,
                     cudaEvaluator ? &*cudaEvaluator : nullptr,
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP || \
+#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP || \
         FOREVERVALIDATOR_HAS_TWIN
                     cudaWinnerWorker
                             ? [worker = cudaWinnerWorker.get(), control](
@@ -784,6 +794,88 @@ BuildBaselineOrThrow(
     return std::move(baseline.events);
 }
 
+// A pool worker's thread with a search thread's stack (the default is 1 MB on
+// Windows: too little for a GPU search's set-up).
+class SearchWorkerThread {
+public:
+    explicit SearchWorkerThread(std::function<void()> body)
+        : body_(std::make_unique<std::function<void()>>(std::move(body))) {
+#if defined(_WIN32)
+        handle_ = CreateThread(nullptr, kSearchThreadStackBytes, &Entry, body_.get(),
+                               STACK_SIZE_PARAM_IS_A_RESERVATION, nullptr);
+        if (handle_ == nullptr) {
+            throw std::system_error(static_cast<int>(GetLastError()), std::system_category(),
+                                    "starting a search worker");
+        }
+#else
+        pthread_attr_t attributes;
+        pthread_attr_init(&attributes);
+        pthread_attr_setstacksize(&attributes, kSearchThreadStackBytes);
+        const int error = pthread_create(&thread_, &attributes, &Entry, body_.get());
+        pthread_attr_destroy(&attributes);
+        if (error != 0) {
+            throw std::system_error(error, std::generic_category(), "starting a search worker");
+        }
+        started_ = true;
+#endif
+    }
+    SearchWorkerThread(SearchWorkerThread &&other) noexcept
+        : body_(std::move(other.body_)),
+#if defined(_WIN32)
+          handle_(std::exchange(other.handle_, nullptr)) {
+    }
+#else
+          thread_(other.thread_),
+          started_(std::exchange(other.started_, false)) {
+    }
+#endif
+    SearchWorkerThread(const SearchWorkerThread &) = delete;
+    SearchWorkerThread &operator=(const SearchWorkerThread &) = delete;
+    SearchWorkerThread &operator=(SearchWorkerThread &&) = delete;
+    ~SearchWorkerThread() {
+        if (joinable()) join();
+    }
+
+    bool joinable() const {
+#if defined(_WIN32)
+        return handle_ != nullptr;
+#else
+        return started_;
+#endif
+    }
+    void join() {
+#if defined(_WIN32)
+        WaitForSingleObject(handle_, INFINITE);
+        CloseHandle(handle_);
+        handle_ = nullptr;
+#else
+        pthread_join(thread_, nullptr);
+        started_ = false;
+#endif
+    }
+
+private:
+#if defined(_WIN32)
+    static DWORD WINAPI Entry(void *body) {
+        (*static_cast<std::function<void()> *>(body))();
+        return 0;
+    }
+#else
+    static void *Entry(void *body) {
+        (*static_cast<std::function<void()> *>(body))();
+        return nullptr;
+    }
+#endif
+
+    std::unique_ptr<std::function<void()>> body_;
+#if defined(_WIN32)
+    HANDLE handle_ = nullptr;
+#else
+    pthread_t thread_{};
+    bool started_ = false;
+#endif
+};
+
 struct CpuWorkerState {
     std::optional<SearchStatisticsUpdate> statistics;
     std::optional<SearchLiveUpdate> live;
@@ -843,26 +935,41 @@ EvaluationSample SampleOf(const SearchResult &result) {
             result.metricValues};
 }
 
-SearchResult RunMultiThreadedCpuSearch(
+// Workers on one search, sharing its best: CPU threads, or one per GPU (each
+// search through runOnDevice) when gpuDevices are given.
+SearchResult RunWorkerPool(
         const SearchRequest &request,
         const SearchAlgorithmRegistration &searchRegistration,
         const EvaluationTargetRegistration &evaluationRegistration,
-        const SearchRunControl *control) {
+        const SearchRunControl *control,
+        const std::vector<SearchDevice> &gpuDevices = {},
+        const DeviceSearchRunner *runOnDevice = nullptr) {
     CheckCancellation(control);
-    if (request.parallelSampleCount == 0u ||
-        request.parallelSampleCount > kMaximumCpuWorkerCount) {
-        throw std::invalid_argument(
-                "CPU worker count must be between 1 and " +
-                std::to_string(kMaximumCpuWorkerCount));
-    }
-    if (!searchRegistration.supportsMultiThreadedCpu) {
-        throw std::invalid_argument(
-                "multi-threaded CPU does not support search algorithm: " +
-                request.searchAlgorithm.id);
+    const bool gpu = !gpuDevices.empty();
+    if (gpu) {
+        if (runOnDevice == nullptr || !searchRegistration.supportsGpuBackends) {
+            throw std::invalid_argument(
+                    "GPU backends do not support search algorithm: " +
+                    request.searchAlgorithm.id);
+        }
+    } else {
+        if (request.parallelSampleCount == 0u ||
+            request.parallelSampleCount > kMaximumCpuWorkerCount) {
+            throw std::invalid_argument(
+                    "CPU worker count must be between 1 and " +
+                    std::to_string(kMaximumCpuWorkerCount));
+        }
+        if (!searchRegistration.supportsMultiThreadedCpu) {
+            throw std::invalid_argument(
+                    "multi-threaded CPU does not support search algorithm: " +
+                    request.searchAlgorithm.id);
+        }
     }
 
     const auto started = std::chrono::steady_clock::now();
-    const std::uint32_t workerCount = request.parallelSampleCount;
+    const std::uint32_t workerCount = gpu
+            ? static_cast<std::uint32_t>(gpuDevices.size())
+            : request.parallelSampleCount;
     using namespace forevervalidator;
     using namespace forevervalidator::experimental;
 
@@ -899,10 +1006,11 @@ SearchResult RunMultiThreadedCpuSearch(
             Require(sourceSandbox.ReadInputs(),
                     "reading shared CPU baseline inputs");
 
+    // (a GPU worker's search loads its own)
     std::vector<PhysicsSandbox> workerSandboxes;
     workerSandboxes.reserve(workerCount);
     for (std::uint32_t workerIndex = 0u;
-         workerIndex < workerCount; ++workerIndex) {
+         !gpu && workerIndex < workerCount; ++workerIndex) {
         workerSandboxes.push_back(Require(
                 ClonePhysicsSandbox(sourceSandbox),
                 "cloning shared CPU sandbox"));
@@ -970,14 +1078,16 @@ SearchResult RunMultiThreadedCpuSearch(
                       request.searchAlgorithm.settings)
             : std::nullopt;
     if (treeSettings) {
-        flatWorkerCount = treeSettings->flatWorkerCount;
+        flatWorkerCount = gpu ? 0u : treeSettings->flatWorkerCount;
         migrationSeconds = treeSettings->migrationSeconds;
     }
+    // GPU workers take their candidates from one sequence, a batch at a time.
+    std::atomic<std::uint64_t> nextGpuIteration{0u};
     std::optional<EvaluationSample> promotedEvaluation;
     std::vector<SandboxInputEvent> promotedInputs;
     std::uint64_t revision = 0u;
     std::size_t finishedWorkerCount = 0u;
-    std::vector<std::thread> workers;
+    std::vector<SearchWorkerThread> workers;
     workers.reserve(workerCount);
     try {
         for (std::uint32_t workerIndex = 0u;
@@ -986,9 +1096,16 @@ SearchResult RunMultiThreadedCpuSearch(
             workers.emplace_back([&, workerIndex]() {
                 try {
                     SearchRequest workerRequest = request;
-                    workerRequest.backend = PhysicsBackend::OptimizedCpu;
-                    workerRequest.parallelSampleCount = 1u;
-                    workerRequest.calibrateCudaParallelSampleCount = false;
+                    if (gpu) {
+                        const SearchDevice &device = gpuDevices[workerIndex];
+                        workerRequest.backend = device.backend;
+                        workerRequest.parallelSampleCount = device.parallelSampleCount;
+                        workerRequest.calibrateCudaParallelSampleCount = device.calibrate;
+                    } else {
+                        workerRequest.backend = PhysicsBackend::OptimizedCpu;
+                        workerRequest.parallelSampleCount = 1u;
+                        workerRequest.calibrateCudaParallelSampleCount = false;
+                    }
 
                     SearchRunControl workerControl;
                     if (control != nullptr) {
@@ -1130,8 +1247,27 @@ SearchResult RunMultiThreadedCpuSearch(
                                 if (!promotedEvaluation) {
                                     return std::nullopt;
                                 }
+                                // a GPU starts over from a shared best: only
+                                // from a better one than its own
+                                const std::optional<SearchLiveUpdate> &own =
+                                        states[workerIndex].live;
+                                if (gpu && own) {
+                                    std::lock_guard<std::mutex> evaluating(evaluatorMutex);
+                                    if (!BetterEvaluation(*evaluator, *promotedEvaluation,
+                                                          promotedInputs.size(), SampleOf(*own),
+                                                          own->bestInputs.size())) {
+                                        return std::nullopt;
+                                    }
+                                }
                                 return promotedInputs;
                             };
+                    if (gpu) {
+                        workerControl.claimIterations =
+                                [&](std::uint32_t count) {
+                                    return nextGpuIteration.fetch_add(
+                                            count, std::memory_order_relaxed);
+                                };
+                    }
                     if (control != nullptr && control->iterationLimit) {
                         const std::uint64_t total =
                                 *control->iterationLimit;
@@ -1160,14 +1296,16 @@ SearchResult RunMultiThreadedCpuSearch(
                                 std::move(flatSettings)};
                     }
 
-                    SearchResult result = RunLoadedSearch(
-                            workerRequest,
-                            replay,
-                            identity,
-                            workerSandboxes[workerIndex],
-                            *workerRegistration,
-                            evaluationRegistration,
-                            &workerControl);
+                    SearchResult result = gpu
+                            ? (*runOnDevice)(workerRequest, &workerControl)
+                            : RunLoadedSearch(
+                                      workerRequest,
+                                      replay,
+                                      identity,
+                                      workerSandboxes[workerIndex],
+                                      *workerRegistration,
+                                      evaluationRegistration,
+                                      &workerControl);
                     std::lock_guard<std::mutex> guard(stateMutex);
                     states[workerIndex].result = std::move(result);
                     states[workerIndex].done = true;
@@ -1189,7 +1327,7 @@ SearchResult RunMultiThreadedCpuSearch(
         }
     } catch (...) {
         internalCancellation.store(true, std::memory_order_relaxed);
-        for (std::thread &worker : workers) {
+        for (SearchWorkerThread &worker : workers) {
             if (worker.joinable()) {
                 worker.join();
             }
@@ -1356,7 +1494,7 @@ SearchResult RunMultiThreadedCpuSearch(
     } catch (...) {
         internalCancellation.store(true, std::memory_order_relaxed);
         stateChanged.notify_all();
-        for (std::thread &worker : workers) {
+        for (SearchWorkerThread &worker : workers) {
             if (worker.joinable()) {
                 worker.join();
             }
@@ -1364,7 +1502,7 @@ SearchResult RunMultiThreadedCpuSearch(
         throw;
     }
 
-    for (std::thread &worker : workers) {
+    for (SearchWorkerThread &worker : workers) {
         worker.join();
     }
     CheckCancellation(control);
@@ -1408,7 +1546,7 @@ SearchResult RunMultiThreadedCpuSearch(
     for (std::size_t index = 0u; index < states.size(); ++index) {
         if (!states[index].result) {
             throw std::runtime_error(
-                    "CPU worker completed without a search result");
+                    "search worker completed without a search result");
         }
         const SearchResult &result = *states[index].result;
         iterations += result.iterations;
@@ -1506,11 +1644,17 @@ SearchResult RunMultiThreadedCpuSearch(
 
 }  // namespace
 
-SearchResult RunSearch(const SearchRequest &request,
-                       const SearchRunControl *control) {
-    using namespace forevervalidator;
-    using namespace forevervalidator::experimental;
+namespace {
 
+struct PreparedSearch {
+    const SearchAlgorithmRegistration *searchRegistration = nullptr;
+    const EvaluationTargetRegistration *evaluationRegistration = nullptr;
+    SearchRequest executionRequest;
+};
+
+// The request checked, its passes clamped to the search end.
+PreparedSearch PrepareSearch(const SearchRequest &request,
+                             const SearchRunControl *control) {
     const SearchAlgorithmRegistration *const searchRegistration =
             FindSearchAlgorithm(request.searchAlgorithm.id);
     const EvaluationTargetRegistration *const evaluationRegistration =
@@ -1597,10 +1741,35 @@ SearchResult RunSearch(const SearchRequest &request,
 
     SearchRequest executionRequest = request;
     executionRequest.modifiers = std::move(executionModifiers);
+    return {searchRegistration, evaluationRegistration, std::move(executionRequest)};
+}
+
+}  // namespace
+
+SearchResult RunSearchOnDevices(const SearchRequest &request,
+                                const std::vector<SearchDevice> &devices,
+                                const DeviceSearchRunner &runOnDevice,
+                                const SearchRunControl *control) {
+    if (devices.empty()) throw std::invalid_argument("no GPU to search on");
+    PreparedSearch prepared = PrepareSearch(request, control);
+    return RunWorkerPool(prepared.executionRequest, *prepared.searchRegistration,
+                         *prepared.evaluationRegistration, control, devices, &runOnDevice);
+}
+
+SearchResult RunSearch(const SearchRequest &request,
+                       const SearchRunControl *control) {
+    using namespace forevervalidator;
+    using namespace forevervalidator::experimental;
+
+    PreparedSearch prepared = PrepareSearch(request, control);
+    const SearchAlgorithmRegistration *const searchRegistration = prepared.searchRegistration;
+    const EvaluationTargetRegistration *const evaluationRegistration =
+            prepared.evaluationRegistration;
+    const SearchRequest &executionRequest = prepared.executionRequest;
 
     if (request.backend == PhysicsBackend::MultiThreadedCpu &&
         ApproximateCpuThreads(request) == 0u) {
-        return RunMultiThreadedCpuSearch(
+        return RunWorkerPool(
                 executionRequest,
                 *searchRegistration,
                 *evaluationRegistration,
@@ -1615,12 +1784,6 @@ SearchResult RunSearch(const SearchRequest &request,
             request, request.approximatePhysics
                     ? ToForeverValidatorBackend(kAuxiliarySimulationBackend)
                     : ToForeverValidatorBackend(request.backend));
-#if FOREVERVALIDATOR_HAS_CUDA
-    options.prepareCudaSearchSpecialization =
-            request.backend == PhysicsBackend::Cuda &&
-            request.useCudaSessionSpecialization &&
-            !request.approximatePhysics;
-#endif
     if (control != nullptr && control->reuseLoadedSandbox) {
         const std::shared_ptr<CachedSearchSandbox> cached =
                 CachedSandboxFor(request);

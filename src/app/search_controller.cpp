@@ -3,6 +3,7 @@
 #include "diagnostics/diagnostics_log.h"
 
 #include "app/compact_number_format.h"
+#include "app/compute_modules.h"
 #include "app/keyboard_layout.h"
 #include "app/packs_directory_finder.h"
 #include "app/search_worker.h"
@@ -38,19 +39,7 @@
 namespace forevertas::app {
 namespace {
 
-// Searches run deep with large frames (GPU search configurations are ~90 KB):
-// Windows gives a thread 1 MB, not enough; this is Linux's main stack and more.
-constexpr uint kSearchThreadStackBytes = 64u * 1024u * 1024u;
-
 // The backend Approximate physics runs on: the one the twin's GPU engine is built for.
-constexpr std::string_view ApproximatePhysicsBackendId() {
-#if FOREVERVALIDATOR_HAS_CUDA
-    return "cuda";
-#else
-    return "hip";
-#endif
-}
-
 constexpr char kPacksDirectoryKey[] = "paths/packsDirectory";
 constexpr char kReplayPathKey[] = "paths/replayPath";
 constexpr char kBaseInputScriptKey[] = "inputs/baseScript";
@@ -63,17 +52,15 @@ constexpr char kCudaParallelSampleCountKey[] =
         "backends/cuda/parallelSampleCount";
 constexpr char kHipParallelSampleCountKey[] =
         "backends/hip/parallelSampleCount";
-constexpr char kVulkanParallelSampleCountKey[] =
-        "backends/vulkan/parallelSampleCount";
 constexpr char kCudaCalibrationEnabledKey[] =
         "backends/cuda/calibrationEnabled";
 constexpr char kHipCalibrationEnabledKey[] =
         "backends/hip/calibrationEnabled";
-constexpr char kVulkanCalibrationEnabledKey[] =
-        "backends/vulkan/calibrationEnabled";
-constexpr char kCudaSessionSpecializationEnabledKey[] =
-        "backends/cuda/sessionSpecializationEnabled";
 constexpr char kApproximatePhysicsKey[] = "backends/cuda/approximatePhysics";
+constexpr char kCudaCardEnabledKey[] = "backends/cuda/cardEnabled";
+constexpr char kHipCardEnabledKey[] = "backends/hip/cardEnabled";
+// the backend id of "GPU" (an NVIDIA and an AMD card, a box per card)
+constexpr char kGpusBackendId[] = "gpus";
 constexpr char kRandomizeSeedsOnStartKey[] =
         "search/randomizeSeedsOnStart";
 constexpr char kAutoRestartModeKey[] = "search/autoRestartMode";
@@ -277,92 +264,14 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     hipCalibrationEnabled_ = AppSettings::Instance()
             .value(QLatin1String(kHipCalibrationEnabledKey), false)
             .toBool();
-    cudaSessionSpecializationEnabled_ = AppSettings::Instance()
-            .value(QLatin1String(
-                           kCudaSessionSpecializationEnabledKey),
-                   true)
-            .toBool();
+    // CUDA fast mode is gone; so is its switch's saved state.
+    AppSettings::Instance().remove(QStringLiteral("backends/cuda/sessionSpecializationEnabled"));
     approximatePhysics_ = AppSettings::Instance()
             .value(QLatin1String(kApproximatePhysicsKey), false)
             .toBool();
-#if FOREVERVALIDATOR_HAS_CUDA
-    const forevervalidator::CudaBackendDiagnostics cuda =
-            forevervalidator::QueryCudaBackendDiagnostics();
-    cudaAvailable_ = cuda.IsReady();
-    cudaFastModeAvailable_ = cuda.SupportsSessionSpecialization();
-    if (cuda.IsReady()) {
-        const QString device = QString::fromStdString(cuda.deviceName);
-        const QString capability =
-                QStringLiteral("%1.%2")
-                        .arg(cuda.computeCapabilityMajor)
-                        .arg(cuda.computeCapabilityMinor);
-        cudaStatusText_ = cudaFastModeAvailable_
-                ? QStringLiteral(
-                          "CUDA ready: %1 (compute capability %2). Fast CUDA "
-                          "is available.")
-                          .arg(device, capability)
-                : QStringLiteral(
-                          "CUDA ready: %1 (compute capability %2). Fast CUDA "
-                          "requires compute capability 7.5 or newer, so "
-                          "regular CUDA will be used.")
-                          .arg(device, capability);
-    } else {
-        cudaStatusText_ = QStringLiteral(
-                "CUDA cannot run on this computer. It needs an NVIDIA "
-                "graphics card with an up-to-date driver. Choose Optimized "
-                "CPU, or update the driver and restart ForeverTAS. "
-                "(Driver message: %1)")
-                                  .arg(QString::fromStdString(cuda.diagnostic));
-    }
-#else
-    cudaStatusText_ = QStringLiteral(
-            "This build of ForeverTAS does not include CUDA. Choose "
-            "Optimized CPU.");
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
-    const auto hip = forevervalidator::QueryHipBackendDiagnostics();
-    hipAvailable_ = hip.IsReady();
-    hipStatusText_ = hipAvailable_
-            ? QStringLiteral("HIP ready: %1")
-                      .arg(QString::fromStdString(hip.deviceName))
-            : QStringLiteral(
-                      "HIP cannot run on this computer. It needs a "
-                      "compatible graphics card with an up-to-date driver. "
-                      "Choose Optimized CPU, or update the driver and "
-                      "restart ForeverTAS. (Driver message: %1)")
-                      .arg(QString::fromStdString(hip.diagnostic));
-#else
-    hipStatusText_ = QStringLiteral(
-            "This build of ForeverTAS does not include HIP. Choose "
-            "Optimized CPU.");
-#endif
-    vulkanParallelSampleCount_ = StoredValue(
-            kVulkanParallelSampleCountKey,
-            QString::number(kDefaultCudaParallelSampleCount));
-    vulkanCalibrationEnabled_ = AppSettings::Instance()
-            .value(QLatin1String(kVulkanCalibrationEnabledKey), false).toBool();
-    const auto vulkan = forevervalidator::QueryVulkanBackendDiagnostics();
-    vulkanAvailable_ = vulkan.IsSearchReady();
-    if (vulkanAvailable_) {
-        vulkanStatusText_ = QStringLiteral("Vulkan ready: %1")
-                                    .arg(QString::fromStdString(vulkan.deviceName));
-    } else if (vulkan.IsReady()) {
-        vulkanStatusText_ = QStringLiteral(
-                "Vulkan search cannot run on %1. Its driver lacks the exact "
-                "math controls the search needs "
-                "(VK_KHR_shader_float_controls2). Choose Optimized CPU, or "
-                "update the graphics driver.")
-                                    .arg(QString::fromStdString(vulkan.deviceName));
-    } else {
-        vulkanStatusText_ = QStringLiteral(
-                "Vulkan cannot run on this computer. Choose Optimized CPU, "
-                "or update the graphics driver and restart ForeverTAS. "
-                "(Driver message: %1)")
-                                    .arg(QString::fromStdString(vulkan.diagnostic));
-    }
-    diagnostics::Log("backend CUDA: %s", qUtf8Printable(cudaStatusText_));
-    diagnostics::Log("backend HIP: %s", qUtf8Printable(hipStatusText_));
-    diagnostics::Log("backend Vulkan: %s", qUtf8Printable(vulkanStatusText_));
+    readComputeBackends();
+    // The Vulkan backend is gone; so are its saved settings.
+    AppSettings::Instance().remove(QStringLiteral("backends/vulkan"));
     AppSettings &settings = AppSettings::Instance();
     randomizeSeedsOnStart_ = settings
             .value(QLatin1String(kRandomizeSeedsOnStartKey), true)
@@ -386,13 +295,21 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     targetMouseEditingLocked_ = settings.value(QLatin1String(kTargetMouseEditingLockedKey), false).toBool();
     ApplyApplicationPalette();
     viewerVisible_ = settings.value(QLatin1String(kViewerVisibleKey), true).toBool();
+    cudaCardEnabled_ = settings.value(QLatin1String(kCudaCardEnabledKey), true).toBool();
+    hipCardEnabled_ = settings.value(QLatin1String(kHipCardEnabledKey), true).toBool();
     const QString storedBackend = StoredValue(
             kSimulationBackendKey,
             BackendId(PhysicsBackend::Reference));
     const std::optional<PhysicsBackend> parsedBackend =
             ParsePhysicsBackend(storedBackend.toStdString());
-    simulationBackend_ = parsedBackend.value_or(PhysicsBackend::Reference);
-    if (!parsedBackend) {
+    // a GPU backend whose module is not installed (yet): Reference until it is
+    simulationBackend_ = parsedBackend && ComputeModules::Instance().Has(*parsedBackend)
+            ? *parsedBackend : PhysicsBackend::Reference;
+    // both cards: "GPU", whichever of the two was chosen
+    if (multipleGpus() && (storedBackend == QLatin1String(kGpusBackendId) ||
+                           (parsedBackend && IsGpuBackend(*parsedBackend)))) {
+        setGpusChosen(true);
+    } else if (!parsedBackend && storedBackend != QLatin1String(kGpusBackendId)) {
         AppSettings::Instance().setValue(
                 QLatin1String(kSimulationBackendKey),
                 BackendId(simulationBackend_));
@@ -457,6 +374,138 @@ QString SearchController::replayInputStatusText() const {
     return replayInputStatusText_;
 }
 
+void SearchController::readComputeBackends() {
+    // GPU backends: compiled in (developer builds) or a module installed
+    // for this computer's GPU.
+    ComputeModules &modules = ComputeModules::Instance();
+    const compute::GpuStatus cuda = modules.Status(PhysicsBackend::Cuda);
+    cudaAvailable_ = modules.Has(PhysicsBackend::Cuda) && cuda.ready;
+    cudaApproximate_ = cudaAvailable_ && cuda.approximate;
+    if (!modules.Has(PhysicsBackend::Cuda)) {
+        cudaStatusText_ = QStringLiteral(
+                "CUDA is not installed. ForeverTAS installs it when it finds "
+                "an NVIDIA graphics card. Choose Optimized CPU.");
+    } else if (cuda.ready) {
+        cudaStatusText_ = QStringLiteral("CUDA ready: %1 (compute capability %2.%3).")
+                .arg(QString::fromStdString(cuda.deviceName))
+                .arg(cuda.computeMajor)
+                .arg(cuda.computeMinor);
+    } else {
+        cudaStatusText_ = QStringLiteral(
+                "CUDA cannot run on this computer. It needs an NVIDIA "
+                "graphics card with an up-to-date driver. Choose Optimized "
+                "CPU, or update the driver and restart ForeverTAS. "
+                "(Driver message: %1)")
+                                  .arg(QString::fromStdString(cuda.diagnostic));
+    }
+    const compute::GpuStatus hip = modules.Status(PhysicsBackend::Hip);
+    hipAvailable_ = modules.Has(PhysicsBackend::Hip) && hip.ready;
+    hipApproximate_ = hipAvailable_ && hip.approximate;
+    if (!modules.Has(PhysicsBackend::Hip)) {
+        hipStatusText_ = QStringLiteral(
+                "HIP is not installed. ForeverTAS installs it when it finds "
+                "an AMD Radeon RX 7000 or 9000 graphics card. Choose "
+                "Optimized CPU.");
+    } else if (hip.ready) {
+        hipStatusText_ = QStringLiteral("HIP ready: %1")
+                .arg(QString::fromStdString(hip.deviceName));
+    } else {
+        hipStatusText_ = QStringLiteral(
+                "HIP cannot run on this computer. It needs a "
+                "compatible graphics card with an up-to-date driver. "
+                "Choose Optimized CPU, or update the driver and "
+                "restart ForeverTAS. (Driver message: %1)")
+                .arg(QString::fromStdString(hip.diagnostic));
+    }
+    cudaCardName_ = cuda.ready && !cuda.deviceName.empty() ? QString::fromStdString(cuda.deviceName)
+                                                           : QStringLiteral("NVIDIA graphics card");
+    hipCardName_ = hip.ready && !hip.deviceName.empty() ? QString::fromStdString(hip.deviceName)
+                                                        : QStringLiteral("AMD graphics card");
+    diagnostics::Log("backend CUDA: %s", qUtf8Printable(cudaStatusText_));
+    diagnostics::Log("backend HIP: %s", qUtf8Printable(hipStatusText_));
+}
+
+void SearchController::refreshComputeBackends() {
+    readComputeBackends();
+    // back to the GPU backend chosen before its module was installed
+    const QString storedId = StoredValue(kSimulationBackendKey, BackendId(PhysicsBackend::Reference));
+    const std::optional<PhysicsBackend> stored = ParsePhysicsBackend(storedId.toStdString());
+    if (multipleGpus() && !gpusChosen() &&
+        (storedId == QLatin1String(kGpusBackendId) || (stored && IsGpuBackend(*stored)))) {
+        setGpusChosen(true);
+        emit simulationBackendIdChanged();
+    } else if (!multipleGpus() && gpusMode_) {
+        setGpusChosen(false);
+        emit simulationBackendIdChanged();
+    } else if (stored && IsGpuBackend(*stored) && simulationBackend_ != *stored &&
+               !gpusChosen() && ComputeModules::Instance().Has(*stored)) {
+        simulationBackend_ = *stored;
+        emit simulationBackendIdChanged();
+    }
+    emit computeBackendsChanged();
+    emit gpuCardsChanged();
+    refreshValidation();
+}
+
+bool SearchController::multipleGpus() const {
+    return ComputeModules::Instance().Has(PhysicsBackend::Cuda) &&
+            ComputeModules::Instance().Has(PhysicsBackend::Hip);
+}
+
+bool SearchController::gpusChosen() const {
+    return gpusMode_ && multipleGpus();
+}
+
+void SearchController::setGpusChosen(bool chosen) {
+    gpusMode_ = chosen && multipleGpus();
+    if (gpusMode_) {
+        // the first ticked card's backend runs the request (the other joins it)
+        simulationBackend_ = cudaCardEnabled_ || !hipCardEnabled_ ? PhysicsBackend::Cuda
+                                                                  : PhysicsBackend::Hip;
+    } else if (IsGpuBackend(simulationBackend_) &&
+               !ComputeModules::Instance().Has(simulationBackend_)) {
+        simulationBackend_ = ComputeModules::Instance().Has(PhysicsBackend::Cuda) ? PhysicsBackend::Cuda
+                : ComputeModules::Instance().Has(PhysicsBackend::Hip)              ? PhysicsBackend::Hip
+                                                                                   : PhysicsBackend::Reference;
+    }
+}
+
+QString SearchController::cudaCardName() const {
+    return cudaCardName_;
+}
+
+QString SearchController::hipCardName() const {
+    return hipCardName_;
+}
+
+bool SearchController::cudaCardEnabled() const {
+    return cudaCardEnabled_;
+}
+
+bool SearchController::hipCardEnabled() const {
+    return hipCardEnabled_;
+}
+
+void SearchController::setCudaCardEnabled(bool value) {
+    if (cudaCardEnabled_ == value) return;
+    cudaCardEnabled_ = value;
+    AppSettings::Instance().setValue(QLatin1String(kCudaCardEnabledKey), value);
+    diagnostics::Log("settings: CUDA card %s", value ? "on" : "off");
+    if (gpusChosen()) setGpusChosen(true);
+    emit gpuCardsChanged();
+    refreshValidation();
+}
+
+void SearchController::setHipCardEnabled(bool value) {
+    if (hipCardEnabled_ == value) return;
+    hipCardEnabled_ = value;
+    AppSettings::Instance().setValue(QLatin1String(kHipCardEnabledKey), value);
+    diagnostics::Log("settings: HIP card %s", value ? "on" : "off");
+    if (gpusChosen()) setGpusChosen(true);
+    emit gpuCardsChanged();
+    refreshValidation();
+}
+
 QVariantList SearchController::simulationBackendOptions() const {
     QVariantList options{
             QVariantMap{
@@ -484,35 +533,30 @@ QVariantList SearchController::simulationBackendOptions() const {
                              "Runs independent optimized CPU simulations "
                              "across multiple worker threads")}},
     };
-#if FOREVERVALIDATOR_HAS_CUDA
-    options.push_back(QVariantMap{
+    if (multipleGpus()) {
+        options.push_back(QVariantMap{
+                {QStringLiteral("id"), QString::fromLatin1(kGpusBackendId)},
+                {QStringLiteral("label"), QStringLiteral("GPU")},
+                {QStringLiteral("description"),
+                 QStringLiteral("The graphics cards ticked below, together")}});
+        return options;
+    }
+    if (ComputeModules::Instance().Has(PhysicsBackend::Cuda)) options.push_back(QVariantMap{
             {QStringLiteral("id"),
              BackendId(PhysicsBackend::Cuda)},
             {QStringLiteral("label"), QStringLiteral("CUDA")},
             {QStringLiteral("description"),
-             QStringLiteral(
-                     "NVIDIA CUDA for Stadium; compute capability 5.0+ is "
-                     "supported, with Fast CUDA on 7.5+")}});
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
-    options.push_back(QVariantMap{
+             QStringLiteral("NVIDIA CUDA for Stadium; compute capability 5.0+")}});
+    if (ComputeModules::Instance().Has(PhysicsBackend::Hip)) options.push_back(QVariantMap{
             {QStringLiteral("id"), BackendId(PhysicsBackend::Hip)},
             {QStringLiteral("label"), QStringLiteral("HIP")},
             {QStringLiteral("description"),
              QStringLiteral("HIP Compute for Stadium on compatible GPUs")}});
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    options.push_back(QVariantMap{
-            {QStringLiteral("id"), BackendId(PhysicsBackend::Vulkan)},
-            {QStringLiteral("label"), QStringLiteral("Vulkan")},
-            {QStringLiteral("description"),
-             QStringLiteral("Vulkan Compute for Stadium on compatible GPUs")}});
-#endif
     return options;
 }
 
 QString SearchController::simulationBackendId() const {
-    return BackendId(simulationBackend_);
+    return gpusChosen() ? QString::fromLatin1(kGpusBackendId) : BackendId(simulationBackend_);
 }
 
 QString SearchController::simulationHorizonMs() const {
@@ -583,10 +627,6 @@ QString SearchController::hipParallelSampleCount() const {
     return hipParallelSampleCount_;
 }
 
-QString SearchController::vulkanParallelSampleCount() const {
-    return vulkanParallelSampleCount_;
-}
-
 bool SearchController::cudaCalibrationEnabled() const {
     return cudaCalibrationEnabled_;
 }
@@ -595,27 +635,13 @@ bool SearchController::hipCalibrationEnabled() const {
     return hipCalibrationEnabled_;
 }
 
-bool SearchController::vulkanCalibrationEnabled() const {
-    return vulkanCalibrationEnabled_;
-}
-
-bool SearchController::cudaSessionSpecializationEnabled() const {
-    return cudaSessionSpecializationEnabled_;
-}
-
 bool SearchController::approximatePhysics() const {
     return approximatePhysics_;
 }
 
 bool SearchController::approximatePhysicsAvailable() const {
-    // The twin's GPU engine is built for CUDA, or for HIP in builds without CUDA.
-#if FOREVERVALIDATOR_HAS_CUDA && FOREVERVALIDATOR_HAS_TWIN
-    return cudaAvailable_;
-#elif FOREVERVALIDATOR_HAS_HIP && FOREVERVALIDATOR_HAS_TWIN
-    return hipAvailable_;
-#else
-    return false;
-#endif
+    // the twin's GPU engine is in the CUDA module, or the HIP one
+    return cudaApproximate_ || hipApproximate_;
 }
 
 bool SearchController::approximatePhysicsCpuAvailable() const {
@@ -626,9 +652,13 @@ bool SearchController::approximatePhysicsCpuAvailable() const {
 #endif
 }
 
-QString SearchController::approximatePhysicsBackendId() const {
-    const std::string_view id = ApproximatePhysicsBackendId();
-    return QString::fromLatin1(id.data(), static_cast<qsizetype>(id.size()));
+bool SearchController::approximatePhysicsOnGpu() const {
+    if (gpusChosen()) {
+        return (cudaCardEnabled_ || hipCardEnabled_) && (!cudaCardEnabled_ || cudaApproximate_) &&
+                (!hipCardEnabled_ || hipApproximate_);
+    }
+    return (simulationBackend_ == PhysicsBackend::Cuda && cudaApproximate_) ||
+            (simulationBackend_ == PhysicsBackend::Hip && hipApproximate_);
 }
 
 bool SearchController::cudaAvailable() const {
@@ -639,24 +669,12 @@ bool SearchController::hipAvailable() const {
     return hipAvailable_;
 }
 
-bool SearchController::vulkanAvailable() const {
-    return vulkanAvailable_;
-}
-
-bool SearchController::cudaFastModeAvailable() const {
-    return cudaFastModeAvailable_;
-}
-
 QString SearchController::cudaStatusText() const {
     return cudaStatusText_;
 }
 
 QString SearchController::hipStatusText() const {
     return hipStatusText_;
-}
-
-QString SearchController::vulkanStatusText() const {
-    return vulkanStatusText_;
 }
 
 bool SearchController::randomizeSeedsOnStart() const {
@@ -821,7 +839,7 @@ void SearchController::evaluateBase() {
     emit baseEvaluationChanged();
     emit canStartChanged();
     emit replayInputStateChanged();
-    thread->setStackSize(kSearchThreadStackBytes);
+    thread->setStackSize(static_cast<uint>(kSearchThreadStackBytes));
     thread->start();
 }
 
@@ -1018,15 +1036,28 @@ void SearchController::setSearchAlgorithmId(const QString &value) {
 }
 
 void SearchController::setSimulationBackendId(const QString &value) {
-    const std::optional<PhysicsBackend> parsed =
-            ParsePhysicsBackend(value.toStdString());
-    if (!parsed || simulationBackend_ == *parsed) {
+    if (value == QLatin1String(kGpusBackendId)) {
+        if (!multipleGpus() || gpusChosen()) return;
+        setGpusChosen(true);
+        diagnostics::Log("settings: physics backend %s", qUtf8Printable(value));
+        persist(kSimulationBackendKey, value);
+        emit simulationBackendIdChanged();
+        emit gpuCardsChanged();
+        refreshValidation();
         return;
     }
+    const std::optional<PhysicsBackend> parsed =
+            ParsePhysicsBackend(value.toStdString());
+    if (!parsed || (!gpusChosen() && simulationBackend_ == *parsed) ||
+        !ComputeModules::Instance().Has(*parsed)) {
+        return;
+    }
+    gpusMode_ = false;
     simulationBackend_ = *parsed;
     diagnostics::Log("settings: physics backend %s", qUtf8Printable(value));
     persist(kSimulationBackendKey, BackendId(simulationBackend_));
     emit simulationBackendIdChanged();
+    emit gpuCardsChanged();
     refreshValidation();
 }
 
@@ -1089,16 +1120,6 @@ void SearchController::setHipParallelSampleCount(const QString &value) {
     refreshValidation();
 }
 
-void SearchController::setVulkanParallelSampleCount(const QString &value) {
-    if (vulkanParallelSampleCount_ == value) {
-        return;
-    }
-    vulkanParallelSampleCount_ = value;
-    persist(kVulkanParallelSampleCountKey, value);
-    emit vulkanParallelSampleCountChanged();
-    refreshValidation();
-}
-
 void SearchController::setCudaCalibrationEnabled(bool value) {
     if (cudaCalibrationEnabled_ == value) {
         return;
@@ -1119,27 +1140,6 @@ void SearchController::setHipCalibrationEnabled(bool value) {
             QLatin1String(kHipCalibrationEnabledKey), value);
     emit hipCalibrationEnabledChanged();
     refreshValidation();
-}
-
-void SearchController::setVulkanCalibrationEnabled(bool value) {
-    if (vulkanCalibrationEnabled_ == value) {
-        return;
-    }
-    vulkanCalibrationEnabled_ = value;
-    AppSettings::Instance().setValue(
-            QLatin1String(kVulkanCalibrationEnabledKey), value);
-    emit vulkanCalibrationEnabledChanged();
-    refreshValidation();
-}
-
-void SearchController::setCudaSessionSpecializationEnabled(bool value) {
-    if (cudaSessionSpecializationEnabled_ == value) {
-        return;
-    }
-    cudaSessionSpecializationEnabled_ = value;
-    AppSettings::Instance().setValue(
-            QLatin1String(kCudaSessionSpecializationEnabledKey), value);
-    emit cudaSessionSpecializationEnabledChanged();
 }
 
 void SearchController::setApproximatePhysics(bool value) {
@@ -1765,14 +1765,15 @@ void SearchController::startSearch() {
     }
     restartPolicy.randomizeSeeds = randomizeSeedsOnStart_;
     QThread *const thread = new QThread(this);
-    thread->setStackSize(kSearchThreadStackBytes);
+    thread->setStackSize(static_cast<uint>(kSearchThreadStackBytes));
     SearchWorker *const worker = new SearchWorker(
             *validation.request,
             ++searchSerial_,
             stopRequested_,
             cancellationRequested_,
             iterationPhase_,
-            restartPolicy);
+            restartPolicy,
+            validation.devices);
     worker->moveToThread(thread);
     workerThread_ = thread;
 
@@ -1814,9 +1815,7 @@ void SearchController::startSearch() {
             this,
             [this](std::uint32_t batchSize) {
                 diagnostics::Log("search: batch size %u", batchSize);
-                if (PhysicsBackendId(simulationBackend_) == "vulkan") {
-                    setVulkanParallelSampleCount(QString::number(batchSize));
-                } else if (PhysicsBackendId(simulationBackend_) == "hip") {
+                if (PhysicsBackendId(simulationBackend_) == "hip") {
                     setHipParallelSampleCount(QString::number(batchSize));
                 } else {
                     setCudaParallelSampleCount(QString::number(batchSize));
@@ -2017,23 +2016,7 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     }
     const SearchComponentConfiguration &configuration =
             *configurationValidation.configuration;
-#if FOREVERVALIDATOR_HAS_VULKAN
-    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Vulkan &&
-        configuration.evaluationTarget.id == kCheckpointTimeEvaluationId) {
-        return {{}, QStringLiteral(
-                "Checkpoint time runs on the CPU, CUDA or HIP. Choose Optimized CPU, "
-                "CUDA or HIP as the physics backend.")};
-    }
-#endif
     if (!baselineOnly && IsGpuBackend(simulationBackend_)) {
-#if FOREVERVALIDATOR_HAS_VULKAN
-        if (simulationBackend_ == PhysicsBackend::Vulkan &&
-            (configuration.searchAlgorithm.id == kTreeSearchId ||
-             configuration.searchAlgorithm.id == kAdaptiveEscalationSearchId)) {
-            return {{}, QStringLiteral(
-                    "Tree search and adaptive escalation require CPU, CUDA, or HIP.")};
-        }
-#endif
         const SearchAlgorithmRegistration *const searchRegistration =
                 FindSearchAlgorithm(configuration.searchAlgorithm.id);
         if (searchRegistration != nullptr &&
@@ -2093,82 +2076,26 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
         }
         parallelSampleCount = value;
     }
-#if FOREVERVALIDATOR_HAS_CUDA
-    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Cuda) {
-        if (!cudaAvailable_) {
-            return {{}, cudaStatusText_};
+    std::vector<SearchDevice> devices;
+    if (!baselineOnly && IsGpuBackend(simulationBackend_)) {
+        if (gpusChosen() && !cudaCardEnabled_ && !hipCardEnabled_) {
+            return {{}, QStringLiteral("Tick at least one graphics card.")};
         }
-        calibrateCudaParallelSampleCount =
-                cudaCalibrationEnabled_;
-        if (!calibrateCudaParallelSampleCount) {
-            bool parsed = false;
-            const QString trimmed =
-                    cudaParallelSampleCount_.trimmed();
-            const uint value = trimmed.toUInt(&parsed);
-            if (!parsed ||
-                trimmed != cudaParallelSampleCount_ ||
-                value == 0u) {
-                return {
-                        {},
-                        QStringLiteral(
-                                "CUDA parallel samples must be a positive "
-                                "whole number.")};
+        for (const PhysicsBackend backend : {PhysicsBackend::Cuda, PhysicsBackend::Hip}) {
+            const bool used = gpusChosen() ? (backend == PhysicsBackend::Cuda ? cudaCardEnabled_ : hipCardEnabled_)
+                                           : backend == simulationBackend_;
+            if (!used) continue;
+            SearchDevice device;
+            if (const QString error = deviceSettings(backend, &device); !error.isEmpty()) {
+                return {{}, error};
             }
-            parallelSampleCount = value;
+            devices.push_back(device);
         }
+        // the first device runs the request, the others join it
+        parallelSampleCount = devices.front().parallelSampleCount;
+        calibrateCudaParallelSampleCount = devices.front().calibrate;
+        if (devices.size() < 2u) devices.clear();
     }
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
-    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Hip) {
-        if (!hipAvailable_) {
-            return {{}, hipStatusText_};
-        }
-        calibrateCudaParallelSampleCount = hipCalibrationEnabled_;
-        if (!calibrateCudaParallelSampleCount) {
-            bool parsed = false;
-            const QString trimmed = hipParallelSampleCount_.trimmed();
-            const uint value = trimmed.toUInt(&parsed);
-            if (!parsed || trimmed != hipParallelSampleCount_ || value == 0u) {
-                return {{}, QStringLiteral(
-                        "HIP parallel samples must be a positive whole number.")};
-            }
-            parallelSampleCount = value;
-        }
-    }
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Vulkan) {
-        if (!vulkanAvailable_) {
-            return {{}, vulkanStatusText_};
-        }
-        if (configuration.evaluationTarget.id ==
-            kCustomVolumeEntryEvaluationId) {
-            return {
-                    {},
-                    QStringLiteral(
-                            "Custom volume targets require a CPU, CUDA or HIP "
-                            "physics backend.")};
-        }
-        calibrateCudaParallelSampleCount =
-                vulkanCalibrationEnabled_;
-        if (!calibrateCudaParallelSampleCount) {
-            bool parsed = false;
-            const QString trimmed =
-                    vulkanParallelSampleCount_.trimmed();
-            const uint value = trimmed.toUInt(&parsed);
-            if (!parsed ||
-                trimmed != vulkanParallelSampleCount_ ||
-                value == 0u) {
-                return {
-                        {},
-                        QStringLiteral(
-                                "Vulkan parallel samples must be a positive "
-                                "whole number.")};
-            }
-            parallelSampleCount = value;
-        }
-    }
-#endif
 
     // Approximate physics: the twin on the GPU, or on every multi-threaded CPU
     // worker but the one that rebuilds.
@@ -2176,9 +2103,7 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
             simulationBackend_ == PhysicsBackend::MultiThreadedCpu &&
             parallelSampleCount >= 2u;
     const bool approximate = !baselineOnly && approximatePhysics_ &&
-            ((approximatePhysicsAvailable() &&
-              PhysicsBackendId(simulationBackend_) == ApproximatePhysicsBackendId()) ||
-             approximateOnCpu);
+            (approximatePhysicsOnGpu() || approximateOnCpu);
     SearchRequest request{
             packsInfo.absoluteFilePath().toUtf8().toStdString(),
             replayInfo.absoluteFilePath().toUtf8().toStdString()};
@@ -2191,12 +2116,29 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     request.modifiers = configuration.modifiers;
     request.evaluationTarget = configuration.evaluationTarget;
     request.baseInputCommands = parsedBaseInputCommands_;
-    request.useCudaSessionSpecialization =
-            PhysicsBackendId(simulationBackend_) == "cuda" &&
-            cudaSessionSpecializationEnabled_ && cudaFastModeAvailable_;
     request.simulationHorizonMs = simulationHorizonMs;
     request.condition = std::move(condition.program);
-    return {std::move(request), {}};
+    return {std::move(request), {}, std::move(devices)};
+}
+
+QString SearchController::deviceSettings(PhysicsBackend backend, SearchDevice *device) const {
+    const bool cuda = backend == PhysicsBackend::Cuda;
+    if (!(cuda ? cudaAvailable_ : hipAvailable_)) return cuda ? cudaStatusText_ : hipStatusText_;
+    device->backend = backend;
+    device->calibrate = cuda ? cudaCalibrationEnabled_ : hipCalibrationEnabled_;
+    device->parallelSampleCount = 1u;
+    if (!device->calibrate) {
+        const QString &text = cuda ? cudaParallelSampleCount_ : hipParallelSampleCount_;
+        bool parsed = false;
+        const QString trimmed = text.trimmed();
+        const uint value = trimmed.toUInt(&parsed);
+        if (!parsed || trimmed != text || value == 0u) {
+            return cuda ? QStringLiteral("CUDA parallel samples must be a positive whole number.")
+                        : QStringLiteral("HIP parallel samples must be a positive whole number.");
+        }
+        device->parallelSampleCount = value;
+    }
+    return {};
 }
 
 double SearchController::evaluationStartMs() const {

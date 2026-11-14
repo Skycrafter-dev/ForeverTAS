@@ -10,30 +10,65 @@ project(ForeverTAS
     HOMEPAGE_URL "https://github.com/Skycrafter-dev/ForeverTAS"
     LANGUAGES CXX)
 
-option(FOREVERTAS_ENABLE_VULKAN
-    "Build ForeverTAS with the optional ForeverValidator Vulkan backend" ON)
 option(FOREVERTAS_ENABLE_CUDA
     "Build ForeverTAS with the optional ForeverValidator CUDA backend" OFF)
 option(FOREVERTAS_ENABLE_HIP
     "Build ForeverTAS with the optional ForeverValidator HIP backend" OFF)
 option(FOREVERTAS_ENABLE_TWIN
     "Build ForeverTAS with ForeverValidator's twin engine (Approximate physics: CPU threads, CUDA or HIP)" OFF)
+# A GPU module (cuda or hip): only the search core with that backend, as a
+# library the app loads at run time; no Qt, no app. See src/compute.
+set(FOREVERTAS_COMPUTE_MODULE "" CACHE STRING "Build only a GPU module: cuda or hip")
+if(FOREVERTAS_COMPUTE_MODULE STREQUAL "cuda")
+    set(FOREVERTAS_ENABLE_CUDA ON CACHE BOOL "" FORCE)
+    set(FOREVERTAS_ENABLE_HIP OFF CACHE BOOL "" FORCE)
+elseif(FOREVERTAS_COMPUTE_MODULE STREQUAL "hip")
+    set(FOREVERTAS_ENABLE_CUDA OFF CACHE BOOL "" FORCE)
+    set(FOREVERTAS_ENABLE_HIP ON CACHE BOOL "" FORCE)
+elseif(FOREVERTAS_COMPUTE_MODULE)
+    message(FATAL_ERROR "FOREVERTAS_COMPUTE_MODULE must be cuda or hip")
+endif()
+if(FOREVERTAS_COMPUTE_MODULE)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    # every GPU generation of a file at once (one module carries them all
+    # until it is split per generation)
+    if(FOREVERTAS_COMPUTE_MODULE STREQUAL "cuda")
+        # ptxas takes up to ~3.7 GB per generation on the twin's kernels:
+        # nvcc runs as many generations side by side as fit in ~5 GB each of
+        # the computer's memory (the rest is the computer's; all cores when
+        # it can: --threads=0), and ninja one CUDA file at a time
+        set(FOREVERTAS_CUDA_GENERATIONS_AT_ONCE "" CACHE STRING
+            "GPU generations nvcc compiles side by side (0: one per core; empty: from the memory)")
+        set(cuda_threads "${FOREVERTAS_CUDA_GENERATIONS_AT_ONCE}")
+        if(cuda_threads STREQUAL "")
+            cmake_host_system_information(RESULT memory_mb QUERY TOTAL_PHYSICAL_MEMORY)
+            cmake_host_system_information(RESULT cores QUERY NUMBER_OF_LOGICAL_CORES)
+            math(EXPR cuda_threads "${memory_mb} / 5120")
+            if(cuda_threads LESS 1)
+                set(cuda_threads 1)
+            elseif(cuda_threads GREATER_EQUAL cores)
+                set(cuda_threads 0)
+            endif()
+        endif()
+        set(FOREVERTAS_CUDA_FILES_AT_ONCE 1 CACHE STRING
+            "CUDA files compiled at the same time")
+        string(APPEND CMAKE_CUDA_FLAGS " --threads=${cuda_threads} --compress-mode=size")
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        set(CMAKE_CUDA_COMPILER_LAUNCHER
+            "${Python3_EXECUTABLE};${CMAKE_CURRENT_SOURCE_DIR}/cmake/compile_slots.py;${CMAKE_BINARY_DIR}/cuda-slots;${FOREVERTAS_CUDA_FILES_AT_ONCE};${CMAKE_CUDA_COMPILER_LAUNCHER}")
+    endif()
+endif()
 option(FOREVERTAS_QML_MODULE_EXTERNAL
     "Use the release's shared QML module instead of building it here" OFF)
 set(FOREVERTAS_COMMON_QML_DIR "" CACHE PATH
     "Directory containing the shared ForeverTAS QML module")
 set(FOREVERTAS_PREBUILT_VALIDATOR_DIR "" CACHE PATH
     "Directory containing a verified, matching Windows Validator build")
-set(FOREVERTAS_DISTRIBUTION_FLAVOR "" CACHE STRING
-    "Public package flavor: universal, nvidia-smNN, or amd-rx7000-rx9000")
 set(FOREVERTAS_WINDOWS_RUNTIME_DIR "" CACHE PATH
     "Directory containing non-Qt runtime DLLs for Windows packaging")
 set(FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR "" CACHE PATH
     "Directory containing redistributable MSVC runtime DLLs")
-set(FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR "" CACHE PATH
-    "Directory containing redistributable CUDA runtime DLLs")
-set(FOREVERTAS_WINDOWS_HIP_RUNTIME_DIR "" CACHE PATH
-    "Directory containing redistributable HIP runtime DLLs")
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -50,6 +85,7 @@ include(CTest)
 include(GNUInstallDirs)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(ZLIB REQUIRED)
+if(NOT FOREVERTAS_COMPUTE_MODULE)
 find_package(SDL3 3.2 QUIET CONFIG)
 if(NOT SDL3_FOUND)
     set(SDL_SHARED OFF CACHE BOOL "Build bundled SDL statically")
@@ -57,6 +93,8 @@ if(NOT SDL3_FOUND)
     set(SDL_TESTS OFF CACHE BOOL "Disable SDL tests")
     set(SDL_EXAMPLES OFF CACHE BOOL "Disable SDL examples")
     set(SDL_INSTALL OFF CACHE BOOL "Install only the app's SDL notice")
+    # no precompiled header: ccache and sccache cannot keep files built with one
+    set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
     FetchContent_Declare(SDL3
         GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
         GIT_TAG f5e5f6588921eed3d7d048ce43d9eb1ff0da0ffc)
@@ -95,6 +133,7 @@ if(BUILD_TESTING)
 endif()
 qt_standard_project_setup(REQUIRES 6.5)
 qt_policy(SET QTP0004 NEW)
+endif()
 
 set(FOREVERVALIDATOR_BUILD_CLI OFF CACHE BOOL
     "Do not build the embedded ForeverValidator CLI" FORCE)
@@ -104,7 +143,8 @@ set(FOREVERVALIDATOR_ENABLE_CUDA ${FOREVERTAS_ENABLE_CUDA} CACHE BOOL
     "Enable the embedded ForeverValidator CUDA backend" FORCE)
 set(FOREVERVALIDATOR_ENABLE_HIP ${FOREVERTAS_ENABLE_HIP} CACHE BOOL
     "Enable the embedded ForeverValidator HIP backend" FORCE)
-set(FOREVERVALIDATOR_ENABLE_VULKAN ${FOREVERTAS_ENABLE_VULKAN} CACHE BOOL
+# ForeverValidator's Vulkan backend is not used by ForeverTAS.
+set(FOREVERVALIDATOR_ENABLE_VULKAN OFF CACHE BOOL
     "Enable the embedded ForeverValidator Vulkan backend" FORCE)
 # The twin runs on CPU threads in every build, and on the GPU with CUDA or HIP.
 set(FOREVERVALIDATOR_BUILD_TWIN ${FOREVERTAS_ENABLE_TWIN} CACHE BOOL
@@ -154,17 +194,10 @@ if(FOREVERTAS_PREBUILT_VALIDATOR_DIR)
     set_target_properties(forevervalidator_native PROPERTIES
         INTERFACE_LINK_LIBRARIES forevervalidator_core)
     set(validator_libraries OpenSSL::Crypto ZLIB::ZLIB)
-    if(FOREVERTAS_ENABLE_VULKAN)
-        find_package(Vulkan 1.2 REQUIRED)
-        list(APPEND validator_libraries Vulkan::Vulkan)
-    endif()
     if(FOREVERTAS_ENABLE_CUDA OR
             (FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "nvidia"))
         find_package(CUDAToolkit REQUIRED)
         list(APPEND validator_libraries CUDA::cudart)
-        if(FOREVERTAS_ENABLE_CUDA)
-            list(APPEND validator_libraries CUDA::nvrtc CUDA::nvJitLink)
-        endif()
     endif()
     if(FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
         file(TO_CMAKE_PATH "$ENV{HIP_PATH}/lib/amdhip64.lib" hip_runtime_library)
@@ -176,7 +209,7 @@ if(FOREVERTAS_PREBUILT_VALIDATOR_DIR)
     set_target_properties(forevervalidator_core PROPERTIES
         INTERFACE_LINK_LIBRARIES "${validator_libraries}"
         INTERFACE_COMPILE_DEFINITIONS
-            "FOREVERVALIDATOR_HAS_CUDA=$<BOOL:${FOREVERTAS_ENABLE_CUDA}>;FOREVERVALIDATOR_HAS_HIP=$<BOOL:${FOREVERTAS_ENABLE_HIP}>;FOREVERVALIDATOR_HAS_VULKAN=$<BOOL:${FOREVERTAS_ENABLE_VULKAN}>")
+            "FOREVERVALIDATOR_HAS_CUDA=$<BOOL:${FOREVERTAS_ENABLE_CUDA}>;FOREVERVALIDATOR_HAS_HIP=$<BOOL:${FOREVERTAS_ENABLE_HIP}>;FOREVERVALIDATOR_HAS_VULKAN=0")
     if(FOREVERTAS_ENABLE_HIP)
         find_path(FOREVERVALIDATOR_HIP_INCLUDE_DIR hip/hip_runtime.h
             HINTS "$ENV{HIP_PATH}/include" "$ENV{ROCM_PATH}/include" REQUIRED)
@@ -195,7 +228,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG f83da1961653afd7bb9ac4589b4c02f955b920c2
+        GIT_TAG 68d3c238da2a93a25583dda2896bc66e1f8980ad
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -279,6 +312,9 @@ add_library(forevertas_core STATIC
     src/searches/cuda_search_configuration.cpp
     src/searches/cuda_search_configuration.h
     src/searches/search_runner.cpp
+    src/compute/compute_local.cpp
+    src/compute/compute_local.h
+    src/compute/compute_module_api.h
     src/diagnostics/diagnostics_log.cpp
     src/diagnostics/diagnostics_log.h
     src/searches/result_input_script.h
@@ -303,6 +339,12 @@ if(FOREVERTAS_ENABLE_HIP)
             __HIP_PLATFORM_AMD__=1)
     endif()
 endif()
+
+if(FOREVERTAS_COMPUTE_MODULE)
+    include(cmake/ComputeModule.cmake)
+    return()
+endif()
+include(cmake/ComputeAbi.cmake)
 
 add_library(forevertas_gui STATIC
     src/app/compact_number_format.cpp
@@ -365,6 +407,12 @@ add_library(forevertas_gui STATIC
     src/app/input_preview_binding.cpp
     src/app/input_preview_binding.h
     src/app/search_controller.cpp
+    src/app/compute_modules.cpp
+    src/app/compute_modules.h
+    src/app/compute_archive.cpp
+    src/app/compute_archive.h
+    src/app/compute_check.cpp
+    src/app/compute_check.h
     src/app/search_controller.h
     src/app/app_settings.cpp
     src/app/app_settings.h
@@ -379,6 +427,13 @@ add_library(forevertas_gui STATIC
     src/app/rolling_throughput.h
     src/app/search_worker.cpp
     src/app/search_worker.h)
+target_include_directories(forevertas_gui PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_dependencies(forevertas_gui forevertas_compute_abi)
+# GPU modules arrive as .tar.zst
+find_path(FOREVERTAS_ZSTD_INCLUDE_DIR zstd.h REQUIRED)
+find_library(FOREVERTAS_ZSTD_LIBRARY NAMES zstd libzstd REQUIRED)
+target_include_directories(forevertas_gui PRIVATE "${FOREVERTAS_ZSTD_INCLUDE_DIR}")
+target_link_libraries(forevertas_gui PUBLIC "${FOREVERTAS_ZSTD_LIBRARY}")
 target_sources(forevertas_gui PRIVATE src/viewer/gamepad_input.cpp src/viewer/gamepad_input.h)
 target_link_libraries(forevertas_gui PUBLIC SDL3::SDL3)
 
@@ -444,10 +499,10 @@ file(GLOB_RECURSE FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES
     "${forevervalidator_SOURCE_DIR}/src/validation/planning/*.cpp"
     "${forevervalidator_SOURCE_DIR}/src/platform/native/*.cpp")
 # The debugger executes the reference/native engine and deliberately does not
-# link CUDA. Driver dispatch and session specialization are CUDA host-side
-# facilities, not part of the editable reference simulation path.
+# link CUDA. Driver dispatch is a CUDA host-side facility, not part of the
+# editable reference simulation path.
 list(FILTER FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES EXCLUDE REGEX
-    "/src/simulation/backends/cuda/(cuda_driver_shim|cuda_session_specialization)\.cpp$")
+    "/src/simulation/backends/cuda/cuda_driver_shim\.cpp$")
 list(FILTER FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES EXCLUDE REGEX
     "/src/simulation/backends/hip/.*\.cpp$")
 add_executable(forevertas-simulation-debug-worker
@@ -548,7 +603,8 @@ qt_add_executable(forevertas
     src/app/update_hardware.h
     src/app/update_release.cpp
     src/app/update_release.h)
-add_dependencies(forevertas forevertas-simulation-debug-worker)
+add_dependencies(forevertas forevertas-simulation-debug-worker forevertas_compute_abi)
+target_include_directories(forevertas PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 set(forevertas_icon_svg
     "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/${FOREVERTAS_APP_ID}.svg")
@@ -801,59 +857,13 @@ if(WIN32)
         "${FOREVERTAS_WINDOWS_RUNTIME_DIR}/z.dll"
         "${FOREVERTAS_WINDOWS_RUNTIME_DIR}/zlib.dll"
         "${FOREVERTAS_WINDOWS_RUNTIME_DIR}/zlib1.dll")
+    # GPU modules arrive as .tar.zst
+    file(GLOB forevertas_zstd_runtime_dlls
+        LIST_DIRECTORIES FALSE
+        "${FOREVERTAS_WINDOWS_RUNTIME_DIR}/zstd.dll")
     file(GLOB forevertas_msvc_runtime_dlls
         LIST_DIRECTORIES FALSE
         "${FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR}/*.dll")
-    if(FOREVERTAS_ENABLE_CUDA)
-        if(NOT FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR
-                AND CMAKE_CUDA_COMPILER)
-            get_filename_component(FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR
-                "${CMAKE_CUDA_COMPILER}" DIRECTORY)
-        endif()
-        if(NOT IS_DIRECTORY "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}")
-            message(FATAL_ERROR
-                "FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR must point to the "
-                "CUDA toolkit bin directory")
-        endif()
-        file(GLOB forevertas_cudart_runtime_dlls
-            LIST_DIRECTORIES FALSE
-            "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}/cudart64_*.dll")
-        file(GLOB forevertas_nvrtc_runtime_dlls
-            LIST_DIRECTORIES FALSE
-            "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}/nvrtc64_120_0.dll")
-        file(GLOB forevertas_nvrtc_builtins_runtime_dlls
-            LIST_DIRECTORIES FALSE
-            "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}/nvrtc-builtins64_*.dll")
-        file(GLOB forevertas_nvjitlink_runtime_dlls
-            LIST_DIRECTORIES FALSE
-            "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}/nvJitLink_*.dll")
-        foreach(forevertas_cuda_runtime_component IN ITEMS
-                cudart nvrtc nvrtc_builtins nvjitlink)
-            list(LENGTH
-                forevertas_${forevertas_cuda_runtime_component}_runtime_dlls
-                forevertas_${forevertas_cuda_runtime_component}_runtime_dll_count)
-            if(NOT forevertas_${forevertas_cuda_runtime_component}_runtime_dll_count EQUAL 1)
-                message(FATAL_ERROR
-                    "Expected exactly one ${forevertas_cuda_runtime_component} "
-                    "runtime DLL in ${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}; "
-                    "found ${forevertas_${forevertas_cuda_runtime_component}_runtime_dll_count}")
-            endif()
-        endforeach()
-        set(forevertas_cuda_runtime_dlls
-            ${forevertas_cudart_runtime_dlls}
-            ${forevertas_nvrtc_runtime_dlls}
-            ${forevertas_nvrtc_builtins_runtime_dlls}
-            ${forevertas_nvjitlink_runtime_dlls})
-    endif()
-    if(FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
-        find_file(forevertas_hip_runtime_dll
-            NAMES amdhip64_7.dll amdhip64_6.dll amdhip64.dll
-            HINTS "${FOREVERTAS_WINDOWS_HIP_RUNTIME_DIR}"
-                  "$ENV{HIP_PATH}/bin"
-                  "$ENV{ROCM_PATH}/bin"
-            REQUIRED)
-        install(FILES "${forevertas_hip_runtime_dll}" DESTINATION ".")
-    endif()
     list(LENGTH forevertas_openssl_runtime_dlls
         forevertas_openssl_runtime_dll_count)
     list(LENGTH forevertas_zlib_runtime_dlls
@@ -873,18 +883,11 @@ if(WIN32)
             "No redistributable MSVC runtime DLLs found in "
             "${FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR}")
     endif()
-    if(FOREVERTAS_ENABLE_VULKAN)
-        find_file(forevertas_vulkan_runtime_dll
-            NAMES vulkan-1.dll
-            HINTS "${FOREVERTAS_WINDOWS_RUNTIME_DIR}" "$ENV{VULKAN_SDK}/Bin"
-            NO_DEFAULT_PATH REQUIRED)
-        install(FILES "${forevertas_vulkan_runtime_dll}" DESTINATION ".")
-    endif()
     install(FILES
         ${forevertas_openssl_runtime_dlls}
         ${forevertas_zlib_runtime_dlls}
+        ${forevertas_zstd_runtime_dlls}
         ${forevertas_msvc_runtime_dlls}
-        ${forevertas_cuda_runtime_dlls}
         DESTINATION ".")
 endif()
 
@@ -905,6 +908,14 @@ if(EXISTS "${forevervalidator_SOURCE_DIR}/LICENSE")
     install(FILES "${forevervalidator_SOURCE_DIR}/LICENSE"
         DESTINATION "${forevertas_license_destination}"
         RENAME ForeverValidator-LICENSE.txt)
+endif()
+# The licenses of the extra files a release ships (its In-game render module's
+# libraries). Plain builds have none.
+set(FOREVERTAS_EXTRA_LICENSE_FILES "" CACHE STRING
+    "License files installed with the app's, under render-module (a list)")
+if(FOREVERTAS_EXTRA_LICENSE_FILES)
+    install(FILES ${FOREVERTAS_EXTRA_LICENSE_FILES}
+        DESTINATION "${forevertas_license_destination}/render-module")
 endif()
 
 if(UNIX)
@@ -934,63 +945,13 @@ else()
     set(CPACK_GENERATOR "TGZ")
 endif()
 
-if(FOREVERTAS_DISTRIBUTION_FLAVOR)
-    if(FOREVERTAS_DISTRIBUTION_FLAVOR STREQUAL "universal")
-        if(FOREVERTAS_ENABLE_CUDA OR FOREVERTAS_ENABLE_HIP OR
-           NOT FOREVERTAS_ENABLE_VULKAN)
-            message(FATAL_ERROR "Universal packages require Vulkan without CUDA or HIP")
-        endif()
-    elseif(FOREVERTAS_DISTRIBUTION_FLAVOR MATCHES
-           "^nvidia-sm(50|52|53|60|61|62|70|72|75|80|86|87|89|90|100|101|120)$")
-        set(forevertas_package_sm "${CMAKE_MATCH_1}")
-        if(NOT FOREVERTAS_ENABLE_CUDA OR NOT FOREVERTAS_ENABLE_HIP OR
-           NOT FOREVERTAS_ENABLE_VULKAN OR
-           NOT CMAKE_HIP_PLATFORM STREQUAL "nvidia")
-            message(FATAL_ERROR "NVIDIA packages require CUDA, NVIDIA HIP, and Vulkan")
-        endif()
-        if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL
-               "${forevertas_package_sm}-real;${forevertas_package_sm}-virtual" OR
-           NOT CMAKE_HIP_ARCHITECTURES STREQUAL "${forevertas_package_sm}")
-            message(FATAL_ERROR "NVIDIA package must contain only its named SM target")
-        endif()
-    elseif(FOREVERTAS_DISTRIBUTION_FLAVOR STREQUAL "amd-rx7000-rx9000")
-        if(FOREVERTAS_ENABLE_CUDA OR NOT FOREVERTAS_ENABLE_HIP OR
-           NOT FOREVERTAS_ENABLE_VULKAN OR
-           NOT CMAKE_HIP_PLATFORM STREQUAL "amd")
-            message(FATAL_ERROR "AMD packages require AMD HIP and Vulkan without CUDA")
-        endif()
-        if(NOT CMAKE_HIP_ARCHITECTURES STREQUAL
-               "gfx1100;gfx1101;gfx1102;gfx1200;gfx1201")
-            message(FATAL_ERROR "AMD package must contain the RX 7000/9000 gfx targets")
-        endif()
-    else()
-        message(FATAL_ERROR "Unknown ForeverTAS distribution flavor")
-    endif()
-    set(forevertas_package_id "${FOREVERTAS_DISTRIBUTION_FLAVOR}")
-    set(forevertas_update_asset_parts
-        "${forevertas_package_platform};${forevertas_package_id}")
-else()
-    set(forevertas_package_id "legacy")
-    set(forevertas_update_asset_parts "${forevertas_package_platform}")
-    if(FOREVERTAS_ENABLE_CUDA)
-        list(APPEND forevertas_update_asset_parts "cuda")
-    endif()
-    if(FOREVERTAS_ENABLE_VULKAN)
-        list(APPEND forevertas_update_asset_parts "vulkan")
-    endif()
-    if(FOREVERTAS_ENABLE_HIP)
-        if(NOT CMAKE_HIP_PLATFORM MATCHES "^(amd|nvidia)$")
-            message(FATAL_ERROR "HIP updates require an AMD or NVIDIA HIP platform")
-        endif()
-        list(APPEND forevertas_update_asset_parts "hip-${CMAKE_HIP_PLATFORM}")
-    endif()
-endif()
+# One app per platform; its GPU code comes as a module (src/compute).
+set(forevertas_update_asset_parts "${forevertas_package_platform};universal")
 list(APPEND forevertas_update_asset_parts "${forevertas_package_arch}")
 list(JOIN forevertas_update_asset_parts "-" FOREVERTAS_UPDATE_ASSET_ID)
 set(FOREVERTAS_UPDATE_ASSET_ID "${FOREVERTAS_UPDATE_ASSET_ID}" CACHE INTERNAL
     "Platform and backend identity of public update artifacts" FORCE)
 target_compile_definitions(forevertas PRIVATE
-    FOREVERTAS_PACKAGE_ID="${forevertas_package_id}"
     FOREVERTAS_UPDATE_PLATFORM="${forevertas_package_platform}"
     FOREVERTAS_UPDATE_ARCH="${forevertas_package_arch}")
 
@@ -1024,24 +985,10 @@ if(FOREVERTAS_WARNING_OPTIONS)
 endif()
 
 if(BUILD_TESTING)
-    if(WIN32)
-        find_program(FOREVERTAS_POWERSHELL_EXECUTABLE NAMES pwsh.exe powershell.exe)
-        if(FOREVERTAS_POWERSHELL_EXECUTABLE)
-            add_test(NAME forevertas-windows-distribution-plan
-                COMMAND "${FOREVERTAS_POWERSHELL_EXECUTABLE}" -NoProfile -File
-                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows_distribution_plan.ps1")
-            add_test(NAME forevertas-windows-template-assembly
-                COMMAND "${FOREVERTAS_POWERSHELL_EXECUTABLE}" -NoProfile -File
-                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows_template_assembly.ps1")
-        endif()
-    endif()
     if(Python3_Interpreter_FOUND)
-        add_test(NAME forevertas-distribution-matrix
+        add_test(NAME forevertas-release-tools
                  COMMAND "${Python3_EXECUTABLE}"
-                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/distribution_tests.py")
-        add_test(NAME forevertas-warm-build-seed
-                 COMMAND "${Python3_EXECUTABLE}"
-                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/warm_builds_tests.py")
+                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_tools_tests.py")
     endif()
     add_executable(forevertas-update-release-tests
         src/app/update_release.cpp
@@ -1117,6 +1064,14 @@ if(BUILD_TESTING)
         target_compile_options(forevertas-debugger-tools-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
     endif()
     add_test(NAME forevertas-debugger-tools COMMAND forevertas-debugger-tools-tests)
+    add_executable(forevertas-compute-archive-tests tests/compute_archive_tests.cpp src/app/compute_archive.cpp)
+    target_include_directories(forevertas-compute-archive-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+        "${FOREVERTAS_ZSTD_INCLUDE_DIR}")
+    target_link_libraries(forevertas-compute-archive-tests PRIVATE Qt6::Core "${FOREVERTAS_ZSTD_LIBRARY}")
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-compute-archive-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-compute-archive COMMAND forevertas-compute-archive-tests)
     target_include_directories(forevertas-shutdown-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(forevertas-shutdown-tests PRIVATE Qt6::Core)
     if(FOREVERTAS_WARNING_OPTIONS)
@@ -1167,10 +1122,6 @@ if(BUILD_TESTING)
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/system_file_dialog_control.cmake)
-    add_test(NAME forevertas-release-cache-control
-             COMMAND ${CMAKE_COMMAND}
-                -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_cache_control.cmake)
     add_test(NAME forevertas-controller
              COMMAND forevertas-controller-tests)
     set_tests_properties(forevertas-controller PROPERTIES
@@ -1322,6 +1273,15 @@ if(BUILD_TESTING)
                 LABELS "cuda;calibration;parity;stadium"
                 RESOURCE_LOCK cuda
                 TIMEOUT 600)
+            add_test(NAME forevertas-gpu-pool
+                     COMMAND forevertas-cuda-search-parity
+                         --gpu-pool
+                         "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                         "${FOREVERTAS_TEST_REPLAY}")
+            set_tests_properties(forevertas-gpu-pool PROPERTIES
+                LABELS "cuda;stadium"
+                RESOURCE_LOCK cuda
+                TIMEOUT 60)
         endif()
         add_test(NAME forevertas-controller-lifecycle
                  COMMAND forevertas-controller-tests
@@ -1657,22 +1617,4 @@ if(BUILD_TESTING)
     add_executable(forevertas-gpu-backend-tests tests/gpu_backend_tests.cpp)
     target_link_libraries(forevertas-gpu-backend-tests PRIVATE forevertas_core)
     add_test(NAME forevertas-gpu-backends COMMAND forevertas-gpu-backend-tests)
-    if(FOREVERTAS_ENABLE_VULKAN AND FOREVERTAS_TEST_PACK_DIRECTORY AND
-       FOREVERTAS_TEST_REPLAY)
-        add_executable(forevertas-vulkan-search-parity
-            tests/vulkan_search_parity_tests.cpp)
-        target_link_libraries(forevertas-vulkan-search-parity PRIVATE forevertas_core)
-        add_test(NAME forevertas-vulkan-search-parity
-            COMMAND forevertas-vulkan-search-parity
-                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
-        add_test(NAME forevertas-vulkan-precise-finish-parity
-            COMMAND forevertas-vulkan-search-parity --precise-finish-only
-                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
-        add_test(NAME forevertas-vulkan-calibration
-            COMMAND forevertas-vulkan-search-parity --calibration-only
-                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
-        set_tests_properties(forevertas-vulkan-search-parity
-            forevertas-vulkan-precise-finish-parity forevertas-vulkan-calibration
-            PROPERTIES LABELS "vulkan;parity;stadium" RUN_SERIAL TRUE TIMEOUT 1200)
-    endif()
 endif()

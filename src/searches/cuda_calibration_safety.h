@@ -17,7 +17,7 @@ struct CudaCalibrationDeviceLimits {
     std::uint32_t maximumThreadsPerMultiprocessor = 0u;
     std::uint32_t maximumBlocksPerMultiprocessor = 0u;
     std::uint32_t multiprocessorCount = 0u;
-    // Preserve strict CUDA validation; Vulkan supplies memory limits only.
+    // Strict CUDA launch validation; HIP supplies memory limits only.
     bool requireCudaExecutionLimits = true;
 };
 

@@ -19,10 +19,6 @@ int main(int argc, char **argv) {
     if (argc != 3) return 2;
     using namespace forevertas;
     std::vector<PhysicsBackend> backends{PhysicsBackend::Reference, PhysicsBackend::OptimizedCpu};
-#if FOREVERVALIDATOR_HAS_VULKAN
-    if (forevervalidator::QueryVulkanBackendDiagnostics().IsSearchReady()) backends.push_back(PhysicsBackend::Vulkan);
-    else std::cout << "SKIP unavailable Vulkan device\n";
-#endif
 #if FOREVERVALIDATOR_HAS_CUDA
     if (forevervalidator::QueryCudaBackendDiagnostics().IsReady()) backends.push_back(PhysicsBackend::Cuda);
     else std::cout << "SKIP unavailable CUDA device\n";

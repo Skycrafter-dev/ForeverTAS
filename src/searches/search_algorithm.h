@@ -141,6 +141,10 @@ struct SearchRunControl {
     std::function<void()> cudaWinnerResolved;
     std::function<std::optional<std::vector<SandboxInputEvent>>()>
             promotedBaselineInputs;
+    // Several GPUs on one search: the first of the next that many candidates
+    // (a GPU claims a block of its batches at a time), so no two GPUs try the
+    // same candidate.
+    std::function<std::uint64_t(std::uint32_t)> claimIterations;
     std::optional<std::uint64_t> iterationLimit;
     std::optional<std::int64_t> evaluationEndTimeLimitMs;
     std::uint64_t iterationIndexOffset = 0u;
@@ -176,7 +180,6 @@ struct SearchExecutionContext {
     const SearchRunControl *control = nullptr;
     std::uint32_t cudaBatchSize = 1u;
     bool calibrateCudaBatchSize = false;
-    bool useCudaSessionSpecialization = false;
     const std::vector<forevervalidator::experimental::
                               PhysicsSandboxCudaModifier>
             *cudaModifiers = nullptr;

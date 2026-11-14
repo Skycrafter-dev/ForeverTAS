@@ -172,7 +172,7 @@ window. Expressions share the Conditions parser's supported car-state variables
 and functions. Each objective keeps its best value over the window; a run wins
 only when at least one objective improves and none worsen. Custom targets
 use attempt-ordered Pareto selection on serial CPU, multi-threaded CPU, CUDA,
-HIP, and Vulkan. GPU scripts support up to 16 objectives and 256 total
+and HIP. GPU scripts support up to 16 objectives and 256 total
 expression instructions; a larger script reports an explicit configuration
 error. GPU nominees are accepted only after an optimized-CPU metric check.
 Local builds need a ForeverValidator source override until the new GPU

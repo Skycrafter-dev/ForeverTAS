@@ -70,20 +70,14 @@ bool TestSearchDiagnostics() {
         {"executing GPU search batch failed: CUDA search batch failed: synchronizing CUDA search batch failed: cudaErrorLaunchTimeout (the launch timed out and was terminated)", "gpu-time-limit"},
         {"creating resident GPU search session failed: CUDA resident search allocation rejected by memory headroom or allocator limits; reduce input density or use Optimized CPU", "gpu-memory"},
         {"GPU search rejected before probe: insufficient memory headroom; reduce GPU memory use or choose Optimized CPU", "gpu-memory"},
-        {"executing GPU search batch failed: CUDA search batch failed: Vulkan memory allocation failed with VkResult -2", "gpu-memory"},
         {"creating resident GPU search session failed: CUDA search host allocation failed", "memory"},
         {"std::bad_alloc", "memory"},
         {"executing GPU search batch failed: CUDA search batch failed: CUDA search batch status: unsupported_physics_transition", "gpu-physics"},
         {"executing GPU search batch failed: CUDA search batch failed: CUDA search batch status: capacity_exceeded", "gpu-capacity"},
-        {"creating resident GPU search session failed: The optional fast CUDA kernel could not be built", "gpu-fast-kernel"},
-        {"creating resident GPU search session failed: Fast CUDA requires compute capability 7.5 or newer; regular CUDA remains available", "gpu-fast-kernel"},
         {"loading scenario into cached sandbox failed: CUDA simulation scope is unsupported", "gpu-map"},
         {"loading scenario into cached sandbox failed: sandbox simulation could not start", "gpu-unavailable"},
         {"creating resident GPU search session failed: CUDA search prerequisites are not ready", "gpu-unavailable"},
         {"executing GPU search batch failed: CUDA search batch failed: launching CUDA simulation kernel failed: cudaErrorIllegalAddress (an illegal memory access was encountered)", "gpu-error"},
-        {"executing GPU search batch failed: CUDA search batch failed: Vulkan queue submission failed with VkResult -4", "gpu-error"},
-        {"executing GPU search batch failed: CUDA search batch failed: Vulkan queue submission failed with VkResult -1000069000", "gpu-error"},
-        {"creating resident GPU search session failed: checkpoint events are not available on Vulkan", "capability"},
         {"CUDA does not support evaluator: custom-volume-entry", "capability"},
         {"creating resident GPU search session failed: Search input pipeline exceeds the 1048576-event limit; reduce input density, insertion counts or deformation radius/count", "limits"},
         {"Line 7: input script exceeds the 1048576-command limit; reduce input density.", "limits"},
@@ -1311,8 +1305,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     okay &= Check(controller.canStart(),
                   "empty base input script did not restore Start");
     constexpr qsizetype expectedBackendCount =
-            3 + FOREVERVALIDATOR_HAS_CUDA + FOREVERVALIDATOR_HAS_HIP +
-            FOREVERVALIDATOR_HAS_VULKAN;
+            3 + FOREVERVALIDATOR_HAS_CUDA + FOREVERVALIDATOR_HAS_HIP;
     okay &= Check(controller.simulationBackendOptions().size() ==
                           expectedBackendCount,
                   "unexpected physics backend count");
@@ -1405,15 +1398,11 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                           QStringLiteral("CUDA"),
                           QStringLiteral(
                                   "NVIDIA CUDA for Stadium; compute "
-                                  "capability 5.0+ is supported, with Fast "
-                                  "CUDA on 7.5+")),
+                                  "capability 5.0+")),
                   "CUDA metadata was not exposed");
     const forevervalidator::CudaBackendDiagnostics cudaDiagnostics =
             forevervalidator::QueryCudaBackendDiagnostics();
     okay &= Check(controller.cudaAvailable() == cudaDiagnostics.IsReady() &&
-                          controller.cudaFastModeAvailable() ==
-                                  cudaDiagnostics
-                                          .SupportsSessionSpecialization() &&
                           !controller.cudaStatusText().isEmpty(),
                   "CUDA compatibility status did not match runtime diagnostics");
 #endif
@@ -1433,34 +1422,12 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                           !controller.hipCalibrationEnabled(),
                   "unexpected default HIP batching settings");
 #endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    const auto vulkanDiagnostics = forevervalidator::QueryVulkanBackendDiagnostics();
-    okay &= Check(HasBackendOption(
-                          controller.simulationBackendOptions(),
-                          QStringLiteral("vulkan"), QStringLiteral("Vulkan"),
-                          QStringLiteral("Vulkan Compute for Stadium on compatible GPUs")),
-                  "Vulkan option was not exposed alongside existing backends");
-    okay &= Check(controller.vulkanAvailable() == vulkanDiagnostics.IsSearchReady() &&
-                          !controller.vulkanStatusText().isEmpty(),
-                  "Vulkan status did not match its own runtime diagnostics");
-    if (vulkanDiagnostics.IsReady() && !vulkanDiagnostics.IsSearchReady()) {
-        okay &= Check(controller.vulkanStatusText().contains(
-                              QStringLiteral("VK_KHR_shader_float_controls2")),
-                      "Vulkan search did not explain the exact FP32 requirement");
-    }
-    okay &= Check(controller.vulkanParallelSampleCount() ==
-                          QString::number(forevertas::kDefaultCudaParallelSampleCount) &&
-                          !controller.vulkanCalibrationEnabled(),
-                  "unexpected default Vulkan batching settings");
-#endif
     okay &= Check(controller.cudaParallelSampleCount() ==
                           QString::number(
                                   forevertas::kDefaultCudaParallelSampleCount),
                   "unexpected default CUDA parallel sample count");
     okay &= Check(!controller.cudaCalibrationEnabled(),
                   "CUDA calibration was unexpectedly enabled by default");
-    okay &= Check(controller.cudaSessionSpecializationEnabled(),
-                  "CUDA fast mode was not enabled by default");
     okay &= Check(controller.searchAlgorithmOptions().size() == 3,
                   "unexpected search algorithm count");
     okay &= Check(
@@ -1545,16 +1512,10 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     controller.setEvaluationTargetSetting("lap", "1");
     for (const auto &option : controller.simulationBackendOptions()) {
         const auto id = option.toMap().value("id").toString();
-        if (id != "cuda" && id != "hip" && id != "vulkan") continue;
+        if (id != "cuda" && id != "hip") continue;
         controller.setSimulationBackendId(id);
-        if (id == "cuda" || id == "hip") {
-            okay &= Check(!controller.validationMessage().contains("Checkpoint time"),
-                          "checkpoint target was rejected on CUDA/HIP");
-            continue;
-        }
-        okay &= Check(!controller.canStart() &&
-                              controller.validationMessage().contains("runs on the CPU, CUDA or HIP"),
-                      "checkpoint target was not explicitly rejected on Vulkan");
+        okay &= Check(!controller.validationMessage().contains("Checkpoint time"),
+                      "checkpoint target was rejected on CUDA/HIP");
     }
     controller.setEvaluationTargetId(QStringLiteral("custom-volume-entry-time"));
     for (const auto &option : controller.simulationBackendOptions()) {
@@ -1608,14 +1569,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
         okay &= Check(!controller.canStart(),
                       "manual CUDA mode ignored its invalid sample count");
         controller.setCudaParallelSampleCount(QStringLiteral("512"));
-        controller.setCudaSessionSpecializationEnabled(false);
-        okay &= Check(!controller.cudaSessionSpecializationEnabled() &&
-                              controller.canStart(),
-                      "regular CUDA mode was not selectable");
-        controller.setCudaSessionSpecializationEnabled(true);
-        okay &= Check(controller.cudaSessionSpecializationEnabled() &&
-                              controller.canStart(),
-                      "CUDA fast preference was not selectable");
+        okay &= Check(controller.canStart(), "a valid manual CUDA count disabled Start");
     } else {
         okay &= Check(!controller.canStart() &&
                               controller.validationMessage() ==
@@ -1627,7 +1581,6 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
 #if FOREVERVALIDATOR_HAS_HIP
     const QString savedCudaBatchForHip = controller.cudaParallelSampleCount();
     const bool savedCudaCalibrationForHip = controller.cudaCalibrationEnabled();
-    const bool savedCudaFastModeForHip = controller.cudaSessionSpecializationEnabled();
     controller.setSimulationBackendId(QStringLiteral("hip"));
     okay &= Check(controller.simulationBackendId() == QStringLiteral("hip"),
                   "HIP backend was not selectable");
@@ -1652,42 +1605,8 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
                       "unavailable HIP backend did not expose its diagnostic");
     }
     okay &= Check(controller.cudaParallelSampleCount() == savedCudaBatchForHip &&
-                          controller.cudaCalibrationEnabled() == savedCudaCalibrationForHip &&
-                          controller.cudaSessionSpecializationEnabled() == savedCudaFastModeForHip,
+                          controller.cudaCalibrationEnabled() == savedCudaCalibrationForHip,
                   "HIP configuration overwrote CUDA preferences");
-    controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    const QString savedCudaBatch = controller.cudaParallelSampleCount();
-    const bool savedCudaCalibration = controller.cudaCalibrationEnabled();
-    const bool savedCudaFastMode = controller.cudaSessionSpecializationEnabled();
-    controller.setSimulationBackendId(QStringLiteral("vulkan"));
-    okay &= Check(controller.simulationBackendId() == QStringLiteral("vulkan"),
-                  "Vulkan backend was not selectable");
-    if (controller.vulkanAvailable()) {
-        okay &= Check(controller.canStart(),
-                      "available Vulkan backend did not enable Start");
-        controller.setVulkanParallelSampleCount(QStringLiteral("0"));
-        okay &= Check(!controller.canStart(), "zero Vulkan batch enabled Start");
-        controller.setVulkanParallelSampleCount(QStringLiteral("8192"));
-        okay &= Check(controller.canStart(), "valid Vulkan batch disabled Start");
-        controller.setVulkanParallelSampleCount(QStringLiteral("4294967296"));
-        okay &= Check(!controller.canStart(), "overflow Vulkan batch enabled Start");
-        controller.setVulkanCalibrationEnabled(true);
-        okay &= Check(controller.canStart(),
-                      "Vulkan calibration depended on the manual batch size");
-        controller.setVulkanCalibrationEnabled(false);
-        okay &= Check(!controller.canStart(), "invalid manual Vulkan batch accepted");
-        controller.setVulkanParallelSampleCount(QStringLiteral("128"));
-    } else {
-        okay &= Check(!controller.canStart() &&
-                              controller.validationMessage() == controller.vulkanStatusText(),
-                      "unavailable Vulkan backend did not expose its diagnostic");
-    }
-    okay &= Check(controller.cudaParallelSampleCount() == savedCudaBatch &&
-                          controller.cudaCalibrationEnabled() == savedCudaCalibration &&
-                          controller.cudaSessionSpecializationEnabled() == savedCudaFastMode,
-                  "Vulkan configuration overwrote CUDA preferences");
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
 #endif
     controller.setSimulationBackendId(QStringLiteral("missing-backend"));
@@ -1817,11 +1736,7 @@ bool TestPersistence(const QString &packsDirectory,
         controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
         controller.setCpuWorkerCount(QStringLiteral("6"));
         controller.setCudaParallelSampleCount(QStringLiteral("384"));
-        controller.setVulkanParallelSampleCount(QStringLiteral("128"));
-        controller.setVulkanCalibrationEnabled(true);
-        controller.setVulkanCalibrationEnabled(false);
         controller.setCudaCalibrationEnabled(true);
-        controller.setCudaSessionSpecializationEnabled(false);
         controller.setUiSetting(QStringLiteral("zoom"), 1.25);
         controller.setViewerVisible(false);
         controller.setSearchAlgorithmSetting(
@@ -1856,20 +1771,10 @@ bool TestPersistence(const QString &packsDirectory,
     okay &= Check(restored.cudaParallelSampleCount() ==
                           QStringLiteral("384"),
                   "CUDA parallel sample count was not persisted");
-    okay &= Check(restored.vulkanParallelSampleCount() == QStringLiteral("128") &&
-                          !restored.vulkanCalibrationEnabled() &&
-                          forevertas::app::AppSettings::Instance().value(QStringLiteral(
-                                  "backends/vulkan/parallelSampleCount")).toString() ==
-                                  QStringLiteral("128") &&
-                          !forevertas::app::AppSettings::Instance().value(QStringLiteral(
-                                  "backends/vulkan/calibrationEnabled")).toBool(),
-                  "Vulkan preferences were not persisted independently of CUDA");
     okay &= Check(restored.cpuWorkerCount() == QStringLiteral("6"),
                   "CPU worker count was not persisted");
     okay &= Check(restored.cudaCalibrationEnabled(),
                   "CUDA calibration mode was not persisted");
-    okay &= Check(!restored.cudaSessionSpecializationEnabled(),
-                  "CUDA fast mode selection was not persisted");
     okay &= Check(restored.uiSetting(QStringLiteral("zoom"), 1.0).toDouble() == 1.25 &&
                           restored.uiSetting(QStringLiteral("missing"), 7).toInt() == 7,
                   "UI settings were not persisted");
@@ -1913,10 +1818,6 @@ bool TestPersistence(const QString &packsDirectory,
                                   "backends/cuda/calibrationEnabled"))
                                   .toBool(),
                   "CUDA calibration mode was not stored canonically");
-    okay &= Check(!forevertas::app::AppSettings::Instance().value(QStringLiteral(
-                                  "backends/cuda/sessionSpecializationEnabled"))
-                                   .toBool(),
-                  "CUDA fast mode was not stored canonically");
     return okay;
 }
 
@@ -2042,24 +1943,12 @@ bool TestDescriptiveSearchStageStatuses() {
                             .contains(QStringLiteral(
                                     "across optimized CPU workers")),
             "multi-threaded CPU stages did not identify worker aggregation");
-    okay &= Check(SearchStageStatus(SearchProgressStage::CreatingSimulation, "vulkan") ==
-                          QStringLiteral("Initializing Vulkan simulation...") &&
-                          SearchStageStatus(SearchProgressStage::PreparingSearch, "vulkan", true) ==
-                          QStringLiteral("Preparing Vulkan search...") &&
-                          SearchStageStatus(SearchProgressStage::Calibration, "vulkan") ==
-                          QStringLiteral("Calibrating Vulkan throughput..."),
-                  "Vulkan status incorrectly exposed CUDA initialization or fast mode");
     const QString cudaInitialization = SearchStageStatus(
             SearchProgressStage::CreatingSimulation,
             "cuda");
-    const QString cudaReplayLoadRegular = SearchStageStatus(
+    const QString cudaReplayLoad = SearchStageStatus(
             SearchProgressStage::LoadingScenario,
-            "cuda",
-            false);
-    const QString cudaReplayLoadFast = SearchStageStatus(
-            SearchProgressStage::LoadingScenario,
-            "cuda",
-            true);
+            "cuda");
     const QString cudaBaseline = SearchStageStatus(
             SearchProgressStage::Baseline,
             "cuda");
@@ -2071,19 +1960,15 @@ bool TestDescriptiveSearchStageStatuses() {
             "cuda");
     okay &= Check(
             cudaInitialization.contains(QStringLiteral("CUDA")) &&
-                    cudaReplayLoadRegular ==
+                    cudaReplayLoad ==
                             QStringLiteral("Loading the map onto CUDA...") &&
-                    cudaReplayLoadFast.contains(
-                            QStringLiteral("building the fast CUDA kernel")) &&
                     cudaBaseline.contains(QStringLiteral("CUDA baseline")) &&
                     cudaCalibration.contains(
                             QStringLiteral("CUDA throughput")) &&
                     cudaMutations.contains(QStringLiteral("Searching on CUDA")) &&
                     !cudaInitialization.contains(
                             QStringLiteral("GPU availability")) &&
-                    !cudaReplayLoadRegular.contains(
-                            QStringLiteral("building")) &&
-                    !cudaReplayLoadRegular.contains(
+                    !cudaReplayLoad.contains(
                             QStringLiteral("GPU availability")),
             "CUDA stages did not describe the actual work clearly");
     okay &= Check(
@@ -2491,11 +2376,7 @@ bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath
     request.modifiers = {{"invalid-disabled-pass", {}}};
     request.searchAlgorithm.id = "not-a-search";
     // Base evaluation ignores the search backend; pick one it cannot use.
-#if FOREVERVALIDATOR_HAS_VULKAN
-    request.backend = PhysicsBackend::Vulkan;
-#else
     request.backend = PhysicsBackend::MultiThreadedCpu;
-#endif
     const auto base = EvaluateBaseline(request);
     bool okay = Check(base && base->bestScore == 30.0 && base->iterations == 0 && base->mutationImprovementCount == 0 &&
                       base->winnerSource == SearchWinnerSource::Baseline && base->bestTimeline.empty() &&

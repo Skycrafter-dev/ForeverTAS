@@ -24,6 +24,19 @@
   Hide all panels (Tab), Show viewer, Zoom in/out (Ctrl++ / Ctrl+-, Ctrl+0 to
   reset), Glass look and Reset layout.
 - The panel layout, zoom and glass look are saved between sessions.
+- **One download per system:** a single ForeverTAS for Linux and one for
+  Windows, for every GPU. ForeverTAS downloads the GPU support for your
+  graphics card by itself (8 to 15 MB, checked before use), and again when you
+  change cards. Earlier versions update into it as usual.
+- **Two graphics cards at once:** with an NVIDIA and an AMD card, the backend
+  list shows **GPU** with a box per card. Tick one or both: ticked cards search
+  together, each its own attempts, and share their best runs. Each card keeps
+  its own batch settings. ForeverTAS downloads the GPU support for both.
+
+### Removed
+
+- **CUDA fast mode** and the **Vulkan** physics backend. CUDA, HIP and the CPU
+  backends remain. A search saved with Vulkan selected opens on Reference.
 
 ## 0.2.7
 

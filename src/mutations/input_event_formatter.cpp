@@ -262,7 +262,9 @@ InputScriptParseResult ParseInputScript(std::string_view script) {
                         "<start>-<end>.");
                 return result;
             }
-            if (range && *endTime <= *time) {
+            // a plain value: GCC 11 takes a later *endTime for a maybe-uninitialized read
+            const std::int64_t endTimeMs = range ? *endTime : 0;
+            if (range && endTimeMs <= *time) {
                 result.error = LineError(
                         lineNumber, "a range must end after it starts.");
                 return result;
@@ -330,7 +332,7 @@ InputScriptParseResult ParseInputScript(std::string_view script) {
             if (range) {
                 // Released, or the analog value back to 0, at the end.
                 ParsedInputCommand undo = command;
-                undo.userTimeMs = *endTime;
+                undo.userTimeMs = endTimeMs;
                 if (undo.value.kind == PhysicsSandboxInputValueKind::Switch) {
                     undo.value.switchState = PhysicsSandboxSwitchState::Released;
                 } else {

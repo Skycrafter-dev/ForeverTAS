@@ -11,7 +11,6 @@
 
 #include <forevervalidator/native.h>
 #if FOREVERVALIDATOR_HAS_CUDA
-#include "simulation/backends/cuda/cuda_session_specialization.h"
 #endif
 
 #include <algorithm>
@@ -371,7 +370,6 @@ bool CheckStatisticsWithoutEligibleBest(
                          &control,
                          1u,
                          false,
-                         false,
                          nullptr,
                          nullptr,
                          {},
@@ -395,72 +393,6 @@ bool CheckStatisticsWithoutEligibleBest(
 }
 
 #if FOREVERVALIDATOR_HAS_CUDA
-bool CheckCudaKernelModeLifecycle(
-        const char *packsDirectory,
-        const char *replayPath) {
-    const forevertas::InputScriptParseResult parsed =
-            forevertas::ParseInputScript(
-                    forevertas::ExtractReplayInputScript(
-                            packsDirectory, replayPath));
-    if (!parsed) {
-        throw std::runtime_error(*parsed.error);
-    }
-
-    forevertas::SearchRequest request{packsDirectory, replayPath};
-    request.baseInputCommands = parsed.commands;
-    request.backend = forevertas::PhysicsBackend::Cuda;
-    request.parallelSampleCount = 64u;
-    request.useCudaSessionSpecialization = false;
-
-    forevertas::SearchRunControl control;
-    control.iterationLimit = 0u;
-    control.sampleBestTimeline = false;
-    control.reuseLoadedSandbox = true;
-
-    const std::uint64_t before =
-            forevervalidator::simulation::cuda::specialization::
-                    SessionModuleBuildCountForTesting();
-    const forevertas::SearchResult regular =
-            forevertas::RunSearch(request, &control);
-    const std::uint64_t afterMapLoad =
-            forevervalidator::simulation::cuda::specialization::
-                    SessionModuleBuildCountForTesting();
-
-    request.useCudaSessionSpecialization = true;
-    const forevertas::SearchResult specialized =
-            forevertas::RunSearch(request, &control);
-    const std::uint64_t afterModeSwitch =
-            forevervalidator::simulation::cuda::specialization::
-                    SessionModuleBuildCountForTesting();
-    const forevertas::SearchResult specializedAgain =
-            forevertas::RunSearch(request, &control);
-    const std::uint64_t afterSpecializedReuse =
-            forevervalidator::simulation::cuda::specialization::
-                    SessionModuleBuildCountForTesting();
-
-    const bool sameResult =
-            regular.winnerSource == specialized.winnerSource &&
-            regular.bestScore == specialized.bestScore &&
-            regular.bestEvaluationTimeMs ==
-                    specialized.bestEvaluationTimeMs &&
-            forevertas::FormatInputScript(regular.bestInputs) ==
-                    forevertas::FormatInputScript(
-                            specialized.bestInputs) &&
-            specialized.bestScore == specializedAgain.bestScore;
-    if (afterMapLoad != before ||
-        afterModeSwitch != before + 1u ||
-        afterSpecializedReuse != afterModeSwitch || !sameResult) {
-        std::cerr
-                << "CUDA fast mode did not skip or reuse specialization "
-                   "correctly: builds="
-                << before << "/" << afterMapLoad << "/"
-                << afterModeSwitch << "/" << afterSpecializedReuse
-                << " same_result=" << sameResult << '\n';
-        return false;
-    }
-    return true;
-}
-
 bool CheckCudaAutoPromoteAcrossBatches(
         const char *packsDirectory,
         const char *replayPath) {
@@ -746,7 +678,6 @@ bool CheckStuntTargetBackend(
     request.baseInputCommands = parsed.commands;
 #if FOREVERVALIDATOR_HAS_CUDA
     if (backend == forevertas::PhysicsBackend::Cuda) {
-        request.useCudaSessionSpecialization = false;
     }
 #endif
     request.evaluationTarget = {
@@ -2019,7 +1950,6 @@ bool CheckGpuSegmentSearch(const char *packs, const char *replay,
 #if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_HIP
     forevertas::SearchRequest request{packs, replay};
     request.backend = backend;
-    request.useCudaSessionSpecialization = false;
     request.parallelSampleCount = 2u;
     request.simulationHorizonMs = 1000u;
     const auto parsed = forevertas::ParseInputScript(
@@ -2091,10 +2021,11 @@ int main(int argc, char **argv) {
     const bool gpuSegmentsOnly = argc == 4 && std::string_view(argv[1]) == "--gpu-segments-only";
     const bool hipSegmentsOnly = argc == 4 && std::string_view(argv[1]) == "--hip-segments-smoke";
     const bool finishExportOnly = argc == 4 && std::string_view(argv[1]) == "--finish-export-only";
+    const bool multiThreadedOnly = argc == 4 && std::string_view(argv[1]) == "--multi-threaded-cpu-only";
     const bool inputAfterHorizonOnly =
             argc == 4 &&
             std::string_view(argv[1]) == "--input-after-horizon-only";
-    if ((!inputAfterHorizonOnly && !finishExportOnly && !gpuSegmentsOnly && !hipSegmentsOnly && argc != 3 && argc != 5) ||
+    if ((!inputAfterHorizonOnly && !finishExportOnly && !multiThreadedOnly && !gpuSegmentsOnly && !hipSegmentsOnly && argc != 3 && argc != 5) ||
         (inputAfterHorizonOnly && argc != 4)) {
         std::cerr << "expected Packs directory, replay path, and optional "
                      "paired replay/challenge paths\n";
@@ -2119,6 +2050,7 @@ int main(int argc, char **argv) {
 #endif
         }
         if (finishExportOnly) return CheckFinishExport(argv[2], argv[3]) ? 0 : 1;
+        if (multiThreadedOnly) return CheckMultiThreadedCpuBackend(argv[2], argv[3]) ? 0 : 1;
         if (inputAfterHorizonOnly) {
             return CheckInputAfterHorizonAccepted(argv[2], argv[3])
                     ? 0
@@ -2134,7 +2066,6 @@ int main(int argc, char **argv) {
             (argc == 5 && !CheckStandaloneChallengeFixture(
                     argv[1], argv[3], argv[4])) ||
 #if FOREVERVALIDATOR_HAS_CUDA
-            !CheckCudaKernelModeLifecycle(argv[1], argv[2]) ||
             !CheckCudaAutoPromoteAcrossBatches(argv[1], argv[2]) ||
 #endif
             !CheckCachedScriptIsolation(argv[1], argv[2]) ||
@@ -2177,13 +2108,6 @@ int main(int argc, char **argv) {
             || !RunBackend(argv[1],
                            argv[2],
                            forevertas::PhysicsBackend::Hip)
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-            || !CheckStuntTargetBackend(
-                    argv[1], argv[2],
-                    forevertas::PhysicsBackend::Vulkan)
-            || !RunBackend(argv[1], argv[2],
-                           forevertas::PhysicsBackend::Vulkan)
 #endif
         ) {
             return 1;

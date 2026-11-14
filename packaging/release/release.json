@@ -1,0 +1,35 @@
+{
+ "repository": "Skycrafter-dev/ForeverTAS",
+ "compute_release": "compute-modules",
+ "cuda": {
+  "sm": [
+   50,
+   52,
+   60,
+   61,
+   70,
+   75,
+   80,
+   86,
+   89,
+   90,
+   100,
+   120
+  ],
+  "ptx": 120
+ },
+ "hip": {
+  "gfx": [
+   "gfx1100",
+   "gfx1101",
+   "gfx1102",
+   "gfx1200",
+   "gfx1201"
+  ]
+ },
+ "windows": {
+  "host": "builder@192.168.122.50",
+  "root": "C:/forevertas-release",
+  "vcpkg_commit": "39344dff01c5a5a0134caf2624cdd492f05d30ea"
+ }
+}

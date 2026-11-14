@@ -1848,20 +1848,10 @@ int main(int argc, char **argv) {
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(QStringLiteral(
                                             "cudaCalibrationCheckBox")));
-                    auto *const cudaSessionSpecializationSection =
-                            qobject_cast<QQuickItem *>(
-                                    root->findChild<QObject *>(QStringLiteral(
-                                            "cudaSessionSpecializationSection")));
                     auto *const cudaCompatibilityStatus =
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(QStringLiteral(
                                             "cudaCompatibilityStatus")));
-                    QObject *const cudaSessionSpecializationSwitch =
-                            root->findChild<QObject *>(QStringLiteral(
-                                    "cudaSessionSpecializationSwitch"));
-                    QObject *const cudaSessionSpecializationWarning =
-                            root->findChild<QObject *>(QStringLiteral(
-                                    "cudaSessionSpecializationWarning"));
 #endif
                     QObject *const settingsWheelRedirector =
                             root->property("settingsWheelRedirectorObject")
@@ -3159,8 +3149,7 @@ int main(int argc, char **argv) {
                             simulationBackendCombo != nullptr &&
                             simulationBackendCombo->property("count").toInt() ==
                                     3 + FOREVERVALIDATOR_HAS_CUDA +
-                                            FOREVERVALIDATOR_HAS_HIP +
-                                            FOREVERVALIDATOR_HAS_VULKAN &&
+                                            FOREVERVALIDATOR_HAS_HIP &&
                             simulationBackendCombo->property("currentValue")
                                             .toString() ==
                                     QStringLiteral("reference") &&
@@ -3262,26 +3251,6 @@ int main(int argc, char **argv) {
                                     !cudaCalibrationCheckBox
                                              ->property("checked")
                                              .toBool() &&
-                                    cudaSessionSpecializationSection != nullptr &&
-                                    cudaSessionSpecializationSection->isVisible() &&
-                                    searchSection != nullptr &&
-                                    cudaSessionSpecializationSection->parentItem() ==
-                                            searchSection->parentItem() &&
-                                    cudaSessionSpecializationSection->y() >=
-                                            searchSection->y() +
-                                                    searchSection->height() &&
-                                    qobject_cast<QQuickItem *>(
-                                            startSearchButton) != nullptr &&
-                                    cudaSessionSpecializationSection->y() +
-                                                    cudaSessionSpecializationSection
-                                                            ->height() <=
-                                            qobject_cast<QQuickItem *>(
-                                                    startSearchButton)
-                                                    ->mapToItem(
-                                                            cudaSessionSpecializationSection
-                                                                    ->parentItem(),
-                                                            QPointF{})
-                                                    .y() &&
                                     cudaCompatibilityStatus != nullptr &&
                                     cudaCompatibilityStatus->isVisible() &&
                                     cudaCompatibilityStatus
@@ -3289,64 +3258,14 @@ int main(int argc, char **argv) {
                                                     .toString() ==
                                             controller.cudaStatusText() &&
                                     !controller.cudaStatusText().isEmpty() &&
-                                    cudaSessionSpecializationSwitch != nullptr &&
-                                    cudaSessionSpecializationWarning != nullptr &&
                                     ContainsText(
                                             root,
                                             QStringLiteral(
                                                     "NVIDIA CUDA for Stadium; "
-                                                    "compute capability 5.0+ "
-                                                    "is supported, with Fast "
-                                                    "CUDA on 7.5+"));
-                            if (controller.cudaFastModeAvailable()) {
-                                backendSelectorValid &=
-                                        cudaSessionSpecializationSwitch
-                                                ->property("checked")
-                                                .toBool() &&
-                                        cudaSessionSpecializationSwitch
-                                                ->property("enabled")
-                                                .toBool() &&
-                                        cudaSessionSpecializationWarning
-                                                ->property("text")
-                                                .toString()
-                                                .contains(QStringLiteral("stunts")) &&
-                                        cudaSessionSpecializationWarning
-                                                ->property("text")
-                                                .toString()
-                                                .contains(QStringLiteral("respawns")) &&
-                                        cudaSessionSpecializationWarning
-                                                ->property("text")
-                                                .toString()
-                                                .contains(QStringLiteral(
-                                                        "Regular CUDA is safer"));
-                            } else {
-                                const QString warning =
-                                        cudaSessionSpecializationWarning
-                                                ->property("text")
-                                                .toString();
-                                backendSelectorValid &=
-                                        !cudaSessionSpecializationSwitch
-                                                 ->property("checked")
-                                                 .toBool() &&
-                                        !cudaSessionSpecializationSwitch
-                                                 ->property("enabled")
-                                                 .toBool() &&
-                                        (controller.cudaAvailable()
-                                                 ? warning.contains(
-                                                           QStringLiteral(
-                                                                   "compute capability 7.5")) &&
-                                                           warning.contains(
-                                                                   QStringLiteral(
-                                                                           "Regular CUDA will be used automatically"))
-                                                 : warning.contains(
-                                                           QStringLiteral(
-                                                                   "CUDA is not available")));
-                            }
+                                                    "compute capability 5.0+"));
                             controller.setCudaCalibrationEnabled(true);
                             controller.setCudaParallelSampleCount(
                                     QStringLiteral("512"));
-                            controller.setCudaSessionSpecializationEnabled(
-                                    false);
                             QCoreApplication::processEvents();
                             backendSelectorValid &=
                                     cudaCalibrationCheckBox
@@ -3355,37 +3274,7 @@ int main(int argc, char **argv) {
                                     cudaParallelSampleCountField
                                                     ->property("text")
                                                     .toString() ==
-                                            QStringLiteral("512") &&
-                                    !cudaSessionSpecializationSwitch
-                                             ->property("checked")
-                                             .toBool();
-                            if (controller.cudaFastModeAvailable()) {
-                                backendSelectorValid &=
-                                        cudaSessionSpecializationWarning
-                                                ->property("text")
-                                                .toString()
-                                                .startsWith(QStringLiteral(
-                                                        "Fast mode is off."));
-                            }
-                            controller.setCudaSessionSpecializationEnabled(
-                                    true);
-                            QCoreApplication::processEvents();
-                            if (controller.cudaFastModeAvailable()) {
-                                backendSelectorValid &=
-                                        cudaSessionSpecializationSwitch
-                                                ->property("checked")
-                                                .toBool() &&
-                                        cudaSessionSpecializationWarning
-                                                ->property("text")
-                                                .toString()
-                                                .startsWith(QStringLiteral(
-                                                        "Fast mode is on."));
-                            } else {
-                                backendSelectorValid &=
-                                        !cudaSessionSpecializationSwitch
-                                                 ->property("checked")
-                                                 .toBool();
-                            }
+                                            QStringLiteral("512");
                         }
 #endif
 #if FOREVERVALIDATOR_HAS_HIP
@@ -3430,42 +3319,6 @@ int main(int argc, char **argv) {
                         }
 #if FOREVERVALIDATOR_HAS_CUDA
                         backendSelectorValid &=
-                                !cudaSessionSpecializationSection->isVisible() &&
-                                !cudaParallelSampleSettings->isVisible() &&
-                                !cudaCompatibilityStatus->isVisible();
-#endif
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-                        controller.setSimulationBackendId(QStringLiteral("vulkan"));
-                        controller.setVulkanParallelSampleCount(QStringLiteral("128"));
-                        QCoreApplication::processEvents();
-                        auto *const vulkanBatch = root->findChild<QQuickItem *>(
-                                QStringLiteral("vulkanParallelSampleSettings"));
-                        auto *const vulkanStatus = root->findChild<QQuickItem *>(
-                                QStringLiteral("vulkanCompatibilityStatus"));
-                        auto *const vulkanCalibration = root->findChild<QQuickItem *>(
-                                QStringLiteral("vulkanCalibrationCheckBox"));
-                        auto *const vulkanBatchField = root->findChild<QObject *>(
-                                QStringLiteral("vulkanParallelSampleCountField"));
-                        backendSelectorValid &=
-                                simulationBackendCombo->property("currentValue").toString() ==
-                                        QStringLiteral("vulkan") &&
-                                simulationBackendCombo->property("displayText").toString() ==
-                                        QStringLiteral("Vulkan") &&
-                                vulkanBatch && vulkanBatch->isVisible() &&
-                                vulkanBatchField &&
-                                vulkanBatchField->property("text").toString() == QStringLiteral("128") &&
-                                vulkanStatus && vulkanStatus->isVisible() &&
-                                vulkanStatus->property("text").toString() == controller.vulkanStatusText() &&
-                                vulkanCalibration && vulkanCalibration->isVisible();
-                        if (vulkanCalibration) {
-                            controller.setVulkanCalibrationEnabled(true);
-                            QCoreApplication::processEvents();
-                            backendSelectorValid &= vulkanCalibration->property("checked").toBool();
-                            controller.setVulkanCalibrationEnabled(false);
-                        }
-#if FOREVERVALIDATOR_HAS_CUDA
-                        backendSelectorValid &= !cudaSessionSpecializationSection->isVisible() &&
                                 !cudaParallelSampleSettings->isVisible() &&
                                 !cudaCompatibilityStatus->isVisible();
 #endif
@@ -3473,15 +3326,8 @@ int main(int argc, char **argv) {
                         controller.setSimulationBackendId(
                                 QStringLiteral("reference"));
                         QCoreApplication::processEvents();
-#if FOREVERVALIDATOR_HAS_VULKAN
-                        backendSelectorValid &= vulkanBatch && !vulkanBatch->isVisible() &&
-                                vulkanStatus && !vulkanStatus->isVisible() &&
-                                vulkanCalibration && !vulkanCalibration->isVisible();
-#endif
 #if FOREVERVALIDATOR_HAS_CUDA
                         backendSelectorValid &=
-                                cudaSessionSpecializationSection != nullptr &&
-                                !cudaSessionSpecializationSection->isVisible() &&
                                 cudaCompatibilityStatus != nullptr &&
                                 !cudaCompatibilityStatus->isVisible();
 #endif

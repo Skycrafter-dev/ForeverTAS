@@ -12,6 +12,7 @@
 #include <chrono>
 #include <memory>
 #include <string_view>
+#include <vector>
 
 namespace forevertas::app {
 
@@ -23,8 +24,7 @@ struct AutoRestartPolicy {
 };
 
 QString SearchStageStatus(SearchProgressStage stage,
-                          std::string_view backendId,
-                          bool useCudaSessionSpecialization = false);
+                          std::string_view backendId);
 bool TryBeginSearchIteration(
         const std::shared_ptr<std::atomic<SearchIterationPhase>> &phase);
 bool TryCancelBeforeSearchIteration(
@@ -40,7 +40,8 @@ public:
                  std::shared_ptr<std::atomic_bool> cancellationRequested,
                  std::shared_ptr<std::atomic<SearchIterationPhase>>
                          iterationPhase,
-                 AutoRestartPolicy restartPolicy = {});
+                 AutoRestartPolicy restartPolicy = {},
+                 std::vector<SearchDevice> devices = {});
 
 public slots:
     void run();
@@ -75,6 +76,8 @@ private:
     std::shared_ptr<std::atomic_bool> cancellationRequested_;
     std::shared_ptr<std::atomic<SearchIterationPhase>> iterationPhase_;
     AutoRestartPolicy restartPolicy_;
+    // several GPUs on the search (two or more), or none: the request's backend
+    std::vector<SearchDevice> devices_;
 };
 
 }  // namespace forevertas::app

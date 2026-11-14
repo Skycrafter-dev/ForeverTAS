@@ -1,6 +1,7 @@
 #ifndef FOREVERTAS_DIAGNOSTICS_DIAGNOSTICS_LOG_H
 #define FOREVERTAS_DIAGNOSTICS_DIAGNOSTICS_LOG_H
 
+#include <cstdio>
 #include <string>
 
 // ForeverTAS's log: one text file per session that users can send when
@@ -14,6 +15,10 @@ namespace forevertas::diagnostics {
 
 bool OpenLog(const std::string &path);
 bool LogOpen() noexcept;
+// The open log's stream, and writing to another copy of this code's stream (a
+// GPU module logs into the app's file; both share one C runtime).
+std::FILE *LogFile() noexcept;
+void UseLogFile(std::FILE *stream) noexcept;
 const std::string &LogPath() noexcept;
 void Log(const char *format, ...) noexcept
 #if defined(__GNUC__) || defined(__clang__)

@@ -48,7 +48,8 @@ class SearchController final : public QObject {
     Q_PROPERTY(QVariantMap replayInputFailure READ replayInputFailure NOTIFY
                        replayInputStateChanged)
     Q_PROPERTY(QVariantList simulationBackendOptions READ
-                       simulationBackendOptions CONSTANT)
+                       simulationBackendOptions NOTIFY
+                       computeBackendsChanged)
     Q_PROPERTY(QString simulationBackendId READ simulationBackendId WRITE
                        setSimulationBackendId NOTIFY simulationBackendIdChanged)
     Q_PROPERTY(QString simulationHorizonMs READ simulationHorizonMs WRITE
@@ -74,33 +75,27 @@ class SearchController final : public QObject {
     Q_PROPERTY(bool hipCalibrationEnabled READ hipCalibrationEnabled WRITE
                        setHipCalibrationEnabled NOTIFY
                        hipCalibrationEnabledChanged)
-    Q_PROPERTY(QString vulkanParallelSampleCount READ vulkanParallelSampleCount WRITE
-                       setVulkanParallelSampleCount NOTIFY
-                       vulkanParallelSampleCountChanged)
-    Q_PROPERTY(bool vulkanCalibrationEnabled READ vulkanCalibrationEnabled WRITE
-                       setVulkanCalibrationEnabled NOTIFY
-                       vulkanCalibrationEnabledChanged)
-    Q_PROPERTY(bool cudaSessionSpecializationEnabled READ
-                       cudaSessionSpecializationEnabled WRITE
-                       setCudaSessionSpecializationEnabled NOTIFY
-                       cudaSessionSpecializationEnabledChanged)
     // CUDA: "Exact" (false) or "Approximate" (true) physics for the search.
     Q_PROPERTY(bool approximatePhysics READ approximatePhysics WRITE
                        setApproximatePhysics NOTIFY approximatePhysicsChanged)
     Q_PROPERTY(bool approximatePhysicsAvailable READ
-                       approximatePhysicsAvailable CONSTANT)
-    Q_PROPERTY(QString approximatePhysicsBackendId READ
-                       approximatePhysicsBackendId CONSTANT)
+                       approximatePhysicsAvailable NOTIFY
+                       computeBackendsChanged)
+    // The chosen GPU (or every ticked graphics card) can run Approximate physics.
+    Q_PROPERTY(bool approximatePhysicsOnGpu READ approximatePhysicsOnGpu NOTIFY gpuCardsChanged)
+    // An NVIDIA and an AMD graphics card: the "GPU" backend, a box per card.
+    Q_PROPERTY(bool multipleGpus READ multipleGpus NOTIFY computeBackendsChanged)
+    Q_PROPERTY(QString cudaCardName READ cudaCardName NOTIFY computeBackendsChanged)
+    Q_PROPERTY(QString hipCardName READ hipCardName NOTIFY computeBackendsChanged)
+    Q_PROPERTY(bool cudaCardEnabled READ cudaCardEnabled WRITE setCudaCardEnabled NOTIFY gpuCardsChanged)
+    Q_PROPERTY(bool hipCardEnabled READ hipCardEnabled WRITE setHipCardEnabled NOTIFY gpuCardsChanged)
     // The twin on CPU threads (the multi-threaded CPU backend, two workers or more).
     Q_PROPERTY(bool approximatePhysicsCpuAvailable READ
                        approximatePhysicsCpuAvailable CONSTANT)
-    Q_PROPERTY(bool cudaAvailable READ cudaAvailable CONSTANT)
-    Q_PROPERTY(bool cudaFastModeAvailable READ cudaFastModeAvailable CONSTANT)
-    Q_PROPERTY(QString cudaStatusText READ cudaStatusText CONSTANT)
-    Q_PROPERTY(bool hipAvailable READ hipAvailable CONSTANT)
-    Q_PROPERTY(QString hipStatusText READ hipStatusText CONSTANT)
-    Q_PROPERTY(bool vulkanAvailable READ vulkanAvailable CONSTANT)
-    Q_PROPERTY(QString vulkanStatusText READ vulkanStatusText CONSTANT)
+    Q_PROPERTY(bool cudaAvailable READ cudaAvailable NOTIFY computeBackendsChanged)
+    Q_PROPERTY(QString cudaStatusText READ cudaStatusText NOTIFY computeBackendsChanged)
+    Q_PROPERTY(bool hipAvailable READ hipAvailable NOTIFY computeBackendsChanged)
+    Q_PROPERTY(QString hipStatusText READ hipStatusText NOTIFY computeBackendsChanged)
     Q_PROPERTY(bool randomizeSeedsOnStart READ randomizeSeedsOnStart WRITE
                        setRandomizeSeedsOnStart NOTIFY
                        randomizeSeedsOnStartChanged)
@@ -207,22 +202,21 @@ public:
     QString cpuWorkerCount() const;
     QString cudaParallelSampleCount() const;
     QString hipParallelSampleCount() const;
-    QString vulkanParallelSampleCount() const;
     bool cudaCalibrationEnabled() const;
     bool hipCalibrationEnabled() const;
-    bool vulkanCalibrationEnabled() const;
-    bool cudaSessionSpecializationEnabled() const;
     bool approximatePhysics() const;
     bool approximatePhysicsAvailable() const;
-    QString approximatePhysicsBackendId() const;
     bool approximatePhysicsCpuAvailable() const;
     bool cudaAvailable() const;
     bool hipAvailable() const;
-    bool vulkanAvailable() const;
-    bool cudaFastModeAvailable() const;
+    bool approximatePhysicsOnGpu() const;
+    bool multipleGpus() const;
+    QString cudaCardName() const;
+    QString hipCardName() const;
+    bool cudaCardEnabled() const;
+    bool hipCardEnabled() const;
     QString cudaStatusText() const;
     QString hipStatusText() const;
-    QString vulkanStatusText() const;
     bool randomizeSeedsOnStart() const;
     bool drawTargetsThroughBlocks() const;
     bool viewerVisible() const;
@@ -287,11 +281,10 @@ public slots:
     void setCpuWorkerCount(const QString &value);
     void setCudaParallelSampleCount(const QString &value);
     void setHipParallelSampleCount(const QString &value);
-    void setVulkanParallelSampleCount(const QString &value);
     void setCudaCalibrationEnabled(bool value);
     void setHipCalibrationEnabled(bool value);
-    void setVulkanCalibrationEnabled(bool value);
-    void setCudaSessionSpecializationEnabled(bool value);
+    void setCudaCardEnabled(bool value);
+    void setHipCardEnabled(bool value);
     void setApproximatePhysics(bool value);
     void setRandomizeSeedsOnStart(bool value);
     void setAutoRestartMode(const QString &value);
@@ -346,6 +339,8 @@ public slots:
     Q_INVOKABLE void finishCustomVolumeDrawing();
     Q_INVOKABLE void cancelCustomVolumeDrawing();
     Q_INVOKABLE void focusSelectedPoseTarget();
+    // GPU backends again (after a GPU module was installed)
+    Q_INVOKABLE void refreshComputeBackends();
     Q_INVOKABLE void startSearch();
     Q_INVOKABLE void evaluateBase();
     Q_INVOKABLE void cancelBaseEvaluation();
@@ -355,6 +350,9 @@ public slots:
     Q_INVOKABLE void changeCyclePage(bool older);
 
 signals:
+    // a GPU backend came or went (a GPU module was installed)
+    void computeBackendsChanged();
+    void gpuCardsChanged();
     void baseEvaluationChanged();
     void packsDirectoryChanged();
     void autoDetectedPacksDirectoryChanged();
@@ -369,11 +367,8 @@ signals:
     void cpuWorkerCountChanged();
     void cudaParallelSampleCountChanged();
     void hipParallelSampleCountChanged();
-    void vulkanParallelSampleCountChanged();
     void cudaCalibrationEnabledChanged();
     void hipCalibrationEnabledChanged();
-    void vulkanCalibrationEnabledChanged();
-    void cudaSessionSpecializationEnabledChanged();
     void approximatePhysicsChanged();
     void randomizeSeedsOnStartChanged();
     void drawTargetsThroughBlocksChanged();
@@ -427,7 +422,14 @@ private:
     struct ValidationResult {
         std::optional<SearchRequest> request;
         QString error;
+        // the "GPU" backend with two cards ticked: both (the request is the first's)
+        std::vector<SearchDevice> devices = {};
     };
+    // The "GPU" backend (two cards) is chosen: simulationBackend_ is then the
+    // first ticked card's.
+    bool gpusChosen() const;
+    void setGpusChosen(bool chosen);
+    QString deviceSettings(PhysicsBackend backend, SearchDevice *device) const;
 
     ValidationResult validate(bool baselineOnly = false) const;
     void refreshValidation();
@@ -461,6 +463,7 @@ private:
                                       const QString &value);
     void applyBaseInputScript(const QString &value, bool recordUndo);
     void refreshSessions();
+    void readComputeBackends();
 
     QString packsDirectory_;
     QString autoDetectedPacksDirectory_;
@@ -484,18 +487,18 @@ private:
             kDefaultCudaParallelSampleCount);
     bool cudaCalibrationEnabled_ = false;
     bool hipCalibrationEnabled_ = false;
-    bool cudaSessionSpecializationEnabled_ = true;
     bool approximatePhysics_ = false;
     bool cudaAvailable_ = false;
-    bool cudaFastModeAvailable_ = false;
     QString cudaStatusText_;
     bool hipAvailable_ = false;
+    bool cudaApproximate_ = false;
+    bool gpusMode_ = false;
+    bool cudaCardEnabled_ = true;
+    bool hipCardEnabled_ = true;
+    QString cudaCardName_;
+    QString hipCardName_;
+    bool hipApproximate_ = false;
     QString hipStatusText_;
-    QString vulkanParallelSampleCount_ = QString::number(
-            kDefaultCudaParallelSampleCount);
-    bool vulkanCalibrationEnabled_ = false;
-    bool vulkanAvailable_ = false;
-    QString vulkanStatusText_;
     bool randomizeSeedsOnStart_ = true;
     bool drawTargetsThroughBlocks_ = false;
     bool viewerVisible_ = true;

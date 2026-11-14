@@ -441,7 +441,7 @@ composite to every pass:
 - `anchors`: when set, an ordinary draw appends one `MutationAnchor` per
   applied item: the earliest input time the item changes, the pass index,
   and a modifier-defined count slot. Recording must not consume random
-  numbers, so ordinary draws stay identical to the CUDA, Vulkan, and HIP
+  numbers, so ordinary draws stay identical to the CUDA and HIP
   samplers.
 - `segment`: when set, the pass draws only `slotCounts[passIndex][slot]`
   items whose anchors fall inside `anchorRange`, applying each item in full
@@ -780,8 +780,8 @@ No search-loop or controller branch should be added for the target.
   and makes it happen as early (`earliest`) or as late (`latest`) as possible.
   Its value comes only from the Conditions, so the app requires at least one.
   The run stops at that first match. It observes ticks before the first
-  mutation, because a later first match would misreport that run. CPU, CUDA,
-  HIP and Vulkan all score the same first-match tick.
+  mutation, because a later first match would misreport that run. CPU, CUDA
+  and HIP all score the same first-match tick.
 
 Spatial target models expose atomic absolute-placement operations. Their QML
 editors receive the viewport's rendered camera pose and the viewer's simulated

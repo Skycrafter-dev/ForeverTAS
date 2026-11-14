@@ -2,6 +2,7 @@
 #include "diagnostics/diagnostics_log.h"
 
 #include "app/compact_number_format.h"
+#include "app/compute_modules.h"
 #include "app/rolling_throughput.h"
 #include "app/search_session_store.h"
 #include "mutations/input_event_formatter.h"
@@ -132,30 +133,7 @@ QString FilePathFromUtf8(const std::string &path) {
 }  // namespace
 
 QString SearchStageStatus(SearchProgressStage stage,
-                          std::string_view backendId,
-                          bool useCudaSessionSpecialization) {
-    if (backendId == "vulkan") {
-        switch (stage) {
-        case SearchProgressStage::CreatingSimulation:
-            return QStringLiteral("Initializing Vulkan simulation...");
-        case SearchProgressStage::LoadingScenario:
-            return QStringLiteral("Loading the map onto Vulkan...");
-        case SearchProgressStage::RestoringSimulation:
-            return QStringLiteral("Restoring the prepared Vulkan simulation...");
-        case SearchProgressStage::ApplyingBaselineInputs:
-            return QStringLiteral("Applying baseline inputs to Vulkan...");
-        case SearchProgressStage::PreparingSearch:
-            return QStringLiteral("Preparing Vulkan search...");
-        case SearchProgressStage::Baseline:
-            return QStringLiteral("Evaluating Vulkan baseline...");
-        case SearchProgressStage::Calibration:
-            return QStringLiteral("Calibrating Vulkan throughput...");
-        case SearchProgressStage::Mutations:
-            return QStringLiteral("Searching on Vulkan...");
-        default:
-            break;
-        }
-    }
+                          std::string_view backendId) {
     const bool cuda = backendId == "cuda";
     const bool multiThreadedCpu =
             backendId == "multi-threaded-cpu";
@@ -175,11 +153,7 @@ QString SearchStageStatus(SearchProgressStage stage,
         return QStringLiteral("Initializing reference simulation...");
     case SearchProgressStage::LoadingScenario:
         if (cuda) {
-            return useCudaSessionSpecialization
-                    ? QStringLiteral(
-                              "Loading the map and building the fast CUDA "
-                              "kernel...")
-                    : QStringLiteral("Loading the map onto CUDA...");
+            return QStringLiteral("Loading the map onto CUDA...");
         }
         return QStringLiteral("Loading the map into the simulation...");
     case SearchProgressStage::RestoringSimulation:
@@ -196,9 +170,7 @@ QString SearchStageStatus(SearchProgressStage stage,
         return QStringLiteral("Applying the baseline input sequence...");
     case SearchProgressStage::PreparingSearch:
         if (cuda) {
-            return useCudaSessionSpecialization
-                    ? QStringLiteral("Preparing fast CUDA search...")
-                    : QStringLiteral("Preparing regular CUDA search...");
+            return QStringLiteral("Preparing CUDA search...");
         }
         if (multiThreadedCpu) {
             return QStringLiteral(
@@ -260,13 +232,15 @@ SearchWorker::SearchWorker(
         std::shared_ptr<std::atomic_bool> stopRequested,
         std::shared_ptr<std::atomic_bool> cancellationRequested,
         std::shared_ptr<std::atomic<SearchIterationPhase>> iterationPhase,
-        AutoRestartPolicy restartPolicy)
+        AutoRestartPolicy restartPolicy,
+        std::vector<SearchDevice> devices)
     : request_(std::move(request)),
       searchId_(searchId),
       stopRequested_(std::move(stopRequested)),
       cancellationRequested_(std::move(cancellationRequested)),
       iterationPhase_(std::move(iterationPhase)),
-      restartPolicy_(restartPolicy) {}
+      restartPolicy_(restartPolicy),
+      devices_(std::move(devices)) {}
 
 void SearchWorker::run() {
     emit stageChanged(QStringLiteral("Preparing search..."), true);
@@ -299,8 +273,7 @@ void SearchWorker::run() {
         emit stageChanged(
                 SearchStageStatus(
                         progress.stage,
-                        PhysicsBackendId(request_.backend),
-                        request_.useCudaSessionSpecialization),
+                        PhysicsBackendId(request_.backend)),
                 true);
     };
     control.cudaBatchSizeChanged = [this](std::uint32_t batchSize) {
@@ -377,7 +350,6 @@ void SearchWorker::run() {
         emit liveRowChanged(SearchSessionStore::LiveRow(
                 request_, currentRestart->load(std::memory_order_relaxed), live));
     };
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
     if (IsGpuBackend(request_.backend)) {
         control.improvementTimelineSampled =
                 [publishImprovement](const SearchLiveUpdate &live) {
@@ -386,7 +358,6 @@ void SearchWorker::run() {
                             PhysicsBackendId(kAuxiliarySimulationBackend));
                 };
     }
-#endif
 
     std::optional<SearchSessionLocation> activeSession;
     std::uint64_t restartNumber = 0;
@@ -458,7 +429,13 @@ void SearchWorker::run() {
                 for (const OptionConfiguration &modifier : request_.modifiers) {
                     modifiers += (modifiers.empty() ? "" : ", ") + modifier.id;
                 }
-                const std::string_view backend = PhysicsBackendId(request_.backend);
+                std::string backend(PhysicsBackendId(request_.backend));
+                if (devices_.size() >= 2u) {
+                    backend.clear();
+                    for (const SearchDevice &device : devices_) {
+                        backend += (backend.empty() ? "" : "+") + std::string(PhysicsBackendId(device.backend));
+                    }
+                }
                 diagnostics::Log("search %llu (restart %llu): %.*s%s, %s, target %s, modifiers %s, "
                                  "horizon %u ms, batch %u%s, replay %s",
                                  static_cast<unsigned long long>(searchId_),
@@ -473,7 +450,7 @@ void SearchWorker::run() {
                                  request_.replayPath.c_str());
             }
             try {
-                result.emplace(RunSearch(request_, &control));
+                result.emplace(ComputeModules::Instance().RunSearch(request_, devices_, &control));
             } catch (const NoEligibleEvaluation &) {
                 if (cancellationRequested_->load(std::memory_order_relaxed))
                     throw SearchCancelled();

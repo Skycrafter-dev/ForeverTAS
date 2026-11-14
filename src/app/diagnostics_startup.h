@@ -9,6 +9,7 @@
 #include <QString>
 #include <QVariant>
 
+class QQmlApplicationEngine;
 class QQuickWindow;
 
 namespace forevertas::app {
@@ -21,6 +22,10 @@ bool StartDiagnostics();
 // Which GPU runtime libraries are loaded, with their versions: call after
 // the GPU backends are queried.
 void LogLoadedGpuRuntimes();
+// Where the window's QML came from: import paths, the ForeverTAS QML plugin
+// loaded, the main file, QML settings in the environment and the QML cache.
+// Call after the window is loaded.
+void LogQmlSetup(const QQmlApplicationEngine &engine);
 // The window's graphics: API, renderer and driver, screens, and scene graph
 // errors.
 void WatchWindow(QQuickWindow *window);

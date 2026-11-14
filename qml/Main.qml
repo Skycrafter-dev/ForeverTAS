@@ -17,6 +17,11 @@ ApplicationWindow {
     property var shutdown: null
     // The session log (Help > Open log folder).
     property var logs: null
+    // a GPU's own settings: its backend, or "GPU" with its card ticked
+    readonly property bool cudaSettingsShown: controller.simulationBackendId === "cuda"
+            || (controller.simulationBackendId === "gpus" && controller.cudaCardEnabled)
+    readonly property bool hipSettingsShown: controller.simulationBackendId === "hip"
+            || (controller.simulationBackendId === "gpus" && controller.hipCardEnabled)
     onClosing: close => {
         dockSpace.flushState()
         if (windowSaveTimer.running)
@@ -547,9 +552,6 @@ ApplicationWindow {
         function onCudaCalibrationEnabledChanged() { editHistory.noteChange() }
         function onHipParallelSampleCountChanged() { editHistory.noteChange() }
         function onHipCalibrationEnabledChanged() { editHistory.noteChange() }
-        function onVulkanParallelSampleCountChanged() { editHistory.noteChange() }
-        function onVulkanCalibrationEnabledChanged() { editHistory.noteChange() }
-        function onCudaSessionSpecializationEnabledChanged() { editHistory.noteChange() }
         function onRandomizeSeedsOnStartChanged() { editHistory.noteChange() }
         function onDrawTargetsThroughBlocksChanged() { editHistory.noteChange() }
         function onSearchAlgorithmIdChanged() { editHistory.noteChange() }
@@ -844,7 +846,7 @@ ApplicationWindow {
         anchors.centerIn: parent
         modal: true
         width: Math.min(560, window.width - 48)
-        title: qsTr("Compute package")
+        title: qsTr("Update")
         closePolicy: window.updater && window.updater.downloading
                      ? Popup.NoAutoClose : Popup.CloseOnEscape
 
@@ -853,90 +855,14 @@ ApplicationWindow {
 
             Label {
                 Layout.fillWidth: true
-                text: window.updater && window.updater.catalogReady
-                      ? qsTr("ForeverTAS %1 · Installed: %2")
+                text: window.updater && window.updater.updateAvailable
+                      ? qsTr("ForeverTAS %1 is available. You have %2.")
                             .arg(window.updater.latestVersion)
-                            .arg(window.updater.installedPackageId)
+                            .arg(Qt.application.version)
                       : window.updater && window.updater.checking
-                        ? qsTr("Checking available packages…")
-                        : qsTr("No package catalog is available.")
+                        ? qsTr("Checking for updates…")
+                        : qsTr("ForeverTAS is up to date.")
                 color: AppTheme.text
-                wrapMode: Text.WordWrap
-            }
-
-            ThemedCheckBox {
-                objectName: "automaticComputePackageCheckBox"
-                visible: window.updater && window.updater.catalogReady
-                text: qsTr("Choose automatically for this computer")
-                checked: window.updater && window.updater.automaticSelection
-                enabled: !window.updater.downloading
-                onClicked: {
-                    if (checked)
-                        window.updater.useAutomaticPackage()
-                    else
-                        window.updater.selectPackage(
-                            window.updater.selectedPackageId)
-                }
-            }
-
-            ListView {
-                id: updatePackageList
-                objectName: "updatePackageList"
-                Layout.fillWidth: true
-                Layout.preferredHeight: Math.min(260, contentHeight)
-                visible: window.updater && window.updater.catalogReady
-                clip: true
-                spacing: 3
-                model: window.updater ? window.updater.packages : []
-                delegate: Rectangle {
-                    required property var modelData
-                    width: updatePackageList.width
-                    height: 44
-                    radius: 5
-                    color: modelData.id === window.updater.selectedPackageId
-                           ? AppTheme.controlHover : AppTheme.surface
-                    border.width: 1
-                    border.color: modelData.id === window.updater.selectedPackageId
-                                  ? AppTheme.accent : AppTheme.border
-
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 10
-                        anchors.rightMargin: 10
-                        spacing: 8
-                        Label {
-                            text: modelData.id === window.updater.selectedPackageId
-                                  ? "●" : "○"
-                            color: AppTheme.accent
-                        }
-                        Label {
-                            Layout.fillWidth: true
-                            text: modelData.label
-                            color: AppTheme.text
-                            elide: Text.ElideRight
-                        }
-                        Label {
-                            visible: modelData.recommended || modelData.installed
-                            text: modelData.recommended
-                                  ? qsTr("Recommended") : qsTr("Installed")
-                            color: AppTheme.textMuted
-                            font.pixelSize: 10
-                        }
-                    }
-                    MouseArea {
-                        anchors.fill: parent
-                        enabled: !window.updater.downloading
-                        onClicked: window.updater.selectPackage(modelData.id)
-                    }
-                }
-            }
-
-            Label {
-                Layout.fillWidth: true
-                visible: window.updater && window.updater.catalogReady
-                         && !window.updater.selectedPackageCompatible
-                text: qsTr("No matching GPU was detected. CPU and Vulkan will still be available in this package.")
-                color: AppTheme.warning
                 wrapMode: Text.WordWrap
             }
 
@@ -989,8 +915,7 @@ ApplicationWindow {
 
             ThemedButton {
                 objectName: "installUpdateButton"
-                text: window.updater && window.updater.updateAvailable
-                      ? qsTr("Install selected") : qsTr("Installed")
+                text: qsTr("Install")
                 highlighted: true
                 enabled: window.updater && window.updater.updateAvailable
                          && !window.updater.downloading
@@ -6203,12 +6128,13 @@ ApplicationWindow {
                                 Label {
                                     Layout.fillWidth: true
                                     text: window.controller.simulationBackendId
+                                          === "gpus"
+                                          ? qsTr("The ticked graphics cards search at the same time and share their best runs")
+                                          : window.controller.simulationBackendId
                                           === "cuda"
-                                          ? qsTr("NVIDIA CUDA for Stadium; compute capability 5.0+ is supported, with Fast CUDA on 7.5+")
+                                          ? qsTr("NVIDIA CUDA for Stadium; compute capability 5.0+")
                                           : window.controller.simulationBackendId === "hip"
                                             ? qsTr("HIP Compute for Stadium on compatible GPUs")
-                                          : window.controller.simulationBackendId === "vulkan"
-                                            ? qsTr("Vulkan Compute for Stadium on compatible GPUs")
                                           : window.controller.simulationBackendId
                                             === "optimized-cpu"
                                             ? qsTr("Faster runtime optimized for Stadium, may break compatibility in other environments")
@@ -6219,6 +6145,24 @@ ApplicationWindow {
                                     color: AppTheme.textMuted
                                     wrapMode: Text.WordWrap
                                     font.pixelSize: 11
+                                }
+
+                                ThemedCheckBox {
+                                    objectName: "cudaCardCheckBox"
+                                    visible: window.controller.simulationBackendId === "gpus"
+                                    text: window.controller.cudaCardName
+                                    checked: window.controller.cudaCardEnabled
+                                    enabled: !window.controller.running
+                                    onToggled: window.controller.cudaCardEnabled = checked
+                                }
+
+                                ThemedCheckBox {
+                                    objectName: "hipCardCheckBox"
+                                    visible: window.controller.simulationBackendId === "gpus"
+                                    text: window.controller.hipCardName
+                                    checked: window.controller.hipCardEnabled
+                                    enabled: !window.controller.running
+                                    onToggled: window.controller.hipCardEnabled = checked
                                 }
 
                                 Label {
@@ -6232,9 +6176,7 @@ ApplicationWindow {
 
                                     objectName: "physicsModeCombo"
                                     Layout.fillWidth: true
-                                    visible: (window.controller.simulationBackendId
-                                              === window.controller.approximatePhysicsBackendId
-                                              && window.controller.approximatePhysicsAvailable)
+                                    visible: window.controller.approximatePhysicsOnGpu
                                              || (window.controller.simulationBackendId === "multi-threaded-cpu"
                                                  && window.controller.approximatePhysicsCpuAvailable
                                                  && Number(window.controller.cpuWorkerCount) >= 2)
@@ -6264,28 +6206,23 @@ ApplicationWindow {
                                     font.pixelSize: 11
                                 }
 
-                                ThemedButton {
-                                    objectName: "changeComputePackageButton"
+                                Label {
+                                    objectName: "computeModuleStatus"
                                     Layout.fillWidth: true
-                                    text: qsTr("Change compute package…")
-                                    enabled: window.updater && window.updater.supported
-                                    onClicked: {
-                                        updateDialog.open()
-                                        window.updater.checkForUpdates()
-                                    }
+                                    visible: text.length > 0
+                                    text: window.updater ? window.updater.computeStatus : ""
+                                    color: AppTheme.textMuted
+                                    wrapMode: Text.WordWrap
+                                    font.pixelSize: 11
                                 }
 
                                 Label {
                                     objectName: "cudaCompatibilityStatus"
                                     Layout.fillWidth: true
-                                    visible: window.controller.simulationBackendId
-                                             === "cuda"
+                                    visible: window.cudaSettingsShown
                                     text: window.controller.cudaStatusText
-                                    color: !window.controller.cudaAvailable
-                                           ? AppTheme.error
-                                           : !window.controller.cudaFastModeAvailable
-                                             ? AppTheme.warning
-                                             : AppTheme.success
+                                    color: window.controller.cudaAvailable
+                                           ? AppTheme.success : AppTheme.error
                                     wrapMode: Text.WordWrap
                                     font.pixelSize: 11
                                 }
@@ -6293,22 +6230,9 @@ ApplicationWindow {
                                 Label {
                                     objectName: "hipCompatibilityStatus"
                                     Layout.fillWidth: true
-                                    visible: window.controller.simulationBackendId
-                                             === "hip"
+                                    visible: window.hipSettingsShown
                                     text: window.controller.hipStatusText
                                     color: window.controller.hipAvailable
-                                           ? AppTheme.success : AppTheme.error
-                                    wrapMode: Text.WordWrap
-                                    font.pixelSize: 11
-                                }
-
-                                Label {
-                                    objectName: "vulkanCompatibilityStatus"
-                                    Layout.fillWidth: true
-                                    visible: window.controller.simulationBackendId
-                                             === "vulkan"
-                                    text: window.controller.vulkanStatusText
-                                    color: window.controller.vulkanAvailable
                                            ? AppTheme.success : AppTheme.error
                                     wrapMode: Text.WordWrap
                                     font.pixelSize: 11
@@ -6410,10 +6334,11 @@ ApplicationWindow {
 
                                 SettingTextField {
                                     objectName: "cudaParallelSampleSettings"
-                                    visible: window.controller.simulationBackendId
-                                             === "cuda"
+                                    visible: window.cudaSettingsShown
                                     fieldObjectName: "cudaParallelSampleCountField"
-                                    label: qsTr("Parallel samples at a time")
+                                    label: window.controller.simulationBackendId === "gpus"
+                                           ? qsTr("%1: parallel samples at a time").arg(window.controller.cudaCardName)
+                                           : qsTr("Parallel samples at a time")
                                     value: window.controller.cudaParallelSampleCount
                                     running: window.controller.running
                                     minimum: 1
@@ -6423,10 +6348,11 @@ ApplicationWindow {
 
                                 SettingTextField {
                                     objectName: "hipParallelSampleSettings"
-                                    visible: window.controller.simulationBackendId
-                                             === "hip"
+                                    visible: window.hipSettingsShown
                                     fieldObjectName: "hipParallelSampleCountField"
-                                    label: qsTr("Parallel samples at a time")
+                                    label: window.controller.simulationBackendId === "gpus"
+                                           ? qsTr("%1: parallel samples at a time").arg(window.controller.hipCardName)
+                                           : qsTr("Parallel samples at a time")
                                     value: window.controller.hipParallelSampleCount
                                     running: window.controller.running
                                     minimum: 1
@@ -6434,24 +6360,12 @@ ApplicationWindow {
                                         window.controller.hipParallelSampleCount = value
                                 }
 
-                                SettingTextField {
-                                    objectName: "vulkanParallelSampleSettings"
-                                    visible: window.controller.simulationBackendId
-                                             === "vulkan"
-                                    fieldObjectName: "vulkanParallelSampleCountField"
-                                    label: qsTr("Parallel samples at a time")
-                                    value: window.controller.vulkanParallelSampleCount
-                                    running: window.controller.running
-                                    minimum: 1
-                                    onEdited: value =>
-                                        window.controller.vulkanParallelSampleCount = value
-                                }
-
                                 ThemedCheckBox {
                                     objectName: "cudaCalibrationCheckBox"
-                                    visible: window.controller.simulationBackendId
-                                             === "cuda"
-                                    text: qsTr("Calibrate for maximum throughput")
+                                    visible: window.cudaSettingsShown
+                                    text: window.controller.simulationBackendId === "gpus"
+                                          ? qsTr("%1: calibrate for maximum throughput").arg(window.controller.cudaCardName)
+                                          : qsTr("Calibrate for maximum throughput")
                                     checked: window.controller.cudaCalibrationEnabled
                                     enabled: !window.controller.running
                                     onToggled:
@@ -6461,25 +6375,14 @@ ApplicationWindow {
 
                                 ThemedCheckBox {
                                     objectName: "hipCalibrationCheckBox"
-                                    visible: window.controller.simulationBackendId
-                                             === "hip"
-                                    text: qsTr("Calibrate for maximum throughput")
+                                    visible: window.hipSettingsShown
+                                    text: window.controller.simulationBackendId === "gpus"
+                                          ? qsTr("%1: calibrate for maximum throughput").arg(window.controller.hipCardName)
+                                          : qsTr("Calibrate for maximum throughput")
                                     checked: window.controller.hipCalibrationEnabled
                                     enabled: !window.controller.running
                                     onToggled:
                                         window.controller.hipCalibrationEnabled =
-                                            checked
-                                }
-
-                                ThemedCheckBox {
-                                    objectName: "vulkanCalibrationCheckBox"
-                                    visible: window.controller.simulationBackendId
-                                             === "vulkan"
-                                    text: qsTr("Calibrate for maximum throughput")
-                                    checked: window.controller.vulkanCalibrationEnabled
-                                    enabled: !window.controller.running
-                                    onToggled:
-                                        window.controller.vulkanCalibrationEnabled =
                                             checked
                                 }
                             }
@@ -6625,49 +6528,6 @@ ApplicationWindow {
                                     inputMethodHints: Qt.ImhDigitsOnly
                                     onTextEdited:
                                         window.controller.autoRestartAttempts = text
-                                }
-                            }
-
-                            ConfigurationSection {
-                                objectName: "cudaSessionSpecializationSection"
-                                Layout.fillWidth: true
-                                Layout.leftMargin: 20
-                                Layout.rightMargin: 20
-                                visible: window.controller.simulationBackendId
-                                            === "cuda"
-                                title: qsTr("CUDA fast mode")
-
-                                ThemedSwitch {
-                                    objectName: "cudaSessionSpecializationSwitch"
-                                    Layout.fillWidth: true
-                                    text: qsTr("Use the faster CUDA kernel")
-                                    checked: window.controller
-                                                 .cudaSessionSpecializationEnabled
-                                             && window.controller
-                                                 .cudaFastModeAvailable
-                                    enabled: !window.controller.running
-                                             && window.controller
-                                                 .cudaFastModeAvailable
-                                    onToggled: window.controller
-                                        .cudaSessionSpecializationEnabled = checked
-                                    Accessible.name: text
-                                }
-
-                                Label {
-                                    objectName: "cudaSessionSpecializationWarning"
-                                    Layout.fillWidth: true
-                                    text: !window.controller.cudaAvailable
-                                          ? qsTr("Fast CUDA is unavailable because CUDA is not available on this system.")
-                                          : !window.controller.cudaFastModeAvailable
-                                            ? qsTr("Fast CUDA is unavailable on this GPU because it requires compute capability 7.5 or newer. Regular CUDA will be used automatically.")
-                                            : (window.controller
-                                                 .cudaSessionSpecializationEnabled
-                                               ? qsTr("Fast mode is on. Its kernel is built once for this map. ")
-                                               : qsTr("Fast mode is off. Its kernel will not be built. "))
-                                              + qsTr("Fast mode is for normal Stadium runs. It can give wrong results or fail when the run uses stunts, respawns, car resets, or unusual map physics. Turn it off for those runs. Regular CUDA is safer, but slower.")
-                                    color: AppTheme.textMuted
-                                    wrapMode: Text.WordWrap
-                                    font.pixelSize: 11
                                 }
                             }
 
@@ -7263,6 +7123,25 @@ ApplicationWindow {
                     onTriggered: window.logs.openFolder()
                 }
             }
+        }
+    }
+
+    // The menu bar as drawn, in the log (a tester's showed no Help menu).
+    Timer {
+        interval: 2000
+        running: window.logs !== null
+        onTriggered: {
+            const menus = []
+            for (let index = 0; index < menuBar.count; ++index) {
+                const menu = menuBar.menuAt(index)
+                const item = menuBar.itemAt(index)
+                menus.push((menu ? menu.title : "?") + (item
+                        ? " (" + (item.visible ? "shown" : "hidden") + ", x " + Math.round(item.x)
+                          + ", width " + Math.round(item.width) + ")"
+                        : " (no item)"))
+            }
+            window.logs.note("menu bar: " + menus.join(", ") + "; " + Math.round(menuBar.width)
+                             + " wide, zoom " + AppTheme.zoom)
         }
     }
 
