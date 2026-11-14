@@ -4,14 +4,16 @@ import QtQuick.Layouts
 import "settings"
 
 // Edit > Preferences: the race's keys and gamepad buttons (click one to
-// change it, then press the new key or button; Esc keeps the old one) and the
-// gamepad.
+// change it, then press the new key or button; Esc keeps the old one), the
+// gamepad, and MCP (AI assistants driving ForeverTAS).
 GlassDialog {
     id: dialog
 
     required property var raceControls
     required property var gamepad
-    // 0: Controls, 1: Gamepad.
+    // The MCP bridge (null in tests that do not make one).
+    property var mcp: null
+    // 0: Controls, 1: Gamepad, 2: MCP.
     property alias section: sections.currentIndex
     // [action, index] while waiting for a key.
     property var capturing: null
@@ -35,6 +37,7 @@ GlassDialog {
             background: Item {}
             ThemedTabButton { text: qsTr("Controls") }
             ThemedTabButton { text: qsTr("Gamepad") }
+            ThemedTabButton { text: qsTr("MCP") }
         }
 
         StackLayout {
@@ -207,6 +210,79 @@ GlassDialog {
                 wrapMode: Text.Wrap
                 color: AppTheme.textMuted
                 font.pixelSize: 11
+            }
+            Item { Layout.fillHeight: true }
+        }
+
+        ColumnLayout {
+            objectName: "mcpSection"
+            spacing: 10
+
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("MCP lets an AI assistant (Claude or any MCP client) drive ForeverTAS: load maps, test scripts, set up and run searches. What it changes shows here as you watch.")
+                wrapMode: Text.WordWrap
+                color: AppTheme.textMuted
+                font.pixelSize: 11
+            }
+            SettingSwitch {
+                objectName: "mcpEnabledSwitch"
+                label: qsTr("Let MCP clients drive ForeverTAS")
+                checked: dialog.mcp !== null && dialog.mcp.enabled
+                running: dialog.mcp === null
+                onToggled: checked => { if (dialog.mcp) dialog.mcp.enabled = checked }
+            }
+            Label {
+                objectName: "mcpStatus"
+                Layout.fillWidth: true
+                text: dialog.mcp === null ? "" : dialog.mcp.status
+                      + (dialog.mcp.clientCount > 0
+                         ? " " + qsTr("%n client(s) connected.", "", dialog.mcp.clientCount) : "")
+                wrapMode: Text.WordWrap
+                color: AppTheme.text
+            }
+            Label {
+                Layout.fillWidth: true
+                text: qsTr("Off, nothing listens and nothing runs. To connect a client, add this to its MCP configuration; with ForeverTAS closed, the client opens it with MCP on.")
+                wrapMode: Text.WordWrap
+                color: AppTheme.textMuted
+                font.pixelSize: 11
+            }
+            ScrollView {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 110
+                clip: true
+                TextArea {
+                    id: mcpConfig
+                    objectName: "mcpClientConfig"
+                    readOnly: true
+                    selectByMouse: true
+                    wrapMode: TextEdit.NoWrap
+                    font.family: "monospace"
+                    font.pixelSize: 11
+                    color: AppTheme.text
+                    text: dialog.mcp === null ? "" : dialog.mcp.clientConfig
+                    background: Rectangle {
+                        color: AppTheme.surface
+                        border.width: 1
+                        border.color: AppTheme.border
+                        radius: 6
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                Item { Layout.fillWidth: true }
+                ThemedButton {
+                    objectName: "copyMcpConfigButton"
+                    text: qsTr("Copy")
+                    enabled: mcpConfig.text.length > 0
+                    onClicked: {
+                        mcpConfig.selectAll()
+                        mcpConfig.copy()
+                        mcpConfig.deselect()
+                    }
+                }
             }
             Item { Layout.fillHeight: true }
         }

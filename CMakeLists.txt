@@ -250,6 +250,8 @@ add_library(forevertas_core STATIC
     src/evaluators/iteration_evaluator.h
     src/evaluators/custom_volume_entry_evaluator.cpp
     src/evaluators/custom_volume_entry_evaluator.h
+    src/evaluators/gate_entry_evaluator.cpp
+    src/evaluators/gate_entry_evaluator.h
     src/evaluators/evaluator_utils.h
     src/evaluators/precise_finish_time_evaluator.cpp
     src/evaluators/precise_finish_time_evaluator.h
@@ -406,6 +408,12 @@ add_library(forevertas_gui STATIC
     src/app/keyboard_layout.h
     src/app/input_preview_binding.cpp
     src/app/input_preview_binding.h
+    src/app/mcp_bridge.cpp
+    src/app/mcp_bridge.h
+    src/app/mcp_protocol.cpp
+    src/app/mcp_protocol.h
+    src/app/mcp_relay.cpp
+    src/app/mcp_relay.h
     src/app/search_controller.cpp
     src/app/compute_modules.cpp
     src/app/compute_modules.h
@@ -477,6 +485,7 @@ target_link_libraries(forevertas_gui PUBLIC
     Qt6::Concurrent
     Qt6::Core
     Qt6::Gui
+    Qt6::Network
     Qt6::Quick
     Qt6::Quick3D
     Qt6::Widgets)
@@ -614,6 +623,34 @@ qt_add_resources(forevertas "forevertas_app_resources"
     PREFIX "/"
     FILES "${forevertas_icon_svg}")
 
+# The documentation the MCP bridge serves (get_documentation): the topics it
+# names, and the README.
+set(forevertas_mcp_docs
+    MCP.md GATES.md SEARCH_COMPONENTS.md CONDITIONS.md CHECKPOINT_TIME.md
+    INPUT_INSERTION.md GPU_BACKENDS.md GPU_SAFETY.md)
+list(TRANSFORM forevertas_mcp_docs PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/docs/")
+qt_add_resources(forevertas "forevertas_mcp_docs"
+    PREFIX "/mcp-docs"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/docs"
+    FILES ${forevertas_mcp_docs})
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/README.md" PROPERTIES
+    QT_RESOURCE_ALIAS "README.md")
+qt_add_resources(forevertas "forevertas_mcp_readme"
+    PREFIX "/mcp-docs"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+
+# The stdio MCP server for Windows (a console program: the app is a GUI one,
+# whose standard input and output Windows does not wire); elsewhere it is
+# ForeverTAS --mcp-stdio.
+if(WIN32)
+    add_executable(forevertas-mcp src/tools/forevertas_mcp_main.cpp)
+    target_link_libraries(forevertas-mcp PRIVATE forevertas_gui Qt6::Core Qt6::Network)
+    target_compile_definitions(forevertas-mcp PRIVATE FOREVERTAS_VERSION="${PROJECT_VERSION}")
+    set_target_properties(forevertas-mcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
+    add_dependencies(forevertas forevertas-mcp)
+    install(TARGETS forevertas-mcp RUNTIME DESTINATION ".")
+endif()
+
 if(WIN32)
     configure_file(
         packaging/windows/forevertas.rc.in
@@ -698,6 +735,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/InputInsertionSettings.qml
         qml/settings/ModifierComposition.qml
         qml/settings/ModifierPassControls.qml
+        qml/settings/GateEntryEvaluationSettings.qml
         qml/settings/PointTargetEvaluationSettings.qml
         qml/settings/PoseTargetEvaluationSettings.qml
         qml/settings/RandomSteeringMutationSettings.qml
@@ -1025,6 +1063,13 @@ if(BUILD_TESTING)
         target_compile_options(forevertas-condition-catalog-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
     endif()
     add_test(NAME forevertas-condition-catalog COMMAND forevertas-condition-catalog-tests)
+
+    add_executable(forevertas-gate-entry-tests tests/gate_entry_tests.cpp)
+    target_link_libraries(forevertas-gate-entry-tests PRIVATE forevertas_core)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-gate-entry-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-gate-entry COMMAND forevertas-gate-entry-tests)
 
     add_executable(forevertas-dock-layout-tests tests/dock_layout_tests.cpp)
     target_link_libraries(forevertas-dock-layout-tests PRIVATE forevertas_gui)
@@ -1599,6 +1644,19 @@ if(BUILD_TESTING)
                      "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-qml-module PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
+            TIMEOUT 60)
+        # MCP: the bridge and relay in process, and on a map.
+        add_executable(forevertas-mcp-tests tests/mcp_tests.cpp)
+        target_link_libraries(forevertas-mcp-tests PRIVATE
+            forevertas_gui Qt6::Gui Qt6::Network Qt6::Qml Qt6::Quick Qt6::Widgets)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-mcp-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-mcp
+                 COMMAND forevertas-mcp-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-mcp PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
             TIMEOUT 60)
         # The window thread's time per mouse move while dragging (not a test):
         # forevertas-drag-benchmark PACKS REPLAY

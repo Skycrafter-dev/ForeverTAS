@@ -13,6 +13,7 @@
 //   module is bytecode only). It fails on that runaway (std::bad_alloc), a
 //   crash, or an Enter slower than 500 ms.
 #include "app/input_preview_binding.h"
+#include "app/mcp_bridge.h"
 #include "app/search_controller.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
@@ -264,7 +265,9 @@ int main(int argc, char **argv) {
             std::cerr << warning.toString().toStdString() << '\n';
     });
     engine.addImportPath(QStringLiteral(FOREVERTAS_QML_IMPORT_DIR));
+    forevertas::app::McpBridge mcp(controller, &engine, false);
     engine.setInitialProperties({
+            {QStringLiteral("mcp"), QVariant::fromValue(static_cast<QObject *>(&mcp))},
             {QStringLiteral("controller"), QVariant::fromValue(static_cast<QObject *>(&controller))},
             {QStringLiteral("viewer"), QVariant::fromValue(static_cast<QObject *>(&viewer))}});
     engine.loadFromModule(QStringLiteral("ForeverTAS"), QStringLiteral("Main"));
@@ -334,6 +337,46 @@ int main(int argc, char **argv) {
         std::cout << "a box's arrow drags the box\n";
 
     }
+    // The scripted telemetry's edit button lies inside its panel and has an
+    // icon (users saw no way to edit it).
+    if (argc == 3) {
+        viewer.setProperty("telemetryScript", QStringLiteral(
+                "Camera pos: X {camera.x} Y {camera.y} Z {camera.z} and a long tail of text to fill the line"));
+        Settle(200);
+        QQuickItem *const panel = window->findChild<QQuickItem *>(QStringLiteral("scriptedTelemetry"));
+        QQuickItem *const edit = window->findChild<QQuickItem *>(QStringLiteral("editTelemetryButton"));
+        if (panel == nullptr || edit == nullptr)
+            return std::cerr << "no scripted telemetry panel or edit button\n", 1;
+        const QRectF inPanel = edit->mapRectToItem(panel, QRectF(0, 0, edit->width(), edit->height()));
+        if (!edit->isVisible() || inPanel.right() > panel->width() + 0.5 || inPanel.left() < 0) {
+            std::cerr << "the telemetry edit button is outside its panel (" << inPanel.left() << ".."
+                      << inPanel.right() << " of " << panel->width() << ")\n";
+            return 1;
+        }
+        // drawn with an icon, not a character a font may lack
+        // (a ThemedButton's own text label drew an icon set on it as nothing)
+        QQmlExpression icon(qmlContext(edit), edit, QStringLiteral("icon.source.toString()"));
+        const QObject *const content = edit->property("contentItem").value<QObject *>();
+        if (icon.evaluate().toString().isEmpty() || content == nullptr ||
+            !QByteArray(content->metaObject()->className()).contains("IconLabel"))
+            return std::cerr << "the telemetry edit button draws no icon\n", 1;
+        // FTAS_PICTURE: the window, to look at (needs the 3D view drawn),
+        // and Edit > Preferences > MCP beside it (-mcp)
+        if (qEnvironmentVariableIsSet("FTAS_PICTURE")) {
+            window->grabWindow().save(qEnvironmentVariable("FTAS_PICTURE"));
+            QObject *const preferences = window->findChild<QObject *>(QStringLiteral("preferencesDialog"));
+            if (preferences != nullptr) {
+                preferences->setProperty("section", 2);
+                QMetaObject::invokeMethod(preferences, "open");
+                Settle(400);
+                window->grabWindow().save(qEnvironmentVariable("FTAS_PICTURE").replace(
+                        QStringLiteral(".png"), QStringLiteral("-mcp.png")));
+                QMetaObject::invokeMethod(preferences, "close");
+                Settle(200);
+            }
+        }
+        std::cout << "the telemetry edit button lies inside its panel\n";
+    }
     // The pose target's position and rotation, each from the camera or the
     // car on its own; from the camera, the pose faces where it looks.
     if (argc == 3) {
@@ -367,13 +410,17 @@ int main(int argc, char **argv) {
     QVariant shown;
     QMetaObject::invokeMethod(space, "setHeaderShown", Q_ARG(QVariant, QStringLiteral("target")),
                               Q_ARG(QVariant, false));
-    Settle(400);
     QQuickItem *panel = nullptr;
     for (QQuickItem *item : space->findChildren<QQuickItem *>())
         if (item->property("panelId").toString() == QStringLiteral("target") &&
             item->property("isDockPanel").toBool())
             panel = item;
     QQuickItem *const frame = panel != nullptr ? panel->property("frame").value<QQuickItem *>() : nullptr;
+    // the header slides away (slowly where drawing is slow)
+    QElapsedTimer sliding;
+    sliding.start();
+    while (frame != nullptr && std::abs(panel->y() - frame->y()) > 1 && sliding.elapsed() < 4000)
+        Settle(50);
     if (frame == nullptr || std::abs(panel->y() - frame->y()) > 1) {
         std::cerr << "the target panel's header did not hide\n";
         return 1;

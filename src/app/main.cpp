@@ -5,6 +5,9 @@
 #include "app/stall_watch.h"
 #include "diagnostics/diagnostics_log.h"
 #include "app/input_preview_binding.h"
+#include "app/mcp_bridge.h"
+#include "app/mcp_protocol.h"
+#include "app/mcp_relay.h"
 #include "app/update_controller.h"
 #include "app/shutdown_controller.h"
 #include "viewer/race_timeline_item.h"
@@ -24,10 +27,15 @@
 #include <QThreadPool>
 #include <QVariant>
 #include <QJSValue>
+#include <QLockFile>
 #include <iostream>
 #include <cstdlib>
 
 int main(int argc, char **argv) {
+    // The stdio MCP server an MCP client runs (no window; see app/mcp_relay.h).
+    if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--mcp-stdio")) {
+        return forevertas::app::RunMcpRelay(argc, argv, QStringLiteral(FOREVERTAS_VERSION));
+    }
     if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-compute-module")) {
         QCoreApplication checker(argc, argv);
         return forevertas::app::CheckComputeModule(argc, argv);
@@ -82,6 +90,12 @@ int main(int argc, char **argv) {
     if (!smokeTest) forevertas::app::StartDiagnostics();
     forevertas::app::DiagnosticsLogs logs;
 
+    // Held while this window runs (MCP on or not): the MCP relay then knows
+    // not to start another.
+    QLockFile presence(forevertas::app::McpPresenceLockPath());
+    presence.setStaleLockTime(0);
+    static_cast<void>(presence.tryLock(200));
+
     forevertas::app::SearchController controller;
     forevertas::app::LogLoadedGpuRuntimes();
     forevertas::app::UpdateController updates;
@@ -135,6 +149,11 @@ int main(int argc, char **argv) {
         QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     }
     QQmlApplicationEngine engine;
+    // MCP: off unless turned on in Preferences, or for this session when an
+    // MCP client started the window (--enable-mcp).
+    forevertas::app::McpBridge mcp(controller, &engine,
+                                   application.arguments().contains(QStringLiteral("--enable-mcp")) &&
+                                           !smokeTest);
     engine.addImportPath(QCoreApplication::applicationDirPath() +
                          QStringLiteral("/qml"));
     engine.setInitialProperties({
@@ -146,7 +165,9 @@ int main(int argc, char **argv) {
             {QStringLiteral("updater"),
              QVariant::fromValue(static_cast<QObject *>(&updates))},
             {QStringLiteral("logs"),
-             QVariant::fromValue(static_cast<QObject *>(&logs))}});
+             QVariant::fromValue(static_cast<QObject *>(&logs))},
+            {QStringLiteral("mcp"),
+             QVariant::fromValue(static_cast<QObject *>(&mcp))}});
     QObject::connect(
             &engine,
             &QQmlApplicationEngine::objectCreationFailed,

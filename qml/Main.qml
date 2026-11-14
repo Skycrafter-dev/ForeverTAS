@@ -17,6 +17,8 @@ ApplicationWindow {
     property var shutdown: null
     // The session log (Help > Open log folder).
     property var logs: null
+    // The MCP bridge (Edit > Preferences > MCP).
+    property var mcp: null
     // a GPU's own settings: its backend, or "GPU" with its card ticked
     readonly property bool cudaSettingsShown: controller.simulationBackendId === "cuda"
             || (controller.simulationBackendId === "gpus" && controller.cudaCardEnabled)
@@ -1495,6 +1497,7 @@ ApplicationWindow {
         parent: Overlay.overlay
         anchors.centerIn: parent
         width: Math.min(560, window.width - 32)
+        mcp: window.mcp
         raceControls: raceControls
         gamepad: window.viewer.gamepad
     }
@@ -5097,11 +5100,15 @@ ApplicationWindow {
                         anchors.margins: 6
                         spacing: 4
 
+                        // the room the edit button leaves, however long the
+                        // text (asking for its own width pushed the button
+                        // out of the panel)
                         Label {
                             id: scriptedTelemetryText
                             objectName: "scriptedTelemetryText"
                             Layout.fillWidth: true
-                            Layout.maximumWidth: 430
+                            Layout.preferredWidth: 0
+                            Layout.alignment: Qt.AlignTop
                             text: viewport.renderTelemetry(
                                       window.viewer.telemetryScript)
                             textFormat: Text.RichText
@@ -5113,13 +5120,17 @@ ApplicationWindow {
                             Accessible.description: text
                         }
 
-                        ThemedToolButton {
+                        // an icon button (a ThemedButton draws text only, and
+                        // the pencil character it had shows in few fonts)
+                        ThemedIconButton {
                             id: editTelemetryButton
                             objectName: "editTelemetryButton"
                             Layout.preferredWidth: 26
                             Layout.preferredHeight: 26
-                            text: "\u270e"
-                            font.pixelSize: 15
+                            Layout.alignment: Qt.AlignTop
+                            icon.source: "qrc:/icons/pencil.svg"
+                            icon.width: 14
+                            icon.height: 14
                             Accessible.name: qsTr("Edit scripted telemetry")
                             onClicked: telemetryEditorDialog.open()
                             ToolTip.visible: hovered

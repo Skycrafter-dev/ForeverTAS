@@ -4,6 +4,18 @@
 
 ### New and improved
 
+- **MCP (AI assistants):** Claude or any MCP client can drive ForeverTAS: load
+  maps, test input scripts headlessly (single runs, batches, snapshots), set
+  up and run searches and read the results, all visible in the window. Off
+  until turned on in Edit > Preferences > MCP, which shows the client
+  configuration to copy; with ForeverTAS closed, a client opens it. See
+  docs/MCP.md. (From a contribution by thirkle.)
+- **Gates target:** an ordered list of gates (position, heading, and limits
+  across, up, on speed, heading and wheels on the ground): the car must cross
+  each earlier one honestly and in order, and the search lowers the time it
+  crosses the last. Misses can be ranked by how close they came, so a search
+  climbs towards a gate nothing reaches yet. CPU backends with exact physics.
+  See docs/GATES.md. (From a contribution by thirkle.)
 - **New look:** every panel is now a sheet of glass over the race view, which
   fills the whole window. Light and dark mode are gone; there is one look.
   View > Glass look... adjusts how dark, blurred and bent the glass is.

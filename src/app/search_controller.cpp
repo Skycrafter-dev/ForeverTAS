@@ -2028,6 +2028,13 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
                                     searchRegistration->displayName))};
         }
     }
+    // The Gates target has no GPU or twin version.
+    if (!baselineOnly && configuration.evaluationTarget.id == kGateEntryEvaluationId &&
+        (IsGpuBackend(simulationBackend_) || approximatePhysics_)) {
+        return {{}, QStringLiteral("The Gates target runs on the CPU backends with exact physics: "
+                                   "choose Optimized CPU, Multi-threaded CPU or Reference, and turn "
+                                   "Approximate physics off.")};
+    }
     ConditionVariables conditionVariables;
     if (configuration.evaluationTarget.id == kPointTargetEvaluationId) {
         const OptionSettings &settings =
