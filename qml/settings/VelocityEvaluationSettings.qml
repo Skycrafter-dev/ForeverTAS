@@ -20,7 +20,7 @@ ColumnLayout {
         chainController: root.controller
         chainKey: "target"
         settings: parent.settings
-        updateSetting: controller.setEvaluationTargetSetting
+        updateSetting: (key, value) => controller.setEvaluationTargetSetting(key, value)
         running: controller.running
         viewer: root.viewer
     }
@@ -66,7 +66,7 @@ ColumnLayout {
         visible: root.towardsPoint
         title: qsTr("Point")
         settings: parent.settings
-        updateSetting: controller.setEvaluationTargetSetting
+        updateSetting: (key, value) => controller.setEvaluationTargetSetting(key, value)
         running: controller.running
     }
 
@@ -103,7 +103,7 @@ ColumnLayout {
         visible: !root.towardsPoint
         title: qsTr("Direction vector")
         settings: parent.settings
-        updateSetting: controller.setEvaluationTargetSetting
+        updateSetting: (key, value) => controller.setEvaluationTargetSetting(key, value)
         running: controller.running
         xKey: "directionX"
         yKey: "directionY"

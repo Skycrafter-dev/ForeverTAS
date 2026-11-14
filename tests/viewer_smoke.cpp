@@ -158,10 +158,21 @@ bool TestBasePreviewReturn(const QString &packs, const QString &replay) {
     viewer.setPreviewingHistory(true);
     viewer.loadMap(packs, otherReplay);
     controller.previewBaseInputs();
-    return WaitUntil([&]() {
+    if (!WaitUntil([&]() {
         return viewer.loaded() && !viewer.loading() && viewer.loadedReplayPath() == replay &&
                 !viewer.previewingHistory() && viewer.selectedRunId() == "preview" &&
                 viewer.inputSample(5).accelerate > 0.99f;
+    })) return false;
+    // An edit of the base inputs while a session's inputs are previewed
+    // (users' edits had no effect until a restart): the edit is shown.
+    viewer.setPreviewingHistory(true);
+    viewer.setPreviewInputScript("0.00 press down");
+    if (!WaitUntil([&]() { return viewer.inputSample(5).brake > 0.99f; })) return false;
+    const QString edited = QStringLiteral("0.00 press up\n0.21 rel up");
+    controller.setBaseInputScript(edited);
+    return WaitUntil([&]() {
+        return !viewer.previewingHistory() && viewer.previewInputScript() == edited &&
+                viewer.inputSample(15).accelerate > 0.99f && viewer.inputSample(5).brake < 0.01f;
     });
 }
 

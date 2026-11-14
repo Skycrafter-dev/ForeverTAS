@@ -2,8 +2,11 @@
 //
 // A GPU module (.tar.zst) as the app gets it: unpacked the app's way, loaded
 // through ComputeModules (its interface key must be this app's), its status
-// read. With a map and its replay, and a GPU this module runs on, a short
-// search on it must match the same search on Optimized CPU exactly.
+// read. With a map and its replay, and a GPU this module runs on, two short
+// searches on it must match the same searches on Optimized CPU exactly: a
+// light one, and one as users run them (a large batch, inputs inserted and
+// deleted along the run: AMD users' sessions failed to allocate there). A
+// Challenge (no replay inputs) is searched from no inputs.
 // Exit 0: good; 1: broken; 3: good, but no GPU here to search on.
 #include "app/compute_check.h"
 #include "app/compute_archive.h"
@@ -31,18 +34,39 @@ namespace {
 
 using namespace forevertas;
 
-SearchResult Search(PhysicsBackend backend, const char *packs, const char *replay) {
-    SearchRequest request{packs, replay};
-    const InputScriptParseResult parsed = ParseInputScript(ExtractReplayInputScript(packs, replay));
+// The replay's inputs, or none for a Challenge.
+std::vector<ParsedInputCommand> BaseInputs(const char *packs, const char *replay) {
+    std::string script;
+    try {
+        script = ExtractReplayInputScript(packs, replay);
+    } catch (const std::exception &) {
+        if (!QString::fromLocal8Bit(replay).endsWith(QStringLiteral(".Challenge.Gbx"), Qt::CaseInsensitive))
+            throw;
+    }
+    const InputScriptParseResult parsed = ParseInputScript(script);
     if (!parsed) throw std::runtime_error(*parsed.error);
-    request.baseInputCommands = parsed.commands;
+    return parsed.commands;
+}
+
+SearchResult Search(PhysicsBackend backend, const char *packs, const char *replay, bool heavy) {
+    SearchRequest request{packs, replay};
+    request.baseInputCommands = BaseInputs(packs, replay);
     request.backend = backend;
-    request.parallelSampleCount = 16u;
+    request.parallelSampleCount = heavy ? 4096u : 16u;
     request.simulationHorizonMs = 2000u;
-    const ModifierRegistration *modifier = FindModifier(kRandomSteeringModifierId);
-    request.modifiers = {{modifier->id, modifier->defaultSettings}};
-    request.modifiers[0].settings["minTimeMs"] = "1000";
-    request.modifiers[0].settings["maxTimeMs"] = "1000";
+    if (heavy) {
+        for (const char *id : {kInputInsertionModifierId, kInputDeletionModifierId}) {
+            const ModifierRegistration *modifier = FindModifier(id);
+            request.modifiers.push_back({modifier->id, modifier->defaultSettings});
+            request.modifiers.back().settings["minTimeMs"] = "0";
+            request.modifiers.back().settings["maxTimeMs"] = "1990";
+        }
+    } else {
+        const ModifierRegistration *modifier = FindModifier(kRandomSteeringModifierId);
+        request.modifiers = {{modifier->id, modifier->defaultSettings}};
+        request.modifiers[0].settings["minTimeMs"] = "1000";
+        request.modifiers[0].settings["maxTimeMs"] = "1000";
+    }
     const EvaluationTargetRegistration *target = FindEvaluationTarget(kVelocityEvaluationId);
     request.evaluationTarget = {target->id, target->defaultSettings};
     request.evaluationTarget.settings["minTimeMs"] = "1020";
@@ -111,20 +135,25 @@ int CheckComputeModule(int argc, char **argv) {
              (sm <= device && (sm / 10 == device / 10 || manifest.value(QStringLiteral("ptx")).toBool())));
     if (!forThisGpu) return 3;
 
-    try {
-        const SearchResult gpu = Search(backend, argv[2], argv[3]);
-        const SearchResult cpu = Search(PhysicsBackend::OptimizedCpu, argv[2], argv[3]);
-        const bool same = gpu.winnerSource == cpu.winnerSource &&
-                gpu.winningIterationIndex == cpu.winningIterationIndex &&
-                gpu.bestScore == cpu.bestScore && gpu.iterations == cpu.iterations &&
-                FormatInputScript(gpu.bestInputs) == FormatInputScript(cpu.bestInputs);
-        std::cout << "search: " << gpu.iterations << " attempts, score " << gpu.bestScore
-                  << (same ? ", the same as Optimized CPU\n" : ", NOT the same as Optimized CPU\n");
-        return same ? 0 : 1;
-    } catch (const std::exception &failure) {
-        std::cerr << "search failed: " << failure.what() << '\n';
-        return 1;
+    bool allSame = true;
+    for (const bool heavy : {false, true}) {
+        const char *const name = heavy ? "search (batch 4096, inputs inserted and deleted)" : "search";
+        try {
+            const SearchResult gpu = Search(backend, argv[2], argv[3], heavy);
+            const SearchResult cpu = Search(PhysicsBackend::OptimizedCpu, argv[2], argv[3], heavy);
+            const bool same = gpu.winnerSource == cpu.winnerSource &&
+                    gpu.winningIterationIndex == cpu.winningIterationIndex &&
+                    gpu.bestScore == cpu.bestScore && gpu.iterations == cpu.iterations &&
+                    FormatInputScript(gpu.bestInputs) == FormatInputScript(cpu.bestInputs);
+            std::cout << name << ": " << gpu.iterations << " attempts, score " << gpu.bestScore
+                      << (same ? ", the same as Optimized CPU\n" : ", NOT the same as Optimized CPU\n");
+            allSame &= same;
+        } catch (const std::exception &failure) {
+            std::cerr << name << " failed: " << failure.what() << '\n';
+            allSame = false;
+        }
     }
+    return allSame ? 0 : 1;
 }
 
 }  // namespace forevertas::app

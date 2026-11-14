@@ -9,6 +9,8 @@ Item {
     property var controller
     property var viewer
     property var projector
+    // What (x, y) shows, nearest first's hit (the race view's pick as drawn).
+    property var pickAt: (x, y) => projector.pick(x, y)
     property bool suppressed: false
     readonly property string targetId: controller.evaluationTargetId
     readonly property var settings: controller.evaluationTargetSettings
@@ -881,7 +883,7 @@ Item {
         const sample = sampleAt(time)
         if (!sample)
             return false
-        const picked = projector.pick(position.x, position.y)
+        const picked = root.pickAt(position.x, position.y)
         if (!picked.objectHit)
             return true
         const camera = projector.camera.scenePosition
@@ -1264,8 +1266,35 @@ Item {
             if (!activeHit)
                 mouse.accepted = false
         }
+        // A fast mouse sends a move every millisecond: a drag looks along the
+        // run once per frame, where the pointer is then; a hover at most
+        // every 8 ms (no timer or frame callback for it: those draw frames,
+        // and hovering changes nothing drawn).
+        property var pendingPosition: null
+        property real lastHoverTime: 0
+        FrameAnimation {
+            running: worldDragArea.pendingPosition !== null
+            onTriggered: worldDragArea.applyPendingPosition()
+        }
+        function applyPendingPosition() {
+            const position = pendingPosition
+            pendingPosition = null
+            if (position)
+                moveTo(position)
+        }
         onPositionChanged: mouse => {
             const position = Qt.point(mouse.x, mouse.y)
+            if (pressed && activeHit) {
+                pendingPosition = position
+                return
+            }
+            const now = Date.now()
+            if (now - lastHoverTime < 8)
+                return
+            lastHoverTime = now
+            moveTo(position)
+        }
+        function moveTo(position) {
             if (pressed && activeHit) {
                 if (Math.hypot(position.x - lastPressPosition.x,
                                position.y - lastPressPosition.y) > 3)
@@ -1289,12 +1318,14 @@ Item {
             }
         }
         onReleased: {
+            applyPendingPosition()
             root.commitDrag(activeHit)
             if (movedDuringDrag)
                 lastPressTime = 0
             activeHit = null
         }
         onCanceled: {
+            pendingPosition = null
             root.dragPreview = null
             lastPressTime = 0
             activeHit = null

@@ -936,6 +936,37 @@ bool CheckCheckpointConditionParity(const char *packs,
                     "checkpoint condition CUDA");
 }
 
+// car.localvel in a condition: a velocity search at 1 s that only counts a
+// car driving forward (its velocity along its own +Z) finds the same best on
+// every backend (the CPU backends read it as 0 everywhere).
+bool CheckLocalVelocityConditionParity(const char *packs, const char *replay) {
+    OptionConfiguration velocity = DefaultEvaluator(forevertas::kVelocityEvaluationId);
+    velocity.settings["minTimeMs"] = "1000";
+    velocity.settings["maxTimeMs"] = "1000";
+    OptionConfiguration random = DefaultModifier(forevertas::kRandomSteeringModifierId);
+    random.settings["minTimeMs"] = "0";
+    random.settings["maxTimeMs"] = "900";
+    const auto run = [&](forevertas::PhysicsBackend backend, const std::string &condition) {
+        std::cout << "  " << (backend == forevertas::PhysicsBackend::Cuda ? "CUDA"
+                              : backend == forevertas::PhysicsBackend::Reference ? "Reference" : "Optimized CPU")
+                  << ", " << condition << std::endl;
+        return Run(packs, replay, backend, backend == forevertas::PhysicsBackend::Cuda ? 32u : 1u, 32u,
+                   {random}, velocity, false, nullptr, false, std::nullopt, nullptr, false, false, 1010u,
+                   condition);
+    };
+    bool okay = true;
+    for (const std::string condition : {"car.localvel.z > 1", "car.localvel.x > 0"}) {
+        const SearchResult reference = run(forevertas::PhysicsBackend::Reference, condition);
+        const SearchResult optimized = run(forevertas::PhysicsBackend::OptimizedCpu, condition);
+        const SearchResult cuda = run(forevertas::PhysicsBackend::Cuda, condition);
+        std::cout << "local velocity condition \"" << condition << "\": best " << reference.bestScore << " ("
+                  << reference.bestEvaluationDescription << ")\n";
+        okay &= SameAuthoritativeResult(reference, optimized, "local velocity optimized CPU: " + condition) &&
+                SameAuthoritativeResult(reference, cuda, "local velocity CUDA: " + condition);
+    }
+    return okay;
+}
+
 SearchResult RunFixedScript(const char *packs,
                             const char *scenario,
                             const std::string &script,
@@ -1238,6 +1269,14 @@ int main(int argc, char **argv) {
             argc == 4 &&
             std::string(argv[1]) == "--precise-finish-only";
     const bool gpuPoolOnly = argc == 4 && std::string(argv[1]) == "--gpu-pool";
+    if (argc == 4 && std::string(argv[1]) == "--local-velocity") {
+        try {
+            return CheckLocalVelocityConditionParity(argv[2], argv[3]) ? 0 : 1;
+        } catch (const std::exception &error) {
+            std::cerr << error.what() << '\n';
+            return 1;
+        }
+    }
     // --throughput [cpu-]exact|[cpu-]approximate SECONDS PACKS REPLAY (FTAS_PROMOTE=0: no promotion)
     if (argc == 6 && std::string(argv[1]) == "--throughput") {
         const std::string mode = argv[2];

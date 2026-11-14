@@ -228,7 +228,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 68d3c238da2a93a25583dda2896bc66e1f8980ad
+        GIT_TAG 703ce475a0091b5563478a97ee3db1b384907c6c
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -720,6 +720,11 @@ qt_add_qml_module(forevertas_qml
         qml/settings/Vector3Settings.qml
         qml/settings/VelocityEvaluationSettings.qml
         qml/settings/VolumeEntryEvaluationSettings.qml)
+# Bytecode only, no QML compiled to C++: Qt 6.9's garbage collector marks the
+# values compiled functions hold and can read one that is gone, then hangs or
+# aborts (Enter in a settings field, after a search;
+# forevertas-qml-module-tests).
+set_target_properties(forevertas_qml PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
 file(GLOB FOREVERTAS_REPLACEMENT_TEXTURES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/*.png")
 qt_add_resources(forevertas_qml "replacement-materials"
@@ -1387,6 +1392,16 @@ if(BUILD_TESTING)
                  COMMAND forevertas-distance-around-walls-tests
                      "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-distance-around-walls PROPERTIES TIMEOUT 60)
+        # car.localvel on each CPU backend, also as the condition program reads it
+        add_executable(forevertas-local-velocity-tests tests/local_velocity_tests.cpp)
+        target_link_libraries(forevertas-local-velocity-tests PRIVATE forevertas_core Qt6::Gui)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-local-velocity-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-local-velocity
+                 COMMAND forevertas-local-velocity-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-local-velocity PROPERTIES TIMEOUT 60)
         if(FOREVERTAS_ENABLE_CUDA)
             # Both compare CPU results with CUDA sessions, whose memory
             # headroom check fails while other tests use the GPU.
@@ -1566,6 +1581,33 @@ if(BUILD_TESTING)
         set_tests_properties(forevertas-viewer-qml PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
             TIMEOUT 180)
+        # UI checks in the QML module the app runs: hidden headers come back;
+        # Enter in every settings field after a search: no hang, no runaway memory.
+        add_executable(forevertas-qml-module-tests tests/qml_module_tests.cpp)
+        add_dependencies(forevertas-qml-module-tests forevertas_qml)
+        target_compile_definitions(forevertas-qml-module-tests PRIVATE
+            FOREVERTAS_QML_IMPORT_DIR="${CMAKE_CURRENT_BINARY_DIR}/bin/qml")
+        target_link_libraries(forevertas-qml-module-tests PRIVATE
+            forevertas_gui Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Widgets)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-qml-module-tests PRIVATE
+                ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-qml-module
+                 COMMAND forevertas-qml-module-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                     "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-qml-module PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
+            TIMEOUT 60)
+        # The window thread's time per mouse move while dragging (not a test):
+        # forevertas-drag-benchmark PACKS REPLAY
+        add_executable(forevertas-drag-benchmark tests/drag_benchmark.cpp)
+        add_dependencies(forevertas-drag-benchmark forevertas_qml)
+        target_compile_definitions(forevertas-drag-benchmark PRIVATE
+            FOREVERTAS_QML_IMPORT_DIR="${CMAKE_CURRENT_BINARY_DIR}/bin/qml")
+        target_link_libraries(forevertas-drag-benchmark PRIVATE
+            forevertas_gui Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Widgets)
         # Screenshots of UI states, by eye (not a test): forevertas-ui-capture PACKS REPLAY OUT_DIR STATE...
         add_executable(forevertas-ui-capture tests/ui_capture.cpp src/app/diagnostics_startup.cpp)
         qt_add_resources(forevertas-ui-capture "module-screen-material-capture" PREFIX "/materials"

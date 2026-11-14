@@ -56,6 +56,9 @@ public:
                                     double y,
                                     double z,
                                     const QQuaternion &rotation);
+    // The selected pose's position alone, or its rotation alone.
+    Q_INVOKABLE bool moveSelectedPositionTo(double x, double y, double z);
+    Q_INVOKABLE bool turnSelectedTo(const QQuaternion &rotation);
     Q_INVOKABLE bool rotateSelected(const QString &axis,
                                     double degrees);
     Q_INVOKABLE bool restoreTargets(const QVariantList &snapshot);

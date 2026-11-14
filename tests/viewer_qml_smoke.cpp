@@ -4747,16 +4747,14 @@ int main(int argc, char **argv) {
                             : poseEditor->findChild<QObject *>(
                                       QStringLiteral(
                                               "poseTargetRotationSettings"));
-                    QObject *const movePoseToCameraButton =
-                            poseEditor == nullptr ? nullptr
-                            : poseEditor->findChild<QObject *>(
-                                      QStringLiteral(
-                                              "movePoseTargetToCameraButton"));
-                    QObject *const movePoseToCarButton =
-                            poseEditor == nullptr ? nullptr
-                            : poseEditor->findChild<QObject *>(
-                                      QStringLiteral(
-                                              "movePoseTargetToCarButton"));
+                    const auto poseButton = [&](const char *name) {
+                        return poseEditor == nullptr ? nullptr
+                                : poseEditor->findChild<QObject *>(QString::fromLatin1(name));
+                    };
+                    QObject *const positionFromCameraButton = poseButton("poseTargetPositionFromCameraButton");
+                    QObject *const positionFromCarButton = poseButton("poseTargetPositionFromCarButton");
+                    QObject *const rotationFromCameraButton = poseButton("poseTargetRotationFromCameraButton");
+                    QObject *const rotationFromCarButton = poseButton("poseTargetRotationFromCarButton");
                     const int placedPoseIndex =
                             controller.poseTargets()->addTarget(
                                     7.0,
@@ -4796,12 +4794,14 @@ int main(int argc, char **argv) {
                             poseNameField != nullptr &&
                             posePositionSettings != nullptr &&
                             poseRotationSettings != nullptr &&
-                            movePoseToCameraButton != nullptr &&
-                            movePoseToCameraButton
-                                    ->property("enabled").toBool() &&
-                            movePoseToCarButton != nullptr &&
-                            movePoseToCarButton
-                                    ->property("enabled").toBool() &&
+                            positionFromCameraButton != nullptr &&
+                            positionFromCameraButton->property("enabled").toBool() &&
+                            positionFromCarButton != nullptr &&
+                            positionFromCarButton->property("enabled").toBool() &&
+                            rotationFromCameraButton != nullptr &&
+                            rotationFromCameraButton->property("enabled").toBool() &&
+                            rotationFromCarButton != nullptr &&
+                            rotationFromCarButton->property("enabled").toBool() &&
                             placedPoseIndex == 1 &&
                             poseSelector->property("count").toInt() == 2 &&
                             poseSelector->property("currentIndex").toInt() ==
@@ -4914,38 +4914,38 @@ int main(int argc, char **argv) {
                     const QVector3D cameraPlacement = viewport
                             ->property("sceneCameraPosition")
                             .value<QVector3D>();
-                    const QQuaternion cameraPlacementRotation = viewport
-                            ->property("sceneCameraRotation")
-                            .value<QQuaternion>();
-                    poseSliderValid &= QMetaObject::invokeMethod(
-                            movePoseToCameraButton, "clicked");
+                    const QQuaternion cameraRotation = viewport
+                            ->property("sceneCameraRotation").value<QQuaternion>();
+                    const auto pose = [&]() { return controller.poseTargets()->selectedTarget(); };
+                    const auto posePosition = [&]() { return pose().value(QStringLiteral("position")).value<QVector3D>(); };
+                    const auto poseRotation = [&]() { return pose().value(QStringLiteral("rotation")).value<QQuaternion>(); };
+                    const auto same = [](const QQuaternion &a, const QQuaternion &b) {
+                        return std::abs(QQuaternion::dotProduct(a.normalized(), b.normalized())) > 0.99999F;
+                    };
+                    // Position and rotation are taken on their own: each
+                    // button leaves the other as it was.
+                    const QQuaternion rotationBefore = poseRotation();
+                    poseSliderValid &= QMetaObject::invokeMethod(positionFromCameraButton, "clicked");
                     QCoreApplication::processEvents();
-                    poseSliderValid &=
-                            controller.poseTargets()
-                                    ->selectedTarget()
-                                    .value(QStringLiteral("position"))
-                                    .value<QVector3D>() == cameraPlacement &&
-                            std::abs(QQuaternion::dotProduct(
-                                    controller.poseTargets()
-                                            ->selectedTarget()
-                                            .value(QStringLiteral("rotation"))
-                                            .value<QQuaternion>(),
-                                    cameraPlacementRotation)) > 0.99999F &&
-                            QMetaObject::invokeMethod(
-                                    movePoseToCarButton, "clicked");
+                    poseSliderValid &= posePosition() == cameraPlacement && same(poseRotation(), rotationBefore);
+                    poseSliderValid &= QMetaObject::invokeMethod(rotationFromCameraButton, "clicked");
                     QCoreApplication::processEvents();
-                    poseSliderValid &=
-                            controller.poseTargets()
-                                    ->selectedTarget()
-                                    .value(QStringLiteral("position"))
-                                    .value<QVector3D>() ==
-                                    viewer.carPosition() &&
-                            std::abs(QQuaternion::dotProduct(
-                                    controller.poseTargets()
-                                            ->selectedTarget()
-                                            .value(QStringLiteral("rotation"))
-                                            .value<QQuaternion>(),
-                                    viewer.carRotation())) > 0.99999F;
+                    // A pose from the camera faces where the camera looks (a
+                    // car drives along its +Z, a camera looks along its -Z)
+                    // with the camera's right on its right (the car's -X).
+                    const QQuaternion fromCamera = poseRotation();
+                    poseSliderValid &= posePosition() == cameraPlacement &&
+                            (fromCamera.rotatedVector(QVector3D(0, 0, 1)) -
+                             cameraRotation.rotatedVector(QVector3D(0, 0, -1))).length() < 1e-3F &&
+                            (fromCamera.rotatedVector(QVector3D(-1, 0, 0)) -
+                             cameraRotation.rotatedVector(QVector3D(1, 0, 0))).length() < 1e-3F;
+                    poseSliderValid &= QMetaObject::invokeMethod(positionFromCarButton, "clicked");
+                    QCoreApplication::processEvents();
+                    poseSliderValid &= posePosition() == viewer.carPosition() && same(poseRotation(), fromCamera);
+                    poseSliderValid &= QMetaObject::invokeMethod(rotationFromCarButton, "clicked");
+                    QCoreApplication::processEvents();
+                    poseSliderValid &= posePosition() == viewer.carPosition() &&
+                            same(poseRotation(), viewer.carRotation());
                     if (!poseSliderValid) {
                         std::cerr << "pose: x " << initialPoseX << " -> "
                                   << controller.poseTargets()->selectedTarget().value(QStringLiteral("x")).toDouble()

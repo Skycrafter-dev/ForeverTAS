@@ -48,7 +48,10 @@ QMetaObject::Connection BindInputPreview(
             &SearchController::baseInputScriptChanged,
             &viewer,
             [&controller, &viewer]() {
-                if (viewer.previewingHistory()) return;
+                // An edit of the base inputs (typed, pasted, the current
+                // race copied) shows them, also over a session's inputs
+                // being previewed (a history row chosen or copied).
+                viewer.setPreviewingHistory(false);
                 viewer.setPreviewInputScript(controller.baseInputScript());
             });
 }

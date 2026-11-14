@@ -325,16 +325,19 @@ Item {
     }
 
     // ---- the top edge: a click hides this panel's header, or brings it back ----
+    // Beside the frame, over its panel (DockPanel lies over the frame): with
+    // the header hidden the content starts at this edge, and would take the click.
     MouseArea {
         objectName: "dockHeaderToggle"
-        x: 24
-        y: 0
+        parent: frame.parent
+        x: frame.x + 24
+        y: frame.y
         width: Math.max(0, frame.width - 48)
         height: 5
-        z: 6
+        z: frame.z + 0.75
         hoverEnabled: true
         cursorShape: Qt.PointingHandCursor
-        visible: !frame.collapsed
+        visible: frame.visible && !frame.collapsed
         onClicked: frame.space.setHeaderShown(frame.currentPanel, !frame.headerShown)
         Rectangle {
             anchors.horizontalCenter: parent.horizontalCenter

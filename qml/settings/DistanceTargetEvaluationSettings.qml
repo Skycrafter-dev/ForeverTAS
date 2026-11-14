@@ -25,7 +25,7 @@ ColumnLayout {
         chainController: root.controller
         chainKey: "target"
         settings: root.settings
-        updateSetting: root.controller.setEvaluationTargetSetting
+        updateSetting: (key, value) => root.controller.setEvaluationTargetSetting(key, value)
         running: root.controller.running
         viewer: root.viewer
     }

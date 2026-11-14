@@ -1612,6 +1612,30 @@ ApplicationWindow {
         return Qt.rect(left, 0, Math.max(1, right - left),
                        Math.max(1, window.height))
     }
+    // The ray from the camera through (x, y) of a race view, as its camera's
+    // projection draws it. Qt's pick(), pickAll() and mapTo3DScene() leave
+    // out the framing of a custom projection (off-centre, between docked
+    // panels), so they missed what is drawn: gizmos could not be grabbed.
+    function framedRay(view, x, y) {
+        const camera = view.camera
+        const p = camera.projection
+        const nx = 2 * x / Math.max(1, view.width) - 1
+        const ny = 1 - 2 * y / Math.max(1, view.height)
+        const local = Qt.vector3d((nx + p.m13) / p.m11, (ny + p.m23) / p.m22, -1)
+        return { origin: camera.scenePosition,
+                 direction: camera.sceneRotation.times(local).normalized() }
+    }
+    // What (x, y) of a race view shows, nearest first: pickAll() as drawn.
+    function framedPickAll(view, x, y) {
+        const ray = framedRay(view, x, y)
+        return view.rayPickAll(ray.origin, ray.direction)
+                   .sort((a, b) => a.distance - b.distance)
+    }
+    // The nearest of them (with objectHit null when there is none): pick() as drawn.
+    function framedPick(view, x, y) {
+        const hits = framedPickAll(view, x, y)
+        return hits.length ? hits[0] : { objectHit: null, scenePosition: Qt.vector3d(0, 0, 0), distance: Infinity }
+    }
     // A camera's projection over the whole race view that shows the framed
     // part as a camera of that size and vertical field of view would.
     function framedProjection(fieldOfView, near, far) {
@@ -1756,6 +1780,11 @@ ApplicationWindow {
                     viewCamera.scenePosition
                 readonly property var sceneCameraRotation:
                     viewCamera.sceneRotation
+                // A car turned as the camera looks: a camera looks along its
+                // -Z with its +X to the right, a car drives along its +Z with
+                // its +X to the left (half a turn about the up axis apart).
+                readonly property var sceneCameraCarRotation:
+                    viewCamera.sceneRotation.times(Qt.quaternion(0, 0, 1, 0))
                 property vector3d freeCameraPosition:
                     Qt.vector3d(0, 0, 0)
                 function renderTelemetry(script) {
@@ -2445,7 +2474,7 @@ ApplicationWindow {
                 function editorPick(view, x, y) {
                     const bodies = ["select", "custom-select", "pose-select"]
                     let first = null
-                    for (const result of view.pickAll(x, y)) {
+                    for (const result of window.framedPickAll(view, x, y)) {
                         const hit = result.objectHit
                         if (!hit)
                             continue
@@ -2548,11 +2577,9 @@ ApplicationWindow {
                     const view = window.rayTracingEnabled
                                ? rayTracingTrajectoryOverlay
                                : rasterMapView
-                    const nearPoint = view.mapTo3DScene(
-                        Qt.vector3d(x, y, 1))
-                    const farPoint = view.mapTo3DScene(
-                        Qt.vector3d(x, y, 2))
-                    const direction = farPoint.minus(nearPoint)
+                    const ray = window.framedRay(view, x, y)
+                    const nearPoint = ray.origin
+                    const direction = ray.direction
                     let numerator = 0
                     let denominator = 0
                     if (target.plane === "xy") {
@@ -4362,8 +4389,8 @@ ApplicationWindow {
                                      : rasterMapView
                         if (viewport.pointPlacementActive
                             && viewport.targetMouseEditingAllowed) {
-                            const picked = rasterMapView.pick(
-                                mouse.x, mouse.y)
+                            const picked = window.framedPick(
+                                rasterMapView, mouse.x, mouse.y)
                             const point = picked.objectHit
                                           ? picked.scenePosition
                                           : viewport.customPlanePoint(
@@ -4429,41 +4456,53 @@ ApplicationWindow {
                             return
                         }
                     }
-                    onPositionChanged: mouse => {
-                        if (!(mouse.buttons & Qt.LeftButton))
-                            return
+                    // A drag moves gizmos and the camera once per frame, to
+                    // where the pointer is then: a fast mouse sends many
+                    // moves a frame, each worth a whole update.
+                    property var pendingMove: null
+                    FrameAnimation {
+                        running: manualInputFocus.pendingMove !== null
+                        onTriggered: manualInputFocus.applyPendingMove()
+                    }
+                    function applyPendingMove() {
+                        const move = pendingMove
+                        pendingMove = null
+                        if (move)
+                            moveTo(move.x, move.y)
+                    }
+                    function moveTo(x, y) {
                         if (viewport.cuboidDragActive) {
-                            viewport.updateCuboidInteraction(
-                                mouse.x, mouse.y)
-                            previousX = mouse.x
-                            previousY = mouse.y
+                            viewport.updateCuboidInteraction(x, y)
+                            previousX = x
+                            previousY = y
                             return
                         }
                         if (viewport.customVertexDragActive
                             || viewport.customDepthDragActive) {
-                            viewport.updateCustomInteraction(
-                                mouse.x, mouse.y)
-                            previousX = mouse.x
-                            previousY = mouse.y
+                            viewport.updateCustomInteraction(x, y)
+                            previousX = x
+                            previousY = y
                             return
                         }
                         if (viewport.poseDragActive) {
-                            viewport.updatePoseInteraction(
-                                mouse.x, mouse.y)
-                            previousX = mouse.x
-                            previousY = mouse.y
+                            viewport.updatePoseInteraction(x, y)
+                            previousX = x
+                            previousY = y
                             return
                         }
                         if (viewport.cuboidPointerCaptured)
                             return
                         viewport.leaveExactWhiteboardView()
-                        viewport.updateViewRotation(
-                            mouse.x - previousX,
-                            mouse.y - previousY)
-                        previousX = mouse.x
-                        previousY = mouse.y
+                        viewport.updateViewRotation(x - previousX, y - previousY)
+                        previousX = x
+                        previousY = y
+                    }
+                    onPositionChanged: mouse => {
+                        if (mouse.buttons & Qt.LeftButton)
+                            pendingMove = Qt.point(mouse.x, mouse.y)
                     }
                     onReleased: {
+                        applyPendingMove()
                         viewport.endCuboidInteraction()
                         viewport.endCustomInteraction()
                         viewport.endPoseInteraction()
@@ -4475,6 +4514,7 @@ ApplicationWindow {
                         editHistory.endGesture()
                     }
                     onCanceled: {
+                        pendingMove = null
                         viewport.endCuboidInteraction()
                         viewport.endCustomInteraction()
                         viewport.endPoseInteraction()
@@ -4523,6 +4563,7 @@ ApplicationWindow {
                     controller: window.controller
                     viewer: window.viewer
                     projector: rasterMapView
+                    pickAt: (x, y) => window.framedPick(rasterMapView, x, y)
                     suppressed: viewport.exportingWhiteboardImage
                 }
 

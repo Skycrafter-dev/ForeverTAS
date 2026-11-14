@@ -324,6 +324,21 @@ bool PoseTargetModel::moveSelectedTo(
     return true;
 }
 
+bool PoseTargetModel::moveSelectedPositionTo(double x, double y, double z) {
+    if (selectedIndex_ < 0 || selectedIndex_ >= count()) {
+        return false;
+    }
+    return moveSelectedTo(x, y, z, Rotation(targets_[static_cast<std::size_t>(selectedIndex_)]));
+}
+
+bool PoseTargetModel::turnSelectedTo(const QQuaternion &rotation) {
+    if (selectedIndex_ < 0 || selectedIndex_ >= count()) {
+        return false;
+    }
+    const QVector3D position = targets_[static_cast<std::size_t>(selectedIndex_)].position;
+    return moveSelectedTo(position.x(), position.y(), position.z(), rotation);
+}
+
 bool PoseTargetModel::rotateSelected(const QString &axis,
                                      double degrees) {
     if (!editingEnabled_ || selectedIndex_ < 0 ||
