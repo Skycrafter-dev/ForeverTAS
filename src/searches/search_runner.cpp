@@ -1763,4 +1763,34 @@ std::optional<SearchResult> EvaluateBaseline(const SearchRequest &request, const
     }
 }
 
+std::optional<std::int64_t> EvaluationStartMs(
+        const std::vector<OptionConfiguration> &modifiers,
+        std::uint32_t simulationHorizonMs) {
+    std::int64_t earliest = modifiers.empty()
+            ? kSearchTickDurationMs
+            : std::numeric_limits<std::int64_t>::max();
+    try {
+        for (const OptionConfiguration &modifier : modifiers) {
+            const ModifierRegistration *const registration =
+                    FindModifier(modifier.id);
+            if (registration == nullptr ||
+                registration->validateSettings(
+                        modifier.settings, kSearchTickDurationMs)) {
+                return std::nullopt;
+            }
+            const std::unique_ptr<InputMutator> mutator = registration->create(
+                    ClampInputWindowToSimulationHorizon(
+                            modifier.settings, kSearchTickDurationMs,
+                            simulationHorizonMs),
+                    kSearchTickDurationMs);
+            earliest = std::min(earliest, mutator->EarliestMutationTimeMs());
+        }
+    } catch (const std::exception &) {
+        return std::nullopt;
+    }
+    return std::max<std::int64_t>(
+            kSearchTickDurationMs,
+            std::min<std::int64_t>(earliest, simulationHorizonMs));
+}
+
 }  // namespace forevertas

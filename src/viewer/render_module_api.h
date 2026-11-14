@@ -57,6 +57,21 @@ typedef struct FtrmFrame {
     int showCar;
 } FtrmFrame;
 
+/* The car of the last frame drawn, for the host's diagnostics (optional:
+ * ftrm_car_state may be missing from older modules). */
+typedef struct FtrmCarState {
+    /* Race time the frame showed, and the module's race tick then. */
+    double raceTimeMs;
+    unsigned tick;
+    /* Where the module's own simulation has the car at that tick. */
+    float position[3];
+    /* 1 when the frame was asked to draw the car (FtrmFrame::showCar). */
+    int shown;
+    /* Controls the module simulates; frames drawn so far. */
+    int controlCount;
+    unsigned framesDrawn;
+} FtrmCarState;
+
 typedef struct FtrmModule FtrmModule;
 
 /* FTRM_API_VERSION the library was built against. */
@@ -97,6 +112,9 @@ typedef int (*FtrmRenderFunction)(FtrmModule *module, const FtrmFrame *frame,
                                   char *error, int errorSize);
 /* Deletes the module's OpenGL objects. */
 typedef void (*FtrmReleaseFunction)(FtrmModule *module);
+/* The last frame's car (FtrmCarState); 0 before the first frame. Call it
+ * where ftrm_render is called (the same thread and context). */
+typedef int (*FtrmCarStateFunction)(FtrmModule *module, FtrmCarState *state);
 
 /* No OpenGL; frees the module. */
 typedef void (*FtrmDestroyFunction)(FtrmModule *module);

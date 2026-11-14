@@ -317,6 +317,8 @@ public slots:
     Q_INVOKABLE bool extendSimulationHorizon();
     Q_INVOKABLE void previewBaseInputs();
     Q_INVOKABLE QString formatSpeed(double metersPerSecond) const;
+    // Where the search starts judging its target (ms); -1 when unknown.
+    Q_INVOKABLE double evaluationStartMs() const;
     Q_INVOKABLE void extractReplayInputs();
     Q_INVOKABLE bool undoBaseInputScript();
     Q_INVOKABLE void setSearchAlgorithmSetting(const QString &key,

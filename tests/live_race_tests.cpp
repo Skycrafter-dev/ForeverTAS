@@ -1,6 +1,7 @@
 // The race view's live race end to end on a replay's map, its inputs as the
 // base inputs: takeover, pause, rewind on both sides of the takeover, speed,
 // stepping, savestates, restart and attempts.
+#include "app/app_settings.h"
 #include "app/input_preview_binding.h"
 #include "app/search_controller.h"
 #include "mutations/replay_input_script.h"
@@ -52,7 +53,7 @@ int main(int argc, char **argv) {
     QGuiApplication application(argc, argv);
     QCoreApplication::setOrganizationName(QStringLiteral("ForeverTASTests"));
     QCoreApplication::setApplicationName(QStringLiteral("LiveRaceTests"));
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     forevertas::app::SearchController controller;
     RaceViewerController v;
     forevertas::app::BindInputPreview(controller, v);

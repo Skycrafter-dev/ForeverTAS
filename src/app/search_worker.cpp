@@ -1,4 +1,5 @@
 #include "app/search_worker.h"
+#include "diagnostics/diagnostics_log.h"
 
 #include "app/compact_number_format.h"
 #include "app/rolling_throughput.h"
@@ -452,6 +453,25 @@ void SearchWorker::run() {
                 }
             }
             currentRestart->store(restartNumber, std::memory_order_relaxed);
+            if (diagnostics::LogOpen()) {
+                std::string modifiers;
+                for (const OptionConfiguration &modifier : request_.modifiers) {
+                    modifiers += (modifiers.empty() ? "" : ", ") + modifier.id;
+                }
+                const std::string_view backend = PhysicsBackendId(request_.backend);
+                diagnostics::Log("search %llu (restart %llu): %.*s%s, %s, target %s, modifiers %s, "
+                                 "horizon %u ms, batch %u%s, replay %s",
+                                 static_cast<unsigned long long>(searchId_),
+                                 static_cast<unsigned long long>(restartNumber),
+                                 static_cast<int>(backend.size()), backend.data(),
+                                 request_.approximatePhysics ? " approximate" : "",
+                                 request_.searchAlgorithm.id.c_str(),
+                                 request_.evaluationTarget.id.c_str(), modifiers.c_str(),
+                                 static_cast<unsigned>(request_.simulationHorizonMs),
+                                 static_cast<unsigned>(request_.parallelSampleCount),
+                                 request_.calibrateCudaParallelSampleCount ? " (calibrated)" : "",
+                                 request_.replayPath.c_str());
+            }
             try {
                 result.emplace(RunSearch(request_, &control));
             } catch (const NoEligibleEvaluation &) {
@@ -470,6 +490,9 @@ void SearchWorker::run() {
             if (restartPolicy_.mode == AutoRestartPolicy::Mode::Off ||
                 stopRequested_->load(std::memory_order_relaxed)) break;
             ++restartNumber;
+            // The new restart has no best yet: not the last one's.
+            emit bestChanged(QString(), QString());
+            emit liveRowChanged(QVariantMap());
             emit stageChanged(
                     QStringLiteral("Starting restart %1...")
                             .arg(static_cast<qulonglong>(restartNumber)),
@@ -531,10 +554,15 @@ void SearchWorker::run() {
             emit cancelled();
         }
     } catch (const std::exception &error) {
+        diagnostics::Log("search %llu failed: %s", static_cast<unsigned long long>(searchId_),
+                         error.what());
         emit failed(QString::fromUtf8(error.what()));
     } catch (...) {
+        diagnostics::Log("search %llu failed: unknown exception",
+                         static_cast<unsigned long long>(searchId_));
         emit failed(QStringLiteral("Unexpected search failure"));
     }
+    diagnostics::Log("search %llu finished", static_cast<unsigned long long>(searchId_));
     emit finished();
 }
 

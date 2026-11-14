@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "app/cuboid_target_model.h"
 #include "app/compact_number_format.h"
 #include "app/custom_volume_target_model.h"
@@ -13,6 +14,7 @@
 #include "mutations/random_steering_mutator.h"
 #include "replay_file_io.h"
 
+#include <cmath>
 #include <forevervalidator/validation.h>
 #include <forevervalidator/native.h>
 
@@ -276,11 +278,11 @@ bool TestCompactNumberFormatting() {
 }
 
 bool TestAutomaticSeedRandomization() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     {
         SearchController controller;
         if (!Check(controller.randomizeSeedsOnStart() &&
-                           QSettings()
+                           forevertas::app::AppSettings::Instance()
                                    .value(QStringLiteral(
                                            "search/randomizeSeedsOnStart"))
                                    .toBool(),
@@ -297,7 +299,7 @@ bool TestAutomaticSeedRandomization() {
         }
     }
 
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     forevertas::app::SearchConfigurationModel configuration;
     configuration.addModifierPass(
             QStringLiteral("existing-event-perturbation"));
@@ -330,7 +332,7 @@ bool TestAutomaticSeedRandomization() {
 }
 
 bool TestTargetVisibilityPersistence() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     {
         SearchController controller;
         if (!Check(!controller.drawTargetsThroughBlocks(),
@@ -349,7 +351,7 @@ bool TestTargetVisibilityPersistence() {
 // joins takes the chain's window; Search end and Preview extent share only
 // the end; another color or an unlinked window stays as it is.
 bool TestWindowChains() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     forevertas::app::SearchController controller;
     controller.setEvaluationTargetId(QStringLiteral("velocity"));
     controller.addModifierPass(QStringLiteral("input-deletion"));
@@ -411,7 +413,7 @@ bool TestWindowChains() {
 }
 
 bool TestUntilHorizonMode() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     forevertas::app::SearchConfigurationModel configuration;
     configuration.setModifierPassSetting(0, "minTimeMs", "0");
     configuration.setModifierPassSetting(0, "maxTimeMs", "invalid retained draft");
@@ -459,7 +461,7 @@ bool TestUntilHorizonMode() {
 }
 
 bool TestDisabledModifierPasses() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     forevertas::app::SearchConfigurationModel configuration;
     configuration.setModifierPassSetting(0, "minTimeMs", "0");
     configuration.setModifierPassSetting(0, "maxTimeMs", "20");
@@ -499,7 +501,7 @@ bool TestDisabledModifierPasses() {
 }
 
 bool TestExplicitHorizonExtension() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     controller.setModifierPassSetting(0, "minTimeMs", "0");
     controller.setModifierPassSetting(0, "maxTimeMs", "2340");
@@ -526,7 +528,7 @@ bool TestExplicitHorizonExtension() {
 }
 
 bool TestAbsoluteTargetPlacement() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     CuboidTargetModel cuboid;
     CustomVolumeTargetModel customVolume;
     PoseTargetModel pose;
@@ -599,7 +601,7 @@ bool TestAbsoluteTargetPlacement() {
 }
 
 bool TestCuboidTargetModel() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     const QVariantMap legacy{
             {QStringLiteral("centerX"), QStringLiteral("1.5")},
             {QStringLiteral("centerY"), QStringLiteral("-2")},
@@ -662,7 +664,7 @@ bool TestCuboidTargetModel() {
                                   QStringLiteral("0.5"),
                   "cuboid edits produced incorrect properties");
 
-    QSettings settings;
+    forevertas::app::AppSettings &settings = forevertas::app::AppSettings::Instance();
     settings.setValue(QStringLiteral("unrelated/largePayload"),
                       QByteArray(512 * 1024, 'x'));
     settings.sync();
@@ -681,7 +683,7 @@ bool TestCuboidTargetModel() {
                               [&]() {
                                   const QJsonDocument persisted =
                                           QJsonDocument::fromJson(
-                                                  QSettings()
+                                                  forevertas::app::AppSettings::Instance()
                                                           .value(QStringLiteral(
                                                                   "targets/cuboids"))
                                                           .toByteArray());
@@ -732,7 +734,7 @@ bool TestCuboidTargetModel() {
                           !restored.translateSelected(1.0, 0.0, 0.0),
                   "cuboid edits were not frozen for a running search");
 
-    QSettings().setValue(
+    forevertas::app::AppSettings::Instance().setValue(
             QStringLiteral("targets/cuboids"),
             QByteArrayLiteral("{\"version\":1,\"targets\":["
                               "{\"id\":\"bad\",\"name\":\"Bad\","
@@ -748,7 +750,7 @@ bool TestCuboidTargetModel() {
 }
 
 bool TestCuboidControllerSynchronization() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     controller.setEvaluationTargetId(QStringLiteral("volume-entry-time"));
     CuboidTargetModel *const cuboids = controller.cuboidTargets();
@@ -789,7 +791,7 @@ bool TestCuboidControllerSynchronization() {
 }
 
 bool TestCustomVolumeTargets() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     CustomVolumeTargetModel model;
     QObject *const initialGeometry =
             model.selectedTarget()
@@ -908,7 +910,7 @@ bool TestCustomVolumeTargets() {
                                   .value(QStringLiteral("polygon"))
                                   .toString() == drawnPolygon,
                   "custom volume did not persist");
-    QSettings().setValue(
+    forevertas::app::AppSettings::Instance().setValue(
             QStringLiteral("targets/customVolumes"),
             QByteArrayLiteral("{not valid json"));
     CustomVolumeTargetModel recovered;
@@ -918,7 +920,7 @@ bool TestCustomVolumeTargets() {
                                   .toBool(),
                   "custom volume did not recover from corrupt persistence");
 
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     controller.setEvaluationTargetId(
             QStringLiteral("custom-volume-entry-time"));
@@ -933,7 +935,7 @@ bool TestCustomVolumeTargets() {
 }
 
 bool TestPoseTargets() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     PoseTargetModel model;
     bool okay = Check(
             model.count() == 1 &&
@@ -1054,7 +1056,7 @@ bool TestPoseTargets() {
                     !model.removeTarget(0),
             "pose target removal did not preserve a usable final target");
 
-    QSettings().setValue(
+    forevertas::app::AppSettings::Instance().setValue(
             QStringLiteral("targets/poses"),
             QByteArrayLiteral(
                     "{\"version\":2,\"selectedId\":\"missing\","
@@ -1086,7 +1088,7 @@ bool TestPoseTargets() {
                             QStringLiteral("0"),
             "pose target persistence did not reject or normalize bad data");
 
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     controller.setEvaluationTargetId(QStringLiteral("pose-target"));
     PoseTargetModel *const targets = controller.poseTargets();
@@ -1174,7 +1176,7 @@ bool TestScenarioInputExtractionAvailability(
     challenge.write("test");
     challenge.close();
 
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     bool okay = Check(controller.canExtractReplayInputs(),
@@ -1186,7 +1188,7 @@ bool TestScenarioInputExtractionAvailability(
 }
 
 bool TestUserTimelineConfigurationBoundary() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     forevertas::app::SearchConfigurationModel configuration;
     bool okay = Check(
             configuration.setModifierPassId(
@@ -1278,7 +1280,7 @@ bool TestUserTimelineConfigurationBoundary() {
 
 bool TestRegistryAndValidation(const QString &packsDirectory,
                                const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
 
@@ -1357,7 +1359,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     controller.setSimulationHorizonMs(QStringLiteral("6000"));
     controller.setConditionScript(QStringLiteral("iterations > 0"));
     okay &= Check(controller.canStart() &&
-                          QSettings().value(QStringLiteral(
+                          forevertas::app::AppSettings::Instance().value(QStringLiteral(
                                   "search/conditionScript")) ==
                                   QStringLiteral("iterations > 0"),
                   "valid condition script was not accepted and persisted");
@@ -1760,7 +1762,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
 
 bool TestCompositionEditing(const QString &packsDirectory,
                             const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
 
@@ -1802,7 +1804,7 @@ bool TestCompositionEditing(const QString &packsDirectory,
 
 bool TestPersistence(const QString &packsDirectory,
                      const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     {
         SearchController controller;
         SetValidPaths(controller, packsDirectory, replayPath);
@@ -1833,7 +1835,7 @@ bool TestPersistence(const QString &packsDirectory,
                 QStringLiteral("targetTimeMs"), QStringLiteral("4320"));
         controller.setBaseInputScript(
                 QStringLiteral("0.00 press up\n0.50 steer -16384"));
-        QSettings().sync();
+        forevertas::app::AppSettings::Instance().sync();
     }
 
     SearchController restored;
@@ -1856,10 +1858,10 @@ bool TestPersistence(const QString &packsDirectory,
                   "CUDA parallel sample count was not persisted");
     okay &= Check(restored.vulkanParallelSampleCount() == QStringLiteral("128") &&
                           !restored.vulkanCalibrationEnabled() &&
-                          QSettings().value(QStringLiteral(
+                          forevertas::app::AppSettings::Instance().value(QStringLiteral(
                                   "backends/vulkan/parallelSampleCount")).toString() ==
                                   QStringLiteral("128") &&
-                          !QSettings().value(QStringLiteral(
+                          !forevertas::app::AppSettings::Instance().value(QStringLiteral(
                                   "backends/vulkan/calibrationEnabled")).toBool(),
                   "Vulkan preferences were not persisted independently of CUDA");
     okay &= Check(restored.cpuWorkerCount() == QStringLiteral("6"),
@@ -1890,28 +1892,28 @@ bool TestPersistence(const QString &packsDirectory,
                                           .value(QStringLiteral("targetTimeMs"))
                                           .toString() == QStringLiteral("4320"),
                   "evaluation target configuration was not persisted");
-    okay &= Check(QSettings().contains(
+    okay &= Check(forevertas::app::AppSettings::Instance().contains(
                           QStringLiteral("composition/modifiers")),
                   "modifier composition JSON was not persisted");
-    okay &= Check(QSettings().value(
+    okay &= Check(forevertas::app::AppSettings::Instance().value(
                                   QStringLiteral(
                                           "selection/simulationBackend"))
                                   .toString() ==
                           QStringLiteral("optimized-cpu"),
                   "physics backend setting was not stored canonically");
-    okay &= Check(QSettings().value(QStringLiteral(
+    okay &= Check(forevertas::app::AppSettings::Instance().value(QStringLiteral(
                                   "backends/cuda/parallelSampleCount"))
                                   .toString() == QStringLiteral("384"),
                   "CUDA parallel sample count was not stored canonically");
-    okay &= Check(QSettings().value(QStringLiteral(
+    okay &= Check(forevertas::app::AppSettings::Instance().value(QStringLiteral(
                                   "backends/cpu/workerCount"))
                                   .toString() == QStringLiteral("6"),
                   "CPU worker count was not stored canonically");
-    okay &= Check(QSettings().value(QStringLiteral(
+    okay &= Check(forevertas::app::AppSettings::Instance().value(QStringLiteral(
                                   "backends/cuda/calibrationEnabled"))
                                   .toBool(),
                   "CUDA calibration mode was not stored canonically");
-    okay &= Check(!QSettings().value(QStringLiteral(
+    okay &= Check(!forevertas::app::AppSettings::Instance().value(QStringLiteral(
                                   "backends/cuda/sessionSpecializationEnabled"))
                                    .toBool(),
                   "CUDA fast mode was not stored canonically");
@@ -1920,7 +1922,7 @@ bool TestPersistence(const QString &packsDirectory,
 
 bool TestExtractionFailurePreservesDraft(const QString &packsDirectory,
                                          const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     const QString draft =
@@ -1972,7 +1974,7 @@ bool TestExtractionWorkerShutdown(const QString &packsDirectory,
 
 bool TestAutorestartSettings(const QString &packsDirectory,
                              const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     controller.setAutoRestartMode(QStringLiteral("duration"));
@@ -2123,7 +2125,7 @@ bool TestIterationBoundaryArbitration() {
 
 bool TestStopAbortsBeforeFirstIteration(const QString &packsDirectory,
                                         const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     QSignalSpy completionSpy(
@@ -2158,7 +2160,7 @@ bool TestLocaleIndependentPersistedDecimals(const QString &packsDirectory,
         return Check(false, "no comma-decimal locale is installed for testing");
     }
 
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     {
         SearchController controller;
         SetValidPaths(controller, packsDirectory, replayPath);
@@ -2186,7 +2188,7 @@ bool TestLocaleIndependentPersistedDecimals(const QString &packsDirectory,
         okay &= Check(controller.canStart(),
                       "restoring a dot decimal did not restore validation");
         if (!okay) return false;
-        QSettings().sync();
+        forevertas::app::AppSettings::Instance().sync();
     }
 
     SearchController restored;
@@ -2217,26 +2219,26 @@ bool TestLocaleIndependentPersistedDecimals(const QString &packsDirectory,
 }
 
 bool TestLegacyMigration() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     const QString retiredBudgetKey = QString::fromLatin1(
             QByteArray::fromHex("617474656d7074436f756e74"));
-    QSettings().setValue(
+    forevertas::app::AppSettings::Instance().setValue(
             QStringLiteral("search/") + retiredBudgetKey,
             QStringLiteral("1000"));
-    QSettings().setValue(QStringLiteral("selection/mutationAlgorithm"),
+    forevertas::app::AppSettings::Instance().setValue(QStringLiteral("selection/mutationAlgorithm"),
                          QStringLiteral("random-steering"));
-    QSettings().setValue(QStringLiteral("search/minMutateMs"),
+    forevertas::app::AppSettings::Instance().setValue(QStringLiteral("search/minMutateMs"),
                          QStringLiteral("1200"));
-    QSettings().setValue(QStringLiteral("search/maxMutateMs"),
+    forevertas::app::AppSettings::Instance().setValue(QStringLiteral("search/maxMutateMs"),
                          QStringLiteral("2400"));
-    QSettings().setValue(QStringLiteral("search/mutationSeed"),
+    forevertas::app::AppSettings::Instance().setValue(QStringLiteral("search/mutationSeed"),
                          QStringLiteral("987"));
-    QSettings().setValue(QStringLiteral("selection/evaluationTarget"),
+    forevertas::app::AppSettings::Instance().setValue(QStringLiteral("selection/evaluationTarget"),
                          QStringLiteral("maximum-speed"));
 
     SearchController controller;
     bool okay = Check(
-            !QSettings().contains(
+            !forevertas::app::AppSettings::Instance().contains(
                     QStringLiteral("search/") + retiredBudgetKey),
             "retired search budget was not removed");
     okay &= Check(controller.modifierPasses().size() == 1 &&
@@ -2255,13 +2257,13 @@ bool TestLegacyMigration() {
                   "legacy modifier settings were not migrated");
     okay &= Check(controller.evaluationTargetId() ==
                           QStringLiteral("velocity") &&
-                          QSettings()
+                          forevertas::app::AppSettings::Instance()
                                           .value(QStringLiteral(
                                                   "selection/evaluationTarget"))
                                           .toString() ==
                                   QStringLiteral("velocity"),
                   "legacy evaluation target was not canonicalized");
-    okay &= Check(QSettings().contains(
+    okay &= Check(forevertas::app::AppSettings::Instance().contains(
                           QStringLiteral("composition/modifiers")),
                   "migrated modifier composition was not persisted");
     return okay;
@@ -2270,7 +2272,7 @@ bool TestLegacyMigration() {
 
 bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
                                    const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
@@ -2470,7 +2472,7 @@ bool TestIndefiniteSearchLifecycle(const QString &packsDirectory,
 
 bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath) {
     using namespace forevertas;
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchRequest request{packsDirectory.toStdString(), replayPath.toStdString()};
     request.backend = PhysicsBackend::OptimizedCpu;
     request.simulationHorizonMs = 100;
@@ -2550,7 +2552,7 @@ bool TestBaseEvaluation(const QString &packsDirectory, const QString &replayPath
 }
 
 bool TestStopRetainsBest(const QString &packsDirectory, const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     controller.setSimulationBackendId("optimized-cpu");
@@ -2641,12 +2643,66 @@ bool TestFinishTimeHistoryDisplay() {
     return okay;
 }
 
+// The distance target's score is a reach time, or 1e12 + 1e6 per event
+// before the target (counting it) + the distance: History shows its parts,
+// also for rows saved before they were split.
+bool TestDistanceHistoryDisplay() {
+    using forevertas::app::SearchSessionStore;
+    bool okay = true;
+    struct Case {
+        double score;
+        QVariant reached;
+        double before;
+        double distance;
+    };
+    for (const Case &expected : {Case{1e12 + 2e6 + 12.5, QVariant(), 1.0, 12.5},
+                                 Case{1e12 + 1e6 + 3.25, QVariant(), 0.0, 3.25},
+                                 Case{7340.0, QVariant(7340.0), 0.0, 0.0}}) {
+        for (bool legacy : {false, true}) {
+            QTemporaryDir directory;
+            forevertas::SearchRequest request{"", ""};
+            request.evaluationTarget.id = forevertas::kDistanceTargetEvaluationId;
+            forevertas::SearchLiveUpdate result;
+            result.bestScore = expected.score;
+            result.bestEvaluationTimeMs = 5120.0;
+            SearchSessionStore::SaveAbortedCycle({{}, {}, directory.path()}, request, 0, result);
+            if (legacy) {
+                // saved before: one Distance column holding the raw score
+                QFile file(directory.filePath(QStringLiteral("restart-000000.json")));
+                if (!file.open(QIODevice::ReadOnly)) return false;
+                auto metadata = QJsonDocument::fromJson(file.readAll()).object();
+                file.close();
+                metadata.insert("columns", QJsonArray{
+                        QJsonObject{{"label", "Distance"}, {"kind", "distance"}, {"better", "lower"}},
+                        QJsonObject{{"label", "At"}, {"kind", "time"}, {"better", ""}}});
+                metadata.insert("metrics", QJsonArray{expected.score, 5120.0});
+                if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
+                file.write(QJsonDocument(metadata).toJson());
+                file.close();
+            }
+            const auto row = SearchSessionStore::Cycle(directory.path(), 0);
+            const QVariantList columns = row.value("columns").toList();
+            const QVariantList metrics = row.value("metrics").toList();
+            okay &= Check(columns.size() == 4 && metrics.size() == 4 &&
+                                  columns.at(2).toMap().value("label").toString() == QStringLiteral("Distance") &&
+                                  metrics.at(0).isNull() == expected.reached.isNull() &&
+                                  (expected.reached.isNull() || metrics.at(0).toDouble() == expected.reached.toDouble()) &&
+                                  metrics.at(1).toDouble() == expected.before &&
+                                  std::abs(metrics.at(2).toDouble() - expected.distance) < 1e-6 &&
+                                  metrics.at(3).toDouble() == 5120.0,
+                          legacy ? "an old distance row was not split into reach, checkpoints and distance"
+                                 : "a distance row does not show reach, checkpoints and distance");
+        }
+    }
+    return okay;
+}
+
 bool TestAutorestartWithoutEligibleResult(const QString &packsDirectory,
                                          const QString &replayPath) {
     bool okay = true;
     for (const QString &mode : {QStringLiteral("attempts"), QStringLiteral("duration")}) {
         {
-            QSettings().clear();
+            forevertas::app::AppSettings::Instance().clear();
             SearchController controller;
             SetValidPaths(controller, packsDirectory, replayPath);
             controller.setBaseInputScript(QStringLiteral("0.00 press up"));
@@ -2685,7 +2741,7 @@ bool TestAutorestartWithoutEligibleResult(const QString &packsDirectory,
 
 bool TestAutorestartHistory(const QString &packsDirectory,
                             const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     controller.setBaseInputScript(QStringLiteral("0.00 press up"));
@@ -2704,6 +2760,14 @@ bool TestAutorestartHistory(const QString &packsDirectory,
     int sessionResets = 0;
     QObject::connect(&controller, &SearchController::searchSessionReset,
                      &controller, [&sessionResets]() { ++sessionResets; });
+    // each restart starts with no best of its own: the last one's is gone
+    int restartsStarted = 0;
+    int staleBests = 0;
+    QObject::connect(&controller, &SearchController::statusChanged, &controller, [&]() {
+        if (!controller.statusText().startsWith(QStringLiteral("Starting restart"))) return;
+        ++restartsStarted;
+        if (!controller.resultText().isEmpty() || !controller.liveRow().isEmpty()) ++staleBests;
+    });
     if (!Check(controller.canStart(),
                "autorestart test configuration could not start")) {
         return false;
@@ -2725,6 +2789,8 @@ bool TestAutorestartHistory(const QString &packsDirectory,
                   }, 30000), "autorestart Stop did not finish and save");
     const QVariantList rows = controller.cycleRows();
     const QString firstSession = controller.selectedSessionDirectory();
+    okay &= Check(restartsStarted >= 1 && staleBests == 0,
+                  "a restart started showing the previous restart's best");
     okay &= Check(controller.baseInputScript() == QStringLiteral("0.00 press up"),
                   "stopping autorestart overwrote the base input script");
     okay &= Check(sessionResets == 1 && !firstSession.isEmpty(),
@@ -2824,7 +2890,7 @@ bool TestAutorestartHistory(const QString &packsDirectory,
 
 bool TestDurationAutorestartAndSaveFailure(
         const QString &packsDirectory, const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
@@ -2913,7 +2979,7 @@ bool TestDurationAutorestartAndSaveFailure(
 bool TestMetricsWhenConditionExcludesBaseline(
         const QString &packsDirectory,
         const QString &replayPath) {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     SearchController controller;
     SetValidPaths(controller, packsDirectory, replayPath);
     controller.setSimulationBackendId(QStringLiteral("optimized-cpu"));
@@ -2967,7 +3033,7 @@ bool TestMetricsWhenConditionExcludesBaseline(
 }
 
 bool TestAutomaticPacksDetection() {
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     QTemporaryDir root;
     if (!root.isValid()) return Check(false, "failed to create search root");
     const QString packs = root.filePath(QStringLiteral(
@@ -3035,11 +3101,11 @@ int main(int argc, char **argv) {
     if (argc == 4 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--session-fixes")) {
         const QString packs = QString::fromLocal8Bit(argv[2]);
         const QString replay = QString::fromLocal8Bit(argv[3]);
-        const bool okay = TestFinishTimeHistoryDisplay() &&
+        const bool okay = TestFinishTimeHistoryDisplay() && TestDistanceHistoryDisplay() &&
                 TestAutorestartWithoutEligibleResult(packs, replay) &&
                 TestAutorestartHistory(packs, replay) &&
                 TestDurationAutorestartAndSaveFailure(packs, replay);
-        QSettings().clear();
+        forevertas::app::AppSettings::Instance().clear();
         return okay ? 0 : 1;
     }
 
@@ -3101,6 +3167,6 @@ int main(int argc, char **argv) {
                 TestMetricsWhenConditionExcludesBaseline(packs, replay) &&
                 TestIndefiniteSearchLifecycle(packs, replay);
     }
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     return okay ? 0 : 1;
 }

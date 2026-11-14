@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
 #include "viewer/simulation_debugger_model.h"
@@ -200,7 +201,7 @@ int main(int argc, char **argv) {
 
     QStandardPaths::setTestModeEnabled(true);
     QGuiApplication application(argc, argv);
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     forevertas::viewer::RaceViewerController viewer;
     auto *const model = viewer.simulationDebugger();
     forevertas::viewer::RaceTimelineItem timeline;

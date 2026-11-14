@@ -603,6 +603,22 @@ bool DockTree::setCurrent(const QString &group, const QString &panel) {
     return false;
 }
 
+bool DockTree::moveTab(const QString &group, const QString &panel, int index) {
+    QStringList *tabs = nullptr;
+    if (DockNode *node = findNode(group); node != nullptr && node->kind == DockNode::Kind::Tabs) {
+        tabs = &node->tabs;
+    }
+    for (DockFloatingGroup &floating : floating_) {
+        if (floating.id == group) tabs = &floating.tabs;
+    }
+    if (tabs == nullptr) return false;
+    const int from = static_cast<int>(tabs->indexOf(panel));
+    const int to = std::clamp(index, 0, static_cast<int>(tabs->size()) - 1);
+    if (from < 0 || from == to) return false;
+    tabs->move(from, to);
+    return true;
+}
+
 void DockTree::followArea(const QRectF &from, const QRectF &to) {
     if (from.isEmpty() || to.isEmpty()) {
         return;
@@ -805,6 +821,18 @@ DockGeometry DockTree::compute(const QRectF &area, double gap,
 }
 
 void DockTree::reconcile(const QStringList &known, const DockTree &fallback) {
+    // Bruteforce became Base, Target, Passes and Search (tabs where it was)
+    // with Results under them.
+    const QString bruteforce = groupOf(QStringLiteral("bruteforce"));
+    if (!bruteforce.isEmpty() && groupOf(QStringLiteral("base")).isEmpty() &&
+        known.contains(QStringLiteral("base"))) {
+        const QStringList pages{QStringLiteral("base"), QStringLiteral("target"),
+                                QStringLiteral("passes"), QStringLiteral("search")};
+        if (dock(DockGroup{{}, pages, pages.first()}, bruteforce, QStringLiteral("center"), 0.0)) {
+            dock(DockGroup{{}, {QStringLiteral("results")}, QStringLiteral("results")}, bruteforce,
+                 QStringLiteral("bottom"), 0.42);
+        }
+    }
     // A repeated panel keeps its last place.
     QStringList seen;
     for (const QString &panel : panels()) {
@@ -826,6 +854,21 @@ void DockTree::reconcile(const QStringList &known, const DockTree &fallback) {
             continue;
         }
         const QString fallbackGroup = fallback.groupOf(panel);
+        // A new panel joins one it shares its default group with.
+        QString sibling;
+        if (const std::optional<DockGroup> defaults = fallback.group(fallbackGroup)) {
+            for (const QString &other : defaults->tabs) {
+                if (other != panel && !groupOf(other).isEmpty()) {
+                    sibling = groupOf(other);
+                    break;
+                }
+            }
+        }
+        if (!sibling.isEmpty() &&
+            dock(DockGroup{{}, {panel}, panel}, sibling, QStringLiteral("center"), 0.0)) {
+            if (fallback.isClosed(panel)) setClosed(panel, true);
+            continue;
+        }
         if (const DockFloatingGroup *floating =
                     fallback.floatingGroup(fallbackGroup)) {
             addFloating(DockGroup{{}, {panel}, panel}, floating->rect);
@@ -1280,6 +1323,12 @@ void DockLayoutModel::setCurrent(const QString &group, const QString &panel) {
     }
 }
 
+void DockLayoutModel::moveTab(const QString &group, const QString &panel, int index) {
+    if (tree_.moveTab(group, panel, index)) {
+        changed();
+    }
+}
+
 void DockLayoutModel::setRatio(const QString &split, qreal ratio) {
     double total = 0;
     for (const DockGeometry::Splitter &splitter : geometry_.splitters) {
@@ -1354,6 +1403,17 @@ QRectF DockLayoutModel::resizeFloating(const QString &group,
     tree_.setFloatingRect(group, snapped);
     changed();
     return snapped;
+}
+
+QRectF DockLayoutModel::placeFloating(const QString &group,
+                                      const QRectF &rect) {
+    if (tree_.floatingGroup(group) == nullptr) {
+        return rect;
+    }
+    const QRectF placed = ClampDockRect(rect, area_);
+    tree_.setFloatingRect(group, placed);
+    changed();
+    return placed;
 }
 
 void DockLayoutModel::rememberPlace(const QString &group,

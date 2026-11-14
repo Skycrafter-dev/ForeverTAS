@@ -1,4 +1,6 @@
 #include "app/search_controller.h"
+#include "app/app_settings.h"
+#include "diagnostics/diagnostics_log.h"
 
 #include "app/compact_number_format.h"
 #include "app/keyboard_layout.h"
@@ -25,7 +27,6 @@
 #include <QPalette>
 #include <QRandomGenerator>
 #include <QRegularExpression>
-#include <QSettings>
 #include <QThread>
 #include <QTimer>
 
@@ -175,7 +176,7 @@ ReplayInputExtractionResult ExtractReplayInputScript(
 }
 
 QString StoredValue(const char *key, const QString &fallback) {
-    return QSettings().value(QLatin1String(key), fallback).toString();
+    return AppSettings::Instance().value(QLatin1String(key), fallback).toString();
 }
 
 QString BackendId(PhysicsBackend backend) {
@@ -253,35 +254,35 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             kSimulationHorizonKey,
             QString::number(kDefaultSimulationHorizonMs));
     conditionScript_ = StoredValue(kConditionScriptKey, {});
-    if (!QSettings().contains(QLatin1String(kSimulationHorizonKey))) {
-        QSettings().setValue(
+    if (!AppSettings::Instance().contains(QLatin1String(kSimulationHorizonKey))) {
+        AppSettings::Instance().setValue(
                 QLatin1String(kSimulationHorizonKey),
                 simulationHorizonMs_);
     }
     // The preview extent starts at the search end once, then only changes
     // when the user edits it.
     previewExtentMs_ = StoredValue(kPreviewExtentKey, simulationHorizonMs_);
-    if (!QSettings().contains(QLatin1String(kPreviewExtentKey))) {
-        QSettings().setValue(QLatin1String(kPreviewExtentKey), previewExtentMs_);
+    if (!AppSettings::Instance().contains(QLatin1String(kPreviewExtentKey))) {
+        AppSettings::Instance().setValue(QLatin1String(kPreviewExtentKey), previewExtentMs_);
     }
     cpuWorkerCount_ = StoredValue(
             kCpuWorkerCountKey,
             QString::number(DefaultCpuWorkerCount()));
-    cudaCalibrationEnabled_ = QSettings()
+    cudaCalibrationEnabled_ = AppSettings::Instance()
             .value(QLatin1String(kCudaCalibrationEnabledKey), false)
             .toBool();
     hipParallelSampleCount_ = StoredValue(
             kHipParallelSampleCountKey,
             QString::number(kDefaultCudaParallelSampleCount));
-    hipCalibrationEnabled_ = QSettings()
+    hipCalibrationEnabled_ = AppSettings::Instance()
             .value(QLatin1String(kHipCalibrationEnabledKey), false)
             .toBool();
-    cudaSessionSpecializationEnabled_ = QSettings()
+    cudaSessionSpecializationEnabled_ = AppSettings::Instance()
             .value(QLatin1String(
                            kCudaSessionSpecializationEnabledKey),
                    true)
             .toBool();
-    approximatePhysics_ = QSettings()
+    approximatePhysics_ = AppSettings::Instance()
             .value(QLatin1String(kApproximatePhysicsKey), false)
             .toBool();
 #if FOREVERVALIDATOR_HAS_CUDA
@@ -338,7 +339,7 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
     vulkanParallelSampleCount_ = StoredValue(
             kVulkanParallelSampleCountKey,
             QString::number(kDefaultCudaParallelSampleCount));
-    vulkanCalibrationEnabled_ = QSettings()
+    vulkanCalibrationEnabled_ = AppSettings::Instance()
             .value(QLatin1String(kVulkanCalibrationEnabledKey), false).toBool();
     const auto vulkan = forevervalidator::QueryVulkanBackendDiagnostics();
     vulkanAvailable_ = vulkan.IsSearchReady();
@@ -359,7 +360,10 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
                 "(Driver message: %1)")
                                     .arg(QString::fromStdString(vulkan.diagnostic));
     }
-    QSettings settings;
+    diagnostics::Log("backend CUDA: %s", qUtf8Printable(cudaStatusText_));
+    diagnostics::Log("backend HIP: %s", qUtf8Printable(hipStatusText_));
+    diagnostics::Log("backend Vulkan: %s", qUtf8Printable(vulkanStatusText_));
+    AppSettings &settings = AppSettings::Instance();
     randomizeSeedsOnStart_ = settings
             .value(QLatin1String(kRandomizeSeedsOnStartKey), true)
             .toBool();
@@ -389,7 +393,7 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             ParsePhysicsBackend(storedBackend.toStdString());
     simulationBackend_ = parsedBackend.value_or(PhysicsBackend::Reference);
     if (!parsedBackend) {
-        QSettings().setValue(
+        AppSettings::Instance().setValue(
                 QLatin1String(kSimulationBackendKey),
                 BackendId(simulationBackend_));
     }
@@ -406,7 +410,7 @@ SearchController::~SearchController() {
         inputScriptPersistTimer_->stop();
     }
     persist(kBaseInputScriptKey, baseInputScript_);
-    QSettings().sync();
+    AppSettings::Instance().sync();
     waitForWorker();
 }
 
@@ -668,7 +672,7 @@ bool SearchController::viewerVisible() const { return viewerVisible_; }
 void SearchController::setViewerVisible(bool value) {
     if (viewerVisible_ == value) return;
     viewerVisible_ = value;
-    QSettings().setValue(QLatin1String(kViewerVisibleKey), value);
+    AppSettings::Instance().setValue(QLatin1String(kViewerVisibleKey), value);
     emit viewerVisibleChanged();
 }
 
@@ -798,6 +802,7 @@ void SearchController::evaluateBase() {
             } else {
                 baseEvaluationResult_ = data;
                 baseEvaluationText_ = text;
+                diagnostics::Log("base inputs: %s", qUtf8Printable(text));
             }
             emit baseEvaluationChanged();
         }, Qt::QueuedConnection);
@@ -957,6 +962,7 @@ void SearchController::setReplayPath(const QString &value) {
         return;
     }
     replayPath_ = value;
+    diagnostics::Log("replay: %s", qUtf8Printable(value));
     persist(kReplayPathKey, value);
     emit replayPathChanged();
     emit replayInputStateChanged();
@@ -1018,6 +1024,7 @@ void SearchController::setSimulationBackendId(const QString &value) {
         return;
     }
     simulationBackend_ = *parsed;
+    diagnostics::Log("settings: physics backend %s", qUtf8Printable(value));
     persist(kSimulationBackendKey, BackendId(simulationBackend_));
     emit simulationBackendIdChanged();
     refreshValidation();
@@ -1097,7 +1104,7 @@ void SearchController::setCudaCalibrationEnabled(bool value) {
         return;
     }
     cudaCalibrationEnabled_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kCudaCalibrationEnabledKey), value);
     emit cudaCalibrationEnabledChanged();
     refreshValidation();
@@ -1108,7 +1115,7 @@ void SearchController::setHipCalibrationEnabled(bool value) {
         return;
     }
     hipCalibrationEnabled_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kHipCalibrationEnabledKey), value);
     emit hipCalibrationEnabledChanged();
     refreshValidation();
@@ -1119,7 +1126,7 @@ void SearchController::setVulkanCalibrationEnabled(bool value) {
         return;
     }
     vulkanCalibrationEnabled_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kVulkanCalibrationEnabledKey), value);
     emit vulkanCalibrationEnabledChanged();
     refreshValidation();
@@ -1130,7 +1137,7 @@ void SearchController::setCudaSessionSpecializationEnabled(bool value) {
         return;
     }
     cudaSessionSpecializationEnabled_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kCudaSessionSpecializationEnabledKey), value);
     emit cudaSessionSpecializationEnabledChanged();
 }
@@ -1140,7 +1147,8 @@ void SearchController::setApproximatePhysics(bool value) {
         return;
     }
     approximatePhysics_ = value;
-    QSettings().setValue(QLatin1String(kApproximatePhysicsKey), value);
+    diagnostics::Log("settings: %s physics", value ? "approximate" : "exact");
+    AppSettings::Instance().setValue(QLatin1String(kApproximatePhysicsKey), value);
     emit approximatePhysicsChanged();
 }
 
@@ -1149,7 +1157,7 @@ void SearchController::setRandomizeSeedsOnStart(bool value) {
         return;
     }
     randomizeSeedsOnStart_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kRandomizeSeedsOnStartKey), value);
     emit randomizeSeedsOnStartChanged();
 }
@@ -1159,7 +1167,7 @@ void SearchController::setDrawTargetsThroughBlocks(bool value) {
         return;
     }
     drawTargetsThroughBlocks_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kDrawTargetsThroughBlocksKey), value);
     emit drawTargetsThroughBlocksChanged();
 }
@@ -1167,12 +1175,13 @@ void SearchController::setDrawTargetsThroughBlocks(bool value) {
 void SearchController::setTargetMouseEditingLocked(bool value) {
     if (targetMouseEditingLocked_ == value) return;
     targetMouseEditingLocked_ = value;
-    QSettings().setValue(QLatin1String(kTargetMouseEditingLockedKey), value);
+    AppSettings::Instance().setValue(QLatin1String(kTargetMouseEditingLockedKey), value);
     emit targetMouseEditingLockedChanged();
 }
 
 void SearchController::setEvaluationTargetId(const QString &value) {
     if (!configuration_.setEvaluationTargetId(value)) return;
+    diagnostics::Log("settings: target %s", qUtf8Printable(value));
     // Each target keeps its own chain.
     ++windowChainRevision_;
     emit windowChainsChanged();
@@ -1275,7 +1284,7 @@ QVariantMap SearchController::windowChain(const QString &key) const {
                 key.mid(5).toInt()));
     }
     return NormalizedChain(
-            QSettings()
+            AppSettings::Instance()
                     .value(StoredChainKey(key, configuration_.evaluationTargetId()))
                     .toMap());
 }
@@ -1288,7 +1297,7 @@ void SearchController::setWindowChain(const QString &key, const QString &color,
         configuration_.setModifierPassChain(key.mid(5).toInt(), chain);
         emit modifierPassesChanged();
     } else {
-        QSettings().setValue(
+        AppSettings::Instance().setValue(
                 StoredChainKey(key, configuration_.evaluationTargetId()), chain);
     }
     ++windowChainRevision_;
@@ -1571,6 +1580,7 @@ void SearchController::setPacksDirectory(const QString &value) {
         return;
     }
     packsDirectory_ = value;
+    diagnostics::Log("packs folder: %s", qUtf8Printable(value));
     persist(kPacksDirectoryKey, value);
     emit packsDirectoryChanged();
     emit replayInputStateChanged();
@@ -1618,12 +1628,12 @@ bool SearchController::browseForReplay() {
 
 QVariant SearchController::uiSetting(const QString &key,
                                      const QVariant &fallback) const {
-    return QSettings().value(QStringLiteral("ui/") + key, fallback);
+    return AppSettings::Instance().value(QStringLiteral("ui/") + key, fallback);
 }
 
 void SearchController::setUiSetting(const QString &key,
                                     const QVariant &value) {
-    QSettings().setValue(QStringLiteral("ui/") + key, value);
+    AppSettings::Instance().setValue(QStringLiteral("ui/") + key, value);
 }
 
 bool SearchController::keyboardIsAzerty() const {
@@ -1677,6 +1687,8 @@ void SearchController::extractReplayInputs() {
                                                 .arg(failure.value(QStringLiteral("reason"))
                                                              .toString()));
                                 replayInputFailure_ = failure;
+                                diagnostics::Log("replay inputs failed: %s",
+                                                 qUtf8Printable(result.error));
                                 emit replayInputStateChanged();
                             } else {
                                 setBaseInputScript(result.script);
@@ -1734,6 +1746,7 @@ void SearchController::startSearch() {
     setLiveMetrics({}, {}, {}, false);
     lastCompletion_.reset();
     setProgress(true, 0.0);
+    diagnostics::Log("search %llu: start", static_cast<unsigned long long>(searchSerial_ + 1u));
     setStatusText(QStringLiteral("Starting search..."));
     setStopping(false);
     setRunning(true);
@@ -1768,6 +1781,7 @@ void SearchController::startSearch() {
             &SearchWorker::stageChanged,
             this,
             [this](const QString &status, bool indeterminate) {
+                diagnostics::Log("search: %s", qUtf8Printable(status));
                 setStatusText(status);
                 setProgress(indeterminate, progressValue_);
             });
@@ -1799,6 +1813,7 @@ void SearchController::startSearch() {
             &SearchWorker::cudaBatchSizeChanged,
             this,
             [this](std::uint32_t batchSize) {
+                diagnostics::Log("search: batch size %u", batchSize);
                 if (PhysicsBackendId(simulationBackend_) == "vulkan") {
                     setVulkanParallelSampleCount(QString::number(batchSize));
                 } else if (PhysicsBackendId(simulationBackend_) == "hip") {
@@ -1860,6 +1875,7 @@ void SearchController::startSearch() {
             this,
             [this](SearchCompletionPtr completion) {
                 lastCompletion_ = completion;
+                diagnostics::Log("search complete: %s", qUtf8Printable(completion->summary));
                 setResultText(completion->summary);
                 setBestInputsText(completion->inputsText);
                 setProgress(false, 1.0);
@@ -1871,6 +1887,7 @@ void SearchController::startSearch() {
             this,
             [this](SearchCompletionPtr completion) {
                 lastCompletion_ = completion;
+                diagnostics::Log("search stopped: %s", qUtf8Printable(completion->summary));
                 setResultText(completion->summary);
                 setBestInputsText(completion->inputsText);
                 setProgress(false, progressValue_);
@@ -1878,6 +1895,7 @@ void SearchController::startSearch() {
                 emit searchCompleted(std::move(completion));
             });
     connect(worker, &SearchWorker::cancelled, this, [this]() {
+        diagnostics::Log("search stopped with no result");
         setStatusText(QStringLiteral("Search stopped"));
         setProgress(false, progressValue_);
     });
@@ -1921,6 +1939,7 @@ void SearchController::stopSearch() {
     if (!running_ || stopping_ || !stopRequested_ || !cancellationRequested_) {
         return;
     }
+    diagnostics::Log("search: stop requested");
     setStopping(true);
     if (iterationPhase_ != nullptr) TryCancelBeforeSearchIteration(iterationPhase_);
     stopRequested_->store(true, std::memory_order_relaxed);
@@ -2180,6 +2199,20 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     return {std::move(request), {}};
 }
 
+double SearchController::evaluationStartMs() const {
+    bool parsed = false;
+    const qulonglong horizon = simulationHorizonMs_.trimmed().toULongLong(&parsed);
+    if (!parsed || horizon < kSearchTickDurationMs || horizon > kMaximumSimulationHorizonMs) {
+        return -1.0;
+    }
+    const SearchConfigurationValidation validation = configuration_.validate(
+            kSearchTickDurationMs, static_cast<std::uint32_t>(horizon));
+    if (!validation.configuration) return -1.0;
+    const std::optional<std::int64_t> start = EvaluationStartMs(
+            validation.configuration->modifiers, static_cast<std::uint32_t>(horizon));
+    return start ? static_cast<double>(*start) : -1.0;
+}
+
 void SearchController::refreshSessions() {
     historyHasOlder_ = historyHasNewer_ = false;
     historySelectionExplicit_ = false;
@@ -2319,6 +2352,7 @@ void SearchController::setReplayInputStatusText(const QString &value) {
         return;
     }
     replayInputStatusText_ = value;
+    diagnostics::Log("replay inputs: %s", qUtf8Printable(value));
     replayInputFailure_.clear();
     emit replayInputStateChanged();
 }
@@ -2449,13 +2483,13 @@ void SearchController::clearAutoDetectedPacksDirectory() {
 }
 
 void SearchController::persist(const char *key, const QString &value) {
-    QSettings().setValue(QLatin1String(key), value);
+    AppSettings::Instance().setValue(QLatin1String(key), value);
 }
 
 void SearchController::flushSettings() {
     if (inputScriptPersistTimer_ != nullptr) inputScriptPersistTimer_->stop();
     persist(kBaseInputScriptKey, baseInputScript_);
-    QSettings().sync();
+    AppSettings::Instance().sync();
 }
 
 void SearchController::requestShutdown() {

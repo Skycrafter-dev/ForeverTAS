@@ -1,19 +1,15 @@
 pragma Singleton
 
 import QtQuick
-import QtCore
+import ForeverTAS.Viewer 1.0
 
 // Global steering unit preference. Settings always store normalized values
 // (-1..1); "native" shows and accepts the game's -65536..65536 scale, with the
 // simulator's half-away-from-zero quantization.
 QtObject {
-    property alias unit: preferences.unit
+    property string unit: AppSettings.value("steeringDisplay/unit", "normalized")
+    onUnitChanged: AppSettings.setValue("steeringDisplay/unit", unit)
     readonly property bool nativeUnits: unit === "native"
-    property Settings storage: Settings {
-        id: preferences
-        category: "steeringDisplay"
-        property string unit: "normalized"
-    }
 
     function displayValue(value) {
         if (!nativeUnits || String(value).trim().length === 0) return String(value)

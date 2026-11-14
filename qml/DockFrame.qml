@@ -18,6 +18,100 @@ Item {
     readonly property bool maximized: space !== null && space.maximizedPanel !== ""
                                       && currentPanel === space.maximizedPanel
     property bool retiring: false
+    // The header shows or hides panel by panel (DockSpace.hiddenHeaders); a
+    // collapsed panel is only its header, which stays.
+    readonly property bool headerShown: space === null || collapsed || space.headerShown(currentPanel)
+    // The header's height, sliding in and out over headerT. While it slides,
+    // the frame's own change of place (shiftY, shiftH) slides with it, so the
+    // content stays still.
+    property real headerT: 1
+    property real headerFrom: 0
+    property real shiftY: 0
+    property real shiftH: 0
+    readonly property real headerSpace: {
+        const target = headerShown ? AppTheme.headerHeight : 0
+        return headerT >= 1 ? target : headerFrom + (target - headerFrom) * headerT
+    }
+    NumberAnimation {
+        id: headerSlide
+        target: frame
+        property: "headerT"
+        from: 0
+        to: 1
+        duration: 220
+        easing.type: Easing.OutCubic
+    }
+    // Set once the layout has given the frame its first panel: from then on a
+    // header shown or hidden slides.
+    property bool settled: false
+    onHeaderShownChanged: {
+        if (!settled || space === null || !space.ready)
+            return
+        const before = Qt.rect(x, y, width, height)
+        const from = headerSpace
+        const target = headerShown ? AppTheme.headerHeight : 0
+        if (floating && !maximized) {
+            const change = headerChange(target - from)
+            if (change.dy !== 0 || change.dh !== 0) {
+                const used = space.layout.placeFloating(
+                        groupId, Qt.rect(tx, ty + change.dy, tw, th + change.dh))
+                place(used.x, used.y, used.width, used.height)
+            }
+        }
+        // where the frame is drawn now, relative to its new place
+        shiftY = before.y - (maximized ? space.area.y : ty)
+        shiftH = before.height - (maximized ? space.area.height : th)
+        headerFrom = from
+        headerT = 0
+        headerSlide.restart()
+    }
+    // What the frame's top and bottom are snapped to: the area's edge or
+    // another panel's (one gap apart, side by side with this one); the room
+    // left beyond each.
+    function snaps() {
+        const a = space.area
+        const reach = AppTheme.gap + 2
+        let top = ty <= a.y + 1.5
+        let bottom = ty + th >= a.y + a.height - 1.5
+        let roomAbove = ty - a.y
+        let roomBelow = a.y + a.height - (ty + th)
+        for (const id in space.frames) {
+            const other = space.frames[id]
+            if (other === frame || other.retiring || !other.visible)
+                continue
+            if (other.tx >= tx + tw || other.tx + other.tw <= tx)
+                continue   // not above or below this one
+            const otherBottom = other.ty + other.th
+            if (otherBottom <= ty + 1.5) {
+                roomAbove = Math.min(roomAbove, ty - otherBottom - AppTheme.gap)
+                if (ty - otherBottom <= reach)
+                    top = true
+            }
+            if (other.ty >= ty + th - 1.5) {
+                roomBelow = Math.min(roomBelow, other.ty - (ty + th) - AppTheme.gap)
+                if (other.ty - (ty + th) <= reach)
+                    bottom = true
+            }
+        }
+        return { top: top, bottom: bottom, above: Math.max(0, roomAbove), below: Math.max(0, roomBelow) }
+    }
+    // How a floating frame changes for a header growing by delta (negative:
+    // hiding): it grows above the content, or shrinks from the top. Snapped
+    // at the top (the area's edge or a panel above), it stays there and
+    // changes at the bottom; snapped at both, it keeps its size and the
+    // content takes or gives the space.
+    function headerChange(delta) {
+        const snap = snaps()
+        if (snap.top && snap.bottom)
+            return { dy: 0, dh: 0 }
+        if (delta < 0)
+            return snap.top ? { dy: 0, dh: delta } : { dy: -delta, dh: delta }
+        if (snap.top)
+            return { dy: 0, dh: Math.min(delta, snap.below) }
+        const up = Math.min(delta, snap.above)
+        const down = Math.min(delta - up, snap.below)
+        return { dy: -up, dh: up + down }
+    }
 
     property real tx: 0
     property real ty: 0
@@ -28,9 +122,9 @@ Item {
     readonly property bool settle: space !== null && space.animating && !dragging && !resizing
                                    && !space.splitting
     x: maximized ? space.area.x : tx
-    y: maximized ? space.area.y : ty
+    y: (maximized ? space.area.y : ty) + shiftY * (1 - headerT)
     width: maximized ? space.area.width : tw
-    height: maximized ? space.area.height : th
+    height: (maximized ? space.area.height : th) + shiftH * (1 - headerT)
     Behavior on x { enabled: frame.settle; SpringAnimation { spring: 3.6; damping: 0.36; epsilon: 0.25 } }
     Behavior on y { enabled: frame.settle; SpringAnimation { spring: 3.6; damping: 0.36; epsilon: 0.25 } }
     Behavior on width { enabled: frame.settle; SpringAnimation { spring: 4.2; damping: 0.42; epsilon: 0.25 } }
@@ -70,7 +164,13 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.top: parent.top
-        height: AppTheme.headerHeight
+        // collapses with the slide: its row moves up out of the clip and
+        // fades, never lying over the content
+        height: frame.headerSpace
+        clip: true
+        visible: height > 0.5
+        opacity: Math.min(1, frame.headerSpace / AppTheme.headerHeight)
+        readonly property real rowCenter: height - AppTheme.headerHeight / 2
 
         MouseArea {
             id: headerArea
@@ -91,10 +191,37 @@ Item {
                 if (pressedTab !== "" && pressedTab !== frame.currentPanel)
                     frame.space.layout.setCurrent(frame.groupId, pressedTab)
             }
+            // A tab of several: along the row it changes place; it comes
+            // loose only when pulled well out of the header.
+            readonly property real tabPull: 28
+            function tabIndexAt(x) {
+                let index = -1
+                for (let i = 0; i < tabRow.children.length; ++i) {
+                    const tab = tabRow.children[i]
+                    if (tab.panelId === undefined)
+                        continue
+                    const at = frame.tabs.indexOf(tab.panelId)
+                    if (x >= tab.x)
+                        index = Math.max(index, at)
+                }
+                return Math.max(0, index)
+            }
             onPositionChanged: mouse => {
                 if (!pressed)
                     return
                 const p = mapToItem(frame.space, mouse.x, mouse.y)
+                if (!moved && pressedTab !== "" && frame.tabs.length > 1) {
+                    const pulledOut = mouse.y < -tabPull || mouse.y > height + tabPull
+                                      || mouse.x < -tabPull || mouse.x > width + tabPull
+                    if (!pulledOut) {
+                        const index = tabIndexAt(mapToItem(tabRow, mouse.x, mouse.y).x)
+                        if (frame.tabs[index] !== pressedTab)
+                            frame.space.layout.moveTab(frame.groupId, pressedTab, index)
+                        return
+                    }
+                    moved = true
+                    frame.space.beginDrag(frame, pressedTab, pressPoint)
+                }
                 if (!moved && Math.hypot(p.x - pressPoint.x, p.y - pressPoint.y) > 5) {
                     moved = true
                     frame.space.beginDrag(frame, pressedTab, pressPoint)
@@ -122,7 +249,7 @@ Item {
             id: tabRow
             anchors.left: parent.left
             anchors.leftMargin: 8
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.rowCenter - height / 2
             spacing: 2
             width: Math.min(implicitWidth, buttons.x - 12)
             clip: true
@@ -159,7 +286,7 @@ Item {
             id: buttons
             anchors.right: parent.right
             anchors.rightMargin: 6
-            anchors.verticalCenter: parent.verticalCenter
+            y: header.rowCenter - height / 2
             spacing: 0
 
             DockHeaderButton {
@@ -193,7 +320,31 @@ Item {
         anchors.rightMargin: 12
         height: 1
         color: Qt.rgba(1, 1, 1, 0.08)
+        opacity: header.opacity
+        visible: !frame.collapsed && frame.headerSpace > 0
+    }
+
+    // ---- the top edge: a click hides this panel's header, or brings it back ----
+    MouseArea {
+        objectName: "dockHeaderToggle"
+        x: 24
+        y: 0
+        width: Math.max(0, frame.width - 48)
+        height: 5
+        z: 6
+        hoverEnabled: true
+        cursorShape: Qt.PointingHandCursor
         visible: !frame.collapsed
+        onClicked: frame.space.setHeaderShown(frame.currentPanel, !frame.headerShown)
+        Rectangle {
+            anchors.horizontalCenter: parent.horizontalCenter
+            y: 1
+            width: Math.min(64, parent.width)
+            height: 3
+            radius: 1.5
+            color: Qt.rgba(1, 1, 1, parent.containsMouse ? 0.45 : frame.headerSpace > 0 ? 0 : 0.16)
+            Behavior on color { ColorAnimation { duration: 120 } }
+        }
     }
 
     // ---- resize edges (floating only) ------------------------------------

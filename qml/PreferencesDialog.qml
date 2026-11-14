@@ -3,8 +3,9 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import "settings"
 
-// Edit > Preferences: the race's keys (click a key to change it, then press
-// the new one; Esc keeps the old one) and the gamepad.
+// Edit > Preferences: the race's keys and gamepad buttons (click one to
+// change it, then press the new key or button; Esc keeps the old one) and the
+// gamepad.
 GlassDialog {
     id: dialog
 
@@ -46,7 +47,7 @@ GlassDialog {
 
         Label {
             Layout.fillWidth: true
-            text: qsTr("The race view takes these keys while it has the focus. Click a key, then press the new one; Esc keeps the old one.")
+            text: qsTr("The race view takes these keys while it has the focus, and the gamepad's buttons while the window has it. Click one, then press the new key or button; Esc keeps the old one.")
             wrapMode: Text.WordWrap
             color: AppTheme.textMuted
             font.pixelSize: 11
@@ -112,7 +113,7 @@ GlassDialog {
                         }
 
                         Repeater {
-                            model: 2
+                            model: 3
                             delegate: ThemedButton {
                                 required property int index
                                 readonly property bool waiting: dialog.capturing
@@ -120,7 +121,7 @@ GlassDialog {
                                     && dialog.capturing[1] === index
                                 objectName: "key_" + row.modelData.id + "_" + index
                                 Layout.preferredWidth: 104
-                                text: waiting ? qsTr("Press a key…")
+                                text: waiting ? qsTr("Press a key or button…")
                                       : index < row.keys.length ? dialog.raceControls.bindingText(row.keys[index])
                                       : "—"
                                 enabled: index <= row.keys.length
@@ -136,7 +137,7 @@ GlassDialog {
                             icon.source: "qrc:/icons/x.svg"
                             enabled: row.keys.length > 0
                             ToolTip.visible: hovered
-                            ToolTip.text: qsTr("No key")
+                            ToolTip.text: qsTr("Nothing")
                             onClicked: {
                                 for (let i = row.keys.length - 1; i >= 0; --i)
                                     dialog.raceControls.setBinding(row.modelData.id, i, null)
@@ -149,7 +150,7 @@ GlassDialog {
 
         ThemedButton {
             objectName: "resetControlsButton"
-            text: qsTr("Reset all keys")
+            text: qsTr("Reset all keys and buttons")
             onClicked: dialog.raceControls.resetAll()
         }
         }
@@ -202,7 +203,7 @@ GlassDialog {
             }
             Label {
                 Layout.fillWidth: true
-                text: qsTr("Left stick steers; right trigger or the south button accelerates, left trigger or the east button brakes. Like the keys, it takes over the race that plays.")
+                text: qsTr("Left stick steers; right trigger or the south button accelerates, left trigger or the east button brakes. Like the keys, it takes over the race that plays. The other buttons do what Controls binds them to.")
                 wrapMode: Text.Wrap
                 color: AppTheme.textMuted
                 font.pixelSize: 11
@@ -218,6 +219,17 @@ GlassDialog {
                 objectName: "closePreferencesButton"
                 text: qsTr("Close")
                 onClicked: dialog.close()
+            }
+        }
+
+        // Takes the next gamepad button while a binding is being changed.
+        Connections {
+            target: dialog.gamepad
+            function onButtonChanged(button, pressed) {
+                if (!pressed || !dialog.capturing)
+                    return
+                dialog.raceControls.setBinding(dialog.capturing[0], dialog.capturing[1], { pad: button })
+                dialog.capturing = null
             }
         }
 

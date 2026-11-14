@@ -1,4 +1,5 @@
 #include "searches/basic_brute_force_search.h"
+#include "diagnostics/diagnostics_log.h"
 #include "searches/gpu_segment_escalation.h"
 
 #include "evaluators/evaluator_utils.h"
@@ -183,12 +184,30 @@ std::string ApproximateDumpDirectory() {
 }
 #endif
 
+// The log gets a search's first GPU batches, then one every 30 s.
+thread_local std::uint32_t loggedGpuBatches = 0u;
+thread_local std::chrono::steady_clock::time_point lastLoggedGpuBatch{};
+
 void ReportCudaBatchProfile(
         const char *phase,
         const forevervalidator::experimental::
                 PhysicsSandboxCudaSearchBatch &batch,
         std::uint64_t timelineTickCount,
         std::chrono::steady_clock::duration wallElapsed) {
+    const auto now = std::chrono::steady_clock::now();
+    if (diagnostics::LogOpen() &&
+        (loggedGpuBatches < 4u || now - lastLoggedGpuBatch >= std::chrono::seconds(30))) {
+        ++loggedGpuBatches;
+        lastLoggedGpuBatch = now;
+        diagnostics::Log("gpu batch (%s) at candidate %llu: %u candidates, %.1f ms (kernels %.1f ms), "
+                         "%.0f MiB on the device%s%s",
+                         phase, static_cast<unsigned long long>(batch.firstCandidateId),
+                         batch.candidateCount,
+                         std::chrono::duration<double, std::milli>(wallElapsed).count(),
+                         batch.metrics.kernelMilliseconds,
+                         static_cast<double>(batch.metrics.residentDeviceBytes) / (1024.0 * 1024.0),
+                         batch.bestChanged ? ", new best" : "", batch.cancelled ? ", cancelled" : "");
+    }
     if (!CudaBatchProfilingEnabled()) {
         return;
     }
@@ -353,6 +372,7 @@ CudaCalibrationBatchProfile CudaCalibrationProfile(
 void ReportRejectedCudaCalibrationBatch(
         std::uint32_t batchSize,
         const CudaCalibrationSafetyDecision &decision) {
+    diagnostics::Log("gpu calibration: %u candidates refused: %s", batchSize, decision.reason.c_str());
     std::clog << "forevertas_cuda_calibration_rejected"
               << " candidates=" << batchSize
               << " reason=\"" << decision.reason << '"'
@@ -372,6 +392,9 @@ void ReportRejectedCudaCalibrationBatch(
 
 void ReportCudaCalibrationSelection(
         const CudaBatchCalibrator &calibrator) {
+    diagnostics::Log("gpu calibration: %u candidates%s, %.0f per second, %.1f s measuring",
+                     calibrator.CurrentBatchSize(), calibrator.Confirming() ? " (confirming)" : "",
+                     calibrator.BestThroughput(), calibrator.SpentSeconds());
     std::clog << "forevertas_cuda_calibration_selected"
               << " candidates="
               << calibrator.CurrentBatchSize()
@@ -949,10 +972,15 @@ SearchResult RunGpuBasicBruteForce(
                 context.resolveCudaWinner);
     }
     std::optional<PhysicsSandboxCudaSearchSession> session;
+    diagnostics::Log("gpu session: creating, batches up to %u%s",
+                     configuration.maximumBatchSize,
+                     context.approximatePhysics ? ", approximate physics" : "");
     session.emplace(Require(
             CreatePhysicsSandboxCudaSearchSession(
                     context.sandbox, configuration),
             "creating resident GPU search session"));
+    diagnostics::Log("gpu session: created");
+    loggedGpuBatches = 0u;
     std::optional<CudaBatchCalibrator> calibrator;
     CudaCalibrationSafetyPlanner calibrationSafety;
     if (context.calibrateCudaBatchSize && !context.approximatePhysics) {

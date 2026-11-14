@@ -1,4 +1,6 @@
 #include "viewer/video_export_controller.h"
+#include "app/app_settings.h"
+#include "diagnostics/diagnostics_log.h"
 
 #include "app/system_file_dialog.h"
 #include "viewer/race_viewer_controller.h"
@@ -7,7 +9,6 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
-#include <QSettings>
 #include <QStandardPaths>
 #include <QThread>
 #include <QUrl>
@@ -25,7 +26,7 @@ constexpr char kSettingsGroup[] = "videoExport/";
 
 VideoExportController::VideoExportController(QObject *parent)
     : QObject(parent) {
-    QSettings settings;
+    app::AppSettings &settings = app::AppSettings::Instance();
     const QString group = QString::fromLatin1(kSettingsGroup);
     camera_ = std::clamp(settings.value(group + QStringLiteral("camera"), 1).toInt(), 1, 3);
     videoWidth_ = settings.value(group + QStringLiteral("width"), 1920).toInt();
@@ -176,6 +177,9 @@ bool VideoExportController::start() {
     running_ = true;
     runningPath_ = outputPath_;
     status_ = tr("Loading the map…");
+    diagnostics::Log("video export: %s, %dx%d at %d fps, camera %d, %d ms, %zu controls, map %s",
+                     qUtf8Printable(outputPath_), videoWidth_, videoHeight_, framesPerSecond_,
+                     static_cast<int>(camera_), settings.durationMs, controls.size(), map.constData());
     emit progressChanged();
     emit stateChanged();
 
@@ -183,6 +187,8 @@ bool VideoExportController::start() {
     worker_ = QThread::create([this, controls, packs, cache, map, output,
                                settings, context]() mutable {
         settings.useCurrentContext = context->makeCurrent() ? 1 : 0;
+        diagnostics::Log("video export: OpenGL context %s; the module starts",
+                         settings.useCurrentContext != 0 ? "shared" : "unavailable (module's own)");
         settings.packsDirectory = packs.constData();
         settings.cacheDirectory = cache.constData();
         settings.mapPath = map.constData();
@@ -198,6 +204,8 @@ bool VideoExportController::start() {
                 },
                 this, &cancel_, error.data(), static_cast<int>(error.size()));
         context->release();
+        diagnostics::Log("video export: the module returned %d%s%s", succeeded,
+                         error[0] != '\0' ? ": " : "", error.data());
         const QString message = QString::fromUtf8(error.data());
         QMetaObject::invokeMethod(
                 this,
@@ -234,6 +242,9 @@ void VideoExportController::pollProgress() {
         return;
     }
     const double progress = static_cast<double>(done) / count;
+    if (static_cast<int>(progress * 10.0) != static_cast<int>(progress_ * 10.0)) {
+        diagnostics::Log("video export: frame %d of %d", done, count);
+    }
     if (progress != progress_) {
         progress_ = progress;
         emit progressChanged();
@@ -264,12 +275,13 @@ void VideoExportController::finish(bool succeeded, const QString &error) {
     } else {
         status_ = error.isEmpty() ? tr("The video could not be made.") : error;
     }
+    diagnostics::Log("video export: %s", qUtf8Printable(status_));
     emit progressChanged();
     emit stateChanged();
 }
 
 void VideoExportController::saveSettings() const {
-    QSettings settings;
+    app::AppSettings &settings = app::AppSettings::Instance();
     const QString group = QString::fromLatin1(kSettingsGroup);
     settings.setValue(group + QStringLiteral("camera"), camera_);
     settings.setValue(group + QStringLiteral("width"), videoWidth_);

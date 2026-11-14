@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
 #include "app/search_controller.h"
@@ -300,11 +301,11 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName(
             QStringLiteral("ViewerSmoke"));
     QStandardPaths::setTestModeEnabled(true);
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     if (basePreviewOnly) {
         const bool okay = TestBasePreviewReturn(QString::fromLocal8Bit(argv[2]), QString::fromLocal8Bit(argv[3]));
         if (!okay) std::cerr << "return to base preview failed\n";
-        QSettings().clear();
+        forevertas::app::AppSettings::Instance().clear();
         return okay ? 0 : 1;
     }
     {

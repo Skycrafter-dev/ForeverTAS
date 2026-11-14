@@ -1,4 +1,5 @@
 import QtQuick
+import QtCore
 import ForeverTAS.Viewer 1.0
 
 // Holds the DockPanel children and arranges them, ImGui style: panels dock
@@ -16,6 +17,23 @@ Item {
 
     property alias layout: dockLayout
     property alias hideAll: dockLayout.hideAll
+    // Panel headers (tabs, float, close) show or hide panel by panel: a click
+    // on a panel's top edge, or View > Panel headers for all of them.
+    // Hidden, the panel's content takes the header's place.
+    property var hiddenHeaders: []
+    readonly property bool allHeadersShown: hiddenHeaders.length === 0
+    function headerShown(panelId) { return hiddenHeaders.indexOf(panelId) < 0 }
+    function setHeaderShown(panelId, shown) {
+        if (headerShown(panelId) === shown)
+            return
+        hiddenHeaders = shown ? hiddenHeaders.filter(id => id !== panelId)
+                              : hiddenHeaders.concat([panelId])
+    }
+    function setAllHeadersShown(shown) {
+        hiddenHeaders = shown ? [] : panels().map(p => p.panelId)
+    }
+    // JSON: QSettings turns a one-item list into a plain string
+    onHiddenHeadersChanged: AppSettings.setValue("dock/hiddenHeaders", JSON.stringify(hiddenHeaders))
     // The panel filling the whole area (Code's expand button); set by the
     // window. Moving or closing panels asks for it to end.
     property string maximizedPanel: ""
@@ -40,6 +58,13 @@ Item {
     }
     property bool splitting: false
     property bool ready: false
+    property int splitterSlots: 0
+    Connections {
+        target: dockLayout
+        function onGeometryChanged() {
+            space.splitterSlots = Math.max(space.splitterSlots, dockLayout.splitters.length)
+        }
+    }
 
     property var frames: ({})
     property Item dragFrame: null
@@ -168,6 +193,7 @@ Item {
             frame.z = g.floating ? 100 + g.order : 10
             if (fresh || !frame.dragging)
                 frame.place(g.x, g.y, g.width, g.height)
+            frame.settled = true
             seen[g.id] = true
         }
         // The dragged group is out of the layout but keeps its frame (which
@@ -327,6 +353,16 @@ Item {
     }
 
     Component.onCompleted: {
+        try {
+            const saved = JSON.parse(AppSettings.value("dock/hiddenHeaders", "[]"))
+            if (Array.isArray(saved))
+                hiddenHeaders = saved.filter(id => typeof id === "string")
+        } catch (error) {}
+        // before headers were per panel: all hidden or all shown
+        if (String(AppSettings.value("dock/headersVisible", true)) === "false") {
+            setAllHeadersShown(false)
+            AppSettings.remove("dock/headersVisible")
+        }
         dockLayout.defaultState = JSON.stringify(defaultLayout(area.width, area.height))
         for (const p of panels()) {
             const update = function() {
@@ -382,10 +418,27 @@ Item {
     }
 
     // ---- drop targets --------------------------------------------------------
+    // Made once and kept (a drag only moves and shows them): building nine
+    // of them as each drag starts, and drawing their glass for the first
+    // time then, made the first drag stutter.
+    readonly property int dropTargetSlots: 9
+    property bool warmingUp: true
+    Timer {
+        // their first frames, drawn all but invisibly once the window is up
+        running: space.ready && space.warmingUp
+        interval: 1500
+        onTriggered: space.warmingUp = false
+    }
     Repeater {
-        model: space.dropTargets
+        model: space.dropTargetSlots
         Item {
-            readonly property bool hot: space.hitKey === modelData.target + "|" + modelData.side
+            readonly property var modelData: index < space.dropTargets.length
+                ? space.dropTargets[index]
+                : { target: "-", side: "center", x: 30, y: 30, size: 38, edge: false }
+            readonly property bool used: index < space.dropTargets.length
+            visible: used || space.warmingUp
+            opacity: used ? 1 : 0.004
+            readonly property bool hot: used && space.hitKey === modelData.target + "|" + modelData.side
             z: 1100
             scale: hot ? 1.12 : 1
             Behavior on scale { NumberAnimation { duration: 90 } }
@@ -426,9 +479,12 @@ Item {
 
     // ---- split handles ---------------------------------------------------------
     Repeater {
-        model: dockLayout.splitters.length
+        // never fewer: a drag empties the list for a moment, and the handles
+        // would all be made again after it
+        model: space.splitterSlots
         Item {
             id: handle
+            visible: index < dockLayout.splitters.length
             readonly property var s: dockLayout.splitters[index] || ({ x: 0, y: 0, width: 0, height: 0, row: true })
             z: 50
             x: s.row ? s.x - 3 : s.x + 24

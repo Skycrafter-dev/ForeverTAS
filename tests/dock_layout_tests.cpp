@@ -96,6 +96,23 @@ void TestTree() {
     Check(!loaded->groupOf("graphics").isEmpty(), "missing panel added back");
     Check(!DockTree::FromJson(QJsonDocument::fromJson("{\"version\":1}").object()),
           "broken layout rejected");
+
+    // Bruteforce split into Base, Target, Passes and Search: a saved layout
+    // gets them where Bruteforce was, with Results under them.
+    DockTree saved;
+    saved.dock(DockGroup{{}, {"inputs"}, "inputs"}, {}, "left", 0.25);
+    saved.dock(DockGroup{{}, {"bruteforce", "code"}, "bruteforce"}, {}, "right", 0.3);
+    const QString place = saved.groupOf("code");
+    DockTree defaults;
+    defaults.dock(DockGroup{{}, {"inputs"}, "inputs"}, {}, "left", 0.25);
+    defaults.dock(DockGroup{{}, {"base", "target", "passes", "search", "code"}, "base"}, {}, "right", 0.3);
+    defaults.dock(DockGroup{{}, {"results"}, "results"}, defaults.groupOf("base"), "bottom", 0.4);
+    saved.reconcile({"inputs", "base", "target", "passes", "search", "results", "code"}, defaults);
+    Check(saved.groupOf("bruteforce").isEmpty(), "Bruteforce gone");
+    for (const char *page : {"base", "target", "passes", "search"})
+        Check(saved.groupOf(page) == place, "a Bruteforce page where Bruteforce was");
+    Check(!saved.groupOf("results").isEmpty() && saved.groupOf("results") != place,
+          "Results in a group of its own");
 }
 
 void TestSnapping() {

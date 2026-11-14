@@ -1,6 +1,6 @@
 #include "viewer/gamepad_input.h"
+#include "app/app_settings.h"
 
-#include <QSettings>
 #include <SDL3/SDL.h>
 #include <algorithm>
 #include <cmath>
@@ -8,8 +8,8 @@
 namespace forevertas::viewer {
 
 GamepadInput::GamepadInput(QObject *parent) : QObject(parent) {
-    selectedIdentity_ = QSettings().value("drive/gamepadIdentity").toString();
-    setDeadzone(QSettings().value("drive/gamepadDeadzone", 0.12).toDouble());
+    selectedIdentity_ = app::AppSettings::Instance().value("drive/gamepadIdentity").toString();
+    setDeadzone(app::AppSettings::Instance().value("drive/gamepadDeadzone", 0.12).toDouble());
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
     initialized_ = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     if (!initialized_) {
@@ -41,6 +41,10 @@ QString GamepadInput::identity(SDL_JoystickID id) const {
 
 void GamepadInput::close() {
     emit sample(0, false, false);
+    for (int button = 0; button < SDL_GAMEPAD_BUTTON_COUNT; ++button) {
+        if ((buttons_ >> button) & 1u) emit buttonChanged(button, false);
+    }
+    buttons_ = 0;
     if (gamepad_) SDL_CloseGamepad(gamepad_);
     gamepad_ = nullptr;
     selectedId_ = 0;
@@ -58,14 +62,14 @@ void GamepadInput::setSelectedId(quint32 id) {
             selectedIdentity_ = identity(id);
         } else status_ = QString::fromUtf8(SDL_GetError());
     }
-    QSettings().setValue("drive/gamepadIdentity", selectedIdentity_);
+    app::AppSettings::Instance().setValue("drive/gamepadIdentity", selectedIdentity_);
     emit devicesChanged();
 }
 
 void GamepadInput::setDeadzone(double value) {
     if (!std::isfinite(value)) return;
     deadzone_ = std::clamp(value, 0.0, 0.5);
-    QSettings().setValue("drive/gamepadDeadzone", deadzone_);
+    app::AppSettings::Instance().setValue("drive/gamepadDeadzone", deadzone_);
     emit settingsChanged();
 }
 
@@ -118,7 +122,17 @@ void GamepadInput::poll() {
     changed |= status_ != status;
     status_ = status;
     if (changed) emit devicesChanged();
-    if (!active_ || !gamepad_) return;
+    if (!gamepad_) return;
+    quint64 buttons = 0;
+    for (int button = 0; button < SDL_GAMEPAD_BUTTON_COUNT; ++button) {
+        if (SDL_GetGamepadButton(gamepad_, static_cast<SDL_GamepadButton>(button))) buttons |= quint64{1} << button;
+    }
+    const quint64 flipped = buttons ^ buttons_;
+    buttons_ = buttons;
+    for (int button = 0; flipped != 0 && button < SDL_GAMEPAD_BUTTON_COUNT; ++button) {
+        if ((flipped >> button) & 1u) emit buttonChanged(button, ((buttons >> button) & 1u) != 0);
+    }
+    if (!active_) return;
     const int steering = QuantizeSteering(SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_LEFTX), deadzone_);
     const bool accelerate = SDL_GetGamepadAxis(gamepad_, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER) > 16384 ||
             SDL_GetGamepadButton(gamepad_, SDL_GAMEPAD_BUTTON_SOUTH);

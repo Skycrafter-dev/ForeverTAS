@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "app/input_preview_binding.h"
 #include "app/search_controller.h"
 #include "app/search_diagnostic.h"
@@ -368,7 +369,7 @@ int main(int argc, char **argv) {
                     ? QStringLiteral("PassManagementQmlSmoke")
                     : QStringLiteral("ViewerQmlSmoke"));
     QStandardPaths::setTestModeEnabled(true);
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
 
     forevertas::app::SearchController controller;
     forevertas::viewer::RaceViewerController viewer;
@@ -661,29 +662,55 @@ int main(int argc, char **argv) {
             dockSpace != nullptr
             ? dockSpace->property("layout").value<QObject *>()
             : nullptr;
-    auto *const initialInnerTabs =
-            qobject_cast<QQuickItem *>(
-                    root->findChild<QObject *>(
-                            QStringLiteral("bruteforceSettingsTabs")));
-    auto *const initialBruteforceContent =
-            qobject_cast<QQuickItem *>(
-                    root->findChild<QObject *>(
-                            QStringLiteral("bruteforceTabContent")));
+    // Base, Target, Passes and Search are dock panels (once Bruteforce's
+    // tabs): a page is shown by making it its group's current panel.
+    const QStringList pageIds{QStringLiteral("base"), QStringLiteral("target"),
+                              QStringLiteral("passes"), QStringLiteral("search")};
+    const auto pagePanel = [&](int page) {
+        return qobject_cast<QQuickItem *>(root->findChild<QObject *>(pageIds.value(page) + "Panel"));
+    };
+    const auto pageCount = [&]() {
+        int count = 0;
+        for (int page = 0; page < pageIds.size(); ++page) count += pagePanel(page) != nullptr;
+        return count;
+    };
+    const auto selectPage = [&](int page) {
+        if (dockLayout == nullptr) return;
+        QString group;
+        QMetaObject::invokeMethod(dockLayout, "groupOf", Q_RETURN_ARG(QString, group),
+                                  Q_ARG(QString, pageIds.value(page)));
+        QMetaObject::invokeMethod(dockLayout, "setCurrent", Q_ARG(QString, group),
+                                  Q_ARG(QString, pageIds.value(page)));
+        QCoreApplication::processEvents();
+    };
+    const auto currentPage = [&]() {
+        for (int page = 0; page < pageIds.size(); ++page) {
+            if (pagePanel(page) != nullptr && pagePanel(page)->property("onTop").toBool()) return page;
+        }
+        return -1;
+    };
+    // The scroll of the page shown (Base, Target, Passes or Search).
+    const auto pageScroll = [&]() -> QObject * {
+        const int page = currentPage();
+        return page < 0 ? nullptr
+                        : root->findChild<QObject *>(pageIds.value(page) + "Scroll");
+    };
+    auto *const initialBruteforceContent = pagePanel(0);
     auto *const initialDebuggerContent =
             qobject_cast<QQuickItem *>(
                     root->findChild<QObject *>(
                             QStringLiteral("simulationDebuggerPanel")));
-    bool stablePassTabs = initialInnerTabs != nullptr &&
-            initialInnerTabs->property("count").toInt() == 4;
-    if (initialInnerTabs != nullptr) {
-        const int initialCount = initialInnerTabs->property("count").toInt();
+    bool stablePassTabs = pageCount() == 4 &&
+            pageCount() == 4;
+    if (pageCount() == 4) {
+        const int initialCount = pageCount();
         controller.addModifierPass(QStringLiteral("random-steering"));
         QCoreApplication::processEvents();
-        stablePassTabs &= initialInnerTabs->property("count").toInt() ==
+        stablePassTabs &= pageCount() ==
                 initialCount;
         controller.removeModifierPass(controller.modifierPasses().size() - 1);
         QCoreApplication::processEvents();
-        stablePassTabs &= initialInnerTabs->property("count").toInt() ==
+        stablePassTabs &= pageCount() ==
                 initialCount;
     }
     QObject *const passEditor = root->findChild<QObject *>(
@@ -833,7 +860,7 @@ int main(int argc, char **argv) {
                 QStringLiteral("conditionScriptTextArea"));
         QObject *emptyConditions = root->findChild<QObject *>(
                 QStringLiteral("emptyConditionsStatus"));
-        initialInnerTabs->setProperty("currentIndex", 3);
+        selectPage(3);
         if (conditionEditor && emptyConditions) {
             {
                 conditionEditor->setProperty("enabled", false);
@@ -988,8 +1015,7 @@ int main(int argc, char **argv) {
                     "FOREVERTAS_PASS_UI_CAPTURE_DIR");
             if (directory.isEmpty()) return true;
             auto *window = qobject_cast<QQuickWindow *>(root);
-            auto *scroll = root->findChild<QObject *>(
-                    QStringLiteral("settingsScroll"));
+            auto *scroll = pageScroll();
             auto *section = root->findChild<QQuickItem *>(
                     QStringLiteral("modifierSection"));
             if (!window || !scroll || !section) return false;
@@ -1001,7 +1027,7 @@ int main(int argc, char **argv) {
             loop.exec();
             return window->grabWindow().save(directory + "/" + name + ".png");
         };
-        initialInnerTabs->setProperty("currentIndex", 2);
+        selectPage(2);
         settle();
         passManagementValid &= click("addModifierButton");
         QObject *const addMenu = root->findChild<QObject *>(
@@ -1088,39 +1114,38 @@ int main(int argc, char **argv) {
                 controller.modifierPasses().isEmpty();
         passManagementValid &= capture(QStringLiteral("03-empty-passes"));
         passManagementValid &= add("random-steering") && selected() == 0 &&
-                initialInnerTabs->property("currentIndex").toInt() == 2 &&
-                initialInnerTabs->property("count").toInt() == 4;
+                currentPage() == 2 &&
+                pageCount() == 4;
         for (int index = 0; index < 12; ++index)
             passManagementValid &= add("input-deletion");
         passManagementValid &= selected() == 12 &&
-                initialInnerTabs->property("count").toInt() == 4;
+                pageCount() == 4;
         passManagementValid &= capture(QStringLiteral("04-many-passes"));
         const int passWindowWidth = root->property("width").toInt();
         const int passWindowHeight = root->property("height").toInt();
         root->setProperty("width", 1240);
         root->setProperty("height", 580);
         passManagementValid &= capture(QStringLiteral("05-compact-passes"));
-        QObject *const passScroll = root->findChild<QObject *>(
-                QStringLiteral("settingsScroll"));
+        QObject *const passScroll = pageScroll();
         QObject *const passContent = passScroll
                 ? passScroll->property("contentItem").value<QObject *>() : nullptr;
         QObject *const passSelector = root->findChild<QObject *>(
                 QStringLiteral("modifierPassSelector"));
         if (passContent && passSelector) {
             passContent->setProperty("contentY", 100.0);
-            initialInnerTabs->setProperty("currentIndex", 3);
+            selectPage(3);
             settle();
             passContent->setProperty("contentY", 50.0);
-            initialInnerTabs->setProperty("currentIndex", 1);
+            selectPage(1);
             settle();
-            initialInnerTabs->setProperty("currentIndex", 2);
+            selectPage(2);
             settle();
             passManagementValid &= selected() == 12 &&
                     passContent->property("contentY").toDouble() == 100.0;
-            initialInnerTabs->setProperty("currentIndex", 3);
+            selectPage(3);
             settle();
             passManagementValid &= passContent->property("contentY").toDouble() == 50.0;
-            initialInnerTabs->setProperty("currentIndex", 2);
+            selectPage(2);
             settle();
             QQmlExpression selectFirst(
                     QQmlEngine::contextForObject(passSelector), passSelector,
@@ -1148,16 +1173,15 @@ int main(int argc, char **argv) {
         settle();
         for (int index = 0; index < 12; ++index)
             passManagementValid &= click("modifierPassRemove");
-        initialInnerTabs->setProperty("currentIndex", 3);
+        selectPage(3);
         controller.addModifierPass(QStringLiteral("random-steering"));
         settle();
-        passManagementValid &= initialInnerTabs->property("currentIndex").toInt() == 3;
+        passManagementValid &= currentPage() == 3;
         controller.removeModifierPass(1);
         settle();
-        passManagementValid &= initialInnerTabs->property("currentIndex").toInt() == 3;
-        initialInnerTabs->setProperty("currentIndex", 0);
-        QObject *const scroll = root->findChild<QObject *>(
-                QStringLiteral("settingsScroll"));
+        passManagementValid &= currentPage() == 3;
+        selectPage(0);
+        QObject *const scroll = pageScroll();
         if (scroll) {
             QObject *const content =
                     scroll->property("contentItem").value<QObject *>();
@@ -1336,7 +1360,7 @@ int main(int argc, char **argv) {
     QTimer::singleShot(1000, &durationSettingsLoop, &QEventLoop::quit);
     durationSettingsLoop.exec();
     globalSettingsVisibleAcrossTabs &= durationText == "01:00.01" &&
-            QSettings().value("timeDisplay/unit").toString() == "clock";
+            forevertas::app::AppSettings::Instance().value("timeDisplay/unit").toString() == "clock";
     QQmlExpression enterDuration(QQmlEngine::contextForObject(maximumTime), maximumTime,
                                 QStringLiteral("text = '3.82 s'; editingFinished()"));
     enterDuration.evaluate();
@@ -1481,7 +1505,7 @@ int main(int argc, char **argv) {
             extractInputsMenuItem != nullptr &&
             gamepadMenuItem != nullptr &&
             dockLayout != nullptr &&
-            initialInnerTabs != nullptr &&
+            pageCount() == 4 &&
             initialBruteforceContent != nullptr &&
             initialDebuggerContent != nullptr && stablePassTabs &&
             sessionSorting;
@@ -1519,7 +1543,7 @@ int main(int argc, char **argv) {
                 initialDebuggerContent->isVisible();
         QMetaObject::invokeMethod(dockLayout, "setCurrent",
                                   Q_ARG(QString, group),
-                                  Q_ARG(QString, QStringLiteral("bruteforce")));
+                                  Q_ARG(QString, QStringLiteral("base")));
         QCoreApplication::processEvents();
         globalSettingsVisibleAcrossTabs &=
                 initialGlobalScript->isVisible() &&
@@ -1839,16 +1863,11 @@ int main(int argc, char **argv) {
                             root->findChild<QObject *>(QStringLiteral(
                                     "cudaSessionSpecializationWarning"));
 #endif
-                    QObject *const settingsScroll = root->findChild<QObject *>(
-                            QStringLiteral("settingsScroll"));
                     QObject *const settingsWheelRedirector =
                             root->property("settingsWheelRedirectorObject")
                                     .value<QObject *>();
                     auto *const bruteforceTabContent =
-                            qobject_cast<QQuickItem *>(
-                                    root->findChild<QObject *>(
-                                            QStringLiteral(
-                                                    "bruteforceTabContent")));
+                            qobject_cast<QQuickItem *>(pagePanel(0));
                     auto *const simulationDebuggerPanel =
                             qobject_cast<QQuickItem *>(
                                     root->findChild<QObject *>(
@@ -2983,8 +3002,8 @@ int main(int argc, char **argv) {
                     const bool widthFieldShowsLeadingDigits =
                             compactWidthVisible && exactWidthOnFocus;
                     const int placementTab =
-                            initialInnerTabs->property("currentIndex").toInt();
-                    initialInnerTabs->setProperty("currentIndex", 0);
+                            currentPage();
+                    selectPage(0);
                     QCoreApplication::processEvents();
                     // Packs folder: File > Set packs folder (a dialog).
                     // Extraction result, base script and preferences: Base,
@@ -3033,7 +3052,7 @@ int main(int argc, char **argv) {
                             baseInputScriptSection->y() +
                                             baseInputScriptSection->height() <=
                                     appearanceControls->y();
-                    initialInnerTabs->setProperty("currentIndex", placementTab);
+                    selectPage(placementTab);
                     QCoreApplication::processEvents();
                     const bool baseInputScriptUiValid =
                             baseInputScriptSection != nullptr &&
@@ -3134,9 +3153,7 @@ int main(int argc, char **argv) {
                             applyAutoPacks != nullptr &&
                             applyAutoPacks->property("text").toString() ==
                                     QStringLiteral("Apply");
-                    initialInnerTabs->setProperty(
-                            "currentIndex",
-                            3);
+                    selectPage(3);
                     QCoreApplication::processEvents();
                     bool backendSelectorValid =
                             simulationBackendCombo != nullptr &&
@@ -3651,9 +3668,10 @@ int main(int argc, char **argv) {
                             evaluationSection != nullptr &&
                             modifierSection != nullptr &&
                             searchSection != nullptr &&
-                            evaluationSection->parentItem() ==
+                            // each in its own panel now (Target, Passes, Search)
+                            evaluationSection->parentItem() !=
                                     modifierSection->parentItem() &&
-                            modifierSection->parentItem() ==
+                            modifierSection->parentItem() !=
                                     searchSection->parentItem() &&
                             conditionsSection->isVisible() &&
                             searchSection->isVisible() &&
@@ -3664,19 +3682,17 @@ int main(int argc, char **argv) {
                             modifierSection->property("radius").toReal() >
                                     0.0 &&
                             searchSection->property("radius").toReal() > 0.0;
-                    initialInnerTabs->setProperty("currentIndex", 1);
+                    selectPage(1);
                     QCoreApplication::processEvents();
                     configurationSectionsValid &=
                             evaluationSection->isVisible() &&
                             !searchSection->isVisible();
-                    initialInnerTabs->setProperty("currentIndex", 2);
+                    selectPage(2);
                     QCoreApplication::processEvents();
                     configurationSectionsValid &=
                             modifierSection->isVisible() &&
                             !evaluationSection->isVisible();
-                    initialInnerTabs->setProperty(
-                            "currentIndex",
-                            3);
+                    selectPage(3);
                     QCoreApplication::processEvents();
                     const bool comboSlotsStyled =
                             simulationBackendCombo != nullptr &&
@@ -3816,10 +3832,11 @@ int main(int argc, char **argv) {
                         QMetaObject::invokeMethod(
                                 dockLayout, "setCurrent",
                                 Q_ARG(QString, group),
-                                Q_ARG(QString, QStringLiteral("bruteforce")));
-                        QObject *const settingsContent =
-                                settingsScroll->property("contentItem")
-                                        .value<QObject *>();
+                                Q_ARG(QString, QStringLiteral("base")));
+                        QCoreApplication::processEvents();
+                        QObject *const shownScroll = pageScroll();
+                        QObject *const settingsContent = shownScroll == nullptr ? nullptr
+                                : shownScroll->property("contentItem").value<QObject *>();
                         if (settingsContent != nullptr) {
                             settingsContent->setProperty("contentY", 0.0);
                         }
@@ -3930,16 +3947,40 @@ int main(int argc, char **argv) {
                     bool sourceTreeWheelValid = false;
                     bool codeViewerWheelValid = false;
                     bool perturbationSliderEditorsValid = false;
-                    bool wheelScrollingValid =
-                            settingsScroll != nullptr &&
-                            settingsWheelRedirector != nullptr &&
-                            settingsWheelRedirector->property("blocking")
-                                    .toBool();
-                    initialInnerTabs->setProperty("currentIndex", 1);
+                    selectPage(1);
                     QCoreApplication::processEvents();
+                    // Each settings panel scrolls on its own: the scroll an
+                    // item sits in (its panel's), and that panel's redirector.
+                    const auto scrollOf = [](QQuickItem *item) -> QQuickItem * {
+                        for (QQuickItem *at = item; at != nullptr; at = at->parentItem()) {
+                            const QString name = at->objectName();
+                            if (name.endsWith(QStringLiteral("Scroll")) &&
+                                (name.startsWith(QStringLiteral("base")) ||
+                                 name.startsWith(QStringLiteral("target")) ||
+                                 name.startsWith(QStringLiteral("passes")) ||
+                                 name.startsWith(QStringLiteral("search")) ||
+                                 name.startsWith(QStringLiteral("results")))) {
+                                return at;
+                            }
+                        }
+                        return nullptr;
+                    };
+                    QQuickItem *outerScroll = qobject_cast<QQuickItem *>(pageScroll());
+                    const auto redirectorOf = [&](QQuickItem *scroll) -> QQuickItem * {
+                        if (scroll == nullptr) return nullptr;
+                        QString name = scroll->objectName();
+                        name.chop(6);   // "Scroll"
+                        return qobject_cast<QQuickItem *>(root->findChild<QObject *>(
+                                name == QStringLiteral("results") ? QStringLiteral("settingsWheelRedirector")
+                                                                  : name + QStringLiteral("WheelRedirector")));
+                    };
+                    bool wheelScrollingValid =
+                            outerScroll != nullptr &&
+                            redirectorOf(outerScroll) != nullptr &&
+                            redirectorOf(outerScroll)->property("blocking").toBool();
                     if (wheelScrollingValid) {
-                        QObject *const flickable =
-                                settingsScroll->property("contentItem")
+                        QObject *flickable =
+                                outerScroll->property("contentItem")
                                         .value<QObject *>();
                         QObject *const bestInputsFlickable =
                                 bestInputsScrollView == nullptr
@@ -3953,11 +3994,16 @@ int main(int argc, char **argv) {
                                 : baseInputScriptScrollView
                                           ->property("contentItem")
                                           .value<QObject *>();
-                        auto *const scrollItem =
-                                qobject_cast<QQuickItem *>(settingsScroll);
-                        auto *const redirectorItem =
-                                qobject_cast<QQuickItem *>(
-                                        settingsWheelRedirector);
+                        QQuickItem *scrollItem = outerScroll;
+                        QQuickItem *redirectorItem = redirectorOf(outerScroll);
+                        // the outer scroll is the one of the panel the item is in
+                        const auto useScrollOf = [&](QQuickItem *item) {
+                            QQuickItem *const scroll = scrollOf(item);
+                            if (scroll == nullptr) return;
+                            scrollItem = scroll;
+                            redirectorItem = redirectorOf(scroll);
+                            flickable = scroll->property("contentItem").value<QObject *>();
+                        };
                         auto *const comboItem =
                                 qobject_cast<QQuickItem *>(
                                         evaluationTargetCombo);
@@ -4009,6 +4055,7 @@ int main(int argc, char **argv) {
                             return event.isAccepted();
                         };
                         if (wheelScrollingValid) {
+                            useScrollOf(comboItem);
                             const double comboContentHeight =
                                     flickable->property("contentHeight")
                                             .toDouble();
@@ -4056,7 +4103,7 @@ int main(int argc, char **argv) {
                                     0,
                                     QStringLiteral(
                                             "existing-event-perturbation"));
-                            initialInnerTabs->setProperty("currentIndex", 2);
+                            selectPage(2);
                             QCoreApplication::processEvents();
                             QCoreApplication::processEvents();
                             QObject *const perturbationSettings =
@@ -4139,6 +4186,7 @@ int main(int argc, char **argv) {
                             wheelScrollingValid &=
                                     absoluteMinimumSlider != nullptr;
                             if (wheelScrollingValid) {
+                                useScrollOf(qobject_cast<QQuickItem *>(absoluteMinimumSlider));
                                 const double sliderContentHeight =
                                         flickable->property("contentHeight")
                                                 .toDouble();
@@ -4203,6 +4251,7 @@ int main(int argc, char **argv) {
 
                             const auto positionOuterForItem =
                                     [&](QQuickItem *item) {
+                                useScrollOf(item);
                                 const QPointF localPoint(
                                         item->width() * 0.5,
                                         std::min(
@@ -4330,7 +4379,7 @@ int main(int argc, char **argv) {
                                     longInputLines.join(QLatin1Char('\n'));
                             controller.setBaseInputScript(longInput);
                             bestInputsTextArea->setProperty("text", longInput);
-                            initialInnerTabs->setProperty("currentIndex", 0);
+                            selectPage(0);
                             QCoreApplication::processEvents();
                             QCoreApplication::processEvents();
                             baseInputWheelValid = nestedWheelMoves(
@@ -4392,18 +4441,14 @@ int main(int argc, char **argv) {
                                     dockLayout, "setCurrent",
                                     Q_ARG(QString, codeGroup),
                                     Q_ARG(QString,
-                                          QStringLiteral("bruteforce")));
+                                          QStringLiteral("base")));
                             QCoreApplication::processEvents();
                         }
                     }
                     bool everyOwnedPanelLoaded =
                             evaluationTargetSelector != nullptr &&
                             modifierComposition != nullptr;
-                    auto *const settingsTabs = qobject_cast<QQuickItem *>(
-                            root->findChild<QObject *>(
-                                    QStringLiteral("bruteforceSettingsTabs")));
-                    if (settingsTabs != nullptr)
-                        settingsTabs->setProperty("currentIndex", 1);
+                    selectPage(1);
                     QCoreApplication::processEvents();
                     const std::array<std::pair<const char *, const char *>, 9>
                             evaluationPanels{{
@@ -4600,8 +4645,7 @@ int main(int argc, char **argv) {
                                      "inputInsertionSettings"},
                                     {"input-deletion",
                                      "inputDeletionSettings"}}};
-                    if (settingsTabs != nullptr)
-                        settingsTabs->setProperty("currentIndex", 2);
+                    selectPage(2);
                     QCoreApplication::processEvents();
                     for (const auto &[id, objectName] : modifierPanels) {
                         controller.setModifierPassId(
@@ -4788,8 +4832,7 @@ int main(int argc, char **argv) {
                                     QStringLiteral("-1"),
                                     true);
 
-                    if (settingsTabs != nullptr)
-                        settingsTabs->setProperty("currentIndex", 1);
+                    selectPage(1);
                     QCoreApplication::processEvents();
                     dropdownStateUpdates &=
                             activateCombo(evaluationTargetCombo, 5);
@@ -4969,11 +5012,13 @@ int main(int argc, char **argv) {
                                     viewport, "endPoseInteraction");
                     controller.focusSelectedPoseTarget();
                     QCoreApplication::processEvents();
+                    // a drag moves the pose along x the way the camera shows
+                    // the axis: changed, either way
                     poseSliderValid &=
                             controller.poseTargets()
                                             ->selectedTarget()
                                             .value(QStringLiteral("x"))
-                                            .toDouble() > initialPoseX &&
+                                            .toDouble() != initialPoseX &&
                             controller.poseTargets()
                                             ->selectedTarget()
                                             .value(
@@ -4982,7 +5027,7 @@ int main(int argc, char **argv) {
                                             .toDouble() > initialPoseYaw &&
                             controller.evaluationTargetSettings()
                                             .value(QStringLiteral("x"))
-                                            .toDouble() > initialPoseX &&
+                                            .toDouble() != initialPoseX &&
                             viewport->property("cuboidFocused").toBool() &&
                             viewport->property("cameraTarget")
                                             .value<QVector3D>() ==
@@ -5056,6 +5101,16 @@ int main(int argc, char **argv) {
                                             .value<QQuaternion>(),
                                     viewer.carRotation())) > 0.99999F;
                     if (!poseSliderValid) {
+                        std::cerr << "pose: x " << initialPoseX << " -> "
+                                  << controller.poseTargets()->selectedTarget().value(QStringLiteral("x")).toDouble()
+                                  << ", yaw " << initialPoseYaw << " -> "
+                                  << controller.poseTargets()->selectedTarget().value(QStringLiteral("yawDegrees")).toDouble()
+                                  << ", focused " << viewport->property("cuboidFocused").toBool()
+                                  << ", handles "
+                                  << root->findChildren<QObject *>(QStringLiteral("poseTargetMoveHandle")).size()
+                                  << "/"
+                                  << root->findChildren<QObject *>(QStringLiteral("poseTargetRotationHandle")).size()
+                                  << '\n';
                         std::cerr
                                 << "pose slider editor: field="
                                 << (rotationWeightField != nullptr

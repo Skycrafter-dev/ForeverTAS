@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import QtQml.Models
 import QtQuick3D
 import QtQuick.Effects
+import QtCore
 import "settings"
 import ForeverTAS.Viewer 1.0
 
@@ -14,6 +15,8 @@ ApplicationWindow {
     required property var viewer
     property var updater: null
     property var shutdown: null
+    // The session log (Help > Open log folder).
+    property var logs: null
     onClosing: close => {
         dockSpace.flushState()
         if (windowSaveTimer.running)
@@ -60,6 +63,433 @@ ApplicationWindow {
         }
     }
 
+    // After a session that crashed or was closed by force: where its log is.
+    GlassDialog {
+        id: previousSessionDialog
+        objectName: "previousSessionDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(480, window.width - 32)
+        title: window.logs && window.logs.previousSessionCrashed
+               ? qsTr("ForeverTAS crashed last time")
+               : qsTr("ForeverTAS did not close normally last time")
+        modal: true
+        Component.onCompleted: {
+            if (window.logs && window.logs.previousSessionLog.length > 0)
+                open()
+        }
+        onClosed: if (window.logs) window.logs.dismissPreviousSession()
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: qsTr("If something went wrong, send its log to the developer: it shows what happened.\n%1")
+                      .arg(window.logs ? window.logs.previousSessionLog : "")
+            }
+            RowLayout {
+                Layout.alignment: Qt.AlignRight
+                spacing: 8
+                ThemedButton {
+                    objectName: "previousSessionOpenLogsButton"
+                    text: qsTr("Open log folder")
+                    onClicked: window.logs.openFolder()
+                }
+                ThemedButton {
+                    objectName: "previousSessionCloseButton"
+                    text: qsTr("Close")
+                    onClicked: previousSessionDialog.close()
+                }
+            }
+        }
+    }
+
+    // ---- the vanishing car ------------------------------------------------------
+    // Once a second, while the car camera follows the selected car, what makes
+    // the car visible is checked; the log gets each change in what fails.
+    // Help > Check the car also tests the picture itself.
+    function selectedCarProblems() {
+        const problems = []
+        const root = selectedRunCarRoot
+        const style = root.layerStyle
+        const p = viewer.carPosition
+        const q = viewer.carRotation
+        if (!style.visible)
+            problems.push("its style is hidden in Graphics (car:" + viewer.selectedRunStyleId + ")")
+        if (style.opacity < 0.05)
+            problems.push("opacity " + style.opacity)
+        if (!isFinite(p.x) || !isFinite(p.y) || !isFinite(p.z))
+            problems.push("position not finite")
+        const length = Math.sqrt(q.scalar * q.scalar + q.x * q.x + q.y * q.y + q.z * q.z)
+        if (!isFinite(length) || Math.abs(length - 1) > 0.01)
+            problems.push("rotation length " + length)
+        if (viewer.carEllipsoids.length === 0)
+            problems.push("no car shape")
+        if (!viewer.selectedEllipsoidFilledGeometry)
+            problems.push("no car geometry")
+        if (!style.throughBlocks) {
+            if (!root.visible)
+                problems.push("car node hidden")
+            for (let node = root.parent; node; node = node.parent) {
+                if (node.visible === false) {
+                    problems.push("a parent is hidden: " + (node.objectName || String(node)))
+                    break
+                }
+            }
+        }
+        const c = viewer.carCameraPosition
+        const distance = Math.sqrt((p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y)
+                                   + (p.z - c.z) * (p.z - c.z))
+        if (!(distance < 60))
+            problems.push("camera " + distance.toFixed(1) + " from the car")
+        const f = viewport.cameraForward
+        if ((p.x - c.x) * f.x + (p.y - c.y) * f.y + (p.z - c.z) * f.z < 0)
+            problems.push("car behind the camera")
+        return problems
+    }
+    function selectedCarState() {
+        const p = viewer.carPosition
+        const q = viewer.carRotation
+        const c = viewer.carCameraPosition
+        return "render " + renderMode + ", camera preset " + viewer.cameraPreset
+               + (viewport.carCameraActive ? " (car camera" + (viewer.hideSelectedCar ? ", internal)" : ")")
+                                           : " (not the car camera)")
+               + ", module car " + moduleCarShown + ", run " + viewer.selectedRunId
+               + " style " + viewer.selectedRunStyleId
+               + ", car (" + p.x.toFixed(2) + ", " + p.y.toFixed(2) + ", " + p.z.toFixed(2) + ")"
+               + " rot (" + q.scalar.toFixed(3) + ", " + q.x.toFixed(3) + ", " + q.y.toFixed(3) + ", " + q.z.toFixed(3) + ")"
+               + ", camera (" + c.x.toFixed(2) + ", " + c.y.toFixed(2) + ", " + c.z.toFixed(2) + ")"
+               + ", time " + viewer.timeMs + " ms" + (viewer.playing ? " playing" : "")
+    }
+    readonly property bool selectedCarExpected: viewer.loaded && viewer.runCount > 0
+                                                && viewport.carCameraActive && !viewer.hideSelectedCar
+                                                && !rayTracingEnabled && !moduleCarShown
+    property string carWatchState: "?"
+    Timer {
+        objectName: "carWatch"
+        interval: 1000
+        repeat: true
+        running: window.logs !== null && window.viewer.loaded && window.viewer.runCount > 0
+        onTriggered: {
+            const state = window.selectedCarExpected ? window.selectedCarProblems().join("; ") : "-"
+            if (state === window.carWatchState)
+                return
+            window.carWatchState = state
+            if (state !== "-" && state !== "")
+                window.logs.note("car check: the car cannot show: " + state + " [" + window.selectedCarState() + "]")
+            else if (state === "")
+                window.logs.note("car check: everything for the car to show is in place")
+        }
+    }
+    // The car probe: every 2 s, while the car camera follows a car that should
+    // show and every check above passes, the race view's picture (as drawn,
+    // never drawn again or with the car hidden) is read around the car's
+    // center for the car's color. Missing twice in a row is logged with the
+    // viewer's state and the picture (at most 3 a session); and again when
+    // the car is back.
+    property int carProbeMisses: 0
+    property real carProbeMissingSince: 0
+    property int carProbePictures: 0
+    property string carProbeNoted: ""
+    function noteCarProbe(key, text) {
+        if (carProbeNoted === key)
+            return
+        carProbeNoted = key
+        logs.note(text)
+    }
+    Timer {
+        objectName: "carProbe"
+        interval: 2000
+        repeat: true
+        running: window.logs !== null && window.selectedCarExpected && window.visible
+                 && rasterMapView.visible && rasterMapView.width > 0
+        onTriggered: {
+            if (window.carWatchState !== "")
+                return   // the state checks already explain it
+            const style = selectedRunCarRoot.layerStyle
+            if (style.throughBlocks || style.opacity < 0.5)
+                return
+            const center = rasterMapView.mapFrom3DScene(window.viewer.carPosition)
+            const c = window.viewer.carCameraPosition
+            const p = window.viewer.carPosition
+            const distance = Math.sqrt((p.x - c.x) * (p.x - c.x) + (p.y - c.y) * (p.y - c.y)
+                                       + (p.z - c.z) * (p.z - c.z))
+            if (!(distance > 0.5) || center.z < 0)
+                return
+            // a quarter-size picture; half a meter around the car's center
+            const scale = 0.25
+            const pixelsPerMeter = rasterMapView.height
+                / (2 * distance * Math.tan(viewCamera.fieldOfView * Math.PI / 360))
+            const radius = Math.max(2, 0.5 * pixelsPerMeter * scale)
+            const size = Qt.size(Math.round(rasterMapView.width * scale),
+                                 Math.round(rasterMapView.height * scale))
+            const color = style.color
+            rasterMapView.grabToImage(result => {
+                const probe = window.logs.carPixels(result.image,
+                                                    Qt.point(center.x * scale, center.y * scale),
+                                                    radius, color)
+                if (probe.skipped !== undefined) {
+                    window.noteCarProbe("skipped", "car probe: not checking: " + probe.skipped)
+                    return
+                }
+                if (probe.fraction >= 0.25) {
+                    if (window.carProbeMisses >= 2)
+                        window.logs.note("car probe: the car is back in the picture after "
+                                         + ((Date.now() - window.carProbeMissingSince) / 1000).toFixed(1)
+                                         + " s (" + Math.round(probe.fraction * 100) + "% car pixels)")
+                    window.carProbeMisses = 0
+                    window.noteCarProbe("seen", "car probe: the car is in the picture ("
+                                        + Math.round(probe.fraction * 100) + "% car pixels)")
+                    return
+                }
+                if (probe.fraction > 0.05)
+                    return   // partly hidden: not a verdict
+                if (++window.carProbeMisses === 1) {
+                    window.carProbeMissingSince = Date.now()
+                    return
+                }
+                if (window.carProbeMisses !== 2)
+                    return
+                const stats = rasterMapView.renderStats
+                window.logs.note("car probe: THE CAR IS NOT IN THE PICTURE although everything for it to show"
+                                 + " is in place: " + Math.round(probe.fraction * 100) + "% car pixels of "
+                                 + probe.samples + " around (" + Math.round(center.x) + ", "
+                                 + Math.round(center.y) + "), " + distance.toFixed(1) + " m from the camera;"
+                                 + " car node visible " + selectedRunCarRoot.visible
+                                 + " at " + selectedRunCarRoot.scenePosition
+                                 + ", " + window.viewer.carEllipsoids.length + " parts"
+                                 + ", style color " + color + " opacity " + style.opacity
+                                 + "; view " + rasterMapView.width + "x" + rasterMapView.height
+                                 + " " + stats.fps + " fps"
+                                 + " [" + window.selectedCarState() + "]")
+                if (window.carProbePictures < 3) {
+                    ++window.carProbePictures
+                    rasterMapView.grabToImage(full => {
+                        const path = window.logs.savePicture(full.image,
+                                                             "car-missing-" + window.carProbePictures)
+                        window.logs.note("car probe: the picture is " + path)
+                    })
+                }
+            }, size)
+        }
+    }
+
+    // The In-game car: the module draws the game's car from its own run of the
+    // inputs. Every 2 s while the car camera follows it: was it asked to draw
+    // the car, is its car where ForeverTAS has the run at that frame's time,
+    // is the camera near it, is the frame the time shown. Changes are logged.
+    // (Its picture is checked by Help > Check the car: the game's skin has no
+    // color to look for.)
+    readonly property bool moduleCarExpected: moduleCarShown && viewer.loaded && viewer.runCount > 0
+                                              && viewport.carCameraActive && !viewer.hideSelectedCar
+    property string moduleCarState: "?"
+    Timer {
+        objectName: "moduleCarProbe"
+        interval: 2000
+        repeat: true
+        running: window.logs !== null && window.moduleCarExpected && window.visible
+        onTriggered: {
+            const car = moduleRenderView.carState()
+            const problems = []
+            let gap = -1
+            if (!car.available) {
+                problems.push("the In-game view has not reported its car (older module or no frame yet)")
+            } else {
+                if (!car.shown)
+                    problems.push("the In-game view was told not to draw the car")
+                // the module's car against the run at the module frame's time
+                const p = window.viewer.selectedRunPositionAt(car.raceTimeMs)
+                const q = car.position
+                gap = Math.sqrt((p.x - q.x) * (p.x - q.x) + (p.y - q.y) * (p.y - q.y)
+                                + (p.z - q.z) * (p.z - q.z))
+                if (!(gap < 5))
+                    problems.push("the In-game car is " + gap.toFixed(1)
+                                  + " m from the run at the same time (module car " + q + ", tick "
+                                  + car.tick + ", " + car.controls + " controls)")
+                // a frame left behind shows the car where the camera no longer is
+                const behind = Math.abs(car.raceTimeMs - window.viewer.presentationTimeMs)
+                if (!window.viewer.playing && behind > 50)
+                    problems.push("the In-game frame shows " + car.raceTimeMs.toFixed(0)
+                                  + " ms, not the " + window.viewer.presentationTimeMs.toFixed(0)
+                                  + " ms shown (" + car.frames + " frames drawn)")
+                const c = car.cameraPosition
+                const seen = Math.sqrt((q.x - c.x) * (q.x - c.x) + (q.y - c.y) * (q.y - c.y)
+                                       + (q.z - c.z) * (q.z - c.z))
+                if (!(seen < 60))
+                    problems.push("the In-game camera is " + seen.toFixed(1) + " m from the In-game car")
+            }
+            const state = problems.join("; ")
+            if (state !== window.moduleCarState) {
+                window.moduleCarState = state
+                window.logs.note(state === ""
+                    ? "in-game car check: drawn, where the camera looks (" + gap.toFixed(2) + " m apart)"
+                    : "in-game car check: the car cannot show: " + state + " [" + window.selectedCarState() + "]")
+            }
+        }
+    }
+
+    // The In-game picture of rect (item coordinates) as the module drew it:
+    // then(image), or then(null) after 2 s without one.
+    function moduleCapture(rect, then) {
+        const serial = moduleRenderView.requestPicture(rect)
+        const started = Date.now()
+        const poll = () => {
+            const picture = moduleRenderView.picture()
+            if (picture.serial >= serial)
+                then(picture.image)
+            else if (Date.now() - started > 2000)
+                then(null)
+            else
+                moduleCaptureTimer.later(poll)
+        }
+        moduleCaptureTimer.later(poll)
+    }
+    Timer {
+        id: moduleCaptureTimer
+        property var pending: []
+        interval: 30
+        function later(f) {
+            pending.push(f)
+            if (!running)
+                start()
+        }
+        onTriggered: {
+            const calls = pending
+            pending = []
+            for (const f of calls)
+                f()
+        }
+    }
+
+    // Calls then(true) once the In-game view has drawn a frame after frame
+    // number "frames", then(false) after 3 s without one.
+    function afterModuleFrame(frames, then) {
+        moduleFrameWait.frames = frames
+        moduleFrameWait.then = then
+        moduleFrameWait.started = Date.now()
+        moduleFrameWait.restart()
+    }
+    Timer {
+        id: moduleFrameWait
+        property int frames: 0
+        property var then: null
+        property real started: 0
+        interval: 50
+        repeat: true
+        onTriggered: {
+            const drawn = moduleRenderView.carState().frames > frames
+            if (!drawn && Date.now() - started < 3000)
+                return
+            stop()
+            // the frame is drawn; the next scene graph frame shows it
+            const then = moduleFrameWait.then
+            Qt.callLater(() => then(drawn))
+        }
+    }
+
+    // Help > Check the car: the picture with and without the car.
+    function checkCar() {
+        // the two pictures must show the same moment: paused, settled
+        if (viewer.playing) {
+            viewer.pause()
+            checkCarLater.restart()
+            return
+        }
+        const problems = selectedCarExpected ? selectedCarProblems() : []
+        logs.note("check the car: " + (problems.length ? problems.join("; ") : "no problem found")
+                  + " [" + selectedCarState() + "]")
+        if (moduleCarShown && viewer.loaded && viewer.runCount > 0) {
+            // the In-game view drawn with and without its car
+            const car = moduleRenderView.carState()
+            logs.note("check the car (In-game): " + JSON.stringify(car) + " [" + selectedCarState() + "]")
+            const failed = qsTr("The In-game view did not draw a new frame to compare with. What the viewer was doing is in the log: send it (Help > Open log folder) with what you did before.")
+            const whole = Qt.rect(0, 0, moduleRenderView.width, moduleRenderView.height)
+            moduleCapture(whole, withCar => {
+                if (withCar === null) {
+                    carCheckDialog.show(failed)
+                    return
+                }
+                logs.keepPicture(withCar)
+                moduleCarCheckHidden = true
+                afterModuleFrame(moduleRenderView.carState().frames, drawn => {
+                    if (!drawn) {
+                        moduleCarCheckHidden = false
+                        logs.note("check the car (In-game): no new frame without the car")
+                        carCheckDialog.show(failed)
+                        return
+                    }
+                    moduleCapture(whole, withoutCar => {
+                        moduleCarCheckHidden = false
+                        if (withoutCar === null) {
+                            carCheckDialog.show(failed)
+                            return
+                        }
+                        const pixels = logs.differingPixels(withoutCar)
+                        logs.note("check the car (In-game): " + pixels + " pixels show the car")
+                        if (pixels <= 30)
+                            logs.note("check the car (In-game): the pictures are "
+                                      + logs.savePicture(withoutCar, "check-in-game-without-car") + " and "
+                                      + logs.saveKeptPicture("check-in-game-with-car"))
+                        carCheckDialog.show(pixels > 30
+                            ? qsTr("The car is in the picture (%1 pixels).").arg(pixels)
+                            : qsTr("The car is not in the picture. What the viewer was doing is in the log: send it (Help > Open log folder) with what you did before."))
+                    })
+                })
+            })
+            return
+        }
+        if (rayTracingEnabled || !rasterMapView.visible || !viewer.loaded || viewer.runCount === 0) {
+            carCheckDialog.show(qsTr("Open a replay and use a raster render mode (not ray traced) to check the car."))
+            return
+        }
+        rasterMapView.grabToImage(withCar => {
+            logs.keepPicture(withCar.image)
+            selectedRunCarRoot.checkHidden = true
+            rasterMapView.grabToImage(withoutCar => {
+                selectedRunCarRoot.checkHidden = false
+                const pixels = logs.differingPixels(withoutCar.image)
+                logs.note("check the car: " + pixels + " pixels show the car")
+                if (pixels <= 30)
+                    logs.note("check the car: the pictures are "
+                              + logs.savePicture(withoutCar.image, "check-without-car") + " and "
+                              + logs.saveKeptPicture("check-with-car"))
+                carCheckDialog.show(pixels > 30
+                    ? qsTr("The car is in the picture (%1 pixels).").arg(pixels)
+                    : qsTr("The car is not in the picture%1. What the viewer was doing is in the log: send it (Help > Open log folder) with what you did before.")
+                          .arg(problems.length ? " (" + problems.join("; ") + ")" : ""))
+            })
+        })
+    }
+    Timer {
+        id: checkCarLater
+        interval: 500
+        onTriggered: window.checkCar()
+    }
+    GlassDialog {
+        id: carCheckDialog
+        objectName: "carCheckDialog"
+        parent: Overlay.overlay
+        anchors.centerIn: parent
+        width: Math.min(460, window.width - 32)
+        title: qsTr("Check the car")
+        modal: true
+        property string message: ""
+        function show(text) { message = text; open() }
+        contentItem: ColumnLayout {
+            spacing: 12
+            Label {
+                Layout.fillWidth: true
+                wrapMode: Text.WordWrap
+                text: carCheckDialog.message
+            }
+            ThemedButton {
+                Layout.alignment: Qt.AlignRight
+                text: qsTr("Close")
+                onClicked: carCheckDialog.close()
+            }
+        }
+    }
+
     property string renderMode: "textured"
     VideoExportDialog {
         id: videoExportDialog
@@ -83,6 +513,8 @@ ApplicationWindow {
     property bool moduleGameCar: String(window.controller.uiSetting(
                                      "moduleGameCar", true)) !== "false"
     readonly property bool moduleCarShown: moduleMapShown && moduleGameCar
+    // Help > Check the car: one In-game frame without the car
+    property bool moduleCarCheckHidden: false
     readonly property real measuredFps: rayTracingEnabled
         ? rayTracingTrajectoryOverlay.renderStats.fps : rasterMapView.renderStats.fps
     onRenderModeChanged: editHistory.noteChange()
@@ -942,7 +1374,9 @@ ApplicationWindow {
                           ratio: headerHeight / Math.max(1, h - g), size: headerHeight,
                           a: tabs("g7", ["race"]),
                           b: { type: "center", id: "center" } },
-                     b: tabs("g8", ["bruteforce", "code"]) }
+                     b: { type: "split", id: "g9", dir: "column", ratio: 0.58,
+                          a: tabs("g8", ["base", "target", "passes", "search", "code"]),
+                          b: tabs("g10", ["results"]) } }
             },
             floating: [
                 floating("g20", "whiteboard", x0 + 12, y0 + 12, whiteboardWidth, whiteboardHeight),
@@ -1113,6 +1547,17 @@ ApplicationWindow {
 
     // The glass look, as a settings dialog in the middle of the window; it
     // does not darken the window, so changes show as they are made.
+    // The gamepad's buttons run the race's actions while the window has the focus (Preferences takes them while it
+    // changes a binding).
+    Connections {
+        target: window.viewer.gamepad
+        function onButtonChanged(button, pressed) {
+            if (preferencesDialog.visible || (pressed && (!window.active || !window.controller.viewerVisible)))
+                return
+            raceControls.handlePad(button, pressed)
+        }
+    }
+
     RaceControls {
         id: raceControls
         controller: window.controller
@@ -1568,7 +2013,7 @@ ApplicationWindow {
                     event.accepted = true
                     if (active && !event.isAutoRepeat
                             && window.viewer.runCount > 0
-                            && window.viewer.carCameraAvailable) {
+                            && window.viewer.carCameras.includes(preset)) {
                         window.viewer.cameraPreset = preset
                         focusCurrentCar()
                     }
@@ -2068,6 +2513,68 @@ ApplicationWindow {
                         viewport.finishWhiteboardImageExport(false)
                 }
 
+                // What a press at (x, y) grabs: a gizmo handle wins over the
+                // see-through body of a box, volume or pose around it (seen
+                // from inside or behind it, the handles lie within its
+                // outline), but not over the map in front of both.
+                function editorPick(view, x, y) {
+                    const bodies = ["select", "custom-select", "pose-select"]
+                    let first = null
+                    for (const result of view.pickAll(x, y)) {
+                        const hit = result.objectHit
+                        if (!hit)
+                            continue
+                        if (hit.targetIndex === undefined)
+                            return first !== null ? first : hit   // in front of the rest
+                        if (hit.editorKind && bodies.indexOf(hit.editorKind) < 0)
+                            return hit
+                        if (first === null)
+                            first = hit
+                    }
+                    return first
+                }
+
+                // How far a drag of (dx, dy) pixels moves a target along a
+                // world axis, in metres: the axis as the camera shows it at
+                // origin (car, orbit or free camera alike); an axis pointing
+                // at the camera takes the vertical drag.
+                function axisDragAmount(origin, axis, dx, dy) {
+                    const unit = axis === "x" ? Qt.vector3d(1, 0, 0)
+                               : axis === "y" ? Qt.vector3d(0, 1, 0)
+                               : Qt.vector3d(0, 0, 1)
+                    const a = rasterMapView.mapFrom3DScene(origin)
+                    const b = rasterMapView.mapFrom3DScene(origin.plus(unit))
+                    let sx = b.x - a.x
+                    let sy = b.y - a.y
+                    let lengthSquared = sx * sx + sy * sy
+                    if (!isFinite(lengthSquared) || lengthSquared < 1e-6) {
+                        // no projection to go by (the 3D view not drawn):
+                        // the orbit camera's angles, as before
+                        const scale = orbitDistance / Math.max(200, Math.min(width, height))
+                        const yaw = orbitYaw * Math.PI / 180
+                        const pitch = orbitPitch * Math.PI / 180
+                        if (axis === "x")
+                            return (dx * Math.cos(yaw) - dy * Math.sin(yaw) * Math.sin(pitch)) * scale
+                        if (axis === "y")
+                            return -dy * Math.cos(pitch) * scale
+                        return (-dx * Math.sin(yaw) - dy * Math.cos(yaw) * Math.sin(pitch)) * scale
+                    }
+                    if (!(lengthSquared >= 64)) {
+                        // the axis seen nearly end-on: along its direction
+                        // on screen if it has one (else the vertical drag),
+                        // at the speed of a metre at that distance
+                        const distance = viewCamera.scenePosition.minus(origin).length()
+                        const perMetre = rasterMapView.height
+                            / (2 * Math.max(0.5, distance)
+                               * Math.tan(viewCamera.fieldOfView * Math.PI / 360))
+                        const length = Math.sqrt(lengthSquared)
+                        const ux = length > 1e-3 ? sx / length : 0
+                        const uy = length > 1e-3 ? sy / length : -1
+                        return (dx * ux + dy * uy) / Math.max(1, perMetre)
+                    }
+                    return (dx * sx + dy * sy) / lengthSquared
+                }
+
                 function beginCuboidInteraction(kind, axis, x, y) {
                     if (!targetMouseEditingAllowed)
                         return false
@@ -2085,22 +2592,8 @@ ApplicationWindow {
                         return
                     const dx = x - cuboidDragX
                     const dy = y - cuboidDragY
-                    const scale = orbitDistance
-                                  / Math.max(200, Math.min(width, height))
-                    const yaw = orbitYaw * Math.PI / 180
-                    const pitch = orbitPitch * Math.PI / 180
-                    let amount = 0
-                    if (cuboidDragAxis === "x") {
-                        amount = (dx * Math.cos(yaw)
-                                  - dy * Math.sin(yaw)
-                                    * Math.sin(pitch)) * scale
-                    } else if (cuboidDragAxis === "y") {
-                        amount = -dy * Math.cos(pitch) * scale
-                    } else {
-                        amount = (-dx * Math.sin(yaw)
-                                  - dy * Math.cos(yaw)
-                                    * Math.sin(pitch)) * scale
-                    }
+                    const target = window.controller.cuboidTargets.selectedTarget
+                    const amount = axisDragAmount(target.center, cuboidDragAxis, dx, dy)
                     if (cuboidDragKind === "resize") {
                         window.controller.cuboidTargets.resizeSelected(
                             cuboidDragAxis, amount)
@@ -2180,23 +2673,10 @@ ApplicationWindow {
                             window.controller.customVolumeTargets.selectedTarget
                         const dx = x - cuboidDragX
                         const dy = y - cuboidDragY
-                        const scale = orbitDistance
-                                      / Math.max(200,
-                                                 Math.min(width, height))
-                        const yaw = orbitYaw * Math.PI / 180
-                        const pitch = orbitPitch * Math.PI / 180
-                        let amount = 0
-                        if (target.plane === "xy") {
-                            amount = (-dx * Math.sin(yaw)
-                                      - dy * Math.cos(yaw)
-                                        * Math.sin(pitch)) * scale
-                        } else if (target.plane === "yz") {
-                            amount = (dx * Math.cos(yaw)
-                                      - dy * Math.sin(yaw)
-                                        * Math.sin(pitch)) * scale
-                        } else {
-                            amount = -dy * Math.cos(pitch) * scale
-                        }
+                        // the depth runs along the axis across the volume's plane
+                        const axis = target.plane === "xy" ? "z"
+                                   : target.plane === "yz" ? "x" : "y"
+                        const amount = axisDragAmount(target.origin, axis, dx, dy)
                         window.controller.customVolumeTargets
                               .resizeDepthSelected(amount)
                     }
@@ -2238,29 +2718,12 @@ ApplicationWindow {
                         window.controller.poseTargets.rotateSelected(
                             poseDragAxis, degrees)
                     } else {
-                        const scale = orbitDistance
-                                      / Math.max(
-                                          200, Math.min(width, height))
-                        const yaw = orbitYaw * Math.PI / 180
-                        const pitch = orbitPitch * Math.PI / 180
-                        let amount = 0
-                        if (poseDragAxis === "x") {
-                            amount = (dx * Math.cos(yaw)
-                                      - dy * Math.sin(yaw)
-                                        * Math.sin(pitch)) * scale
-                            window.controller.poseTargets
-                                  .translateSelected(amount, 0, 0)
-                        } else if (poseDragAxis === "y") {
-                            amount = -dy * Math.cos(pitch) * scale
-                            window.controller.poseTargets
-                                  .translateSelected(0, amount, 0)
-                        } else {
-                            amount = (-dx * Math.sin(yaw)
-                                      - dy * Math.cos(yaw)
-                                        * Math.sin(pitch)) * scale
-                            window.controller.poseTargets
-                                  .translateSelected(0, 0, amount)
-                        }
+                        const target = window.controller.poseTargets.selectedTarget
+                        const amount = axisDragAmount(target.position, poseDragAxis, dx, dy)
+                        window.controller.poseTargets.translateSelected(
+                            poseDragAxis === "x" ? amount : 0,
+                            poseDragAxis === "y" ? amount : 0,
+                            poseDragAxis === "z" ? amount : 0)
                     }
                     cuboidDragX = x
                     cuboidDragY = y
@@ -3004,7 +3467,7 @@ ApplicationWindow {
                     mapPath: window.viewer.loadedReplayPath
                     viewer: window.viewer
                     raceTimeMs: window.viewer.presentationTimeMs
-                    showCar: window.moduleGameCar
+                    showCar: window.moduleGameCar && !window.moduleCarCheckHidden
                     // The 3D view's map meshes show this frame: draw them
                     // again with it.
                     onFrameChanged: rasterMapView.update()
@@ -3597,7 +4060,9 @@ ApplicationWindow {
                                   opacity: 1 })
 
                         objectName: "selectedRunCarRoot"
-                        visible: window.viewer.loaded
+                        // Help > Check the car: one frame without it
+                        property bool checkHidden: false
+                        visible: !checkHidden && window.viewer.loaded
                                  && window.viewer.runCount > 0
                                  && layerStyle.visible
                                  && !layerStyle.throughBlocks
@@ -3988,7 +4453,7 @@ ApplicationWindow {
                             viewport.cuboidPointerCaptured = true
                             return
                         }
-                        const hit = view.pick(mouse.x, mouse.y).objectHit
+                        const hit = viewport.editorPick(view, mouse.x, mouse.y)
                         if (hit && hit.targetIndex !== undefined
                             && viewport.targetMouseEditingAllowed) {
                             viewport.cuboidPointerCaptured = true
@@ -4228,7 +4693,6 @@ ApplicationWindow {
                 objectName: "inputsPanel"
                 panelId: "inputs"
                 title: qsTr("Inputs")
-                available: window.controller.viewerVisible
 
                 Rectangle {
                     id: timelinePanel
@@ -4275,6 +4739,18 @@ ApplicationWindow {
                                     font.pixelSize: 10
                                 }
                             }
+                            ThemedIconButton {
+                                objectName: "timelineRotateButton"
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                icon.source: "qrc:/icons/rotate-cw.svg"
+                                checkable: true
+                                checked: timelinePreferences.horizontal
+                                ToolTip.visible: hovered
+                                ToolTip.text: checked ? qsTr("Time down") : qsTr("Time across")
+                                onClicked: timelinePreferences.horizontal = checked
+                            }
                         }
 
                         RaceTimeline {
@@ -4286,6 +4762,15 @@ ApplicationWindow {
                             enabled: window.viewer.runCount > 0
                                      && !window.viewer.manualDriving
                             pixelsPerTick: 3
+                            horizontal: timelinePreferences.horizontal
+
+                            QtObject {
+                                id: timelinePreferences
+                                property bool horizontal: String(AppSettings.value(
+                                    "timeline/horizontal", false)) === "true"
+                                onHorizontalChanged: AppSettings.setValue(
+                                    "timeline/horizontal", horizontal)
+                            }
                         }
 
                         Rectangle {
@@ -4344,7 +4829,6 @@ ApplicationWindow {
                 objectName: "graphicsPanel"
                 panelId: "graphics"
                 title: qsTr("Graphics")
-                available: window.controller.viewerVisible
 
                 GraphicsInspector {
                     id: graphicsInspector
@@ -4550,7 +5034,7 @@ ApplicationWindow {
                             Layout.preferredHeight: 32
                             text: qsTr("Far")
                             enabled: window.viewer.runCount > 0
-                                     && window.viewer.carCameraAvailable
+                                     && window.viewer.carCameras.includes(1)
                             highlighted: enabled
                                 && viewport.carCameraActive
                                 && window.viewer.cameraPreset === 1
@@ -4571,7 +5055,7 @@ ApplicationWindow {
                             Layout.preferredHeight: 32
                             text: qsTr("Near")
                             enabled: window.viewer.runCount > 0
-                                     && window.viewer.carCameraAvailable
+                                     && window.viewer.carCameras.includes(2)
                             highlighted: enabled
                                 && viewport.carCameraActive
                                 && window.viewer.cameraPreset === 2
@@ -4592,7 +5076,7 @@ ApplicationWindow {
                             Layout.preferredHeight: 32
                             text: qsTr("Internal")
                             enabled: window.viewer.runCount > 0
-                                     && window.viewer.carCameraAvailable
+                                     && window.viewer.carCameras.includes(3)
                             highlighted: enabled
                                 && viewport.carCameraActive
                                 && window.viewer.cameraPreset === 3
@@ -5288,79 +5772,24 @@ ApplicationWindow {
                 }
             }
 
+            // Base, Target, Passes and Search are panels of their own (each can be
+            // docked or floated on its own); Results holds what the search does.
+
             DockPanel {
-                id: bruteforcePanel
-                objectName: "bruteforcePanel"
-                panelId: "bruteforce"
-                title: qsTr("Bruteforce")
+                id: basePanel
+                objectName: "basePanel"
+                panelId: "base"
+                title: qsTr("Base")
 
                 Rectangle {
-                    id: settingsPanel
-
                     objectName: "settingsPanel"
                     anchors.fill: parent
                     color: AppTheme.panel
 
-                    ColumnLayout {
-                        id: settingsNavigation
-                        anchors.top: parent.top
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.margins: 20
-                        spacing: 8
-
-                        TabBar {
-                            id: bruteforceSettingsTabs
-                            objectName: "bruteforceSettingsTabs"
-                            Layout.fillWidth: true
-                            background: Item {}
-                            ThemedTabButton { text: qsTr("Base") }
-                            ThemedTabButton { text: qsTr("Target") }
-                            ThemedTabButton { text: qsTr("Passes") }
-                            ThemedTabButton { text: qsTr("Search") }
-                        }
-
-                        ModifierPassControls {
-                            Layout.fillWidth: true
-                            visible: bruteforceSettingsTabs.currentIndex === 2
-                            composition: modifierComposition
-                        }
-                    }
-
                     ScrollView {
-                        id: settingsScroll
-
-                        objectName: "settingsScroll"
-                        property var tabOffsets: ({})
-                        property string activeScrollKey: ""
-                        property bool restoringScroll: false
-                        readonly property string scrollKey:
-                            "search-" + bruteforceSettingsTabs.currentIndex
-                        function restoreTabScroll() {
-                            restoringScroll = true
-                            Qt.callLater(function() {
-                                const content = settingsScroll.contentItem
-                                const saved = settingsScroll.tabOffsets[settingsScroll.scrollKey]
-                                const offset = saved !== undefined ? saved : 0
-                                content.contentY = Math.max(0, Math.min(offset,
-                                    content.contentHeight - content.height))
-                                settingsScroll.activeScrollKey = settingsScroll.scrollKey
-                                settingsScroll.restoringScroll = false
-                            })
-                        }
-                        onScrollKeyChanged: restoreTabScroll()
-                        Connections {
-                            target: settingsScroll.contentItem
-                            function onContentYChanged() {
-                                if (!settingsScroll.restoringScroll
-                                    && settingsScroll.activeScrollKey === settingsScroll.scrollKey) {
-                                    settingsScroll.tabOffsets[settingsScroll.scrollKey] =
-                                        settingsScroll.contentItem.contentY
-                                }
-                            }
-                        }
-                        anchors.top: settingsNavigation.bottom
-                        anchors.topMargin: 12
+                        id: baseScroll
+                        objectName: "baseScroll"
+                        anchors.top: parent.top
                         anchors.bottom: parent.bottom
                         anchors.left: parent.left
                         anchors.right: parent.right
@@ -5368,29 +5797,26 @@ ApplicationWindow {
                         contentWidth: availableWidth
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         PanelWheelRedirector {
-                            id: settingsWheelRedirector
-                            objectName: "settingsWheelRedirector"
-                            parent: settingsScroll.parent
+                            objectName: "baseWheelRedirector"
+                            parent: baseScroll.parent
                             anchors.fill: parent
-                            flickable: settingsScroll.contentItem
+                            flickable: baseScroll.contentItem
                         }
 
                         ColumnLayout {
-                            width: settingsScroll.availableWidth
+                            width: baseScroll.availableWidth
                             spacing: 14
 
                             Item {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 12
-                                visible: bruteforceSettingsTabs.currentIndex === 0
                             }
 
                             ColumnLayout {
                                 id: replaySection
 
                                 objectName: "replayInputStatusSection"
-                                visible: bruteforceSettingsTabs.currentIndex === 0
-                                         && (!!window.controller.replayInputFailure.reason
+                                visible: (!!window.controller.replayInputFailure.reason
                                              || window.controller.replayInputStatusText.length > 0)
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 20
@@ -5421,10 +5847,8 @@ ApplicationWindow {
                                 }
                             }
 
-
                             ConfigurationSection {
                                 objectName: "baseInputScriptSection"
-                                visible: bruteforceSettingsTabs.currentIndex === 0
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 20
                                 Layout.rightMargin: 20
@@ -5519,7 +5943,6 @@ ApplicationWindow {
                                 id: appearanceControls
 
                                 objectName: "appearanceControls"
-                                visible: bruteforceSettingsTabs.currentIndex === 0
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 20
                                 Layout.rightMargin: 20
@@ -5541,16 +5964,199 @@ ApplicationWindow {
                                 TimeUnits {}
                             }
 
-                            ColumnLayout {
-                                id: bruteforceTabContent
-
-                                objectName: "bruteforceTabContent"
+                            Item {
                                 Layout.fillWidth: true
-                                spacing: 14
+                                Layout.preferredHeight: 16
+                            }
+                        }
+                    }
+                }
+            }
+
+            DockPanel {
+                id: targetPanel
+                objectName: "targetPanel"
+                panelId: "target"
+                title: qsTr("Target")
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: AppTheme.panel
+
+                    ScrollView {
+                        id: targetScroll
+                        objectName: "targetScroll"
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        PanelWheelRedirector {
+                            objectName: "targetWheelRedirector"
+                            parent: targetScroll.parent
+                            anchors.fill: parent
+                            flickable: targetScroll.contentItem
+                        }
+
+                        ColumnLayout {
+                            width: targetScroll.availableWidth
+                            spacing: 14
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 12
+                            }
+
+                            ConfigurationSection {
+                                objectName: "evaluationSection"
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                title: qsTr("Evaluation")
+
+                                AlgorithmSelector {
+                                    objectName: "evaluationTargetSelector"
+                                    Layout.fillWidth: true
+                                    title: qsTr("Target")
+                                    comboObjectName: "evaluationTargetCombo"
+                                    iconMode: true
+                                    options: window.controller.evaluationTargetOptions
+                                    selectedId: window.controller.evaluationTargetId
+                                    controller: window.controller
+                                    viewer: window.viewer
+                                    viewport: viewport
+                                    onSelectionRequested: id =>
+                                        window.controller.evaluationTargetId = id
+                                }
+                            }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 16
+                            }
+                        }
+                    }
+                }
+            }
+
+            DockPanel {
+                id: passesPanel
+                objectName: "passesPanel"
+                panelId: "passes"
+                title: qsTr("Passes")
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: AppTheme.panel
+
+                    ColumnLayout {
+                        id: passesTop
+                        anchors.top: parent.top
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.margins: 20
+                        spacing: 8
+
+                        ModifierPassControls {
+                            Layout.fillWidth: true
+                            composition: modifierComposition
+                        }
+                    }
+
+                    ScrollView {
+                        id: passesScroll
+                        objectName: "passesScroll"
+                        anchors.top: passesTop.bottom
+                        anchors.topMargin: 4
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        PanelWheelRedirector {
+                            objectName: "passesWheelRedirector"
+                            parent: passesScroll.parent
+                            anchors.fill: parent
+                            flickable: passesScroll.contentItem
+                        }
+
+                        ColumnLayout {
+                            width: passesScroll.availableWidth
+                            spacing: 14
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 4
+                            }
+
+                            ConfigurationSection {
+                                objectName: "modifierSection"
+                                visible: window.controller.modifierPasses.length > 0
+                                Layout.fillWidth: true
+                                Layout.leftMargin: 20
+                                Layout.rightMargin: 20
+                                title: qsTr("Pass settings")
+
+                                ModifierComposition {
+                                    id: modifierComposition
+                                    Layout.fillWidth: true
+                                    onPassActivated: passesScroll.contentItem.contentY = 0
+                                    controller: window.controller
+                                    viewer: window.viewer
+                                    options: window.controller.modifierOptions
+                                    passes: window.controller.modifierPasses
+                                }
+                            }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 16
+                            }
+                        }
+                    }
+                }
+            }
+
+            DockPanel {
+                id: searchPanel
+                objectName: "searchPanel"
+                panelId: "search"
+                title: qsTr("Search")
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: AppTheme.panel
+
+                    ScrollView {
+                        id: searchScroll
+                        objectName: "searchScroll"
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        PanelWheelRedirector {
+                            objectName: "searchWheelRedirector"
+                            parent: searchScroll.parent
+                            anchors.fill: parent
+                            flickable: searchScroll.contentItem
+                        }
+
+                        ColumnLayout {
+                            width: searchScroll.availableWidth
+                            spacing: 14
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 12
+                            }
 
                             ColumnLayout {
-                                visible: bruteforceSettingsTabs.currentIndex ===
-                                         3
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 20
                                 Layout.rightMargin: 20
@@ -5884,13 +6490,10 @@ ApplicationWindow {
                                 Layout.leftMargin: 20
                                 Layout.rightMargin: 20
                                 color: AppTheme.border
-                                visible: bruteforceSettingsTabs.currentIndex === 3
                             }
 
                             ConfigurationSection {
                                 objectName: "conditionsSection"
-                                visible: bruteforceSettingsTabs.currentIndex ===
-                                         3
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 20
                                 Layout.rightMargin: 20
@@ -5958,53 +6561,7 @@ ApplicationWindow {
                             }
 
                             ConfigurationSection {
-                                objectName: "evaluationSection"
-                                visible: bruteforceSettingsTabs.currentIndex === 1
-                                Layout.fillWidth: true
-                                Layout.leftMargin: 20
-                                Layout.rightMargin: 20
-                                title: qsTr("Evaluation")
-
-                                AlgorithmSelector {
-                                    objectName: "evaluationTargetSelector"
-                                    Layout.fillWidth: true
-                                    title: qsTr("Target")
-                                    comboObjectName: "evaluationTargetCombo"
-                                    iconMode: true
-                                    options: window.controller.evaluationTargetOptions
-                                    selectedId: window.controller.evaluationTargetId
-                                    controller: window.controller
-                                    viewer: window.viewer
-                                    viewport: viewport
-                                    onSelectionRequested: id =>
-                                        window.controller.evaluationTargetId = id
-                                }
-                            }
-
-                            ConfigurationSection {
-                                objectName: "modifierSection"
-                                visible: bruteforceSettingsTabs.currentIndex === 2
-                                         && window.controller.modifierPasses.length > 0
-                                Layout.fillWidth: true
-                                Layout.leftMargin: 20
-                                Layout.rightMargin: 20
-                                title: qsTr("Pass settings")
-
-                                ModifierComposition {
-                                    id: modifierComposition
-                                    Layout.fillWidth: true
-                                    onPassActivated: settingsScroll.contentItem.contentY = 0
-                                    controller: window.controller
-                                    viewer: window.viewer
-                                    options: window.controller.modifierOptions
-                                    passes: window.controller.modifierPasses
-                                }
-                            }
-
-                            ConfigurationSection {
                                 objectName: "searchSection"
-                                visible: bruteforceSettingsTabs.currentIndex ===
-                                         3
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 20
                                 Layout.rightMargin: 20
@@ -6076,9 +6633,7 @@ ApplicationWindow {
                                 Layout.fillWidth: true
                                 Layout.leftMargin: 20
                                 Layout.rightMargin: 20
-                                visible: bruteforceSettingsTabs.currentIndex ===
-                                         3
-                                         && window.controller.simulationBackendId
+                                visible: window.controller.simulationBackendId
                                             === "cuda"
                                 title: qsTr("CUDA fast mode")
 
@@ -6114,6 +6669,52 @@ ApplicationWindow {
                                     wrapMode: Text.WordWrap
                                     font.pixelSize: 11
                                 }
+                            }
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 16
+                            }
+                        }
+                    }
+                }
+            }
+
+            DockPanel {
+                id: resultsPanel
+                objectName: "resultsPanel"
+                panelId: "results"
+                title: qsTr("Results")
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: AppTheme.panel
+
+                    ScrollView {
+                        id: resultsScroll
+                        objectName: "resultsScroll"
+                        anchors.top: parent.top
+                        anchors.bottom: parent.bottom
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        PanelWheelRedirector {
+                            id: settingsWheelRedirector
+                            objectName: "settingsWheelRedirector"
+                            parent: resultsScroll.parent
+                            anchors.fill: parent
+                            flickable: resultsScroll.contentItem
+                        }
+
+                        ColumnLayout {
+                            width: resultsScroll.availableWidth
+                            spacing: 14
+
+                            Item {
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 12
                             }
 
                             Label {
@@ -6172,6 +6773,7 @@ ApplicationWindow {
                                     onClicked: window.controller.cancelBaseEvaluation()
                                 }
                             }
+
                             FailureNotice {
                                 objectName: "baseEvaluationFailure"
                                 Layout.fillWidth: true
@@ -6403,8 +7005,6 @@ ApplicationWindow {
                                 }
                             }
 
-                            }
-
                             Item {
                                 Layout.fillWidth: true
                                 Layout.preferredHeight: 16
@@ -6562,7 +7162,11 @@ ApplicationWindow {
 
                 PanelMenuItem { panelId: "inputs"; text: qsTr("Inputs") }
                 PanelMenuItem { panelId: "graphics"; text: qsTr("Graphics") }
-                PanelMenuItem { panelId: "bruteforce"; text: qsTr("Bruteforce") }
+                PanelMenuItem { panelId: "base"; text: qsTr("Base") }
+                PanelMenuItem { panelId: "target"; text: qsTr("Target") }
+                PanelMenuItem { panelId: "passes"; text: qsTr("Passes") }
+                PanelMenuItem { panelId: "search"; text: qsTr("Search") }
+                PanelMenuItem { panelId: "results"; text: qsTr("Results") }
                 PanelMenuItem { panelId: "code"; text: qsTr("Code") }
                 PanelMenuItem { panelId: "race"; text: qsTr("Race viewer") }
                 PanelMenuItem { panelId: "camera"; text: qsTr("Camera") }
@@ -6579,6 +7183,13 @@ ApplicationWindow {
                     onTriggered: whiteboardOverlay.drawingListOpen = !whiteboardOverlay.drawingListOpen
                 }
                 MenuSeparator {}
+                ThemedMenuItem {
+                    objectName: "panelHeadersMenuItem"
+                    text: qsTr("Panel headers")
+                    showMark: true
+                    marked: dockSpace.allHeadersShown
+                    onTriggered: dockSpace.setAllHeadersShown(!dockSpace.allHeadersShown)
+                }
                 ThemedMenuItem {
                     objectName: "hideAllPanelsMenuItem"
                     text: qsTr("Hide all panels")
@@ -6631,6 +7242,25 @@ ApplicationWindow {
                     objectName: "resetLayoutMenuItem"
                     text: qsTr("Reset layout")
                     onTriggered: dockSpace.resetLayout()
+                }
+            }
+
+            GlassMenu {
+                id: helpMenu
+                objectName: "helpMenu"
+                title: qsTr("Help")
+
+                ThemedMenuItem {
+                    objectName: "checkCarMenuItem"
+                    text: qsTr("Check the car")
+                    enabled: window.logs !== null && window.viewer.loaded
+                    onTriggered: window.checkCar()
+                }
+                ThemedMenuItem {
+                    objectName: "openLogFolderMenuItem"
+                    text: qsTr("Open log folder")
+                    enabled: window.logs !== null
+                    onTriggered: window.logs.openFolder()
                 }
             }
         }

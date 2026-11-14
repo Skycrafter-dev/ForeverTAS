@@ -24,6 +24,7 @@
 #include <QStandardPaths>
 #include <QUuid>
 
+#include <cmath>
 #include <stdexcept>
 #include <map>
 #include <limits>
@@ -106,8 +107,15 @@ QJsonArray ColumnsFor(const std::string &targetId, const OptionSettings &setting
                        "speed", "higher"),
                 at};
     }
-    if (targetId == kPointTargetEvaluationId || targetId == kDistanceTargetEvaluationId) {
+    if (targetId == kPointTargetEvaluationId) {
         return {Column(QStringLiteral("Distance"), "distance", "lower"), at};
+    }
+    if (targetId == kDistanceTargetEvaluationId) {
+        // The score orders reaching before distance (see DistanceParts):
+        // shown as what it is made of.
+        return {Column(QStringLiteral("Reached at"), "time", "lower"),
+                Column(QStringLiteral("Checkpoints before"), "integer", "lower"),
+                Column(QStringLiteral("Distance"), "distance", "lower"), at};
     }
     if (targetId == kPoseTargetEvaluationId) {
         return {Column(QStringLiteral("Pose error"), "number", "lower"), at};
@@ -145,12 +153,45 @@ QJsonArray Columns(const SearchRequest &request) {
     return ColumnsFor(request.evaluationTarget.id, request.evaluationTarget.settings);
 }
 
+// The distance target's score (distance_target_evaluator.cpp): a run that
+// reaches the target scores its reach time in ms; one that does not,
+// 1e12 + 1e6 per event still before the target (the target itself counts
+// one) + its closest distance in metres.
+struct DistanceParts {
+    QJsonValue reachedMs;   // null when not reached
+    double eventsBefore = 0.0;
+    double distance = 0.0;
+};
+
+DistanceParts SplitDistanceScore(double score) {
+    constexpr double kNotReached = 1e12;
+    constexpr double kPerEvent = 1e6;
+    DistanceParts parts;
+    if (score < kNotReached) {
+        parts.reachedMs = score;
+        return parts;
+    }
+    const double rest = score - kNotReached;
+    const double events = std::floor(rest / kPerEvent);
+    parts.eventsBefore = std::max(0.0, events - 1.0);
+    parts.distance = rest - events * kPerEvent;
+    return parts;
+}
+
 template<typename Result>
 QJsonArray Metrics(const SearchRequest &request,
                    const Result &result) {
     QJsonArray metrics;
     if (request.evaluationTarget.id == kScriptedTargetEvaluationId) {
         for (double value : result.metricValues) metrics.append(value);
+        return metrics;
+    }
+    if (request.evaluationTarget.id == kDistanceTargetEvaluationId) {
+        const DistanceParts parts = SplitDistanceScore(result.bestScore);
+        metrics.append(parts.reachedMs);
+        metrics.append(parts.eventsBefore);
+        metrics.append(parts.distance);
+        metrics.append(result.bestEvaluationTimeMs);
         return metrics;
     }
     for (const QJsonValue &column : Columns(request)) {
@@ -314,6 +355,18 @@ QVariantMap RowFromMetadata(const QJsonObject &metadata) {
             settings["script"] = lines.join(QLatin1Char('\n')).toStdString();
         }
         row.insert(QStringLiteral("columns"), ColumnsFor(targetId, settings).toVariantList());
+    }
+    // Distance targets saved before their score was split: the "Distance"
+    // column held the raw score.
+    if (metadata.value("targetId").toString().toStdString() == kDistanceTargetEvaluationId &&
+        row.value(QStringLiteral("columns")).toList().size() == 2) {
+        const QJsonArray metrics = metadata.value("metrics").toArray();
+        const DistanceParts parts = SplitDistanceScore(metrics.at(0).toDouble());
+        row.insert(QStringLiteral("columns"),
+                   ColumnsFor(kDistanceTargetEvaluationId, {}).toVariantList());
+        row.insert(QStringLiteral("metrics"),
+                   QVariantList{parts.reachedMs.toVariant(), parts.eventsBefore, parts.distance,
+                                metrics.at(1).toVariant()});
     }
     const auto count = row.value(QStringLiteral("attemptsExact"), row.value(QStringLiteral("attempts"))).toULongLong();
     row.insert(QStringLiteral("attemptsExact"), QString::number(count));

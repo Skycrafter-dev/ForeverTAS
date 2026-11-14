@@ -1,7 +1,7 @@
 import QtQuick
 
-// The race's keys: which keys do what (the user's choice, saved), and what a
-// key event in the race view does with them.
+// The race's keys and gamepad buttons: which do what (the user's choice,
+// saved), and what a key event in the race view or a button does with them.
 QtObject {
     id: controls
     objectName: "raceControls"
@@ -13,7 +13,7 @@ QtObject {
     // keys' places (QWERTY Q is AZERTY A).
     readonly property bool azerty: controller.keyboardIsAzerty()
     property int savestateCount: 4
-    // action id -> [{ key, modifiers }]
+    // action id -> [{ key, modifiers } or { pad }] (pad: an SDL gamepad button)
     property var bindings: ({})
     property int revision: 0
 
@@ -41,6 +41,24 @@ QtObject {
         return list
     }
 
+    // SDL_GamepadButton values.
+    readonly property var pad: ({ a: 0, b: 1, x: 2, y: 3, back: 4, guide: 5, start: 6, leftStick: 7,
+                                  rightStick: 8, leftShoulder: 9, rightShoulder: 10, up: 11, down: 12,
+                                  left: 13, right: 14 })
+    // The gamepad's own defaults: driving stays on the stick, the triggers, A and B (GamepadInput).
+    function defaultPadBindings() {
+        const button = b => ({ pad: b })
+        return {
+            respawn: [button(pad.y)],
+            restart: [button(pad.back)],
+            pause: [button(pad.start)],
+            rewind: [button(pad.leftShoulder)],
+            stepBack: [button(pad.left)],
+            stepForward: [button(pad.right)],
+            slower: [button(pad.down)],
+            faster: [button(pad.up)]
+        }
+    }
     function defaultBindings() {
         const key = k => ({ key: k, modifiers: 0 })
         const result = {
@@ -57,6 +75,9 @@ QtObject {
             slower: [key(azerty ? Qt.Key_A : Qt.Key_Q)],
             faster: [key(Qt.Key_E)]
         }
+        const pads = defaultPadBindings()
+        for (const id in pads)
+            result[id] = result[id].concat(pads[id])
         for (let i = 1; i <= 12; ++i) {
             result["load" + i] = [key(Qt.Key_F1 + i - 1)]
             result["save" + i] = [{ key: Qt.Key_F1 + i - 1, modifiers: Qt.ShiftModifier }]
@@ -77,13 +98,24 @@ QtObject {
         const merged = {}
         for (const id in defaults)
             merged[id] = Array.isArray(saved[id]) ? saved[id] : defaults[id]
+        // Keys saved before the gamepad had actions: its defaults join them, on the buttons nothing uses.
+        const padsAdded = !stored || Boolean(controller.uiSetting("racePadDefaults", false))
+        if (!padsAdded) {
+            const pads = defaultPadBindings()
+            const used = b => Object.values(merged).some(list => list.some(o => sameBinding(o, b)))
+            for (const id in pads)
+                if (!merged[id].some(b => b.pad !== undefined))
+                    merged[id] = merged[id].concat(pads[id].filter(b => !used(b)))
+        }
         bindings = merged
         viewer.savestateCount = savestateCount
         ++revision
         // The first launch keeps the keys picked for this keyboard; later
         // ones keep what was set, whatever the keyboard.
-        if (!stored)
+        if (!stored || !padsAdded) {
+            controller.setUiSetting("racePadDefaults", true)
             save()
+        }
     }
     function save() {
         controller.setUiSetting("raceKeys", JSON.stringify(bindings))
@@ -99,12 +131,12 @@ QtObject {
         else
             list.splice(index, 1)
         next[action] = list.filter(b => b)
-        // A key does one thing: it leaves any other action it was on.
+        // A key or button does one thing: it leaves any other action it was on.
         if (binding) {
             for (const id in next) {
                 if (id === action)
                     continue
-                next[id] = next[id].filter(b => !(b.key === binding.key && b.modifiers === binding.modifiers))
+                next[id] = next[id].filter(b => !sameBinding(b, binding))
             }
         }
         bindings = next
@@ -118,6 +150,12 @@ QtObject {
         bindings = defaultBindings()
         savestateCount = 4
         save()
+    }
+
+    function sameBinding(a, b) {
+        if (a.pad !== undefined || b.pad !== undefined)
+            return a.pad === b.pad
+        return a.key === b.key && a.modifiers === b.modifiers
     }
 
     readonly property int modifierMask: Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier
@@ -142,9 +180,17 @@ QtObject {
             return String.fromCharCode(key)
         return "#" + key
     }
+    function padName(button) {
+        const names = ["A", "B", "X", "Y", qsTr("Back"), qsTr("Guide"), qsTr("Start"), qsTr("Left stick"),
+                       qsTr("Right stick"), "LB", "RB", qsTr("D-pad ↑"), qsTr("D-pad ↓"), qsTr("D-pad ←"),
+                       qsTr("D-pad →")]
+        return button < names.length ? names[button] : qsTr("Button %1").arg(button)
+    }
     function bindingText(binding) {
         if (!binding)
             return ""
+        if (binding.pad !== undefined)
+            return "🎮 " + padName(binding.pad)
         let text = ""
         if (binding.modifiers & Qt.ControlModifier) text += "Ctrl+"
         if (binding.modifiers & Qt.AltModifier) text += "Alt+"
@@ -191,16 +237,40 @@ QtObject {
                       pressed)
     }
 
+    // The action a gamepad button is bound to.
+    function actionForPad(button) {
+        for (const id in bindings) {
+            if (!actions.some(a => a.id === id))
+                continue
+            if (bindings[id].some(b => b.pad === button))
+                return id
+        }
+        return ""
+    }
+    // A gamepad button (GamepadInput.buttonChanged); true when it was bound.
+    function handlePad(button, pressed) {
+        const action = actionForPad(button)
+        if (!action.length)
+            return false
+        run(action, pressed, false)
+        return true
+    }
+
     // Handles a key in the race view; true when it was a race key.
     function handle(event, pressed) {
         const action = actionFor(event, pressed)
         if (!action.length)
             return false
         event.accepted = true
-        const once = pressed && !event.isAutoRepeat
+        run(action, pressed, event.isAutoRepeat)
+        return true
+    }
+
+    function run(action, pressed, autoRepeat) {
+        const once = pressed && !autoRepeat
         switch (action) {
         case "accelerate": case "brake": case "left": case "right":
-            if (!event.isAutoRepeat)
+            if (!autoRepeat)
                 viewer.setManualInput(action, pressed)
             break
         case "respawn":
@@ -218,7 +288,7 @@ QtObject {
         case "rewind":
             if (once)
                 viewer.beginRewind()
-            else if (!pressed && !event.isAutoRepeat)
+            else if (!pressed && !autoRepeat)
                 viewer.endRewind()
             break
         case "stepBack":
@@ -243,7 +313,6 @@ QtObject {
             else if (once && action.startsWith("save"))
                 viewer.saveState(Number(action.substring(4)) - 1)
         }
-        return true
     }
 
     Component.onCompleted: load()

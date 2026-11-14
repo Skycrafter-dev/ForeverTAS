@@ -1,4 +1,5 @@
 #include "viewer/simulation_debugger_model.h"
+#include "app/app_settings.h"
 #include "viewer/debugger_tools.h"
 
 #include "simulation_debug_sources.h"
@@ -12,7 +13,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
-#include <QSettings>
 #include <QTemporaryFile>
 #include <QTimer>
 #include <QUuid>
@@ -239,11 +239,11 @@ void SimulationDebuggerModel::saveWatches() {
         const auto row = watch.toMap();
         persisted.append(QJsonObject{{"id", row.value("id").toString()}, {"expression", row.value("expression").toString()}});
     }
-    QSettings().setValue(QStringLiteral("simulationDebugger/watchesV1"), QJsonDocument(persisted).toJson(QJsonDocument::Compact));
+    app::AppSettings::Instance().setValue(QStringLiteral("simulationDebugger/watchesV1"), QJsonDocument(persisted).toJson(QJsonDocument::Compact));
 }
 
 void SimulationDebuggerModel::loadWatches() {
-    const auto persisted = QJsonDocument::fromJson(QSettings().value(QStringLiteral("simulationDebugger/watchesV1")).toByteArray()).array();
+    const auto persisted = QJsonDocument::fromJson(app::AppSettings::Instance().value(QStringLiteral("simulationDebugger/watchesV1")).toByteArray()).array();
     QSet<QString> ids, paths;
     for (const auto &value : persisted) {
         const auto row = value.toObject();
@@ -1199,17 +1199,17 @@ int SimulationDebuggerModel::depth(const QString &path) {
 }
 
 QString SimulationDebuggerModel::configuredLldbPath() const {
-    return QSettings().value(QStringLiteral("simulationDebugger/lldbPath")).toString();
+    return app::AppSettings::Instance().value(QStringLiteral("simulationDebugger/lldbPath")).toString();
 }
 
 QString SimulationDebuggerModel::configuredTerminalPath() const {
-    return QSettings().value(QStringLiteral("simulationDebugger/terminalPath")).toString();
+    return app::AppSettings::Instance().value(QStringLiteral("simulationDebugger/terminalPath")).toString();
 }
 
 void SimulationDebuggerModel::configureTools(const QString &lldb, const QString &terminal) {
     if (active_ || preparing_) return;
-    QSettings().setValue(QStringLiteral("simulationDebugger/lldbPath"), lldb.trimmed());
-    QSettings().setValue(QStringLiteral("simulationDebugger/terminalPath"), terminal.trimmed());
+    app::AppSettings::Instance().setValue(QStringLiteral("simulationDebugger/lldbPath"), lldb.trimmed());
+    app::AppSettings::Instance().setValue(QStringLiteral("simulationDebugger/terminalPath"), terminal.trimmed());
     refreshDebuggerTools();
 }
 
@@ -1704,7 +1704,7 @@ void SimulationDebuggerModel::loadSources() {
 
 void SimulationDebuggerModel::restoreBreakpoints() {
     const QStringList persisted =
-            QSettings()
+            app::AppSettings::Instance()
                     .value(QStringLiteral("simulationDebugger/"
                                           "breakpointsV1"))
                     .toStringList();
@@ -1741,7 +1741,7 @@ void SimulationDebuggerModel::saveBreakpoints() const {
         }
     }
     std::sort(persisted.begin(), persisted.end());
-    QSettings().setValue(QStringLiteral("simulationDebugger/breakpointsV1"),
+    app::AppSettings::Instance().setValue(QStringLiteral("simulationDebugger/breakpointsV1"),
                          persisted);
 }
 

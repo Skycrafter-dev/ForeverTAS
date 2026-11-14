@@ -201,6 +201,8 @@ class RaceViewerController final : public QObject {
                        cameraPresetChanged)
     Q_PROPERTY(bool carCameraAvailable READ carCameraAvailable NOTIFY
                        cameraChanged)
+    // the car cameras (1, 2, 3) this map's car has
+    Q_PROPERTY(QVariantList carCameras READ carCameras NOTIFY cameraChanged)
     Q_PROPERTY(QVector3D carCameraPosition READ carCameraPosition NOTIFY
                        cameraChanged)
     Q_PROPERTY(QQuaternion carCameraRotation READ carCameraRotation NOTIFY
@@ -349,6 +351,7 @@ public:
     Q_INVOKABLE QVariantMap conditionPreview(const QString &script) const;
     int cameraPreset() const;
     bool carCameraAvailable() const;
+    QVariantList carCameras() const;
     QVector3D carCameraPosition() const;
     QQuaternion carCameraRotation() const;
     QVector3D carCameraTarget() const;
@@ -504,6 +507,9 @@ public slots:
     Q_INVOKABLE void loadMap(const QString &packsDirectory,
                             const QString &replayPath,
                             const QString &backendId);
+    // Where the selected run's car is at timeMs (the diagnostics compare the
+    // In-game view's car with it).
+    Q_INVOKABLE QVector3D selectedRunPositionAt(double timeMs) const;
     Q_INVOKABLE QVector2D cameraClipPlanes(const QVector3D &cameraPosition,
                                            double cameraDistance) const;
     Q_INVOKABLE QString renderTelemetry(
@@ -630,6 +636,7 @@ private:
     void waitForWorker();
     void updatePose();
     void updateCarCamera();
+    void logSelectedCar(const RaceViewerRun *run);
     void advancePlayback();
     void advanceManualDrive();
     void appendSimulationDebuggerFrame(const QVariantMap &frame);
@@ -730,12 +737,17 @@ private:
     double carCameraFieldOfView_ = 75.0;
     int cameraPreset_ = 1;
     bool carCameraAvailable_ = false;
+    QVariantList carCameras_;
     // The car camera is the driver's view (the selected car is hidden).
     bool carCameraInternal_ = false;
     QString telemetryScript_;
     QString statusText_ = QStringLiteral("No map loaded");
     QVariantMap statusFailure_;
     QString selectedRunId_;
+    // What the log last heard about the selected car (updatePose).
+    QString loggedSelectedRunId_;
+    std::size_t loggedRunCount_ = 0;
+    bool loggedPoseInvalid_ = false;
     QString loadedPacksDirectory_;
     QString loadedReplayPath_;
     QString previewInputScript_;

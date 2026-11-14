@@ -1,10 +1,10 @@
 #include "app/pose_target_model.h"
+#include "app/app_settings.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSet>
-#include <QSettings>
 #include <QUuid>
 
 #include <algorithm>
@@ -430,7 +430,7 @@ QString PoseTargetModel::nextDefaultName() const {
 
 void PoseTargetModel::load(const QVariantMap &legacySettings) {
     const QJsonDocument document = QJsonDocument::fromJson(
-            QSettings().value(QLatin1String(kPoseTargetsKey)).toByteArray());
+            AppSettings::Instance().value(QLatin1String(kPoseTargetsKey)).toByteArray());
     QString selectedId;
     QSet<QString> loadedIds;
     if (document.isObject()) {
@@ -546,7 +546,7 @@ void PoseTargetModel::persist() const {
                          target.pitchDegrees,
                          target.rollDegrees}}});
     }
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kPoseTargetsKey),
             QJsonDocument(QJsonObject{
                     {QStringLiteral("version"), kVersion},

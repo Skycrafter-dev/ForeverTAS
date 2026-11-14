@@ -45,6 +45,16 @@ Item {
     Component.onCompleted: Qt.callLater(refreshSummary)
 
     Connections {
+        target: root.controller
+        function onModifierPassesChanged() {
+            Qt.callLater(root.refreshSummary)
+        }
+        function onSimulationHorizonMsChanged() {
+            Qt.callLater(root.refreshSummary)
+        }
+    }
+
+    Connections {
         target: root.controller.cuboidTargets
         function onSelectedTargetChanged() {
             Qt.callLater(root.refreshSummary)
@@ -533,14 +543,23 @@ Item {
             const contains = position => custom
                 ? customContains(position, shape)
                 : cuboidEntry(position, position, shape) >= 0
+            // As the search judges it: from the earliest input a pass may
+            // change (on a multilap, the lap being worked on), to the horizon.
+            const start = Math.max(0, controller.evaluationStartMs())
+            const end = Number(controller.simulationHorizonMs)
+            const first = frames.findIndex(frame => frame.timeMs >= start)
+            if (first < 0)
+                return { label: qsTr("Target not entered"), event: null }
             // Fastest entry needs the car seen entering.
             const bySpeed = (config.measure ?? "time") === "speed"
-            if (!bySpeed && contains(frames[0].position))
-                return { label: qsTr("Entry: %1").arg(DurationDisplay.text(frames[0].timeMs)),
-                         event: frames[0] }
-            for (let index = 1; index < frames.length; ++index) {
+            if (!bySpeed && contains(frames[first].position))
+                return { label: qsTr("Entry: %1").arg(DurationDisplay.text(frames[first].timeMs)),
+                         event: frames[first] }
+            for (let index = first + 1; index < frames.length; ++index) {
                 const before = frames[index - 1]
                 const after = frames[index]
+                if (before.timeMs >= end)
+                    break
                 if (contains(before.position))
                     continue
                 const fraction = custom

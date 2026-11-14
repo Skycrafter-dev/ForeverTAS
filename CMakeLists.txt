@@ -279,6 +279,8 @@ add_library(forevertas_core STATIC
     src/searches/cuda_search_configuration.cpp
     src/searches/cuda_search_configuration.h
     src/searches/search_runner.cpp
+    src/diagnostics/diagnostics_log.cpp
+    src/diagnostics/diagnostics_log.h
     src/searches/result_input_script.h
     src/time_format.h
     src/searches/search_runner.h)
@@ -328,6 +330,8 @@ add_library(forevertas_gui STATIC
     src/viewer/ray_tracing_scene.cpp
     src/viewer/ray_tracing_scene.h
     src/viewer/race_timeline_item.cpp
+    src/viewer/pointer_lock.cpp
+    src/viewer/pointer_lock.h
     src/viewer/race_timeline_item.h
     src/viewer/race_viewer_controller.cpp
     src/viewer/race_viewer_controller.h
@@ -362,6 +366,8 @@ add_library(forevertas_gui STATIC
     src/app/input_preview_binding.h
     src/app/search_controller.cpp
     src/app/search_controller.h
+    src/app/app_settings.cpp
+    src/app/app_settings.h
     src/app/search_diagnostic.cpp
     src/app/search_diagnostic.h
     src/app/packs_directory_finder.cpp
@@ -483,6 +489,44 @@ else()
 endif()
 set_target_properties(forevertas-simulation-debug-worker PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
+# Wayland: the pointer held during the timeline's cursor drag (pointer
+# constraints and relative pointer, which Qt does not offer).
+if(UNIX AND NOT APPLE AND TARGET Qt6::GuiPrivate)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FOREVERTAS_WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
+        pkg_get_variable(FOREVERTAS_WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+    endif()
+    find_program(FOREVERTAS_WAYLAND_SCANNER wayland-scanner)
+    if(FOREVERTAS_WAYLAND_CLIENT_FOUND AND FOREVERTAS_WAYLAND_SCANNER AND FOREVERTAS_WAYLAND_PROTOCOLS_DIR)
+        enable_language(C)   # the generated protocol code
+        set(forevertas_wayland_generated "${CMAKE_CURRENT_BINARY_DIR}/wayland-protocols")
+        file(MAKE_DIRECTORY "${forevertas_wayland_generated}")
+        foreach(protocol
+                "unstable/pointer-constraints/pointer-constraints-unstable-v1"
+                "unstable/relative-pointer/relative-pointer-unstable-v1")
+            get_filename_component(protocol_name "${protocol}" NAME)
+            set(protocol_xml "${FOREVERTAS_WAYLAND_PROTOCOLS_DIR}/${protocol}.xml")
+            add_custom_command(
+                OUTPUT "${forevertas_wayland_generated}/${protocol_name}-client-protocol.h"
+                       "${forevertas_wayland_generated}/${protocol_name}-protocol.c"
+                COMMAND "${FOREVERTAS_WAYLAND_SCANNER}" client-header "${protocol_xml}"
+                        "${forevertas_wayland_generated}/${protocol_name}-client-protocol.h"
+                COMMAND "${FOREVERTAS_WAYLAND_SCANNER}" private-code "${protocol_xml}"
+                        "${forevertas_wayland_generated}/${protocol_name}-protocol.c"
+                DEPENDS "${protocol_xml}"
+                VERBATIM)
+            target_sources(forevertas_gui PRIVATE
+                "${forevertas_wayland_generated}/${protocol_name}-client-protocol.h"
+                "${forevertas_wayland_generated}/${protocol_name}-protocol.c")
+        endforeach()
+        target_include_directories(forevertas_gui PRIVATE "${forevertas_wayland_generated}")
+        target_link_libraries(forevertas_gui PRIVATE PkgConfig::FOREVERTAS_WAYLAND_CLIENT)
+        target_compile_definitions(forevertas_gui PRIVATE FOREVERTAS_WAYLAND_POINTER_LOCK=1)
+    else()
+        message(STATUS "Wayland pointer lock off (needs wayland-client, wayland-protocols and wayland-scanner)")
+    endif()
+endif()
 if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools)
     target_compile_definitions(forevertas_gui PUBLIC
         FOREVERTAS_GPU_RAY_TRACING=1)
@@ -494,6 +538,10 @@ endif()
 
 qt_add_executable(forevertas
     src/app/main.cpp
+    src/app/diagnostics_startup.cpp
+    src/app/diagnostics_startup.h
+    src/app/stall_watch.cpp
+    src/app/stall_watch.h
     src/app/update_controller.cpp
     src/app/update_controller.h
     src/app/update_hardware.cpp
@@ -665,6 +713,15 @@ target_link_libraries(forevertas PRIVATE
     Qt6::QuickControls2)
 target_compile_definitions(forevertas PRIVATE
     FOREVERTAS_VERSION="${PROJECT_VERSION}")
+if(WIN32)
+    # The crash handler: stacks, module versions, display adapters, minidumps.
+    target_link_libraries(forevertas PRIVATE dbghelp version psapi dxgi)
+endif()
+if(MSVC)
+    # ForeverTAS.pdb stays with the build (not shipped) to read crash stacks
+    # and dumps from users' logs; the code is the same as without it.
+    target_link_options(forevertas PRIVATE /DEBUG:FULL /OPT:REF /OPT:ICF)
+endif()
 
 if(WIN32)
     set(forevertas_runtime_destination ".")
@@ -1549,6 +1606,43 @@ if(BUILD_TESTING)
         set_tests_properties(forevertas-viewer-qml PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
             TIMEOUT 180)
+        # Screenshots of UI states, by eye (not a test): forevertas-ui-capture PACKS REPLAY OUT_DIR STATE...
+        add_executable(forevertas-ui-capture tests/ui_capture.cpp src/app/diagnostics_startup.cpp)
+        qt_add_resources(forevertas-ui-capture "module-screen-material-capture" PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/shaders" FILES shaders/module_screen.frag)
+        qt_add_resources(forevertas-ui-capture "environment-textures-capture" PREFIX "/environment"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment" FILES ${FOREVERTAS_ENVIRONMENT_TEXTURES})
+        qt_add_resources(forevertas-ui-capture "replacement-materials-capture" PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials" FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
+        qt_add_resources(forevertas-ui-capture "lucide-icons-capture" PREFIX "/icons"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons" FILES ${FOREVERTAS_LUCIDE_ICONS})
+        qt_add_shaders(forevertas-ui-capture "glass-shaders-capture" PREFIX "/glass"
+            FILES shaders/ambient.frag shaders/glass.frag shaders/gloss.frag)
+        target_compile_definitions(forevertas-ui-capture PRIVATE FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_definitions(forevertas-ui-capture PRIVATE FOREVERTAS_VERSION="${PROJECT_VERSION}")
+        if(WIN32)
+            target_link_libraries(forevertas-ui-capture PRIVATE dbghelp version psapi dxgi)
+        endif()
+        target_link_libraries(forevertas-ui-capture PRIVATE forevertas_gui Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Quick3D
+            Qt6::QuickControls2 Qt6::Widgets)
+        # The Export dialog's video export, by hand on a platform: forevertas-video-export PACKS REPLAY OUT.mp4 [W H FPS]
+        add_executable(forevertas-video-export tests/video_export_test.cpp)
+        target_link_libraries(forevertas-video-export PRIVATE forevertas_gui Qt6::Gui Qt6::Widgets)
+        # The vanishing car, hunted: forevertas-car-stress PACKS REPLAY OUT_DIR [STEPS [SEED]] (under a display)
+        add_executable(forevertas-car-stress tests/car_stress.cpp)
+        qt_add_resources(forevertas-car-stress "module-screen-material-stress" PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/shaders" FILES shaders/module_screen.frag)
+        qt_add_resources(forevertas-car-stress "environment-textures-stress" PREFIX "/environment"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment" FILES ${FOREVERTAS_ENVIRONMENT_TEXTURES})
+        qt_add_resources(forevertas-car-stress "replacement-materials-stress" PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials" FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
+        qt_add_resources(forevertas-car-stress "lucide-icons-stress" PREFIX "/icons"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons" FILES ${FOREVERTAS_LUCIDE_ICONS})
+        qt_add_shaders(forevertas-car-stress "glass-shaders-stress" PREFIX "/glass"
+            FILES shaders/ambient.frag shaders/glass.frag shaders/gloss.frag)
+        target_compile_definitions(forevertas-car-stress PRIVATE FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(forevertas-car-stress PRIVATE forevertas_gui Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Quick3D
+            Qt6::QuickControls2 Qt6::Widgets)
         add_test(NAME forevertas-pass-management-qml
                  COMMAND forevertas-viewer-qml-smoke
                      "${FOREVERTAS_TEST_PACK_DIRECTORY}"

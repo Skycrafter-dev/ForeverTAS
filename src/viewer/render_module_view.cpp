@@ -1,4 +1,5 @@
 #include "viewer/render_module_view.h"
+#include "diagnostics/diagnostics_log.h"
 
 #include "viewer/race_viewer_controller.h"
 #include "viewer/render_module_library.h"
@@ -121,7 +122,9 @@ class RenderModuleRenderer : public QSGTextureProvider {
     Q_OBJECT
 
 public:
-    explicit RenderModuleRenderer(QQuickWindow *window) : window_(window) {}
+    RenderModuleRenderer(QQuickWindow *window,
+                         std::shared_ptr<RenderModuleView::CarSnapshot> carSnapshot)
+        : window_(window), carSnapshot_(std::move(carSnapshot)) {}
 
     ~RenderModuleRenderer() override {
         // Runs on the render thread with the context current.
@@ -184,6 +187,7 @@ public:
     // --- Called on the render thread.
 
     void render() {
+        readRequestedPicture();
         if (!drawing_ || (!dirty_ && incoming_ == nullptr) ||
             rhiTexture_ == nullptr) {
             return;
@@ -278,7 +282,46 @@ private:
         gl->glDisable(GL_SCISSOR_TEST);
         gl->glBlitFramebuffer(0, 0, width, height, 0, height, width, 0,
                               GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        FtrmCarState car{};
+        if (library.carState != nullptr && library.carState(module_, &car)) {
+            const std::lock_guard<std::mutex> lock(carSnapshot_->mutex);
+            carSnapshot_->available = true;
+            carSnapshot_->car = car;
+            carSnapshot_->camera = frame_.camera;
+        }
         emit drawn(source_);
+    }
+
+    // The diagnostics' picture: read from the texture the module drew into.
+    void readRequestedPicture() {
+        QRect rect;
+        {
+            const std::lock_guard<std::mutex> lock(carSnapshot_->mutex);
+            if (!carSnapshot_->pictureRequested) return;
+            rect = carSnapshot_->pictureRect;
+        }
+        QOpenGLContext *const context = QOpenGLContext::currentContext();
+        if (context == nullptr || module_ == nullptr || textureFramebuffer_ == 0u) return;
+        rect &= QRect(QPoint(0, 0), size_);
+        QImage image(rect.size().expandedTo(QSize(1, 1)), QImage::Format_RGBA8888);
+        image.fill(Qt::black);
+        if (!rect.isEmpty()) {
+            QOpenGLExtraFunctions *const gl = context->extraFunctions();
+            window_->beginExternalCommands();
+            {
+                const SavedGlState saved(gl);
+                // the texture holds the image top row first, as QImage does
+                gl->glBindFramebuffer(GL_READ_FRAMEBUFFER, textureFramebuffer_);
+                gl->glPixelStorei(GL_PACK_ALIGNMENT, 4);
+                gl->glReadPixels(rect.x(), rect.y(), rect.width(), rect.height(), GL_RGBA,
+                                 GL_UNSIGNED_BYTE, image.bits());
+            }
+            window_->endExternalCommands();
+        }
+        const std::lock_guard<std::mutex> lock(carSnapshot_->mutex);
+        carSnapshot_->picture = image;
+        carSnapshot_->pictureRequested = false;
+        ++carSnapshot_->pictureSerial;
     }
 
     void resizeTexture(const QSize &size) {
@@ -382,6 +425,7 @@ private:
     QSize size_;
     QRhiTexture *rhiTexture_ = nullptr;
     std::unique_ptr<QSGTexture> texture_;
+    std::shared_ptr<RenderModuleView::CarSnapshot> carSnapshot_;
     GLuint textureFramebuffer_ = 0u;
     GLuint drawFramebuffer_ = 0u;
     GLuint colorRenderbuffer_ = 0u;
@@ -497,6 +541,50 @@ void RenderModuleView::setRaceTimeMs(double timeMs) {
 }
 
 bool RenderModuleView::showCar() const { return showCar_; }
+
+int RenderModuleView::requestPicture(const QRectF &rect) {
+    QSize size;
+    QPointF origin;
+    float fieldOfView = 0.0f;
+    imageLayout(&size, &origin, &fieldOfView);
+    const qreal ratio = window() != nullptr ? window()->devicePixelRatio() : 1.0;
+    const QRectF pixels(rect.x() * ratio + origin.x(), rect.y() * ratio + origin.y(),
+                        rect.width() * ratio, rect.height() * ratio);
+    int serial = 0;
+    {
+        const std::lock_guard<std::mutex> lock(carSnapshot_->mutex);
+        carSnapshot_->pictureRequested = true;
+        carSnapshot_->pictureRect = pixels.toAlignedRect();
+        serial = carSnapshot_->pictureSerial + 1;
+    }
+    update();
+    return serial;
+}
+
+QVariantMap RenderModuleView::picture() const {
+    const std::lock_guard<std::mutex> lock(carSnapshot_->mutex);
+    return {{QStringLiteral("serial"), carSnapshot_->pictureSerial},
+            {QStringLiteral("image"), QVariant::fromValue(carSnapshot_->picture)}};
+}
+
+QVariantMap RenderModuleView::carState() const {
+    const std::lock_guard<std::mutex> lock(carSnapshot_->mutex);
+    if (!carSnapshot_->available) return {{QStringLiteral("available"), false}};
+    const FtrmCarState &car = carSnapshot_->car;
+    const FtrmCamera &camera = carSnapshot_->camera;
+    return {{QStringLiteral("available"), true},
+            {QStringLiteral("raceTimeMs"), car.raceTimeMs},
+            {QStringLiteral("tick"), car.tick},
+            {QStringLiteral("position"),
+             QVector3D(car.position[0], car.position[1], car.position[2])},
+            {QStringLiteral("shown"), car.shown != 0},
+            {QStringLiteral("controls"), car.controlCount},
+            {QStringLiteral("frames"), car.framesDrawn},
+            {QStringLiteral("cameraPosition"),
+             QVector3D(camera.position[0], camera.position[1], camera.position[2])},
+            {QStringLiteral("cameraTarget"),
+             QVector3D(camera.target[0], camera.target[1], camera.target[2])}};
+}
 
 void RenderModuleView::setShowCar(bool show) {
     const bool changed = showCar_ != show;
@@ -621,7 +709,7 @@ void RenderModuleView::ensureRenderer() const {
         return;
     }
     auto *const self = const_cast<RenderModuleView *>(this);
-    renderer_ = new RenderModuleRenderer(window());
+    renderer_ = new RenderModuleRenderer(window(), carSnapshot_);
     connect(window(), &QQuickWindow::beforeRendering, renderer_,
             &RenderModuleRenderer::render, Qt::DirectConnection);
     connect(window(), &QQuickWindow::sceneGraphInvalidated, self,
@@ -878,6 +966,7 @@ void RenderModuleView::setFrameValue(bool changed) {
 
 void RenderModuleView::setStatus(const QString &status) {
     if (status_ != status) {
+        diagnostics::Log("in-game view: %s", status.isEmpty() ? "ready" : qUtf8Printable(status));
         status_ = status;
         emit statusChanged();
     }

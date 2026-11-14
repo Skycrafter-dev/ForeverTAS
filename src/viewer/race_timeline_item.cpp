@@ -1,5 +1,6 @@
 #include "viewer/race_timeline_item.h"
 
+#include "app/app_settings.h"
 #include "app/dock_layout.h"
 #include "app/panel_wheel_redirector.h"
 #include "viewer/gpu_ray_tracing_view.h"
@@ -10,9 +11,13 @@
 #include "time_format.h"
 
 #include <QCursor>
+#include <QGuiApplication>
+#include <QHoverEvent>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QQmlEngine>
+#include <QQuickWindow>
+#include <QScreen>
 #include <QWheelEvent>
 
 #include <algorithm>
@@ -24,6 +29,8 @@ namespace {
 constexpr qreal kMinimumPixelsPerTick = 1.0;
 constexpr qreal kMaximumPixelsPerTick = 12.0;
 constexpr int kScrubUpdateIntervalMs = 16;
+// How close to the current-tick line a press grabs it (pixels along time).
+constexpr qreal kCursorGrab = 7.0;
 
 struct TimelineScale {
     qint64 majorTicks = 100;
@@ -105,6 +112,11 @@ QString FormatTimelineTime(qint64 tick) {
 
 RaceTimelineItem::RaceTimelineItem(QQuickItem *parent)
     : QQuickPaintedItem(parent) {
+    connect(&pointerLock_, &PointerLock::moved, this, [this](const QPointF &delta) {
+        if (dragMode_ == DragMode::Cursor && grabMode_ == GrabMode::Locked && viewer_ != nullptr) {
+            moveCursorGrab(grabTravel_ + (horizontal_ ? delta.x() : delta.y()));
+        }
+    });
     setAcceptedMouseButtons(Qt::LeftButton | Qt::RightButton);
     setAcceptHoverEvents(true);
     setAntialiasing(false);
@@ -174,6 +186,46 @@ void RaceTimelineItem::setPixelsPerTick(qreal value) {
     emit pixelsPerTickChanged();
 }
 
+bool RaceTimelineItem::horizontal() const {
+    return horizontal_;
+}
+
+void RaceTimelineItem::setHorizontal(bool value) {
+    if (horizontal_ == value) {
+        return;
+    }
+    horizontal_ = value;
+    setCursor(QCursor(horizontal_ ? Qt::SizeHorCursor : Qt::SizeVerCursor));
+    update();
+    emit horizontalChanged();
+}
+
+qreal RaceTimelineItem::along(const QPointF &point) const {
+    return horizontal_ ? point.x() : point.y();
+}
+
+qreal RaceTimelineItem::alongSize() const {
+    return horizontal_ ? width() : height();
+}
+
+bool RaceTimelineItem::onCursor(const QPointF &point) const {
+    return std::abs(along(point) - alongSize() * 0.5) <= kCursorGrab;
+}
+
+void RaceTimelineItem::updateCursorShape(const QPointF &point) {
+    if (dragMode_ != DragMode::None) {
+        return;
+    }
+    setCursor(QCursor(onCursor(point) ? Qt::OpenHandCursor
+                                      : horizontal_ ? Qt::SizeHorCursor
+                                                    : Qt::SizeVerCursor));
+}
+
+void RaceTimelineItem::hoverMoveEvent(QHoverEvent *event) {
+    updateCursorShape(event->position());
+    QQuickPaintedItem::hoverMoveEvent(event);
+}
+
 void RaceTimelineItem::paint(QPainter *painter) {
     const QRectF area = boundingRect();
     // The timeline sits on a glass panel: dark washes, not solid fills.
@@ -190,43 +242,55 @@ void RaceTimelineItem::paint(QPainter *painter) {
         return;
     }
 
-    const qreal centerY = area.height() * 0.5;
-    const qreal centerX = area.width() * 0.5;
-    const qreal rulerWidth = area.width() < 210.0 ? 42.0 : 52.0;
+    // Drawn in the vertical layout's frame: x across (the ruler, left
+    // steering, brake / gas / brake, right steering), y along time. Horizontal
+    // turns that frame a quarter turn (x across becomes up, y along becomes
+    // right); the labels stay upright.
+    const qreal across = horizontal_ ? area.height() : area.width();
+    const qreal length = horizontal_ ? area.width() : area.height();
+    const QTransform frame = horizontal_
+            ? QTransform(0.0, -1.0, 1.0, 0.0, 0.0, area.height())
+            : QTransform();
+    const QTransform base = painter->transform();
+    painter->setTransform(frame, true);
+    const qreal centerY = length * 0.5;
+    const qreal rulerWidth = horizontal_ ? 26.0 : across < 210.0 ? 42.0 : 52.0;
     const qreal rulerRight = rulerWidth - 2.0;
-    const qreal accelerationWidth = area.width() < 210.0 ? 18.0 : 24.0;
+    // The pedals' columns keep to a tenth of the room (steering is the
+    // finer input), the controls centred in what the ruler leaves.
+    const qreal room = std::max<qreal>(0.0, across - rulerWidth);
+    const qreal accelerationWidth = std::clamp<qreal>(room * 0.1, 6.0, 24.0);
     const qreal brakeWidth = accelerationWidth * 0.5;
     const qreal controlWidth = accelerationWidth + 2.0 * brakeWidth;
-    const qreal controlLeft = centerX - controlWidth * 0.5;
+    const qreal controlLeft = rulerWidth + (room - controlWidth) * 0.5;
     const qreal controlRight = controlLeft + controlWidth;
     const qreal steeringWidth = std::max<qreal>(
             0.0,
-            std::min(controlLeft - rulerWidth - 2.0,
-                     area.width() - controlRight - 10.0));
+            std::min(controlLeft - rulerWidth - 2.0, across - controlRight - 2.0));
 
     painter->fillRect(
-            QRectF(0.0, 0.0, rulerWidth, area.height()),
+            QRectF(0.0, 0.0, rulerWidth, length),
             QColor(0, 0, 0, 46));
     painter->setPen(
             QColor(QStringLiteral("#2b332f")));
     painter->drawLine(QPointF(rulerRight, 0.0),
-                      QPointF(rulerRight, area.height()));
+                      QPointF(rulerRight, length));
 
     painter->fillRect(
-            QRectF(controlLeft, 0.0, controlWidth, area.height()),
+            QRectF(controlLeft, 0.0, controlWidth, length),
             QColor(255, 255, 255, 10));
     painter->setPen(
             QColor(QStringLiteral("#29312c")));
     painter->drawLine(QPointF(controlLeft, 0.0),
-                      QPointF(controlLeft, area.height()));
+                      QPointF(controlLeft, length));
     painter->drawLine(QPointF(controlLeft + brakeWidth, 0.0),
-                      QPointF(controlLeft + brakeWidth, area.height()));
+                      QPointF(controlLeft + brakeWidth, length));
     painter->drawLine(
             QPointF(controlLeft + brakeWidth + accelerationWidth, 0.0),
             QPointF(controlLeft + brakeWidth + accelerationWidth,
-                    area.height()));
+                    length));
     painter->drawLine(QPointF(controlRight, 0.0),
-                      QPointF(controlRight, area.height()));
+                      QPointF(controlRight, length));
 
     const qreal currentTickPosition =
             static_cast<qreal>(viewer_->timeMs()) /
@@ -239,7 +303,7 @@ void RaceTimelineItem::paint(QPainter *painter) {
             viewer_->tickCount() - 1,
             static_cast<qint64>(std::ceil(
                     currentTickPosition +
-                    (area.height() - centerY) / pixelsPerTick_)) + 1);
+                    (length - centerY) / pixelsPerTick_)) + 1);
     const qreal rowHeight = pixelsPerTick_;
 
     QVector<QRectF> leftSteering;
@@ -332,7 +396,7 @@ void RaceTimelineItem::paint(QPainter *painter) {
                 (static_cast<qreal>(tick) - currentTickPosition) *
                         pixelsPerTick_;
         const qreal alignedY = std::floor(y) + 0.5;
-        if (alignedY < 0.0 || alignedY >= area.height()) {
+        if (alignedY < 0.0 || alignedY >= length) {
             continue;
         }
 
@@ -340,12 +404,12 @@ void RaceTimelineItem::paint(QPainter *painter) {
         const bool centisecondTick = tick % 10 != 0;
         const bool minorTick = tick % scale.minorTicks == 0;
         const qreal tickStartX = majorTick
-                ? 38.0
+                ? rulerRight - (horizontal_ ? 10.0 : 12.0)
                 : centisecondTick
                 ? rulerRight - centisecondTickLength
                 : minorTick
-                ? 43.0
-                : 47.0;
+                ? rulerRight - 7.0
+                : rulerRight - 3.0;
         painter->setPen(majorTick
                                 ? majorTickPen
                                 : centisecondTick
@@ -359,23 +423,52 @@ void RaceTimelineItem::paint(QPainter *painter) {
         if (majorTick) {
             painter->setPen(
                     QColor(QStringLiteral("#aeb8b0")));
-            painter->drawText(
-                    QRectF(2.0, alignedY - 8.0, 34.0, 16.0),
-                    Qt::AlignRight | Qt::AlignVCenter,
-                    FormatTimelineTime(tick));
+            if (horizontal_) {
+                // upright, under its tick
+                const QPointF at = frame.map(QPointF(7.0, alignedY));
+                painter->save();
+                painter->setTransform(base);
+                painter->drawText(QRectF(at.x() - 30.0, at.y() - 8.0, 60.0, 16.0),
+                                  Qt::AlignCenter, FormatTimelineTime(tick));
+                painter->restore();
+            } else {
+                painter->drawText(
+                        QRectF(2.0, alignedY - 8.0, 34.0, 16.0),
+                        Qt::AlignRight | Qt::AlignVCenter,
+                        FormatTimelineTime(tick));
+            }
         }
     }
 
     const QColor currentTickColor(QStringLiteral("#f3c85b"));
     painter->setPen(QPen(currentTickColor, 2.0));
     painter->drawLine(QPointF(0.0, centerY),
-                      QPointF(area.width(), centerY));
+                      QPointF(across, centerY));
+    // the handle: grab it to move the current tick like a cursor
     painter->setBrush(currentTickColor);
     painter->setPen(Qt::NoPen);
     painter->drawPolygon(QPolygonF{
-            QPointF(area.width() - 1.0, centerY),
-            QPointF(area.width() - 9.0, centerY - 5.0),
-            QPointF(area.width() - 9.0, centerY + 5.0)});
+            QPointF(across - 1.0, centerY),
+            QPointF(across - 12.0, centerY - 7.0),
+            QPointF(across - 12.0, centerY + 7.0)});
+    // the grip held during a cursor drag (beginCursorGrab), in place of the
+    // pointer: a yellow knob with arrows along time
+    if (drawnPointerShown_ && dragMode_ == DragMode::Cursor) {
+        painter->setTransform(base);
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        const QPointF p = drawnPointer_;
+        const QPointF axis = horizontal_ ? QPointF(1.0, 0.0) : QPointF(0.0, 1.0);
+        const QPointF side(axis.y(), axis.x());
+        painter->setPen(QPen(QColor(20, 20, 20, 210), 1.5));
+        painter->setBrush(currentTickColor);
+        painter->drawEllipse(p, 6.5, 6.5);
+        for (const qreal direction : {-1.0, 1.0}) {
+            const QPointF tip = p + axis * (direction * 15.0);
+            const QPointF base0 = p + axis * (direction * 9.0) + side * 5.0;
+            const QPointF base1 = p + axis * (direction * 9.0) - side * 5.0;
+            painter->drawPolygon(QPolygonF{tip, base0, base1});
+        }
+    }
 }
 
 void RaceTimelineItem::mousePressEvent(QMouseEvent *event) {
@@ -385,15 +478,74 @@ void RaceTimelineItem::mousePressEvent(QMouseEvent *event) {
         return;
     }
     viewer_->pause();
-    dragAnchorY_ = event->position().y();
+    dragAnchorAlong_ = along(event->position());
     if (event->button() == Qt::RightButton) {
         zoomAnchorPixelsPerTick_ = pixelsPerTick_;
         dragMode_ = DragMode::Zoom;
     } else {
         dragAnchorTimeMs_ = viewer_->timeMs();
-        dragMode_ = DragMode::Scrub;
+        dragMode_ = onCursor(event->position()) ? DragMode::Cursor : DragMode::Scrub;
+        if (dragMode_ == DragMode::Cursor) beginCursorGrab(event);
     }
     event->accept();
+}
+
+// The yellow arrow held like a game holds the pointer: the real pointer is
+// hidden and kept still (locked by the compositor on Wayland, put back after
+// each move elsewhere), its motion moves time, and the timeline draws a grip
+// that wraps around at its ends; the pointer comes back where the grip is.
+void RaceTimelineItem::beginCursorGrab(const QMouseEvent *event) {
+    grabPoint_ = event->position();
+    grabTravel_ = 0.0;
+    grabSlack_ = 0.0;
+    grabGlobal_ = event->globalPosition();
+    if (pointerLock_.lock(window())) {
+        grabMode_ = GrabMode::Locked;
+    } else if (QGuiApplication::platformName().startsWith(QLatin1String("wayland"))) {
+        grabMode_ = GrabMode::Free;   // no lock offered: the pointer moves on, hidden
+    } else {
+        grabMode_ = GrabMode::Pinned;
+    }
+    setCursor(QCursor(Qt::BlankCursor));
+    drawnPointer_ = grabPoint_;
+    drawnPointerShown_ = true;
+    update();
+}
+
+void RaceTimelineItem::moveCursorGrab(qreal travel) {
+    // time follows the grip: down (or right) is later. Past the run's start
+    // or end the grip stops with time, so going back answers at once.
+    const qreal pixelsPerMs = pixelsPerTick_ / viewer_->tickDurationMs();
+    const qreal earliest = -static_cast<qreal>(dragAnchorTimeMs_) * pixelsPerMs;
+    const qreal latest = static_cast<qreal>(viewer_->durationMs() - dragAnchorTimeMs_) * pixelsPerMs;
+    const qreal held = std::clamp(travel, std::min(earliest, 0.0), std::max(latest, 0.0));
+    grabSlack_ += held - travel;
+    travel = held;
+    grabTravel_ = travel;
+    queueScrub(static_cast<qint64>(std::llround(static_cast<qreal>(dragAnchorTimeMs_) + travel / pixelsPerMs)));
+    const qreal size = alongSize();
+    qreal value = std::fmod(along(grabPoint_) + travel, size);
+    if (value < 0.0) value += size;
+    drawnPointer_ = grabPoint_;
+    if (horizontal_) {
+        drawnPointer_.setX(value);
+    } else {
+        drawnPointer_.setY(value);
+    }
+    update();
+}
+
+void RaceTimelineItem::endCursorGrab() {
+    if (grabMode_ == GrabMode::None) return;
+    const QPointF shown = drawnPointer_;
+    if (grabMode_ == GrabMode::Locked) {
+        pointerLock_.unlock(mapToScene(shown));
+    } else if (grabMode_ == GrabMode::Pinned) {
+        QCursor::setPos(window() != nullptr ? window()->screen() : nullptr, mapToGlobal(shown).toPoint());
+    }
+    grabMode_ = GrabMode::None;
+    drawnPointerShown_ = false;
+    update();
 }
 
 void RaceTimelineItem::mouseMoveEvent(QMouseEvent *event) {
@@ -401,13 +553,32 @@ void RaceTimelineItem::mouseMoveEvent(QMouseEvent *event) {
         event->ignore();
         return;
     }
-    const qreal deltaY = event->position().y() - dragAnchorY_;
+    if (dragMode_ == DragMode::Cursor) {
+        if (grabMode_ == GrabMode::Pinned) {
+            const QPointF delta = event->globalPosition() - grabGlobal_;
+            if (delta.isNull()) {
+                event->accept();
+                return;   // the pointer put back
+            }
+            QCursor::setPos(window() != nullptr ? window()->screen() : nullptr, grabGlobal_.toPoint());
+            if (QCursor::pos() != grabGlobal_.toPoint()) {
+                grabMode_ = GrabMode::Free;   // the system would not move it after all
+            }
+            moveCursorGrab(grabTravel_ + (horizontal_ ? delta.x() : delta.y()));
+        } else if (grabMode_ == GrabMode::Free) {
+            moveCursorGrab(along(event->position()) - along(grabPoint_) + grabSlack_);
+        }
+        event->accept();
+        return;
+    }
+    const qreal delta = along(event->position()) - dragAnchorAlong_;
     if (dragMode_ == DragMode::Zoom) {
         setPixelsPerTick(
-                zoomAnchorPixelsPerTick_ * std::exp(-deltaY / 120.0));
+                zoomAnchorPixelsPerTick_ * std::exp(-delta / 120.0));
     } else {
+        // the inputs follow the pointer
         const qreal deltaTimeMs =
-                deltaY / pixelsPerTick_ * viewer_->tickDurationMs();
+                delta / pixelsPerTick_ * viewer_->tickDurationMs();
         queueScrub(static_cast<qint64>(std::llround(
                 static_cast<qreal>(dragAnchorTimeMs_) - deltaTimeMs)));
     }
@@ -478,13 +649,15 @@ void RaceTimelineItem::applyPendingScrub() {
 
 void RaceTimelineItem::finishScrub() {
     scrubUpdateTimer_.stop();
-    if (dragMode_ == DragMode::Scrub) {
+    if (dragMode_ == DragMode::Scrub || dragMode_ == DragMode::Cursor) {
         applyPendingScrub();
     } else {
         hasPendingScrub_ = false;
     }
+    endCursorGrab();
     dragMode_ = DragMode::None;
     lastScrubUpdate_.invalidate();
+    setCursor(QCursor(horizontal_ ? Qt::SizeHorCursor : Qt::SizeVerCursor));
 }
 
 void RaceTimelineItem::disconnectViewer() {
@@ -494,6 +667,9 @@ void RaceTimelineItem::disconnectViewer() {
 }
 
 void RegisterRaceViewerQmlTypes() {
+    static const int settingsTypeId = qmlRegisterSingletonInstance(
+            "ForeverTAS.Viewer", 1, 0, "AppSettings",
+            &forevertas::app::AppSettings::Instance());
     static const int timelineTypeId = qmlRegisterType<RaceTimelineItem>(
             "ForeverTAS.Viewer", 1, 0, "RaceTimeline");
     static const int wheelTypeId =
@@ -514,6 +690,7 @@ void RegisterRaceViewerQmlTypes() {
     static const int whiteboardCanvasTypeId =
             qmlRegisterType<WhiteboardCanvasItem>(
                     "ForeverTAS.Viewer", 1, 0, "WhiteboardCanvasItem");
+    Q_UNUSED(settingsTypeId);
     Q_UNUSED(timelineTypeId);
     Q_UNUSED(wheelTypeId);
     Q_UNUSED(dockLayoutTypeId);

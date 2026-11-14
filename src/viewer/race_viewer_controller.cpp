@@ -1,4 +1,6 @@
 #include "viewer/race_viewer_controller.h"
+#include "app/app_settings.h"
+#include "diagnostics/diagnostics_log.h"
 
 #include "evaluators/distance_target_evaluator.h"
 
@@ -28,7 +30,6 @@
 #include <QQmlEngine>
 #include <QColor>
 #include <QRegularExpression>
-#include <QSettings>
 #include <QThread>
 #include <QTimer>
 #include <QVariantMap>
@@ -662,6 +663,12 @@ public:
         return true;
     }
 
+    // Whether camera `preset` can run for this car at all (3 falls back
+    // to a hood view).
+    bool Offers(int preset) const {
+        return resources_ != nullptr && (preset == 3 || SelectSession(preset));
+    }
+
 private:
     static constexpr std::uint32_t kCountdownMs = 2600u;
     static constexpr std::uint32_t kCountdownTickMs = 10u;
@@ -1071,6 +1078,9 @@ std::shared_ptr<const RaceCameraResources> LoadCameraResources(
     auto loaded = forevervalidator::LoadInstalledRaceCameraEnvironment(
             packsDirectory.toUtf8().toStdString(), packName);
     if (!loaded) {
+        const auto &error = loaded.Error();
+        diagnostics::Log("viewer: no car cameras: %s.pak: %s (%s)", packName.c_str(),
+                         error.diagnostic.c_str(), error.relatedAsset.c_str());
         return {};
     }
     auto resources = std::make_shared<RaceCameraResources>();
@@ -1090,6 +1100,9 @@ std::shared_ptr<const RaceCameraResources> LoadCameraResources(
                 packsDirectory.toUtf8().toStdString(), "Alpine");
         if (shared) {
             resources->sharedFarEnvironment = std::move(shared).Value();
+        } else {
+            diagnostics::Log("viewer: %s.pak has no far race camera and Alpine.pak cannot lend one: %s",
+                             packName.c_str(), shared.Error().diagnostic.c_str());
         }
     }
     return resources;
@@ -2238,19 +2251,19 @@ RaceViewerController::RaceViewerController(QObject *parent)
     : QObject(parent), simulationDebugger_(this) {
     connect(&gamepad_, &GamepadInput::sample, this, &RaceViewerController::setGamepadInput);
     // The opt-in live best car was removed; drop its stale preference.
-    QSettings().remove(QStringLiteral("viewer/liveBestUpdates"));
+    app::AppSettings::Instance().remove(QStringLiteral("viewer/liveBestUpdates"));
     cameraPreset_ = std::clamp(
-            QSettings().value(
+            app::AppSettings::Instance().value(
                     QStringLiteral("viewer/cameraPreset"), 1).toInt(),
             1, 3);
-    telemetryScript_ = QSettings()
+    telemetryScript_ = app::AppSettings::Instance()
             .value(QLatin1String(kTelemetryScriptKey),
                    DefaultTelemetryScript())
             .toString();
     if (telemetryScript_ == LegacyTelemetryScript())
         telemetryScript_ = DefaultTelemetryScript();
     const QJsonDocument styles = QJsonDocument::fromJson(
-            QSettings().value(QLatin1String(kVisualStylesKey))
+            app::AppSettings::Instance().value(QLatin1String(kVisualStylesKey))
                     .toByteArray());
     if (styles.isObject()) {
         visualStyles_ = styles.toVariant().toMap();
@@ -2500,7 +2513,7 @@ QVariantMap RaceViewerController::visualStylesSnapshot() const {
 void RaceViewerController::restoreVisualStyles(const QVariantMap &styles) {
     if (visualStyles_ == styles) return;
     visualStyles_ = styles;
-    QSettings().setValue(
+    app::AppSettings::Instance().setValue(
             QLatin1String(kVisualStylesKey),
             QJsonDocument::fromVariant(visualStyles_).toJson(
                     QJsonDocument::Compact));
@@ -2548,7 +2561,7 @@ void RaceViewerController::setVisualStyle(
     if (style.value(property) == normalized) return;
     style.insert(property, normalized);
     visualStyles_.insert(id, style);
-    QSettings().setValue(
+    app::AppSettings::Instance().setValue(
             QLatin1String(kVisualStylesKey),
             QJsonDocument::fromVariant(visualStyles_).toJson(
                     QJsonDocument::Compact));
@@ -3032,6 +3045,10 @@ bool RaceViewerController::carCameraAvailable() const {
     return carCameraAvailable_;
 }
 
+QVariantList RaceViewerController::carCameras() const {
+    return carCameras_;
+}
+
 QVector3D RaceViewerController::carCameraPosition() const {
     return carCameraPosition_;
 }
@@ -3065,7 +3082,7 @@ void RaceViewerController::setTelemetryScript(const QString &value) {
         return;
     }
     telemetryScript_ = value;
-    QSettings().setValue(QLatin1String(kTelemetryScriptKey), value);
+    app::AppSettings::Instance().setValue(QLatin1String(kTelemetryScriptKey), value);
     emit telemetryScriptChanged();
 }
 
@@ -3347,6 +3364,16 @@ void RaceViewerController::requestRayTracingScene() {
             return {nullptr, QString::fromUtf8(error.what())};
         }
     }));
+}
+
+QVector3D RaceViewerController::selectedRunPositionAt(double timeMs) const {
+    const RaceViewerRun *const selected = selectedRun();
+    if (selected == nullptr) return {};
+    RaceViewerRun run;
+    run.frames = selected->frames;
+    run.position = selected->position;
+    UpdateRunPose(run, timeMs);
+    return run.position;
 }
 
 QVector2D
@@ -3979,7 +4006,7 @@ void RaceViewerController::setCameraPreset(int value) {
         return;
     }
     cameraPreset_ = clamped;
-    QSettings().setValue(
+    app::AppSettings::Instance().setValue(
             QStringLiteral("viewer/cameraPreset"), cameraPreset_);
     if (cameraResources_) {
         cameraRuntime_ =
@@ -6034,6 +6061,13 @@ void RaceViewerController::applyLoadResult(
     cameraRuntime_ = cameraResources_
             ? std::make_unique<RaceCameraRuntime>(cameraResources_)
             : nullptr;
+    carCameras_.clear();
+    for (int preset = 1; preset <= 3; ++preset) {
+        if (cameraRuntime_ != nullptr && cameraRuntime_->Offers(preset)) carCameras_.append(preset);
+    }
+    diagnostics::Log("viewer: car cameras %s", carCameras_.isEmpty() ? "none" :
+                     qUtf8Printable(QVariant(carCameras_).toStringList().join(QStringLiteral(", "))));
+    emit cameraChanged();
     inputPreviewRuntime_.reset();
     resetManualTakeoverState();
     simulationDebugger_.configure(QStringLiteral("Reference"));
@@ -6165,6 +6199,7 @@ void RaceViewerController::setLoading(bool value) {
         return;
     }
     loading_ = value;
+    diagnostics::Log("viewer: %s", value ? "loading a map" : "map loading done");
     emit stateChanged();
 }
 
@@ -6174,6 +6209,7 @@ void RaceViewerController::setStatusText(const QString &value) {
     }
     statusText_ = value;
     statusFailure_.clear();
+    if (!value.isEmpty()) diagnostics::Log("viewer: %s", qUtf8Printable(value));
     emit stateChanged();
 }
 
@@ -6181,6 +6217,7 @@ void RaceViewerController::setStatusFailure(const QString &stage,
                                             const QString &details,
                                             const QString &statusText) {
     statusText_ = statusText;
+    diagnostics::Log("viewer failed (%s): %s", qUtf8Printable(stage), qUtf8Printable(details));
     statusFailure_ = forevertas::app::SearchDiagnostic(stage, details);
     emit stateChanged();
 }
@@ -6297,8 +6334,40 @@ void RaceViewerController::updatePose() {
         carPosition_ = run->position;
         carRotation_ = run->rotation;
     }
+    logSelectedCar(run);
     emit poseChanged();
     updateCarCamera();
+}
+
+// The selected car in the log: which run it is, and a pose that cannot be
+// drawn. A string compare per pose update.
+void RaceViewerController::logSelectedCar(const RaceViewerRun *run) {
+    if (!diagnostics::LogOpen()) return;
+    if (selectedRunId_ != loggedSelectedRunId_ || runs_.size() != loggedRunCount_) {
+        loggedSelectedRunId_ = selectedRunId_;
+        loggedRunCount_ = runs_.size();
+        if (run == nullptr) {
+            diagnostics::Log("viewer car: selected run \"%s\" is none of the %zu runs: the car keeps its last pose",
+                             qUtf8Printable(selectedRunId_), runs_.size());
+        } else {
+            diagnostics::Log("viewer car: run \"%s\" (%s), style \"%s\", %zu frames; %zu runs",
+                             qUtf8Printable(run->id), qUtf8Printable(run->name),
+                             qUtf8Printable(styleRunId(*run)), run->frames.size(), runs_.size());
+        }
+    }
+    const auto finite = [](float value) { return std::isfinite(value); };
+    const float length = carRotation_.length();
+    const bool invalid = !finite(carPosition_.x()) || !finite(carPosition_.y()) ||
+                         !finite(carPosition_.z()) || !finite(carRotation_.scalar()) ||
+                         !finite(carRotation_.x()) || !finite(carRotation_.y()) ||
+                         !finite(carRotation_.z()) || std::abs(length - 1.0f) > 0.01f;
+    if (invalid != loggedPoseInvalid_) {
+        loggedPoseInvalid_ = invalid;
+        diagnostics::Log("viewer car: pose %s at %.3f ms: position (%g, %g, %g), rotation (%g, %g, %g, %g)",
+                         invalid ? "CANNOT BE DRAWN" : "valid again", presentationMs_,
+                         carPosition_.x(), carPosition_.y(), carPosition_.z(), carRotation_.scalar(),
+                         carRotation_.x(), carRotation_.y(), carRotation_.z());
+    }
 }
 
 void RaceViewerController::updateCarCamera() {

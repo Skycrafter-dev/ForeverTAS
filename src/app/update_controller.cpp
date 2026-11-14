@@ -1,4 +1,6 @@
 #include "app/update_controller.h"
+#include "app/app_settings.h"
+#include "diagnostics/diagnostics_log.h"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -7,7 +9,6 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
-#include <QSettings>
 #include <QStandardPaths>
 #include <QThread>
 
@@ -41,7 +42,7 @@ bool successfulResponse(QNetworkReply *reply) {
 
 UpdateController::UpdateController(QObject *parent)
     : QObject(parent), m_hardware(DetectUpdateHardware()) {
-    m_automaticSelection = !QSettings().contains(
+    m_automaticSelection = !AppSettings::Instance().contains(
             QLatin1String(kPreferredPackageKey));
 #if defined(Q_OS_WIN)
     m_supported = QFileInfo::exists(QCoreApplication::applicationDirPath() +
@@ -121,6 +122,7 @@ void UpdateController::setError(const QString &message) {
     if (m_errorMessage == message)
         return;
     m_errorMessage = message;
+    if (!message.isEmpty()) diagnostics::Log("update: %s", qUtf8Printable(message));
     emit errorMessageChanged();
 }
 
@@ -155,7 +157,7 @@ void UpdateController::checkForUpdates() {
                     m_recommendedPackageId = RecommendedPackageId(
                             m_hardware.nvidiaComputeCapability,
                             m_hardware.amdRadeonRx7000Or9000, ids);
-                    const QString preferred = QSettings().value(
+                    const QString preferred = AppSettings::Instance().value(
                             QLatin1String(kPreferredPackageKey)).toString();
                     m_selectedPackageId = !m_automaticSelection &&
                                                   ids.contains(preferred)
@@ -198,7 +200,7 @@ void UpdateController::selectPackage(const QString &packageId) {
         if (package.packageId == packageId) {
             m_selectedPackageId = packageId;
             m_automaticSelection = false;
-            QSettings().setValue(QLatin1String(kPreferredPackageKey),
+            AppSettings::Instance().setValue(QLatin1String(kPreferredPackageKey),
                                  packageId);
             emit selectedPackageChanged();
             emit updateAvailableChanged();
@@ -210,7 +212,7 @@ void UpdateController::selectPackage(const QString &packageId) {
 void UpdateController::useAutomaticPackage() {
     if (m_downloading)
         return;
-    QSettings().remove(QLatin1String(kPreferredPackageKey));
+    AppSettings::Instance().remove(QLatin1String(kPreferredPackageKey));
     m_automaticSelection = true;
     m_selectedPackageId = m_recommendedPackageId;
     emit selectedPackageChanged();

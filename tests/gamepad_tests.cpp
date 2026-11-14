@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "viewer/gamepad_input.h"
 #include "viewer/race_viewer_controller.h"
 #include <QGuiApplication>
@@ -60,8 +61,8 @@ int main(int argc, char **argv) {
         Check(!pad.devices().isEmpty() && pad.selectedId() == 0, "enumeration or explicit selection failed");
         pad.setSelectedId(id);
         pad.setDeadzone(.2);
-        Check(pad.selectedId() == id && QSettings().value("drive/gamepadDeadzone").toDouble() == .2 &&
-              !QSettings().value("drive/gamepadIdentity").toString().isEmpty(), "settings did not persist");
+        Check(pad.selectedId() == id && forevertas::app::AppSettings::Instance().value("drive/gamepadDeadzone").toDouble() == .2 &&
+              !forevertas::app::AppSettings::Instance().value("drive/gamepadIdentity").toString().isEmpty(), "settings did not persist");
         const auto packs = QString::fromLocal8Bit(argv[1]);
         const auto replay = QString::fromLocal8Bit(argv[2]);
         viewer.setSimulationHorizonMs(1500);

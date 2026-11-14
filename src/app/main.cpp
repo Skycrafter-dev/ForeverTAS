@@ -1,4 +1,8 @@
 #include "app/search_controller.h"
+#include "app/app_settings.h"
+#include "app/diagnostics_startup.h"
+#include "app/stall_watch.h"
+#include "diagnostics/diagnostics_log.h"
 #include "app/input_preview_binding.h"
 #include "app/update_controller.h"
 #include "app/shutdown_controller.h"
@@ -56,8 +60,13 @@ int main(int argc, char **argv) {
             QStringLiteral(FOREVERTAS_VERSION));
     application.setWindowIcon(
             QIcon(QStringLiteral(":/icons/forevertas.svg")));
+    const bool smokeTest = application.arguments().contains(
+            QStringLiteral("--qml-smoke-test"));
+    if (!smokeTest) forevertas::app::StartDiagnostics();
+    forevertas::app::DiagnosticsLogs logs;
 
     forevertas::app::SearchController controller;
+    forevertas::app::LogLoadedGpuRuntimes();
     forevertas::app::UpdateController updates;
     forevertas::viewer::RaceViewerController viewer;
     forevertas::app::ShutdownController shutdown(
@@ -65,7 +74,13 @@ int main(int argc, char **argv) {
             [&] { return controller.shutdownReady() && viewer.shutdownReady() &&
                          QThreadPool::globalInstance()->activeThreadCount() == 0; },
             [&] { controller.flushSettings(); },
-            [] { std::_Exit(EXIT_SUCCESS); });
+            [] {
+                forevertas::app::AppSettings::Instance().shutDown();
+                forevertas::app::StopStallWatch();
+                forevertas::diagnostics::Log("closed");
+                forevertas::app::FinishDiagnostics();
+                std::_Exit(EXIT_SUCCESS);
+            });
     forevertas::app::BindInputPreview(controller, viewer);
     QObject::connect(&controller, &forevertas::app::SearchController::searchStarted,
                      &viewer, &forevertas::viewer::RaceViewerController::beginSearchPreview);
@@ -99,6 +114,7 @@ int main(int argc, char **argv) {
     // A render module draws with OpenGL inside the window's own frame.
     if (forevertas::viewer::LoadedRenderModule().loaded &&
         forevertas::viewer::RenderModuleOpenGlUsable()) {
+        forevertas::diagnostics::Log("render module loaded: the window draws with OpenGL");
         QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
     }
     QQmlApplicationEngine engine;
@@ -111,7 +127,9 @@ int main(int argc, char **argv) {
             {QStringLiteral("viewer"),
              QVariant::fromValue(static_cast<QObject *>(&viewer))},
             {QStringLiteral("updater"),
-             QVariant::fromValue(static_cast<QObject *>(&updates))}});
+             QVariant::fromValue(static_cast<QObject *>(&updates))},
+            {QStringLiteral("logs"),
+             QVariant::fromValue(static_cast<QObject *>(&logs))}});
     QObject::connect(
             &engine,
             &QQmlApplicationEngine::objectCreationFailed,
@@ -120,9 +138,12 @@ int main(int argc, char **argv) {
             Qt::QueuedConnection);
     engine.loadFromModule(QStringLiteral("ForeverTAS"),
                           QStringLiteral("Main"));
+    forevertas::diagnostics::Log("window loaded");
+    forevertas::app::WatchWindow(
+            qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)));
+    if (!smokeTest) forevertas::app::StartStallWatch();
 
-    if (application.arguments().contains(
-                QStringLiteral("--qml-smoke-test"))) {
+    if (smokeTest) {
         QTimer::singleShot(100, &application, [&]() {
             QObject *const root = engine.rootObjects().value(0);
             QObject *const inspector = root != nullptr
@@ -148,5 +169,9 @@ int main(int argc, char **argv) {
         QTimer::singleShot(0, &updates,
                            &forevertas::app::UpdateController::checkForUpdates);
     }
-    return application.exec();
+    const int exitCode = application.exec();
+    forevertas::app::StopStallWatch();
+    forevertas::diagnostics::Log("closed (%d)", exitCode);
+    forevertas::app::FinishDiagnostics();
+    return exitCode;
 }

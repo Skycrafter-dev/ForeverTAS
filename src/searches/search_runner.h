@@ -66,6 +66,13 @@ SearchResult RunSearch(
 std::optional<SearchResult> EvaluateBaseline(
         const SearchRequest &request, const SearchRunControl *control = nullptr);
 
+// Where a search starts judging its target: the earliest input any pass may
+// change (what came before is the base run's, the same in every iteration).
+// Nullopt when a pass's settings are invalid.
+std::optional<std::int64_t> EvaluationStartMs(
+        const std::vector<OptionConfiguration> &modifiers,
+        std::uint32_t simulationHorizonMs);
+
 }  // namespace forevertas
 
 #endif

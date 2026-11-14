@@ -130,6 +130,8 @@ public:
     // total: the split's size along its axis minus the gap.
     bool setRatio(const QString &split, double ratio, double total = 0);
     bool setCurrent(const QString &group, const QString &panel);
+    // A tab to another place in its group's row.
+    bool moveTab(const QString &group, const QString &panel, int index);
     bool setCollapsed(const QString &floatingGroup, bool collapsed);
     // The area grew or shrank: floating panels keep their place from the
     // nearest edges of the area they were put in (a panel in the middle
@@ -231,6 +233,7 @@ public:
     Q_INVOKABLE void resetLayout();
 
     Q_INVOKABLE void setCurrent(const QString &group, const QString &panel);
+    Q_INVOKABLE void moveTab(const QString &group, const QString &panel, int index);
     Q_INVOKABLE void setRatio(const QString &split, qreal ratio);
     Q_INVOKABLE void raise(const QString &group);
     Q_INVOKABLE void setCollapsed(const QString &group, bool collapsed);
@@ -239,6 +242,9 @@ public:
     Q_INVOKABLE QRectF moveFloating(const QString &group, const QRectF &rect);
     Q_INVOKABLE QRectF resizeFloating(const QString &group,
                                       const QRectF &rect, int edges);
+    // A floating group exactly at rect (kept inside the area, not snapped):
+    // its header shown or hidden around content that stays still.
+    Q_INVOKABLE QRectF placeFloating(const QString &group, const QRectF &rect);
     // Docked group: float it next to where it is. Floating: dock it back.
     Q_INVOKABLE void toggleFloating(const QString &group);
 

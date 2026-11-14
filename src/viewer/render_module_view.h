@@ -6,7 +6,13 @@
 #include <QPointer>
 #include <QQuickItem>
 #include <QString>
+#include <QImage>
+#include <QRect>
+#include <QVariantMap>
 #include <QVector3D>
+
+#include <memory>
+#include <mutex>
 
 #include <vector>
 
@@ -90,6 +96,16 @@ public:
     void setRaceTimeMs(double timeMs);
     bool showCar() const;
     void setShowCar(bool show);
+    // The car of the module's last frame, for the diagnostics: available,
+    // raceTimeMs, tick, position (the module's own simulation), shown,
+    // controls, frames, and the camera it was drawn from.
+    Q_INVOKABLE QVariantMap carState() const;
+    // The In-game picture for the diagnostics (grabbing the item does not
+    // see the module's texture): asks for the part of the view in rect
+    // (item coordinates) to be read on the next frame; picture() then gives
+    // {serial, image} once read (serial counts the pictures read).
+    Q_INVOKABLE int requestPicture(const QRectF &rect);
+    Q_INVOKABLE QVariantMap picture() const;
     QVector3D cameraPosition() const;
     void setCameraPosition(const QVector3D &position);
     QVector3D cameraTarget() const;
@@ -177,6 +193,21 @@ private:
 
     // Lives on the render thread.
     mutable RenderModuleRenderer *renderer_ = nullptr;
+public:
+    // The last frame's car, written on the render thread.
+    struct CarSnapshot {
+        std::mutex mutex;
+        bool available = false;
+        FtrmCarState car{};
+        FtrmCamera camera{};
+        // requestPicture / picture
+        bool pictureRequested = false;
+        QRect pictureRect;
+        int pictureSerial = 0;
+        QImage picture;
+    };
+private:
+    std::shared_ptr<CarSnapshot> carSnapshot_ = std::make_shared<CarSnapshot>();
 };
 
 }  // namespace forevertas::viewer

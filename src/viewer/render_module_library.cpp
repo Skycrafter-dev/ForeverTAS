@@ -1,4 +1,5 @@
 #include "viewer/render_module_library.h"
+#include "diagnostics/diagnostics_log.h"
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -32,6 +33,8 @@ const RenderModuleLibrary &LoadedRenderModule() {
             // Kept loaded for the rest of the run.
             auto *const module = new QLibrary(candidate);
             if (!module->load()) {
+                diagnostics::Log("render module %s: not loaded: %s", qUtf8Printable(candidate),
+                                 qUtf8Printable(module->errorString()));
                 if (candidate == overridePath) {
                     qWarning().noquote() << "render module not loaded:"
                                          << module->errorString();
@@ -62,11 +65,15 @@ const RenderModuleLibrary &LoadedRenderModule() {
                     resolve("ftrm_destroy"));
             result.exportVideo = reinterpret_cast<FtrmExportVideoFunction>(
                     resolve("ftrm_export_video"));
+            result.carState = reinterpret_cast<FtrmCarStateFunction>(
+                    resolve("ftrm_car_state"));
             if (version == nullptr || label == nullptr ||
                 version() != FTRM_API_VERSION || result.create == nullptr ||
                 result.prepare == nullptr || result.upload == nullptr ||
                 result.setControls == nullptr || result.render == nullptr ||
                 result.release == nullptr || result.destroy == nullptr) {
+                diagnostics::Log("render module %s: wrong version (%d)", qUtf8Printable(candidate),
+                                 version != nullptr ? version() : -1);
                 if (candidate == overridePath) {
                     qWarning() << "render module not loaded: wrong version";
                 }
@@ -77,6 +84,9 @@ const RenderModuleLibrary &LoadedRenderModule() {
             }
             result.label = QString::fromUtf8(label());
             result.loaded = true;
+            diagnostics::Log("render module %s: loaded (%s)%s",
+                             qUtf8Printable(module->fileName()), qUtf8Printable(result.label),
+                             result.exportVideo != nullptr ? ", video export" : "");
             break;
         }
         return result;
@@ -88,6 +98,7 @@ bool RenderModuleOpenGlUsable() {
     RenderModuleWorkerContext context;
     const bool usable = context.makeCurrent();
     context.release();
+    diagnostics::Log("render module: OpenGL 3.3 context %s", usable ? "available" : "NOT available");
     return usable;
 }
 

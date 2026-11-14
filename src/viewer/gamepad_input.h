@@ -32,6 +32,9 @@ signals:
     void devicesChanged();
     void settingsChanged();
     void sample(int steering, bool accelerate, bool brake);
+    // A button of the selected gamepad pressed or released (SDL_GamepadButton), whatever `active` is: the race's
+    // actions (RaceControls) and their bindings take them.
+    void buttonChanged(int button, bool pressed);
 private:
     QString identity(SDL_JoystickID id) const;
     void close();
@@ -45,6 +48,7 @@ private:
     bool initialized_ = false;
     bool active_ = false;
     bool armed_ = false;
+    quint64 buttons_ = 0;   // the buttons down at the last poll
 };
 }  // namespace forevertas::viewer
 #endif

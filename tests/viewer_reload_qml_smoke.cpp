@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "app/input_preview_binding.h"
 #include "app/search_controller.h"
 #include "viewer/race_timeline_item.h"
@@ -96,7 +97,7 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName(
             QStringLiteral("ViewerReloadQmlSmoke"));
     QStandardPaths::setTestModeEnabled(true);
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
 
     const QString packs = QString::fromLocal8Bit(argv[1]);
     const QString replays[]{

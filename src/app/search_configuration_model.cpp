@@ -1,4 +1,5 @@
 #include "app/search_configuration_model.h"
+#include "app/app_settings.h"
 
 #include "input_timeline_time.h"
 #include "searches/algorithm_registry.h"
@@ -7,7 +8,6 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSettings>
 
 #include <algorithm>
 #include <limits>
@@ -24,7 +24,7 @@ constexpr char kModifierPassesKey[] = "composition/modifiers";
 constexpr char kEvaluationTargetKey[] = "selection/evaluationTarget";
 
 QString StoredValue(const char *key, const QString &fallback) {
-    return QSettings().value(QLatin1String(key), fallback).toString();
+    return AppSettings::Instance().value(QLatin1String(key), fallback).toString();
 }
 
 QString OptionSettingPath(const QString &category,
@@ -37,7 +37,7 @@ QString OptionSettingPath(const QString &category,
 void RemoveRetiredSearchBudget() {
     const QString retiredKey = QString::fromLatin1(
             QByteArray::fromHex("617474656d7074436f756e74"));
-    QSettings storage;
+    AppSettings &storage = AppSettings::Instance();
     storage.remove(QStringLiteral("search/") + retiredKey);
     storage.remove(OptionSettingPath(
             QStringLiteral("search"),
@@ -88,7 +88,7 @@ QVariantMap ModifierPassValue(const ModifierRegistration &registration,
 template<typename Registration>
 QVariantMap LoadOptionSettings(const QString &category,
                                const Registration &registration) {
-    QSettings storage;
+    AppSettings &storage = AppSettings::Instance();
     QVariantMap values;
     for (const auto &[key, defaultValue] : registration.defaultSettings) {
         const QString qKey = QString::fromStdString(key);
@@ -169,7 +169,7 @@ SearchConfigurationModel::SearchConfigurationModel() {
         const QString canonical = QString::fromStdString(registration->id);
         if (searchAlgorithmId_ != canonical) {
             searchAlgorithmId_ = canonical;
-            QSettings().setValue(
+            AppSettings::Instance().setValue(
                     QLatin1String(kSearchAlgorithmKey), canonical);
         }
     } else {
@@ -181,7 +181,7 @@ SearchConfigurationModel::SearchConfigurationModel() {
         const QString canonical = QString::fromStdString(registration->id);
         if (evaluationTargetId_ != canonical) {
             evaluationTargetId_ = canonical;
-            QSettings().setValue(
+            AppSettings::Instance().setValue(
                     QLatin1String(kEvaluationTargetKey), canonical);
         }
     } else {
@@ -241,7 +241,7 @@ bool SearchConfigurationModel::setSearchAlgorithmId(const QString &value) {
             : QString::fromStdString(registration->id);
     if (searchAlgorithmId_ == canonical) return false;
     searchAlgorithmId_ = canonical;
-    QSettings().setValue(QLatin1String(kSearchAlgorithmKey), canonical);
+    AppSettings::Instance().setValue(QLatin1String(kSearchAlgorithmKey), canonical);
     loadSearchAlgorithmSettings();
     return true;
 }
@@ -254,7 +254,7 @@ bool SearchConfigurationModel::setEvaluationTargetId(const QString &value) {
             : QString::fromStdString(registration->id);
     if (evaluationTargetId_ == canonical) return false;
     evaluationTargetId_ = canonical;
-    QSettings().setValue(QLatin1String(kEvaluationTargetKey), canonical);
+    AppSettings::Instance().setValue(QLatin1String(kEvaluationTargetKey), canonical);
     loadEvaluationTargetSettings();
     return true;
 }
@@ -541,7 +541,7 @@ void SearchConfigurationModel::loadSearchAlgorithmSettings() {
 
 void SearchConfigurationModel::loadModifierPasses() {
     modifierPasses_.clear();
-    QSettings storage;
+    AppSettings &storage = AppSettings::Instance();
     const QJsonDocument document = QJsonDocument::fromJson(
             storage.value(QLatin1String(kModifierPassesKey)).toByteArray());
     if (document.isArray()) {
@@ -614,7 +614,7 @@ void SearchConfigurationModel::persistModifierPasses() const {
         }
         array.push_back(stored);
     }
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kModifierPassesKey),
             QJsonDocument(array).toJson(QJsonDocument::Compact));
 }
@@ -632,7 +632,7 @@ void SearchConfigurationModel::persistOptionSetting(
         const QString &optionId,
         const QString &key,
         const QString &value) const {
-    QSettings().setValue(OptionSettingPath(category, optionId, key), value);
+    AppSettings::Instance().setValue(OptionSettingPath(category, optionId, key), value);
 }
 
 }  // namespace forevertas::app

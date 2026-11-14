@@ -30,6 +30,8 @@ struct RenderModuleLibrary {
     FtrmDestroyFunction destroy = nullptr;
     // Null when the module cannot export video.
     FtrmExportVideoFunction exportVideo = nullptr;
+    // Null for modules older than the car diagnostics.
+    FtrmCarStateFunction carState = nullptr;
 };
 
 const RenderModuleLibrary &LoadedRenderModule();
