@@ -283,7 +283,7 @@ std::optional<std::string> ValidateInputInsertionSettings(
     if (const auto error = ValidateOptionSettingKeys(
                 settings, DefaultInputInsertionSettings())) return error;
     const auto parsed = ParseSettings(settings);
-    if (!parsed) return "input insertion settings are invalid";
+    if (!parsed) return kUnreadableSetting;
     if (const auto error = ValidateModifierWindow(parsed->window,
                                                    tickDurationMs)) return error;
     if (const auto error = ValidateChannel(
@@ -295,7 +295,7 @@ std::optional<std::string> ValidateInputInsertionSettings(
     if (parsed->steeringAbsoluteMinimum >
                 parsed->steeringAbsoluteMaximum ||
         parsed->steeringOffsetMinimum > parsed->steeringOffsetMaximum) {
-        return "input insertion steering ranges are invalid";
+        return "a steering minimum is above its maximum";
     }
     return std::nullopt;
 }

@@ -213,6 +213,21 @@ ColumnLayout {
                 value: root.controller.running
                 when: passSettingsLoader.item !== null
             }
+            // The pass's window chain follows its position.
+            Binding {
+                target: passSettingsLoader.item
+                property: "windowChainKey"
+                value: "pass:" + passDelegate.index
+                when: passSettingsLoader.item !== null
+                      && "windowChainKey" in passSettingsLoader.item
+            }
+            Binding {
+                target: passSettingsLoader.item
+                property: "chainController"
+                value: root.controller
+                when: passSettingsLoader.item !== null
+                      && "chainController" in passSettingsLoader.item
+            }
 
         }
 

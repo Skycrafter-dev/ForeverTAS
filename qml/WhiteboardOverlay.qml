@@ -17,11 +17,15 @@ Item {
     property real pendingTextY: 0
     property bool drawingListOpen: false
     property real toolbarMaximumWidth: width - 28
+    // When set, the toolbar and the drawing list are shown inside these
+    // items (the Whiteboard and Drawings panels) instead of over the board.
+    property Item toolbarHost: null
+    property Item drawingListHost: null
+    readonly property real toolbarNaturalHeight: toolbar.naturalHeight
     property bool imageExportInProgress: false
     property int pendingImageBoardIndex: -1
     property string pendingImageMode: ""
-    readonly property color toolbarControlText:
-        AppTheme.dark ? AppTheme.viewerOverlayText : AppTheme.text
+    readonly property color toolbarControlText: AppTheme.viewerOverlayText
     property var captureViewpoint: function() { return ({}) }
     property var restoreViewpoint: function(board) {}
     property var afterPickUp: function() {}
@@ -354,20 +358,24 @@ Item {
         readonly property real preferredContentWidth:
             Math.max(primaryPreferredContentWidth,
                      secondaryPreferredContentWidth)
-        x: 14
-        y: root.boardTop + 10
-        z: 20
-        width: Math.min(
-                   parent.width - 28,
-                   root.toolbarMaximumWidth,
-                   preferredContentWidth + 12)
-        height: root.model.active
+        readonly property bool hosted: root.toolbarHost !== null
+        readonly property real naturalHeight: root.model.active
                 ? toolbarContent.height + 12 : 46
+        parent: hosted ? root.toolbarHost : root
+        x: hosted ? 0 : 14
+        y: hosted ? 0 : root.boardTop + 10
+        z: 20
+        width: hosted ? parent.width
+                      : Math.min(
+                            parent.width - 28,
+                            root.toolbarMaximumWidth,
+                            preferredContentWidth + 12)
+        height: hosted ? parent.height : naturalHeight
         radius: 6
-        color: AppTheme.viewerOverlayStrong
-        border.width: 1
+        color: hosted ? "transparent" : AppTheme.viewerOverlayStrong
+        border.width: hosted ? 0 : 1
         border.color: root.model.active
-                      ? (AppTheme.dark ? "#8b978d" : "#758176")
+                      ? "#8b978d"
                       : AppTheme.viewerOverlayBorder
         clip: true
 
@@ -661,15 +669,19 @@ Item {
     Rectangle {
         id: drawingList
         objectName: "whiteboardDrawingList"
+        readonly property bool hosted: root.drawingListHost !== null
+        parent: hosted ? root.drawingListHost : root
         z: 25
         visible: root.drawingListOpen
-        width: Math.min(310, root.toolbarMaximumWidth, root.width - 28)
-        height: Math.max(0, Math.min(450, root.height - y - 12))
-        x: 14
-        y: root.toolbarBottom + 8
+        width: hosted ? parent.width
+                      : Math.min(310, root.toolbarMaximumWidth, root.width - 28)
+        height: hosted ? parent.height
+                       : Math.max(0, Math.min(450, root.height - y - 12))
+        x: hosted ? 0 : 14
+        y: hosted ? 0 : root.toolbarBottom + 8
         radius: 6
-        color: AppTheme.viewerOverlayStrong
-        border.width: 1
+        color: hosted ? "transparent" : AppTheme.viewerOverlayStrong
+        border.width: hosted ? 0 : 1
         border.color: AppTheme.viewerOverlayBorder
         clip: true
 
@@ -879,7 +891,7 @@ Item {
         }
     }
 
-    Menu {
+    GlassMenu {
         id: imageExportMenu
         objectName: "whiteboardImageExportMenu"
         property int boardIndex: -1
@@ -906,10 +918,9 @@ Item {
     Popup {
         id: colorPopup
         objectName: "whiteboardColorPopup"
-        parent: root
-        x: Math.min(root.width - width - 12,
-                    toolbar.x + 8)
-        y: toolbar.y + toolbar.height + 6
+        parent: toolbar
+        x: 8
+        y: toolbar.height + 6
         z: 30
         width: 212
         height: 92

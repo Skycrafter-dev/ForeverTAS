@@ -1,4 +1,6 @@
 #include "app/search_configuration_model.h"
+#include "searches/setting_labels.h"
+#include "app/app_settings.h"
 
 #include "input_timeline_time.h"
 #include "searches/algorithm_registry.h"
@@ -7,7 +9,6 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSettings>
 
 #include <algorithm>
 #include <limits>
@@ -24,7 +25,7 @@ constexpr char kModifierPassesKey[] = "composition/modifiers";
 constexpr char kEvaluationTargetKey[] = "selection/evaluationTarget";
 
 QString StoredValue(const char *key, const QString &fallback) {
-    return QSettings().value(QLatin1String(key), fallback).toString();
+    return AppSettings::Instance().value(QLatin1String(key), fallback).toString();
 }
 
 QString OptionSettingPath(const QString &category,
@@ -37,7 +38,7 @@ QString OptionSettingPath(const QString &category,
 void RemoveRetiredSearchBudget() {
     const QString retiredKey = QString::fromLatin1(
             QByteArray::fromHex("617474656d7074436f756e74"));
-    QSettings storage;
+    AppSettings &storage = AppSettings::Instance();
     storage.remove(QStringLiteral("search/") + retiredKey);
     storage.remove(OptionSettingPath(
             QStringLiteral("search"),
@@ -88,7 +89,7 @@ QVariantMap ModifierPassValue(const ModifierRegistration &registration,
 template<typename Registration>
 QVariantMap LoadOptionSettings(const QString &category,
                                const Registration &registration) {
-    QSettings storage;
+    AppSettings &storage = AppSettings::Instance();
     QVariantMap values;
     for (const auto &[key, defaultValue] : registration.defaultSettings) {
         const QString qKey = QString::fromStdString(key);
@@ -169,7 +170,7 @@ SearchConfigurationModel::SearchConfigurationModel() {
         const QString canonical = QString::fromStdString(registration->id);
         if (searchAlgorithmId_ != canonical) {
             searchAlgorithmId_ = canonical;
-            QSettings().setValue(
+            AppSettings::Instance().setValue(
                     QLatin1String(kSearchAlgorithmKey), canonical);
         }
     } else {
@@ -181,7 +182,7 @@ SearchConfigurationModel::SearchConfigurationModel() {
         const QString canonical = QString::fromStdString(registration->id);
         if (evaluationTargetId_ != canonical) {
             evaluationTargetId_ = canonical;
-            QSettings().setValue(
+            AppSettings::Instance().setValue(
                     QLatin1String(kEvaluationTargetKey), canonical);
         }
     } else {
@@ -241,7 +242,7 @@ bool SearchConfigurationModel::setSearchAlgorithmId(const QString &value) {
             : QString::fromStdString(registration->id);
     if (searchAlgorithmId_ == canonical) return false;
     searchAlgorithmId_ = canonical;
-    QSettings().setValue(QLatin1String(kSearchAlgorithmKey), canonical);
+    AppSettings::Instance().setValue(QLatin1String(kSearchAlgorithmKey), canonical);
     loadSearchAlgorithmSettings();
     return true;
 }
@@ -254,7 +255,7 @@ bool SearchConfigurationModel::setEvaluationTargetId(const QString &value) {
             : QString::fromStdString(registration->id);
     if (evaluationTargetId_ == canonical) return false;
     evaluationTargetId_ = canonical;
-    QSettings().setValue(QLatin1String(kEvaluationTargetKey), canonical);
+    AppSettings::Instance().setValue(QLatin1String(kEvaluationTargetKey), canonical);
     loadEvaluationTargetSettings();
     return true;
 }
@@ -334,9 +335,30 @@ bool SearchConfigurationModel::setModifierPassId(int index,
         QString::fromStdString(registration->id)) {
         return false;
     }
-    modifierPasses_[index] = ModifierPassValue(
+    QVariantMap replaced = ModifierPassValue(
             *registration, ToVariantMap(registration->defaultSettings),
             existing.value(QStringLiteral("enabled"), true).toBool());
+    if (existing.contains(QStringLiteral("chain"))) {
+        replaced.insert(QStringLiteral("chain"),
+                        existing.value(QStringLiteral("chain")));
+    }
+    modifierPasses_[index] = replaced;
+    persistModifierPasses();
+    return true;
+}
+
+QVariantMap SearchConfigurationModel::modifierPassChain(int index) const {
+    if (index < 0 || index >= modifierPasses_.size()) return {};
+    return modifierPasses_.at(index).toMap().value(QStringLiteral("chain")).toMap();
+}
+
+bool SearchConfigurationModel::setModifierPassChain(int index,
+                                                    const QVariantMap &chain) {
+    if (index < 0 || index >= modifierPasses_.size()) return false;
+    QVariantMap pass = modifierPasses_.at(index).toMap();
+    if (pass.value(QStringLiteral("chain")).toMap() == chain) return false;
+    pass.insert(QStringLiteral("chain"), chain);
+    modifierPasses_[index] = pass;
     persistModifierPasses();
     return true;
 }
@@ -401,36 +423,57 @@ bool SearchConfigurationModel::randomizeModifierSeeds(
     return changed;
 }
 
+namespace {
+
+// "Where: why." as one plain sentence, the setting at fault named.
+template<typename Registration>
+QString SettingsProblem(const QString &where, const Registration &registration,
+                        const OptionSettings &settings, const std::string &problem,
+                        std::uint32_t tickDurationMs) {
+    QString text = QString::fromStdString(ExplainSettingsProblem(
+            registration.id, settings, registration.defaultSettings, problem,
+            [&registration, tickDurationMs](const OptionSettings &candidate) {
+                return registration.validateSettings(candidate, tickDurationMs);
+            }));
+    if (!text.isEmpty()) text[0] = text[0].toUpper();
+    if (!text.endsWith(QLatin1Char('.'))) text += QLatin1Char('.');
+    return QStringLiteral("%1 (%2): %3").arg(where, QString::fromStdString(registration.displayName), text);
+}
+
+}  // namespace
+
 SearchConfigurationValidation SearchConfigurationModel::validate(
         std::uint32_t tickDurationMs,
         std::uint32_t simulationHorizonMs, bool baselineOnly) const {
     const SearchAlgorithmRegistration *const searchRegistration =
             FindSearchAlgorithm(baselineOnly ? DefaultSearchAlgorithmConfiguration().id : searchAlgorithmId_.toStdString());
     if (searchRegistration == nullptr) {
-        return {{}, QStringLiteral("Select a valid search algorithm.")};
+        return {{}, QStringLiteral("Choose a search.")};
     }
     const EvaluationTargetRegistration *const evaluationRegistration =
             FindEvaluationTarget(evaluationTargetId_.toStdString());
     if (evaluationRegistration == nullptr) {
-        return {{}, QStringLiteral("Select a valid evaluation target.")};
+        return {{}, QStringLiteral("Choose a target.")};
     }
 
     const OptionSettings searchSettings =
             baselineOnly ? DefaultSearchAlgorithmConfiguration().settings : ToOptionSettings(searchAlgorithmSettings_);
     const auto resolvedEvaluation = ResolveHorizonWindowSettings(
             ToOptionSettings(evaluationTargetSettings_), tickDurationMs, simulationHorizonMs, false);
-    if (!resolvedEvaluation) return {{}, QStringLiteral("Select a valid evaluation end mode.")};
+    if (!resolvedEvaluation) return {{}, QStringLiteral("Target: choose when it ends.")};
     const OptionSettings &evaluationSettings = *resolvedEvaluation;
     if (const auto error = searchRegistration->validateSettings(
                 searchSettings, tickDurationMs)) {
-        return {{}, QString::fromStdString(*error)};
+        return {{}, SettingsProblem(QStringLiteral("Search"), *searchRegistration, searchSettings, *error,
+                                    tickDurationMs)};
     }
     if (const auto error = evaluationRegistration->validateSettings(
                 evaluationSettings, tickDurationMs)) {
-        return {{}, QString::fromStdString(*error)};
+        return {{}, SettingsProblem(QStringLiteral("Target"), *evaluationRegistration, evaluationSettings,
+                                    *error, tickDurationMs)};
     }
     if (!baselineOnly && modifierPasses_.isEmpty()) {
-        return {{}, QStringLiteral("Add at least one input modifier pass.")};
+        return {{}, QStringLiteral("Add a pass: a search needs at least one to change the inputs.")};
     }
 
     std::vector<OptionConfiguration> modifiers;
@@ -445,19 +488,18 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
         const ModifierRegistration *const registration =
                 FindModifier(id.toStdString());
         if (registration == nullptr) {
-            return {{}, QStringLiteral("Modifier pass %1 has an invalid type.")
+            return {{}, QStringLiteral("Pass %1 is of a kind this version doesn't know: remove it.")
                                 .arg(index + 1)};
         }
         const auto resolved = ResolveHorizonWindowSettings(ToOptionSettings(
                 pass.value(QStringLiteral("settings")).toMap()),
                 tickDurationMs, simulationHorizonMs, true);
-        if (!resolved) return {{}, QStringLiteral("Modifier pass %1: select a valid end mode.").arg(index + 1)};
+        if (!resolved) return {{}, QStringLiteral("Pass %1: choose when it ends.").arg(index + 1)};
         const OptionSettings &settings = *resolved;
         if (const auto error = registration->validateSettings(
                     settings, tickDurationMs)) {
-            return {{}, QStringLiteral("Modifier pass %1: %2")
-                                .arg(index + 1)
-                                .arg(QString::fromStdString(*error))};
+            return {{}, SettingsProblem(QStringLiteral("Pass %1").arg(index + 1), *registration, settings,
+                                        *error, tickDurationMs)};
         }
         const OptionSettings executionSettings =
                 ClampInputWindowToSimulationHorizon(
@@ -470,7 +512,7 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
         modifiers.push_back({registration->id, settings});
     }
     if (!baselineOnly && modifiers.empty()) {
-        return {{}, QStringLiteral("Enable at least one input modifier pass.")};
+        return {{}, QStringLiteral("Turn on at least one pass.")};
     }
     const std::unique_ptr<IterationEvaluator> evaluator =
             evaluationRegistration->create(
@@ -485,20 +527,20 @@ SearchConfigurationValidation SearchConfigurationModel::validate(
         plan.startTimeMs < earliestMutationTimeMs) {
         return {{},
                 QStringLiteral(
-                        "Evaluation start time %1 ms precedes the first "
-                        "modifier time at %2 ms.")
+                        "The target starts at %1 ms, before any pass changes an input (the "
+                        "earliest at %2 ms). Start the target later or a pass earlier.")
                         .arg(plan.startTimeMs)
                         .arg(earliestMutationTimeMs)};
     }
     if (plan.endTimeMs < plan.startTimeMs) {
         return {{}, QStringLiteral(
-                            "Evaluation time window ends before it starts.")};
+                            "The target's time window ends before it starts.")};
     }
     if (plan.endTimeMs > simulationHorizonMs) {
         return {{},
                 QStringLiteral(
-                        "Evaluation maximum time %1 ms exceeds the "
-                        "Simulation horizon of %2 ms.")
+                        "The target goes on until %1 ms, past the simulation horizon "
+                        "(%2 ms). Lengthen the horizon or end the target earlier.")
                         .arg(plan.endTimeMs)
                         .arg(simulationHorizonMs)};
     }
@@ -520,7 +562,7 @@ void SearchConfigurationModel::loadSearchAlgorithmSettings() {
 
 void SearchConfigurationModel::loadModifierPasses() {
     modifierPasses_.clear();
-    QSettings storage;
+    AppSettings &storage = AppSettings::Instance();
     const QJsonDocument document = QJsonDocument::fromJson(
             storage.value(QLatin1String(kModifierPassesKey)).toByteArray());
     if (document.isArray()) {
@@ -543,9 +585,15 @@ void SearchConfigurationModel::loadModifierPasses() {
                 }
                 settings.insert(iterator.key(), iterator.value().toString());
             }
-            modifierPasses_.push_back(
-                    ModifierPassValue(*registration, settings,
-                            object.value(QStringLiteral("enabled")).toBool(true)));
+            QVariantMap pass = ModifierPassValue(
+                    *registration, settings,
+                    object.value(QStringLiteral("enabled")).toBool(true));
+            const QJsonObject chain =
+                    object.value(QStringLiteral("chain")).toObject();
+            if (!chain.isEmpty()) {
+                pass.insert(QStringLiteral("chain"), chain.toVariantMap());
+            }
+            modifierPasses_.push_back(pass);
         }
     }
     if (!modifierPasses_.isEmpty()) return;
@@ -574,14 +622,20 @@ void SearchConfigurationModel::persistModifierPasses() const {
              ++iterator) {
             settings.insert(iterator.key(), iterator.value().toString());
         }
-        array.push_back(QJsonObject{
+        QJsonObject stored{
                 {QStringLiteral("enabled"),
                  pass.value(QStringLiteral("enabled"), true).toBool()},
                 {QStringLiteral("id"),
                  pass.value(QStringLiteral("id")).toString()},
-                {QStringLiteral("settings"), settings}});
+                {QStringLiteral("settings"), settings}};
+        const QVariantMap chain = pass.value(QStringLiteral("chain")).toMap();
+        if (!chain.isEmpty()) {
+            stored.insert(QStringLiteral("chain"),
+                          QJsonObject::fromVariantMap(chain));
+        }
+        array.push_back(stored);
     }
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kModifierPassesKey),
             QJsonDocument(array).toJson(QJsonDocument::Compact));
 }
@@ -599,7 +653,7 @@ void SearchConfigurationModel::persistOptionSetting(
         const QString &optionId,
         const QString &key,
         const QString &value) const {
-    QSettings().setValue(OptionSettingPath(category, optionId, key), value);
+    AppSettings::Instance().setValue(OptionSettingPath(category, optionId, key), value);
 }
 
 }  // namespace forevertas::app

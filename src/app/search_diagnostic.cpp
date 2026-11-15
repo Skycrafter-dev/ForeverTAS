@@ -25,13 +25,6 @@ bool StartsWithAny(const QString &text,
     return false;
 }
 
-// Vulkan result codes, matched whole: -1 must not match -13 or -1000069000.
-bool HasVkResult(const QString &text, int code) {
-    const QRegularExpression pattern(
-            QStringLiteral("VkResult %1(?![0-9])").arg(code));
-    return pattern.match(text).hasMatch();
-}
-
 struct Explanation {
     QString category;
     QString reason;
@@ -67,10 +60,9 @@ Explanation Explain(const QString &details) {
                 QStringLiteral("The graphics card took too long on one step."),
                 QStringLiteral("The graphics card also draws your screen, so the system stops GPU work that runs too long. Turn on \"Calibrate for maximum throughput\", or lower \"Parallel samples at a time\". If it still happens, choose Optimized CPU.")};
     }
-    const bool gpuText = ContainsAny(details, {"CUDA", "HIP", "Vulkan", "GPU"});
+    const bool gpuText = ContainsAny(details, {"CUDA", "HIP", "GPU"});
     if (ContainsAny(details, {"memory headroom", "CUDA free memory", "GPU memory limits",
                               "cudaErrorMemoryAllocation", "hipErrorOutOfMemory"}) ||
-        HasVkResult(details, -2) ||
         (gpuText && details.contains(QLatin1String("allocation failed")) &&
          !details.contains(QLatin1String("host allocation failed")))) {
         return {QStringLiteral("gpu-memory"),
@@ -78,8 +70,7 @@ Explanation Explain(const QString &details) {
                 QStringLiteral("Close other programs that use the graphics card, such as games, browsers or video players. You can also lower \"Parallel samples at a time\", or choose Optimized CPU.")};
     }
     if (ContainsAny(details, {"bad_alloc", "allocation failed", "could not allocate"},
-                    Qt::CaseInsensitive) ||
-        HasVkResult(details, -1)) {
+                    Qt::CaseInsensitive)) {
         return {QStringLiteral("memory"),
                 QStringLiteral("The computer ran out of memory."),
                 QStringLiteral("Close other programs and try again. Lowering \"Parallel samples at a time\" or \"Worker threads\" also uses less memory.")};
@@ -94,13 +85,6 @@ Explanation Explain(const QString &details) {
                 QStringLiteral("An attempt needed more room than the GPU search has."),
                 QStringLiteral("Lower the input density or the insertion counts, or choose Optimized CPU as the physics backend.")};
     }
-    if (ContainsAny(details, {"fast CUDA", "fast mode", "specialized CUDA",
-                              "session specialization"},
-                    Qt::CaseInsensitive)) {
-        return {QStringLiteral("gpu-fast-kernel"),
-                QStringLiteral("The faster CUDA kernel could not be used."),
-                QStringLiteral("Turn off \"Use the faster CUDA kernel\" in the CUDA settings. Regular CUDA still works.")};
-    }
     if (ContainsAny(details, {"simulation scope is unsupported",
                               "supports only certified map and vehicle"})) {
         return {QStringLiteral("gpu-map"),
@@ -109,16 +93,13 @@ Explanation Explain(const QString &details) {
     }
     if (ContainsAny(details, {"search prerequisites are not ready", "support is not compiled",
                               "unavailable in a CPU-only build", "selected GPU backend is not compiled",
-                              "-capable devices", "no Vulkan physical device",
-                              "no Vulkan device supports", "compute capability",
-                              "lacks a required Vulkan", "has no compute queue",
-                              "VK_KHR_shader_float_controls2", "VK_EXT_memory_budget",
-                              "Vulkan 1.2 loader", "sandbox simulation could not start"})) {
+                              "-capable devices", "compute capability",
+                              "sandbox simulation could not start"})) {
         return {QStringLiteral("gpu-unavailable"),
                 QStringLiteral("The graphics card backend could not start."),
                 QStringLiteral("Update the graphics driver and restart ForeverTAS, or choose Optimized CPU as the physics backend.")};
     }
-    if (ContainsAny(details, {"cudaError", "CUDA error", "hipError", "HIP error", "VkResult",
+    if (ContainsAny(details, {"cudaError", "CUDA error", "hipError", "HIP error",
                               "device_failure", "search batch status: unknown"})) {
         return {QStringLiteral("gpu-error"),
                 QStringLiteral("The graphics card reported an error."),
@@ -127,7 +108,7 @@ Explanation Explain(const QString &details) {
     if (StartsWithAny(details, {"unsupported "}, Qt::CaseInsensitive) ||
         ContainsAny(details, {"backend is not available", "backend is not supported",
                               "does not support evaluator", "does not support modifier",
-                              "does not support search algorithm", "not available on Vulkan",
+                              "does not support search algorithm",
                               "GPU custom targets support at most", "scripted GPU target",
                               "condition program must contain",
                               "smooth-steering weight table is too large"})) {

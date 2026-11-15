@@ -99,11 +99,11 @@ std::optional<std::string> ValidateTimeOptionSettings(
         return keyError;
     }
     const auto parsed = ParseSettings(settings);
-    if (!parsed) return "time target settings contain invalid values";
+    if (!parsed) return kUnreadableSetting;
     return ValidateTimeWindow(parsed->minimumTimeMs,
                               parsed->maximumTimeMs,
                               tickDurationMs,
-                              "evaluation",
+                              "the minimum time",
                               true);
 }
 

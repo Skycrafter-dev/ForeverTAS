@@ -4,6 +4,7 @@
 #include "searches/option_settings_utils.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <sstream>
 #include <stdexcept>
@@ -32,15 +33,45 @@ Quaternion FromEulerDegrees(double yaw, double pitch, double roll) {
             cp * cy * cr + sp * sy * sr};
 }
 
-double RotationError(const Quaternion &target,
-                     const forevervalidator::experimental::
-                             PhysicsSandboxStateView &state) {
-    const double dot = std::abs(target.x * state.car.rotationX +
-                                target.y * state.car.rotationY +
-                                target.z * state.car.rotationZ +
-                                target.w * state.car.rotationW);
-    return 2.0 * std::acos(std::clamp(dot, 0.0, 1.0));
+// The rotation from the target orientation to the car's, as a rotation
+// vector in the target's own axes: x is pitch, y is yaw, z is roll (the
+// axes FromEulerDegrees turns about). Its length is the angle between them.
+EvaluationVector3 RotationErrorVector(
+        const Quaternion &target,
+        const forevervalidator::experimental::PhysicsSandboxStateView
+                &state) {
+    const double cx = state.car.rotationX;
+    const double cy = state.car.rotationY;
+    const double cz = state.car.rotationZ;
+    const double cw = state.car.rotationW;
+    // conjugate(target) * car
+    const double tx = -target.x;
+    const double ty = -target.y;
+    const double tz = -target.z;
+    const double tw = target.w;
+    double x = tw * cx + tx * cw + ty * cz - tz * cy;
+    double y = tw * cy - tx * cz + ty * cw + tz * cx;
+    double z = tw * cz + tx * cy - ty * cx + tz * cw;
+    double w = tw * cw - tx * cx - ty * cy - tz * cz;
+    if (w < 0.0) {
+        x = -x;
+        y = -y;
+        z = -z;
+        w = -w;
+    }
+    const double sine = std::sqrt(x * x + y * y + z * z);
+    if (sine <= 1e-12) return {};
+    const double angle = 2.0 * std::atan2(sine, w);
+    return {x / sine * angle, y / sine * angle, z / sine * angle};
 }
+
+struct PoseWeights {
+    // World X, Y, Z; then yaw, pitch, roll. 1 counts an axis fully.
+    EvaluationVector3 position{1.0, 1.0, 1.0};
+    double yaw = 1.0;
+    double pitch = 1.0;
+    double roll = 1.0;
+};
 
 struct PoseSettings {
     std::int64_t minimumTimeMs = 0;
@@ -48,7 +79,25 @@ struct PoseSettings {
     EvaluationVector3 position;
     Quaternion orientation;
     double rotationWeight = 0.5;
+    PoseWeights weights;
 };
+
+// Distance and angle with each axis weighted; equal weights of 1 give the
+// plain distance and angle.
+double WeightedPositionError(const PoseSettings &settings,
+                             const EvaluationVector3 &position) {
+    const EvaluationVector3 d = Difference(position, settings.position);
+    const EvaluationVector3 &w = settings.weights.position;
+    return std::sqrt(w.x * d.x * d.x + w.y * d.y * d.y + w.z * d.z * d.z);
+}
+
+double WeightedRotationError(const PoseSettings &settings,
+                             const EvaluationVector3 &rotation) {
+    const PoseWeights &w = settings.weights;
+    return std::sqrt(w.pitch * rotation.x * rotation.x +
+                     w.yaw * rotation.y * rotation.y +
+                     w.roll * rotation.z * rotation.z);
+}
 
 class PoseSession final : public IterationEvaluationSession {
 public:
@@ -66,8 +115,10 @@ public:
                     &current) override {
         static_cast<void>(previous);
         const double positionError =
-                Distance(PositionOf(current), settings_.position);
-        const double rotationError = RotationError(settings_.orientation, current);
+                WeightedPositionError(settings_, PositionOf(current));
+        const double rotationError = WeightedRotationError(
+                settings_,
+                RotationErrorVector(settings_.orientation, current));
         const double score = (1.0 - settings_.rotationWeight) * positionError +
                 settings_.rotationWeight * rotationError;
         std::ostringstream description;
@@ -123,11 +174,24 @@ std::optional<PoseSettings> ParseSettings(const OptionSettings &settings) {
         !weight || *weight < 0.0 || *weight > 100.0) {
         return std::nullopt;
     }
+    std::array<double, 6> axes{};
+    constexpr const char *axisKeys[] = {"weightX", "weightY", "weightZ",
+                                        "weightYaw", "weightPitch",
+                                        "weightRoll"};
+    for (std::size_t index = 0; index < axes.size(); ++index) {
+        const auto value = ReadDoubleSetting(settings, axisKeys[index]);
+        if (!value || *value < 0.0 || *value > 100.0) return std::nullopt;
+        axes[index] = *value / 100.0;
+    }
     return PoseSettings{*minimum,
                         *maximum,
                         *position,
                         FromEulerDegrees(*yaw, *pitch, *roll),
-                        *weight / 100.0};
+                        *weight / 100.0,
+                        {{axes[0], axes[1], axes[2]},
+                         axes[3],
+                         axes[4],
+                         axes[5]}};
 }
 
 }  // namespace
@@ -141,7 +205,13 @@ OptionSettings DefaultPoseTargetOptionSettings() {
             {"yawDegrees", "0"},
             {"pitchDegrees", "0"},
             {"rollDegrees", "0"},
-            {"rotationWeightPercent", "50"}};
+            {"rotationWeightPercent", "50"},
+            {"weightX", "100"},
+            {"weightY", "100"},
+            {"weightZ", "100"},
+            {"weightYaw", "100"},
+            {"weightPitch", "100"},
+            {"weightRoll", "100"}};
 }
 
 std::optional<std::string> ValidatePoseTargetOptionSettings(
@@ -153,12 +223,12 @@ std::optional<std::string> ValidatePoseTargetOptionSettings(
     }
     const auto parsed = ParseSettings(settings);
     if (!parsed) {
-        return "pose settings must be finite and weight must be between 0 and 100";
+        return "positions and angles must be numbers, and weights between 0 and 100";
     }
     return ValidateTimeWindow(parsed->minimumTimeMs,
                               parsed->maximumTimeMs,
                               tickDurationMs,
-                              "evaluation",
+                              "the minimum time",
                               true);
 }
 

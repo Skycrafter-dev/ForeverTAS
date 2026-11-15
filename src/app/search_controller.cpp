@@ -1,6 +1,10 @@
 #include "app/search_controller.h"
+#include "app/app_settings.h"
+#include "diagnostics/diagnostics_log.h"
 
 #include "app/compact_number_format.h"
+#include "app/compute_modules.h"
+#include "app/keyboard_layout.h"
 #include "app/packs_directory_finder.h"
 #include "app/search_worker.h"
 #include "app/search_diagnostic.h"
@@ -24,7 +28,6 @@
 #include <QPalette>
 #include <QRandomGenerator>
 #include <QRegularExpression>
-#include <QSettings>
 #include <QThread>
 #include <QTimer>
 
@@ -36,6 +39,7 @@
 namespace forevertas::app {
 namespace {
 
+// The backend Approximate physics runs on: the one the twin's GPU engine is built for.
 constexpr char kPacksDirectoryKey[] = "paths/packsDirectory";
 constexpr char kReplayPathKey[] = "paths/replayPath";
 constexpr char kBaseInputScriptKey[] = "inputs/baseScript";
@@ -48,16 +52,15 @@ constexpr char kCudaParallelSampleCountKey[] =
         "backends/cuda/parallelSampleCount";
 constexpr char kHipParallelSampleCountKey[] =
         "backends/hip/parallelSampleCount";
-constexpr char kVulkanParallelSampleCountKey[] =
-        "backends/vulkan/parallelSampleCount";
 constexpr char kCudaCalibrationEnabledKey[] =
         "backends/cuda/calibrationEnabled";
 constexpr char kHipCalibrationEnabledKey[] =
         "backends/hip/calibrationEnabled";
-constexpr char kVulkanCalibrationEnabledKey[] =
-        "backends/vulkan/calibrationEnabled";
-constexpr char kCudaSessionSpecializationEnabledKey[] =
-        "backends/cuda/sessionSpecializationEnabled";
+constexpr char kApproximatePhysicsKey[] = "backends/cuda/approximatePhysics";
+constexpr char kCudaCardEnabledKey[] = "backends/cuda/cardEnabled";
+constexpr char kHipCardEnabledKey[] = "backends/hip/cardEnabled";
+// the backend id of "GPU" (an NVIDIA and an AMD card, a box per card)
+constexpr char kGpusBackendId[] = "gpus";
 constexpr char kRandomizeSeedsOnStartKey[] =
         "search/randomizeSeedsOnStart";
 constexpr char kAutoRestartModeKey[] = "search/autoRestartMode";
@@ -66,7 +69,6 @@ constexpr char kAutoRestartAttemptsKey[] = "search/autoRestartAttempts";
 constexpr char kDrawTargetsThroughBlocksKey[] =
         "viewer/drawTargetsThroughBlocks";
 constexpr char kTargetMouseEditingLockedKey[] = "viewer/targetMouseEditingLocked";
-constexpr char kDarkModeKey[] = "appearance/darkMode";
 constexpr char kViewerVisibleKey[] = "viewer/visible";
 std::atomic_bool gAutomaticPacksSearchScheduled{false};
 
@@ -94,7 +96,7 @@ std::optional<std::chrono::seconds> ParseRestartDuration(
             : std::nullopt;
 }
 
-void ApplyApplicationPalette(bool dark) {
+void ApplyApplicationPalette() {
     auto *const application =
             qobject_cast<QApplication *>(QCoreApplication::instance());
     if (application == nullptr) {
@@ -102,39 +104,18 @@ void ApplyApplicationPalette(bool dark) {
     }
 
     QPalette palette;
-    const QColor window =
-            dark ? QColor(QStringLiteral("#171a18"))
-                 : QColor(QStringLiteral("#eceeeb"));
-    const QColor surface =
-            dark ? QColor(QStringLiteral("#292e2a")) : Qt::white;
-    const QColor alternate =
-            dark ? QColor(QStringLiteral("#242925"))
-                 : QColor(QStringLiteral("#f3f5f1"));
-    const QColor control =
-            dark ? QColor(QStringLiteral("#343a35"))
-                 : QColor(QStringLiteral("#e1e5df"));
-    const QColor text =
-            dark ? QColor(QStringLiteral("#f0f3ef"))
-                 : QColor(QStringLiteral("#202421"));
-    const QColor muted =
-            dark ? QColor(QStringLiteral("#aeb8b0"))
-                 : QColor(QStringLiteral("#667064"));
-    const QColor accent =
-            dark ? QColor(QStringLiteral("#45b778"))
-                 : QColor(QStringLiteral("#26734d"));
-    const QColor accentText =
-            dark ? QColor(QStringLiteral("#101411")) : Qt::white;
-    const QColor disabledSurface =
-            dark ? QColor(QStringLiteral("#252925"))
-                 : QColor(QStringLiteral("#ecefe9"));
-    const QColor disabledText =
-            dark ? QColor(QStringLiteral("#737b74"))
-                 : QColor(QStringLiteral("#92988f"));
-    const QColor tooltip =
-            dark ? QColor(QStringLiteral("#f0f3ef"))
-                 : QColor(QStringLiteral("#202421"));
-    const QColor tooltipText =
-            dark ? QColor(QStringLiteral("#202421")) : Qt::white;
+    const QColor window(QStringLiteral("#171a18"));
+    const QColor surface(QStringLiteral("#292e2a"));
+    const QColor alternate(QStringLiteral("#242925"));
+    const QColor control(QStringLiteral("#343a35"));
+    const QColor text(QStringLiteral("#f0f3ef"));
+    const QColor muted(QStringLiteral("#aeb8b0"));
+    const QColor accent(QStringLiteral("#45b778"));
+    const QColor accentText(QStringLiteral("#101411"));
+    const QColor disabledSurface(QStringLiteral("#252925"));
+    const QColor disabledText(QStringLiteral("#737b74"));
+    const QColor tooltip(QStringLiteral("#141a17"));
+    const QColor tooltipText(QStringLiteral("#f0f3ef"));
 
     palette.setColor(QPalette::Window, window);
     palette.setColor(QPalette::WindowText, text);
@@ -182,7 +163,7 @@ ReplayInputExtractionResult ExtractReplayInputScript(
 }
 
 QString StoredValue(const char *key, const QString &fallback) {
-    return QSettings().value(QLatin1String(key), fallback).toString();
+    return AppSettings::Instance().value(QLatin1String(key), fallback).toString();
 }
 
 QString BackendId(PhysicsBackend backend) {
@@ -260,110 +241,38 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             kSimulationHorizonKey,
             QString::number(kDefaultSimulationHorizonMs));
     conditionScript_ = StoredValue(kConditionScriptKey, {});
-    if (!QSettings().contains(QLatin1String(kSimulationHorizonKey))) {
-        QSettings().setValue(
+    if (!AppSettings::Instance().contains(QLatin1String(kSimulationHorizonKey))) {
+        AppSettings::Instance().setValue(
                 QLatin1String(kSimulationHorizonKey),
                 simulationHorizonMs_);
     }
     // The preview extent starts at the search end once, then only changes
     // when the user edits it.
     previewExtentMs_ = StoredValue(kPreviewExtentKey, simulationHorizonMs_);
-    if (!QSettings().contains(QLatin1String(kPreviewExtentKey))) {
-        QSettings().setValue(QLatin1String(kPreviewExtentKey), previewExtentMs_);
+    if (!AppSettings::Instance().contains(QLatin1String(kPreviewExtentKey))) {
+        AppSettings::Instance().setValue(QLatin1String(kPreviewExtentKey), previewExtentMs_);
     }
     cpuWorkerCount_ = StoredValue(
             kCpuWorkerCountKey,
             QString::number(DefaultCpuWorkerCount()));
-    cudaCalibrationEnabled_ = QSettings()
+    cudaCalibrationEnabled_ = AppSettings::Instance()
             .value(QLatin1String(kCudaCalibrationEnabledKey), false)
             .toBool();
     hipParallelSampleCount_ = StoredValue(
             kHipParallelSampleCountKey,
             QString::number(kDefaultCudaParallelSampleCount));
-    hipCalibrationEnabled_ = QSettings()
+    hipCalibrationEnabled_ = AppSettings::Instance()
             .value(QLatin1String(kHipCalibrationEnabledKey), false)
             .toBool();
-    cudaSessionSpecializationEnabled_ = QSettings()
-            .value(QLatin1String(
-                           kCudaSessionSpecializationEnabledKey),
-                   true)
+    // CUDA fast mode is gone; so is its switch's saved state.
+    AppSettings::Instance().remove(QStringLiteral("backends/cuda/sessionSpecializationEnabled"));
+    approximatePhysics_ = AppSettings::Instance()
+            .value(QLatin1String(kApproximatePhysicsKey), false)
             .toBool();
-#if FOREVERVALIDATOR_HAS_CUDA
-    const forevervalidator::CudaBackendDiagnostics cuda =
-            forevervalidator::QueryCudaBackendDiagnostics();
-    cudaAvailable_ = cuda.IsReady();
-    cudaFastModeAvailable_ = cuda.SupportsSessionSpecialization();
-    if (cuda.IsReady()) {
-        const QString device = QString::fromStdString(cuda.deviceName);
-        const QString capability =
-                QStringLiteral("%1.%2")
-                        .arg(cuda.computeCapabilityMajor)
-                        .arg(cuda.computeCapabilityMinor);
-        cudaStatusText_ = cudaFastModeAvailable_
-                ? QStringLiteral(
-                          "CUDA ready: %1 (compute capability %2). Fast CUDA "
-                          "is available.")
-                          .arg(device, capability)
-                : QStringLiteral(
-                          "CUDA ready: %1 (compute capability %2). Fast CUDA "
-                          "requires compute capability 7.5 or newer, so "
-                          "regular CUDA will be used.")
-                          .arg(device, capability);
-    } else {
-        cudaStatusText_ = QStringLiteral(
-                "CUDA cannot run on this computer. It needs an NVIDIA "
-                "graphics card with an up-to-date driver. Choose Optimized "
-                "CPU, or update the driver and restart ForeverTAS. "
-                "(Driver message: %1)")
-                                  .arg(QString::fromStdString(cuda.diagnostic));
-    }
-#else
-    cudaStatusText_ = QStringLiteral(
-            "This build of ForeverTAS does not include CUDA. Choose "
-            "Optimized CPU.");
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
-    const auto hip = forevervalidator::QueryHipBackendDiagnostics();
-    hipAvailable_ = hip.IsReady();
-    hipStatusText_ = hipAvailable_
-            ? QStringLiteral("HIP ready: %1")
-                      .arg(QString::fromStdString(hip.deviceName))
-            : QStringLiteral(
-                      "HIP cannot run on this computer. It needs a "
-                      "compatible graphics card with an up-to-date driver. "
-                      "Choose Optimized CPU, or update the driver and "
-                      "restart ForeverTAS. (Driver message: %1)")
-                      .arg(QString::fromStdString(hip.diagnostic));
-#else
-    hipStatusText_ = QStringLiteral(
-            "This build of ForeverTAS does not include HIP. Choose "
-            "Optimized CPU.");
-#endif
-    vulkanParallelSampleCount_ = StoredValue(
-            kVulkanParallelSampleCountKey,
-            QString::number(kDefaultCudaParallelSampleCount));
-    vulkanCalibrationEnabled_ = QSettings()
-            .value(QLatin1String(kVulkanCalibrationEnabledKey), false).toBool();
-    const auto vulkan = forevervalidator::QueryVulkanBackendDiagnostics();
-    vulkanAvailable_ = vulkan.IsSearchReady();
-    if (vulkanAvailable_) {
-        vulkanStatusText_ = QStringLiteral("Vulkan ready: %1")
-                                    .arg(QString::fromStdString(vulkan.deviceName));
-    } else if (vulkan.IsReady()) {
-        vulkanStatusText_ = QStringLiteral(
-                "Vulkan search cannot run on %1. Its driver lacks the exact "
-                "math controls the search needs "
-                "(VK_KHR_shader_float_controls2). Choose Optimized CPU, or "
-                "update the graphics driver.")
-                                    .arg(QString::fromStdString(vulkan.deviceName));
-    } else {
-        vulkanStatusText_ = QStringLiteral(
-                "Vulkan cannot run on this computer. Choose Optimized CPU, "
-                "or update the graphics driver and restart ForeverTAS. "
-                "(Driver message: %1)")
-                                    .arg(QString::fromStdString(vulkan.diagnostic));
-    }
-    QSettings settings;
+    readComputeBackends();
+    // The Vulkan backend is gone; so are its saved settings.
+    AppSettings::Instance().remove(QStringLiteral("backends/vulkan"));
+    AppSettings &settings = AppSettings::Instance();
     randomizeSeedsOnStart_ = settings
             .value(QLatin1String(kRandomizeSeedsOnStartKey), true)
             .toBool();
@@ -384,18 +293,24 @@ void SearchController::initialize(const QStringList *packsSearchPatterns) {
             .value(QLatin1String(kDrawTargetsThroughBlocksKey), false)
             .toBool();
     targetMouseEditingLocked_ = settings.value(QLatin1String(kTargetMouseEditingLockedKey), false).toBool();
-    darkMode_ =
-            QSettings().value(QLatin1String(kDarkModeKey), false).toBool();
-    ApplyApplicationPalette(darkMode_);
+    ApplyApplicationPalette();
     viewerVisible_ = settings.value(QLatin1String(kViewerVisibleKey), true).toBool();
+    cudaCardEnabled_ = settings.value(QLatin1String(kCudaCardEnabledKey), true).toBool();
+    hipCardEnabled_ = settings.value(QLatin1String(kHipCardEnabledKey), true).toBool();
     const QString storedBackend = StoredValue(
             kSimulationBackendKey,
             BackendId(PhysicsBackend::Reference));
     const std::optional<PhysicsBackend> parsedBackend =
             ParsePhysicsBackend(storedBackend.toStdString());
-    simulationBackend_ = parsedBackend.value_or(PhysicsBackend::Reference);
-    if (!parsedBackend) {
-        QSettings().setValue(
+    // a GPU backend whose module is not installed (yet): Reference until it is
+    simulationBackend_ = parsedBackend && ComputeModules::Instance().Has(*parsedBackend)
+            ? *parsedBackend : PhysicsBackend::Reference;
+    // both cards: "GPU", whichever of the two was chosen
+    if (multipleGpus() && (storedBackend == QLatin1String(kGpusBackendId) ||
+                           (parsedBackend && IsGpuBackend(*parsedBackend)))) {
+        setGpusChosen(true);
+    } else if (!parsedBackend && storedBackend != QLatin1String(kGpusBackendId)) {
+        AppSettings::Instance().setValue(
                 QLatin1String(kSimulationBackendKey),
                 BackendId(simulationBackend_));
     }
@@ -412,7 +327,7 @@ SearchController::~SearchController() {
         inputScriptPersistTimer_->stop();
     }
     persist(kBaseInputScriptKey, baseInputScript_);
-    QSettings().sync();
+    AppSettings::Instance().sync();
     waitForWorker();
 }
 
@@ -459,6 +374,138 @@ QString SearchController::replayInputStatusText() const {
     return replayInputStatusText_;
 }
 
+void SearchController::readComputeBackends() {
+    // GPU backends: compiled in (developer builds) or a module installed
+    // for this computer's GPU.
+    ComputeModules &modules = ComputeModules::Instance();
+    const compute::GpuStatus cuda = modules.Status(PhysicsBackend::Cuda);
+    cudaAvailable_ = modules.Has(PhysicsBackend::Cuda) && cuda.ready;
+    cudaApproximate_ = cudaAvailable_ && cuda.approximate;
+    if (!modules.Has(PhysicsBackend::Cuda)) {
+        cudaStatusText_ = QStringLiteral(
+                "CUDA is not installed. ForeverTAS installs it when it finds "
+                "an NVIDIA graphics card. Choose Optimized CPU.");
+    } else if (cuda.ready) {
+        cudaStatusText_ = QStringLiteral("CUDA ready: %1 (compute capability %2.%3).")
+                .arg(QString::fromStdString(cuda.deviceName))
+                .arg(cuda.computeMajor)
+                .arg(cuda.computeMinor);
+    } else {
+        cudaStatusText_ = QStringLiteral(
+                "CUDA cannot run on this computer. It needs an NVIDIA "
+                "graphics card with an up-to-date driver. Choose Optimized "
+                "CPU, or update the driver and restart ForeverTAS. "
+                "(Driver message: %1)")
+                                  .arg(QString::fromStdString(cuda.diagnostic));
+    }
+    const compute::GpuStatus hip = modules.Status(PhysicsBackend::Hip);
+    hipAvailable_ = modules.Has(PhysicsBackend::Hip) && hip.ready;
+    hipApproximate_ = hipAvailable_ && hip.approximate;
+    if (!modules.Has(PhysicsBackend::Hip)) {
+        hipStatusText_ = QStringLiteral(
+                "HIP is not installed. ForeverTAS installs it when it finds "
+                "an AMD Radeon RX 7000 or 9000 graphics card. Choose "
+                "Optimized CPU.");
+    } else if (hip.ready) {
+        hipStatusText_ = QStringLiteral("HIP ready: %1")
+                .arg(QString::fromStdString(hip.deviceName));
+    } else {
+        hipStatusText_ = QStringLiteral(
+                "HIP cannot run on this computer. It needs a "
+                "compatible graphics card with an up-to-date driver. "
+                "Choose Optimized CPU, or update the driver and "
+                "restart ForeverTAS. (Driver message: %1)")
+                .arg(QString::fromStdString(hip.diagnostic));
+    }
+    cudaCardName_ = cuda.ready && !cuda.deviceName.empty() ? QString::fromStdString(cuda.deviceName)
+                                                           : QStringLiteral("NVIDIA graphics card");
+    hipCardName_ = hip.ready && !hip.deviceName.empty() ? QString::fromStdString(hip.deviceName)
+                                                        : QStringLiteral("AMD graphics card");
+    diagnostics::Log("backend CUDA: %s", qUtf8Printable(cudaStatusText_));
+    diagnostics::Log("backend HIP: %s", qUtf8Printable(hipStatusText_));
+}
+
+void SearchController::refreshComputeBackends() {
+    readComputeBackends();
+    // back to the GPU backend chosen before its module was installed
+    const QString storedId = StoredValue(kSimulationBackendKey, BackendId(PhysicsBackend::Reference));
+    const std::optional<PhysicsBackend> stored = ParsePhysicsBackend(storedId.toStdString());
+    if (multipleGpus() && !gpusChosen() &&
+        (storedId == QLatin1String(kGpusBackendId) || (stored && IsGpuBackend(*stored)))) {
+        setGpusChosen(true);
+        emit simulationBackendIdChanged();
+    } else if (!multipleGpus() && gpusMode_) {
+        setGpusChosen(false);
+        emit simulationBackendIdChanged();
+    } else if (stored && IsGpuBackend(*stored) && simulationBackend_ != *stored &&
+               !gpusChosen() && ComputeModules::Instance().Has(*stored)) {
+        simulationBackend_ = *stored;
+        emit simulationBackendIdChanged();
+    }
+    emit computeBackendsChanged();
+    emit gpuCardsChanged();
+    refreshValidation();
+}
+
+bool SearchController::multipleGpus() const {
+    return ComputeModules::Instance().Has(PhysicsBackend::Cuda) &&
+            ComputeModules::Instance().Has(PhysicsBackend::Hip);
+}
+
+bool SearchController::gpusChosen() const {
+    return gpusMode_ && multipleGpus();
+}
+
+void SearchController::setGpusChosen(bool chosen) {
+    gpusMode_ = chosen && multipleGpus();
+    if (gpusMode_) {
+        // the first ticked card's backend runs the request (the other joins it)
+        simulationBackend_ = cudaCardEnabled_ || !hipCardEnabled_ ? PhysicsBackend::Cuda
+                                                                  : PhysicsBackend::Hip;
+    } else if (IsGpuBackend(simulationBackend_) &&
+               !ComputeModules::Instance().Has(simulationBackend_)) {
+        simulationBackend_ = ComputeModules::Instance().Has(PhysicsBackend::Cuda) ? PhysicsBackend::Cuda
+                : ComputeModules::Instance().Has(PhysicsBackend::Hip)              ? PhysicsBackend::Hip
+                                                                                   : PhysicsBackend::Reference;
+    }
+}
+
+QString SearchController::cudaCardName() const {
+    return cudaCardName_;
+}
+
+QString SearchController::hipCardName() const {
+    return hipCardName_;
+}
+
+bool SearchController::cudaCardEnabled() const {
+    return cudaCardEnabled_;
+}
+
+bool SearchController::hipCardEnabled() const {
+    return hipCardEnabled_;
+}
+
+void SearchController::setCudaCardEnabled(bool value) {
+    if (cudaCardEnabled_ == value) return;
+    cudaCardEnabled_ = value;
+    AppSettings::Instance().setValue(QLatin1String(kCudaCardEnabledKey), value);
+    diagnostics::Log("settings: CUDA card %s", value ? "on" : "off");
+    if (gpusChosen()) setGpusChosen(true);
+    emit gpuCardsChanged();
+    refreshValidation();
+}
+
+void SearchController::setHipCardEnabled(bool value) {
+    if (hipCardEnabled_ == value) return;
+    hipCardEnabled_ = value;
+    AppSettings::Instance().setValue(QLatin1String(kHipCardEnabledKey), value);
+    diagnostics::Log("settings: HIP card %s", value ? "on" : "off");
+    if (gpusChosen()) setGpusChosen(true);
+    emit gpuCardsChanged();
+    refreshValidation();
+}
+
 QVariantList SearchController::simulationBackendOptions() const {
     QVariantList options{
             QVariantMap{
@@ -486,35 +533,30 @@ QVariantList SearchController::simulationBackendOptions() const {
                              "Runs independent optimized CPU simulations "
                              "across multiple worker threads")}},
     };
-#if FOREVERVALIDATOR_HAS_CUDA
-    options.push_back(QVariantMap{
+    if (multipleGpus()) {
+        options.push_back(QVariantMap{
+                {QStringLiteral("id"), QString::fromLatin1(kGpusBackendId)},
+                {QStringLiteral("label"), QStringLiteral("GPU")},
+                {QStringLiteral("description"),
+                 QStringLiteral("The graphics cards ticked below, together")}});
+        return options;
+    }
+    if (ComputeModules::Instance().Has(PhysicsBackend::Cuda)) options.push_back(QVariantMap{
             {QStringLiteral("id"),
              BackendId(PhysicsBackend::Cuda)},
             {QStringLiteral("label"), QStringLiteral("CUDA")},
             {QStringLiteral("description"),
-             QStringLiteral(
-                     "NVIDIA CUDA for Stadium; compute capability 5.0+ is "
-                     "supported, with Fast CUDA on 7.5+")}});
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
-    options.push_back(QVariantMap{
+             QStringLiteral("NVIDIA CUDA for Stadium; compute capability 5.0+")}});
+    if (ComputeModules::Instance().Has(PhysicsBackend::Hip)) options.push_back(QVariantMap{
             {QStringLiteral("id"), BackendId(PhysicsBackend::Hip)},
             {QStringLiteral("label"), QStringLiteral("HIP")},
             {QStringLiteral("description"),
              QStringLiteral("HIP Compute for Stadium on compatible GPUs")}});
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    options.push_back(QVariantMap{
-            {QStringLiteral("id"), BackendId(PhysicsBackend::Vulkan)},
-            {QStringLiteral("label"), QStringLiteral("Vulkan")},
-            {QStringLiteral("description"),
-             QStringLiteral("Vulkan Compute for Stadium on compatible GPUs")}});
-#endif
     return options;
 }
 
 QString SearchController::simulationBackendId() const {
-    return BackendId(simulationBackend_);
+    return gpusChosen() ? QString::fromLatin1(kGpusBackendId) : BackendId(simulationBackend_);
 }
 
 QString SearchController::simulationHorizonMs() const {
@@ -585,10 +627,6 @@ QString SearchController::hipParallelSampleCount() const {
     return hipParallelSampleCount_;
 }
 
-QString SearchController::vulkanParallelSampleCount() const {
-    return vulkanParallelSampleCount_;
-}
-
 bool SearchController::cudaCalibrationEnabled() const {
     return cudaCalibrationEnabled_;
 }
@@ -597,12 +635,30 @@ bool SearchController::hipCalibrationEnabled() const {
     return hipCalibrationEnabled_;
 }
 
-bool SearchController::vulkanCalibrationEnabled() const {
-    return vulkanCalibrationEnabled_;
+bool SearchController::approximatePhysics() const {
+    return approximatePhysics_;
 }
 
-bool SearchController::cudaSessionSpecializationEnabled() const {
-    return cudaSessionSpecializationEnabled_;
+bool SearchController::approximatePhysicsAvailable() const {
+    // the twin's GPU engine is in the CUDA module, or the HIP one
+    return cudaApproximate_ || hipApproximate_;
+}
+
+bool SearchController::approximatePhysicsCpuAvailable() const {
+#if FOREVERVALIDATOR_HAS_TWIN
+    return true;
+#else
+    return false;
+#endif
+}
+
+bool SearchController::approximatePhysicsOnGpu() const {
+    if (gpusChosen()) {
+        return (cudaCardEnabled_ || hipCardEnabled_) && (!cudaCardEnabled_ || cudaApproximate_) &&
+                (!hipCardEnabled_ || hipApproximate_);
+    }
+    return (simulationBackend_ == PhysicsBackend::Cuda && cudaApproximate_) ||
+            (simulationBackend_ == PhysicsBackend::Hip && hipApproximate_);
 }
 
 bool SearchController::cudaAvailable() const {
@@ -613,24 +669,12 @@ bool SearchController::hipAvailable() const {
     return hipAvailable_;
 }
 
-bool SearchController::vulkanAvailable() const {
-    return vulkanAvailable_;
-}
-
-bool SearchController::cudaFastModeAvailable() const {
-    return cudaFastModeAvailable_;
-}
-
 QString SearchController::cudaStatusText() const {
     return cudaStatusText_;
 }
 
 QString SearchController::hipStatusText() const {
     return hipStatusText_;
-}
-
-QString SearchController::vulkanStatusText() const {
-    return vulkanStatusText_;
 }
 
 bool SearchController::randomizeSeedsOnStart() const {
@@ -641,16 +685,12 @@ bool SearchController::drawTargetsThroughBlocks() const {
     return drawTargetsThroughBlocks_;
 }
 
-bool SearchController::darkMode() const {
-    return darkMode_;
-}
-
 bool SearchController::viewerVisible() const { return viewerVisible_; }
 
 void SearchController::setViewerVisible(bool value) {
     if (viewerVisible_ == value) return;
     viewerVisible_ = value;
-    QSettings().setValue(QLatin1String(kViewerVisibleKey), value);
+    AppSettings::Instance().setValue(QLatin1String(kViewerVisibleKey), value);
     emit viewerVisibleChanged();
 }
 
@@ -727,7 +767,7 @@ void SearchController::evaluateBase() {
     const auto generation = baselineEvaluationGeneration_;
     baseEvaluationResult_.clear();
     baseEvaluationText_ = QStringLiteral("Evaluating base inputs...");
-    auto thread = QThread::create([this, request = *validation.request, cancelled, generation] {
+    QThread *const thread = QThread::create([this, request = *validation.request, cancelled, generation] {
         QVariantMap data{{QStringLiteral("backend"), QStringLiteral("optimized-cpu")},
                          {QStringLiteral("targetId"), QString::fromStdString(request.evaluationTarget.id)},
                          {QStringLiteral("horizonMs"), request.simulationHorizonMs}};
@@ -780,6 +820,7 @@ void SearchController::evaluateBase() {
             } else {
                 baseEvaluationResult_ = data;
                 baseEvaluationText_ = text;
+                diagnostics::Log("base inputs: %s", qUtf8Printable(text));
             }
             emit baseEvaluationChanged();
         }, Qt::QueuedConnection);
@@ -798,6 +839,7 @@ void SearchController::evaluateBase() {
     emit baseEvaluationChanged();
     emit canStartChanged();
     emit replayInputStateChanged();
+    thread->setStackSize(static_cast<uint>(kSearchThreadStackBytes));
     thread->start();
 }
 
@@ -807,10 +849,6 @@ bool SearchController::running() const {
 
 bool SearchController::stopping() const {
     return stopping_;
-}
-
-bool SearchController::aborting() const {
-    return cancellationRequested_ && cancellationRequested_->load(std::memory_order_relaxed);
 }
 
 bool SearchController::progressIndeterminate() const {
@@ -905,6 +943,10 @@ QVariantList SearchController::cycleRows() const {
     return cycleRows_;
 }
 
+QVariantMap SearchController::liveRow() const {
+    return liveRow_;
+}
+
 QString SearchController::selectedInputsText() const {
     return selectedInputsText_;
 }
@@ -938,6 +980,7 @@ void SearchController::setReplayPath(const QString &value) {
         return;
     }
     replayPath_ = value;
+    diagnostics::Log("replay: %s", qUtf8Printable(value));
     persist(kReplayPathKey, value);
     emit replayPathChanged();
     emit replayInputStateChanged();
@@ -993,14 +1036,28 @@ void SearchController::setSearchAlgorithmId(const QString &value) {
 }
 
 void SearchController::setSimulationBackendId(const QString &value) {
-    const std::optional<PhysicsBackend> parsed =
-            ParsePhysicsBackend(value.toStdString());
-    if (!parsed || simulationBackend_ == *parsed) {
+    if (value == QLatin1String(kGpusBackendId)) {
+        if (!multipleGpus() || gpusChosen()) return;
+        setGpusChosen(true);
+        diagnostics::Log("settings: physics backend %s", qUtf8Printable(value));
+        persist(kSimulationBackendKey, value);
+        emit simulationBackendIdChanged();
+        emit gpuCardsChanged();
+        refreshValidation();
         return;
     }
+    const std::optional<PhysicsBackend> parsed =
+            ParsePhysicsBackend(value.toStdString());
+    if (!parsed || (!gpusChosen() && simulationBackend_ == *parsed) ||
+        !ComputeModules::Instance().Has(*parsed)) {
+        return;
+    }
+    gpusMode_ = false;
     simulationBackend_ = *parsed;
+    diagnostics::Log("settings: physics backend %s", qUtf8Printable(value));
     persist(kSimulationBackendKey, BackendId(simulationBackend_));
     emit simulationBackendIdChanged();
+    emit gpuCardsChanged();
     refreshValidation();
 }
 
@@ -1012,6 +1069,7 @@ void SearchController::setSimulationHorizonMs(const QString &value) {
     persist(kSimulationHorizonKey, value);
     emit simulationHorizonMsChanged();
     refreshValidation();
+    propagateWindowChain(QStringLiteral("searchEnd"));
 }
 
 void SearchController::setPreviewExtentMs(const QString &value) {
@@ -1019,6 +1077,7 @@ void SearchController::setPreviewExtentMs(const QString &value) {
     previewExtentMs_ = value;
     persist(kPreviewExtentKey, value);
     emit previewExtentMsChanged();
+    propagateWindowChain(QStringLiteral("previewExtent"));
 }
 
 void SearchController::setConditionScript(const QString &value) {
@@ -1061,22 +1120,12 @@ void SearchController::setHipParallelSampleCount(const QString &value) {
     refreshValidation();
 }
 
-void SearchController::setVulkanParallelSampleCount(const QString &value) {
-    if (vulkanParallelSampleCount_ == value) {
-        return;
-    }
-    vulkanParallelSampleCount_ = value;
-    persist(kVulkanParallelSampleCountKey, value);
-    emit vulkanParallelSampleCountChanged();
-    refreshValidation();
-}
-
 void SearchController::setCudaCalibrationEnabled(bool value) {
     if (cudaCalibrationEnabled_ == value) {
         return;
     }
     cudaCalibrationEnabled_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kCudaCalibrationEnabledKey), value);
     emit cudaCalibrationEnabledChanged();
     refreshValidation();
@@ -1087,31 +1136,20 @@ void SearchController::setHipCalibrationEnabled(bool value) {
         return;
     }
     hipCalibrationEnabled_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kHipCalibrationEnabledKey), value);
     emit hipCalibrationEnabledChanged();
     refreshValidation();
 }
 
-void SearchController::setVulkanCalibrationEnabled(bool value) {
-    if (vulkanCalibrationEnabled_ == value) {
+void SearchController::setApproximatePhysics(bool value) {
+    if (approximatePhysics_ == value) {
         return;
     }
-    vulkanCalibrationEnabled_ = value;
-    QSettings().setValue(
-            QLatin1String(kVulkanCalibrationEnabledKey), value);
-    emit vulkanCalibrationEnabledChanged();
-    refreshValidation();
-}
-
-void SearchController::setCudaSessionSpecializationEnabled(bool value) {
-    if (cudaSessionSpecializationEnabled_ == value) {
-        return;
-    }
-    cudaSessionSpecializationEnabled_ = value;
-    QSettings().setValue(
-            QLatin1String(kCudaSessionSpecializationEnabledKey), value);
-    emit cudaSessionSpecializationEnabledChanged();
+    approximatePhysics_ = value;
+    diagnostics::Log("settings: %s physics", value ? "approximate" : "exact");
+    AppSettings::Instance().setValue(QLatin1String(kApproximatePhysicsKey), value);
+    emit approximatePhysicsChanged();
 }
 
 void SearchController::setRandomizeSeedsOnStart(bool value) {
@@ -1119,7 +1157,7 @@ void SearchController::setRandomizeSeedsOnStart(bool value) {
         return;
     }
     randomizeSeedsOnStart_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kRandomizeSeedsOnStartKey), value);
     emit randomizeSeedsOnStartChanged();
 }
@@ -1129,7 +1167,7 @@ void SearchController::setDrawTargetsThroughBlocks(bool value) {
         return;
     }
     drawTargetsThroughBlocks_ = value;
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kDrawTargetsThroughBlocksKey), value);
     emit drawTargetsThroughBlocksChanged();
 }
@@ -1137,22 +1175,16 @@ void SearchController::setDrawTargetsThroughBlocks(bool value) {
 void SearchController::setTargetMouseEditingLocked(bool value) {
     if (targetMouseEditingLocked_ == value) return;
     targetMouseEditingLocked_ = value;
-    QSettings().setValue(QLatin1String(kTargetMouseEditingLockedKey), value);
+    AppSettings::Instance().setValue(QLatin1String(kTargetMouseEditingLockedKey), value);
     emit targetMouseEditingLockedChanged();
-}
-
-void SearchController::setDarkMode(bool value) {
-    if (darkMode_ == value) {
-        return;
-    }
-    darkMode_ = value;
-    QSettings().setValue(QLatin1String(kDarkModeKey), value);
-    ApplyApplicationPalette(value);
-    emit darkModeChanged();
 }
 
 void SearchController::setEvaluationTargetId(const QString &value) {
     if (!configuration_.setEvaluationTargetId(value)) return;
+    diagnostics::Log("settings: target %s", qUtf8Printable(value));
+    // Each target keeps its own chain.
+    ++windowChainRevision_;
+    emit windowChainsChanged();
     emit evaluationTargetIdChanged();
     emit evaluationTargetSettingsChanged();
     synchronizeSelectedCuboid();
@@ -1204,14 +1236,164 @@ void SearchController::setModifierPassSetting(int index,
     if (!configuration_.setModifierPassSetting(index, key, value)) return;
     emit modifierPassesChanged();
     refreshValidation();
+    if (key == QStringLiteral("minTimeMs") ||
+        key == QStringLiteral("maxTimeMs") ||
+        key == QStringLiteral("maxTimeMode")) {
+        propagateWindowChain(QStringLiteral("pass:") + QString::number(index));
+    }
+}
+
+namespace {
+
+// White when never chained, like TICK.
+QVariantMap NormalizedChain(const QVariantMap &chain) {
+    return {{QStringLiteral("color"),
+             chain.value(QStringLiteral("color"), QStringLiteral("white"))},
+            {QStringLiteral("linked"),
+             chain.value(QStringLiteral("linked"), false).toBool()}};
+}
+
+bool ChainedTogether(const QVariantMap &first, const QVariantMap &second) {
+    return first.value(QStringLiteral("linked")).toBool() &&
+           second.value(QStringLiteral("linked")).toBool() &&
+           first.value(QStringLiteral("color")) ==
+                   second.value(QStringLiteral("color"));
+}
+
+QString StoredChainKey(const QString &key, const QString &evaluationTargetId) {
+    return key == QStringLiteral("target")
+            ? QStringLiteral("chains/evaluation/") + evaluationTargetId
+            : QStringLiteral("chains/") + key;
+}
+
+}  // namespace
+
+QStringList SearchController::windowChainKeys() const {
+    QStringList keys;
+    for (int index = 0; index < configuration_.modifierPasses().size(); ++index) {
+        keys << QStringLiteral("pass:") + QString::number(index);
+    }
+    keys << QStringLiteral("target") << QStringLiteral("searchEnd")
+         << QStringLiteral("previewExtent");
+    return keys;
+}
+
+QVariantMap SearchController::windowChain(const QString &key) const {
+    if (key.startsWith(QStringLiteral("pass:"))) {
+        return NormalizedChain(configuration_.modifierPassChain(
+                key.mid(5).toInt()));
+    }
+    return NormalizedChain(
+            AppSettings::Instance()
+                    .value(StoredChainKey(key, configuration_.evaluationTargetId()))
+                    .toMap());
+}
+
+void SearchController::setWindowChain(const QString &key, const QString &color,
+                                      bool linked) {
+    const QVariantMap chain{{QStringLiteral("color"), color},
+                            {QStringLiteral("linked"), linked}};
+    if (key.startsWith(QStringLiteral("pass:"))) {
+        configuration_.setModifierPassChain(key.mid(5).toInt(), chain);
+        emit modifierPassesChanged();
+    } else {
+        AppSettings::Instance().setValue(
+                StoredChainKey(key, configuration_.evaluationTargetId()), chain);
+    }
+    ++windowChainRevision_;
+    emit windowChainsChanged();
+    if (!linked) return;
+    // A window joining a chain takes the window the chain already has.
+    for (const QString &other : windowChainKeys()) {
+        if (other == key || !ChainedTogether(chain, windowChain(other))) continue;
+        if (const auto window = chainWindow(other)) {
+            propagatingWindowChain_ = true;
+            applyChainWindow(key, *window);
+            propagatingWindowChain_ = false;
+            return;
+        }
+    }
+}
+
+std::optional<SearchController::ChainWindow> SearchController::chainWindow(
+        const QString &key) const {
+    if (key == QStringLiteral("searchEnd")) {
+        return ChainWindow{false, {}, simulationHorizonMs_,
+                           QStringLiteral("fixed")};
+    }
+    if (key == QStringLiteral("previewExtent")) {
+        return ChainWindow{false, {}, previewExtentMs_, QStringLiteral("fixed")};
+    }
+    const QVariantMap settings = key == QStringLiteral("target")
+            ? configuration_.evaluationTargetSettings()
+            : configuration_.modifierPasses()
+                      .value(key.mid(5).toInt())
+                      .toMap()
+                      .value(QStringLiteral("settings"))
+                      .toMap();
+    if (!settings.contains(QStringLiteral("minTimeMs")) ||
+        !settings.contains(QStringLiteral("maxTimeMs"))) {
+        return std::nullopt;
+    }
+    return ChainWindow{
+            true, settings.value(QStringLiteral("minTimeMs")).toString(),
+            settings.value(QStringLiteral("maxTimeMs")).toString(),
+            settings.value(QStringLiteral("maxTimeMode"), QStringLiteral("fixed"))
+                    .toString()};
+}
+
+void SearchController::applyChainWindow(const QString &key,
+                                        const ChainWindow &window) {
+    // "Until horizon" ends at Search end.
+    const QString end = window.endMode == QStringLiteral("horizon")
+            ? simulationHorizonMs_ : window.end;
+    if (key == QStringLiteral("searchEnd")) {
+        if (window.endMode != QStringLiteral("horizon")) {
+            setSimulationHorizonMs(end);
+        }
+        return;
+    }
+    if (key == QStringLiteral("previewExtent")) {
+        setPreviewExtentMs(end);
+        return;
+    }
+    const auto target = chainWindow(key);
+    if (!target) return;
+    const auto set = [&](const QString &name, const QString &value) {
+        if (key == QStringLiteral("target")) {
+            setEvaluationTargetSetting(name, value);
+        } else {
+            setModifierPassSetting(key.mid(5).toInt(), name, value);
+        }
+    };
+    if (window.hasStart) set(QStringLiteral("minTimeMs"), window.start);
+    set(QStringLiteral("maxTimeMode"), window.endMode);
+    set(QStringLiteral("maxTimeMs"), window.end);
+}
+
+void SearchController::propagateWindowChain(const QString &key) {
+    if (propagatingWindowChain_) return;
+    const QVariantMap chain = windowChain(key);
+    if (!chain.value(QStringLiteral("linked")).toBool()) return;
+    const auto window = chainWindow(key);
+    if (!window) return;
+    propagatingWindowChain_ = true;
+    for (const QString &other : windowChainKeys()) {
+        if (other != key && ChainedTogether(chain, windowChain(other))) {
+            applyChainWindow(other, *window);
+        }
+    }
+    propagatingWindowChain_ = false;
 }
 
 void SearchController::setEvaluationTargetSetting(const QString &key,
                                                   const QString &value) {
     const bool isCuboid = configuration_.evaluationTargetId() ==
             QString::fromLatin1(kVolumeEntryEvaluationId);
+    // Cuboid geometry belongs to the cuboid list; how a cuboid is judged
+    // is a setting like any other.
     if (!configuration_.setEvaluationTargetSetting(
-                key, value, !isCuboid)) {
+                key, value, !isCuboid || key == QStringLiteral("measure"))) {
         return;
     }
     if (isCuboid) {
@@ -1225,6 +1407,11 @@ void SearchController::setEvaluationTargetSetting(const QString &key,
     }
     emit evaluationTargetSettingsChanged();
     refreshValidation();
+    if (key == QStringLiteral("minTimeMs") ||
+        key == QStringLiteral("maxTimeMs") ||
+        key == QStringLiteral("maxTimeMode")) {
+        propagateWindowChain(QStringLiteral("target"));
+    }
 }
 
 void SearchController::synchronizeSelectedCuboid() {
@@ -1393,6 +1580,7 @@ void SearchController::setPacksDirectory(const QString &value) {
         return;
     }
     packsDirectory_ = value;
+    diagnostics::Log("packs folder: %s", qUtf8Printable(value));
     persist(kPacksDirectoryKey, value);
     emit packsDirectoryChanged();
     emit replayInputStateChanged();
@@ -1400,7 +1588,7 @@ void SearchController::setPacksDirectory(const QString &value) {
     refreshSessions();
 }
 
-void SearchController::browseForPacksDirectory() {
+bool SearchController::browseForPacksDirectory() {
     const QFileInfo current(packsDirectory_.isEmpty()
                                     ? autoDetectedPacksDirectory_
                                     : packsDirectory_);
@@ -1409,9 +1597,11 @@ void SearchController::browseForPacksDirectory() {
             : QDir::homePath();
     const QString selected = OpenSystemDirectoryDialog(
             QStringLiteral("Select Packs directory"), initialDirectory);
-    if (!selected.isEmpty()) {
-        setPacksDirectory(selected);
+    if (selected.isEmpty()) {
+        return false;
     }
+    setPacksDirectory(selected);
+    return true;
 }
 
 void SearchController::applyAutoDetectedPacksDirectory() {
@@ -1422,16 +1612,32 @@ void SearchController::applyAutoDetectedPacksDirectory() {
     setPacksDirectory(detected);
 }
 
-void SearchController::browseForReplay() {
+bool SearchController::browseForReplay() {
     const QFileInfo current(replayPath_);
     const QString initialPath = current.isFile()
             ? current.absoluteFilePath()
             : QDir::homePath();
     const QString selected = OpenSystemFileDialog(
             QStringLiteral("Select replay or challenge"), initialPath);
-    if (!selected.isEmpty()) {
-        setReplayPath(selected);
+    if (selected.isEmpty()) {
+        return false;
     }
+    setReplayPath(selected);
+    return true;
+}
+
+QVariant SearchController::uiSetting(const QString &key,
+                                     const QVariant &fallback) const {
+    return AppSettings::Instance().value(QStringLiteral("ui/") + key, fallback);
+}
+
+void SearchController::setUiSetting(const QString &key,
+                                    const QVariant &value) {
+    AppSettings::Instance().setValue(QStringLiteral("ui/") + key, value);
+}
+
+bool SearchController::keyboardIsAzerty() const {
+    return KeyboardLettersAreAzerty();
 }
 
 QString SearchController::formatCompactNumber(double value) const {
@@ -1481,6 +1687,8 @@ void SearchController::extractReplayInputs() {
                                                 .arg(failure.value(QStringLiteral("reason"))
                                                              .toString()));
                                 replayInputFailure_ = failure;
+                                diagnostics::Log("replay inputs failed: %s",
+                                                 qUtf8Printable(result.error));
                                 emit replayInputStateChanged();
                             } else {
                                 setBaseInputScript(result.script);
@@ -1528,6 +1736,8 @@ void SearchController::startSearch() {
     cycleRows_.clear();
     selectedInputsText_.clear();
     emit historyChanged();
+    liveRow_.clear();
+    emit liveRowChanged();
     setResultText({});
     failureDiagnostic_.clear();
     emit resultChanged();
@@ -1536,6 +1746,7 @@ void SearchController::startSearch() {
     setLiveMetrics({}, {}, {}, false);
     lastCompletion_.reset();
     setProgress(true, 0.0);
+    diagnostics::Log("search %llu: start", static_cast<unsigned long long>(searchSerial_ + 1u));
     setStatusText(QStringLiteral("Starting search..."));
     setStopping(false);
     setRunning(true);
@@ -1554,13 +1765,15 @@ void SearchController::startSearch() {
     }
     restartPolicy.randomizeSeeds = randomizeSeedsOnStart_;
     QThread *const thread = new QThread(this);
+    thread->setStackSize(static_cast<uint>(kSearchThreadStackBytes));
     SearchWorker *const worker = new SearchWorker(
             *validation.request,
             ++searchSerial_,
             stopRequested_,
             cancellationRequested_,
             iterationPhase_,
-            restartPolicy);
+            restartPolicy,
+            validation.devices);
     worker->moveToThread(thread);
     workerThread_ = thread;
 
@@ -1569,6 +1782,7 @@ void SearchController::startSearch() {
             &SearchWorker::stageChanged,
             this,
             [this](const QString &status, bool indeterminate) {
+                diagnostics::Log("search: %s", qUtf8Printable(status));
                 setStatusText(status);
                 setProgress(indeterminate, progressValue_);
             });
@@ -1600,9 +1814,8 @@ void SearchController::startSearch() {
             &SearchWorker::cudaBatchSizeChanged,
             this,
             [this](std::uint32_t batchSize) {
-                if (PhysicsBackendId(simulationBackend_) == "vulkan") {
-                    setVulkanParallelSampleCount(QString::number(batchSize));
-                } else if (PhysicsBackendId(simulationBackend_) == "hip") {
+                diagnostics::Log("search: batch size %u", batchSize);
+                if (PhysicsBackendId(simulationBackend_) == "hip") {
                     setHipParallelSampleCount(QString::number(batchSize));
                 } else {
                     setCudaParallelSampleCount(QString::number(batchSize));
@@ -1614,6 +1827,11 @@ void SearchController::startSearch() {
             [this](const QString &summary, const QString &inputsText) {
                 setResultText(summary);
                 setBestInputsText(inputsText);
+            });
+    connect(worker, &SearchWorker::liveRowChanged, this,
+            [this](const QVariantMap &row) {
+                liveRow_ = row;
+                emit liveRowChanged();
             });
     connect(worker,
             &SearchWorker::improvementFound,
@@ -1656,14 +1874,28 @@ void SearchController::startSearch() {
             this,
             [this](SearchCompletionPtr completion) {
                 lastCompletion_ = completion;
+                diagnostics::Log("search complete: %s", qUtf8Printable(completion->summary));
                 setResultText(completion->summary);
                 setBestInputsText(completion->inputsText);
                 setProgress(false, 1.0);
                 setStatusText(QStringLiteral("Search complete"));
                 emit searchCompleted(std::move(completion));
             });
+    connect(worker,
+            &SearchWorker::stopped,
+            this,
+            [this](SearchCompletionPtr completion) {
+                lastCompletion_ = completion;
+                diagnostics::Log("search stopped: %s", qUtf8Printable(completion->summary));
+                setResultText(completion->summary);
+                setBestInputsText(completion->inputsText);
+                setProgress(false, progressValue_);
+                setStatusText(QStringLiteral("Search stopped"));
+                emit searchCompleted(std::move(completion));
+            });
     connect(worker, &SearchWorker::cancelled, this, [this]() {
-        setStatusText(QStringLiteral("Search aborted"));
+        diagnostics::Log("search stopped with no result");
+        setStatusText(QStringLiteral("Search stopped"));
         setProgress(false, progressValue_);
     });
     connect(worker,
@@ -1677,6 +1909,11 @@ void SearchController::startSearch() {
                 setStatusText(QStringLiteral("Search failed"));
                 setProgress(false, progressValue_);
             });
+    connect(worker, &SearchWorker::finished, this, [this]() {
+        if (liveRow_.isEmpty()) return;
+        liveRow_.insert(QStringLiteral("running"), false);
+        emit liveRowChanged();
+    });
     connect(worker, &SearchWorker::finished, thread, &QThread::quit);
     connect(worker, &SearchWorker::finished, worker, &QObject::deleteLater);
     connect(thread, &QThread::finished, this, [this, thread]() {
@@ -1695,30 +1932,19 @@ void SearchController::startSearch() {
     thread->start();
 }
 
+// Stop shuts the search down at once: the running batch is dropped, the best
+// found so far stays the result.
 void SearchController::stopSearch() {
-    if (!running_ || stopping_ || !stopRequested_) {
+    if (!running_ || stopping_ || !stopRequested_ || !cancellationRequested_) {
         return;
     }
+    diagnostics::Log("search: stop requested");
     setStopping(true);
-    if (iterationPhase_ != nullptr &&
-        TryCancelBeforeSearchIteration(iterationPhase_) &&
-        cancellationRequested_ != nullptr) {
-        cancellationRequested_->store(true, std::memory_order_relaxed);
-        emit stoppingChanged();
-        setStatusText(QStringLiteral("Aborting search startup..."));
-        return;
-    }
+    if (iterationPhase_ != nullptr) TryCancelBeforeSearchIteration(iterationPhase_);
     stopRequested_->store(true, std::memory_order_relaxed);
-    setStatusText(QStringLiteral("Stopping after current iteration..."));
-}
-
-void SearchController::abortSearch() {
-    if (!running_ || !cancellationRequested_ || aborting()) return;
-    if (stopRequested_) stopRequested_->store(true, std::memory_order_relaxed);
     cancellationRequested_->store(true, std::memory_order_relaxed);
-    setStopping(true);
     emit stoppingChanged();
-    setStatusText(QStringLiteral("Aborting at the next simulation checkpoint..."));
+    setStatusText(QStringLiteral("Stopping..."));
 }
 
 SearchController::ValidationResult SearchController::validate(bool baselineOnly) const {
@@ -1790,23 +2016,7 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     }
     const SearchComponentConfiguration &configuration =
             *configurationValidation.configuration;
-#if FOREVERVALIDATOR_HAS_VULKAN
-    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Vulkan &&
-        configuration.evaluationTarget.id == kCheckpointTimeEvaluationId) {
-        return {{}, QStringLiteral(
-                "Checkpoint time runs on the CPU, CUDA or HIP. Choose Optimized CPU, "
-                "CUDA or HIP as the physics backend.")};
-    }
-#endif
     if (!baselineOnly && IsGpuBackend(simulationBackend_)) {
-#if FOREVERVALIDATOR_HAS_VULKAN
-        if (simulationBackend_ == PhysicsBackend::Vulkan &&
-            (configuration.searchAlgorithm.id == kTreeSearchId ||
-             configuration.searchAlgorithm.id == kAdaptiveEscalationSearchId)) {
-            return {{}, QStringLiteral(
-                    "Tree search and adaptive escalation require CPU, CUDA, or HIP.")};
-        }
-#endif
         const SearchAlgorithmRegistration *const searchRegistration =
                 FindSearchAlgorithm(configuration.searchAlgorithm.id);
         if (searchRegistration != nullptr &&
@@ -1817,6 +2027,13 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
                             .arg(QString::fromStdString(
                                     searchRegistration->displayName))};
         }
+    }
+    // The Gates target has no GPU or twin version.
+    if (!baselineOnly && configuration.evaluationTarget.id == kGateEntryEvaluationId &&
+        (IsGpuBackend(simulationBackend_) || approximatePhysics_)) {
+        return {{}, QStringLiteral("The Gates target runs on the CPU backends with exact physics: "
+                                   "choose Optimized CPU, Multi-threaded CPU or Reference, and turn "
+                                   "Approximate physics off.")};
     }
     ConditionVariables conditionVariables;
     if (configuration.evaluationTarget.id == kPointTargetEvaluationId) {
@@ -1866,87 +2083,39 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
         }
         parallelSampleCount = value;
     }
-#if FOREVERVALIDATOR_HAS_CUDA
-    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Cuda) {
-        if (!cudaAvailable_) {
-            return {{}, cudaStatusText_};
+    std::vector<SearchDevice> devices;
+    if (!baselineOnly && IsGpuBackend(simulationBackend_)) {
+        if (gpusChosen() && !cudaCardEnabled_ && !hipCardEnabled_) {
+            return {{}, QStringLiteral("Tick at least one graphics card.")};
         }
-        calibrateCudaParallelSampleCount =
-                cudaCalibrationEnabled_;
-        if (!calibrateCudaParallelSampleCount) {
-            bool parsed = false;
-            const QString trimmed =
-                    cudaParallelSampleCount_.trimmed();
-            const uint value = trimmed.toUInt(&parsed);
-            if (!parsed ||
-                trimmed != cudaParallelSampleCount_ ||
-                value == 0u) {
-                return {
-                        {},
-                        QStringLiteral(
-                                "CUDA parallel samples must be a positive "
-                                "whole number.")};
+        for (const PhysicsBackend backend : {PhysicsBackend::Cuda, PhysicsBackend::Hip}) {
+            const bool used = gpusChosen() ? (backend == PhysicsBackend::Cuda ? cudaCardEnabled_ : hipCardEnabled_)
+                                           : backend == simulationBackend_;
+            if (!used) continue;
+            SearchDevice device;
+            if (const QString error = deviceSettings(backend, &device); !error.isEmpty()) {
+                return {{}, error};
             }
-            parallelSampleCount = value;
+            devices.push_back(device);
         }
+        // the first device runs the request, the others join it
+        parallelSampleCount = devices.front().parallelSampleCount;
+        calibrateCudaParallelSampleCount = devices.front().calibrate;
+        if (devices.size() < 2u) devices.clear();
     }
-#endif
-#if FOREVERVALIDATOR_HAS_HIP
-    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Hip) {
-        if (!hipAvailable_) {
-            return {{}, hipStatusText_};
-        }
-        calibrateCudaParallelSampleCount = hipCalibrationEnabled_;
-        if (!calibrateCudaParallelSampleCount) {
-            bool parsed = false;
-            const QString trimmed = hipParallelSampleCount_.trimmed();
-            const uint value = trimmed.toUInt(&parsed);
-            if (!parsed || trimmed != hipParallelSampleCount_ || value == 0u) {
-                return {{}, QStringLiteral(
-                        "HIP parallel samples must be a positive whole number.")};
-            }
-            parallelSampleCount = value;
-        }
-    }
-#endif
-#if FOREVERVALIDATOR_HAS_VULKAN
-    if (!baselineOnly && simulationBackend_ == PhysicsBackend::Vulkan) {
-        if (!vulkanAvailable_) {
-            return {{}, vulkanStatusText_};
-        }
-        if (configuration.evaluationTarget.id ==
-            kCustomVolumeEntryEvaluationId) {
-            return {
-                    {},
-                    QStringLiteral(
-                            "Custom volume targets require a CPU, CUDA or HIP "
-                            "physics backend.")};
-        }
-        calibrateCudaParallelSampleCount =
-                vulkanCalibrationEnabled_;
-        if (!calibrateCudaParallelSampleCount) {
-            bool parsed = false;
-            const QString trimmed =
-                    vulkanParallelSampleCount_.trimmed();
-            const uint value = trimmed.toUInt(&parsed);
-            if (!parsed ||
-                trimmed != vulkanParallelSampleCount_ ||
-                value == 0u) {
-                return {
-                        {},
-                        QStringLiteral(
-                                "Vulkan parallel samples must be a positive "
-                                "whole number.")};
-            }
-            parallelSampleCount = value;
-        }
-    }
-#endif
 
+    // Approximate physics: the twin on the GPU, or on every multi-threaded CPU
+    // worker but the one that rebuilds.
+    const bool approximateOnCpu = approximatePhysicsCpuAvailable() &&
+            simulationBackend_ == PhysicsBackend::MultiThreadedCpu &&
+            parallelSampleCount >= 2u;
+    const bool approximate = !baselineOnly && approximatePhysics_ &&
+            (approximatePhysicsOnGpu() || approximateOnCpu);
     SearchRequest request{
             packsInfo.absoluteFilePath().toUtf8().toStdString(),
             replayInfo.absoluteFilePath().toUtf8().toStdString()};
     request.backend = baselineOnly ? kAuxiliarySimulationBackend : simulationBackend_;
+    request.approximatePhysics = approximate;
     request.parallelSampleCount = parallelSampleCount;
     request.calibrateCudaParallelSampleCount =
             calibrateCudaParallelSampleCount;
@@ -1954,12 +2123,43 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     request.modifiers = configuration.modifiers;
     request.evaluationTarget = configuration.evaluationTarget;
     request.baseInputCommands = parsedBaseInputCommands_;
-    request.useCudaSessionSpecialization =
-            PhysicsBackendId(simulationBackend_) == "cuda" &&
-            cudaSessionSpecializationEnabled_ && cudaFastModeAvailable_;
     request.simulationHorizonMs = simulationHorizonMs;
     request.condition = std::move(condition.program);
-    return {std::move(request), {}};
+    return {std::move(request), {}, std::move(devices)};
+}
+
+QString SearchController::deviceSettings(PhysicsBackend backend, SearchDevice *device) const {
+    const bool cuda = backend == PhysicsBackend::Cuda;
+    if (!(cuda ? cudaAvailable_ : hipAvailable_)) return cuda ? cudaStatusText_ : hipStatusText_;
+    device->backend = backend;
+    device->calibrate = cuda ? cudaCalibrationEnabled_ : hipCalibrationEnabled_;
+    device->parallelSampleCount = 1u;
+    if (!device->calibrate) {
+        const QString &text = cuda ? cudaParallelSampleCount_ : hipParallelSampleCount_;
+        bool parsed = false;
+        const QString trimmed = text.trimmed();
+        const uint value = trimmed.toUInt(&parsed);
+        if (!parsed || trimmed != text || value == 0u) {
+            return cuda ? QStringLiteral("CUDA parallel samples must be a positive whole number.")
+                        : QStringLiteral("HIP parallel samples must be a positive whole number.");
+        }
+        device->parallelSampleCount = value;
+    }
+    return {};
+}
+
+double SearchController::evaluationStartMs() const {
+    bool parsed = false;
+    const qulonglong horizon = simulationHorizonMs_.trimmed().toULongLong(&parsed);
+    if (!parsed || horizon < kSearchTickDurationMs || horizon > kMaximumSimulationHorizonMs) {
+        return -1.0;
+    }
+    const SearchConfigurationValidation validation = configuration_.validate(
+            kSearchTickDurationMs, static_cast<std::uint32_t>(horizon));
+    if (!validation.configuration) return -1.0;
+    const std::optional<std::int64_t> start = EvaluationStartMs(
+            validation.configuration->modifiers, static_cast<std::uint32_t>(horizon));
+    return start ? static_cast<double>(*start) : -1.0;
 }
 
 void SearchController::refreshSessions() {
@@ -2101,6 +2301,7 @@ void SearchController::setReplayInputStatusText(const QString &value) {
         return;
     }
     replayInputStatusText_ = value;
+    diagnostics::Log("replay inputs: %s", qUtf8Printable(value));
     replayInputFailure_.clear();
     emit replayInputStateChanged();
 }
@@ -2231,13 +2432,13 @@ void SearchController::clearAutoDetectedPacksDirectory() {
 }
 
 void SearchController::persist(const char *key, const QString &value) {
-    QSettings().setValue(QLatin1String(key), value);
+    AppSettings::Instance().setValue(QLatin1String(key), value);
 }
 
 void SearchController::flushSettings() {
     if (inputScriptPersistTimer_ != nullptr) inputScriptPersistTimer_->stop();
     persist(kBaseInputScriptKey, baseInputScript_);
-    QSettings().sync();
+    AppSettings::Instance().sync();
 }
 
 void SearchController::requestShutdown() {

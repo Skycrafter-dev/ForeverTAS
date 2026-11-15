@@ -22,9 +22,9 @@ QtObject {
         "simulationBackendId", "simulationHorizonMs",
         "conditionScript", "cpuWorkerCount", "cudaParallelSampleCount",
         "cudaCalibrationEnabled", "hipParallelSampleCount",
-        "hipCalibrationEnabled", "vulkanParallelSampleCount",
-        "vulkanCalibrationEnabled", "cudaSessionSpecializationEnabled",
-        "randomizeSeedsOnStart", "drawTargetsThroughBlocks", "darkMode"
+        "hipCalibrationEnabled",
+        "approximatePhysics",
+        "randomizeSeedsOnStart", "drawTargetsThroughBlocks"
     ]
     readonly property var cuboidKeys:
         ["id", "name", "centerX", "centerY", "centerZ",

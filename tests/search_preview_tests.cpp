@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "app/search_completion.h"
 #include "viewer/race_viewer_controller.h"
 
@@ -35,14 +36,14 @@ int main(int argc, char **argv) {
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, settings.path());
     QCoreApplication::setOrganizationName(QStringLiteral("search-preview-test"));
     QCoreApplication::setApplicationName(QStringLiteral("search-preview-test"));
-    QSettings().setValue(QStringLiteral("viewer/liveBestUpdates"), true);
+    forevertas::app::AppSettings::Instance().setValue(QStringLiteral("viewer/liveBestUpdates"), true);
     using namespace forevertas;
     viewer::RaceViewerController viewer;
     const auto check = [](bool okay, const char *message) {
         if (!okay) std::cerr << message << '\n';
         return okay;
     };
-    if (!check(!QSettings().contains(QStringLiteral("viewer/liveBestUpdates")) &&
+    if (!check(!forevertas::app::AppSettings::Instance().contains(QStringLiteral("viewer/liveBestUpdates")) &&
                viewer.metaObject()->indexOfProperty("liveBestUpdates") < 0,
                "the removed live best preference survived")) return 1;
     const QString packs = QString::fromLocal8Bit(argv[1]);

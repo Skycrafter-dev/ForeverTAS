@@ -76,46 +76,8 @@ cmake_args=(
 if command -v sccache >/dev/null 2>&1; then
     cmake_args+=(-DCMAKE_CXX_COMPILER_LAUNCHER=sccache)
 fi
-if [[ -n "${FOREVERTAS_ENABLE_VULKAN:-}" ]]; then
-    cmake_args+=("-DFOREVERTAS_ENABLE_VULKAN=${FOREVERTAS_ENABLE_VULKAN}")
-fi
-if [[ -n "${FOREVERTAS_ENABLE_CUDA:-}" ]]; then
-    cmake_args+=(
-        "-DFOREVERTAS_ENABLE_CUDA=${FOREVERTAS_ENABLE_CUDA}"
-    )
-fi
-if [[ -n "${FOREVERTAS_ENABLE_HIP:-}" ]]; then
-    cmake_args+=("-DFOREVERTAS_ENABLE_HIP=${FOREVERTAS_ENABLE_HIP}")
-fi
-if [[ -n "${FOREVERTAS_DISTRIBUTION_FLAVOR:-}" ]]; then
-    cmake_args+=("-DFOREVERTAS_DISTRIBUTION_FLAVOR=${FOREVERTAS_DISTRIBUTION_FLAVOR}")
-fi
-if [[ -n "${FOREVERTAS_QML_MODULE_EXTERNAL:-}" ]]; then
-    cmake_args+=("-DFOREVERTAS_QML_MODULE_EXTERNAL=${FOREVERTAS_QML_MODULE_EXTERNAL}")
-fi
-if [[ -n "${FOREVERTAS_COMMON_QML_DIR:-}" ]]; then
-    cmake_args+=("-DFOREVERTAS_COMMON_QML_DIR=${FOREVERTAS_COMMON_QML_DIR}")
-fi
-if [[ -n "${FOREVERTAS_HIP_PLATFORM:-}" ]]; then
-    cmake_args+=("-DCMAKE_HIP_PLATFORM=${FOREVERTAS_HIP_PLATFORM}")
-fi
-if [[ -n "${FOREVERTAS_HIP_ARCHITECTURES:-}" ]]; then
-    cmake_args+=(
-        "-DCMAKE_HIP_ARCHITECTURES=${FOREVERTAS_HIP_ARCHITECTURES}"
-    )
-fi
-if [[ -n "${FOREVERTAS_HIP_FLAGS:-}" ]]; then
-    cmake_args+=("-DCMAKE_HIP_FLAGS=${FOREVERTAS_HIP_FLAGS}")
-fi
-if [[ -n "${FOREVERTAS_CUDA_ARCHITECTURES:-}" ]]; then
-    cmake_args+=(
-        "-DCMAKE_CUDA_ARCHITECTURES=${FOREVERTAS_CUDA_ARCHITECTURES}"
-    )
-fi
-if [[ -n "${FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS:-}" ]]; then
-    cmake_args+=(
-        "-DFOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS=${FOREVERVALIDATOR_CUDA_SPLIT_COMPILE_JOBS}"
-    )
+if [[ -n "${FOREVERTAS_ENABLE_TWIN:-}" ]]; then
+    cmake_args+=("-DFOREVERTAS_ENABLE_TWIN=${FOREVERTAS_ENABLE_TWIN}")
 fi
 if [[ -n "${FOREVERTAS_VALIDATOR_SOURCE:-}" ]]; then
     cmake_args+=(
@@ -127,57 +89,36 @@ if [[ "${FOREVERTAS_SKIP_BUILD:-0}" == "1" ]]; then
     test -x "${build_dir}/bin/ForeverTAS"
 else
     cmake "${cmake_args[@]}"
-    vulkan_include_dir="$(sed -n 's/^Vulkan_INCLUDE_DIR:PATH=//p' \
-        "${build_dir}/CMakeCache.txt")"
-    vulkan_header="${vulkan_include_dir}/vulkan/vulkan_core.h"
-    if [[ -f "${vulkan_header}" ]]; then
-        header_digest="$(sha256sum "${vulkan_header}" | cut -d' ' -f1)"
-        header_stamp="${build_dir}/.forevertas-vulkan-header-sha256"
-        previous_digest=""
-        if [[ -f "${header_stamp}" ]]; then
-            previous_digest="$(<"${header_stamp}")"
-        fi
-        if [[ "${header_digest}" != "${previous_digest}" ]]; then
-            while IFS= read -r -d '' object; do
-                rm -f "${object}"
-            done < <(find "${build_dir}" -type f \
-                -name 'vulkan_compute_runtime.cpp.o' -print0)
-        fi
-    fi
     cmake --build "${build_dir}" --parallel "${release_jobs}"
-    if [[ -n "${header_digest:-}" ]]; then
-        printf '%s\n' "${header_digest}" > "${header_stamp}"
-    fi
 fi
 
 if [[ "${FOREVERTAS_SKIP_PACKAGING:-0}" == "1" ]]; then
     exit 0
 fi
-if [[ -n "${FOREVERTAS_PACKAGE_TEMPLATE_APPDIR:-}" ]]; then
-    exec bash "${repo_root}/packaging/linux/package-from-template.sh"
-fi
-
 rm -rf "${appdir}"
 DESTDIR="${appdir}" cmake --install "${build_dir}"
+
+# Optional libraries a build ships beside the executable (colon-separated
+# paths), such as an optional render module; plain builds have none.
+# linuxdeploy bundles what they need in turn.
+extra_deploy_args=()
+if [[ -n "${FOREVERTAS_EXTRA_LIBRARIES:-}" ]]; then
+    IFS=':' read -r -a extra_libraries <<<"${FOREVERTAS_EXTRA_LIBRARIES}"
+    for extra_library in "${extra_libraries[@]}"; do
+        if [[ ! -f "${extra_library}" ]]; then
+            echo "Extra library not found: ${extra_library}" >&2
+            exit 1
+        fi
+        extra_target="${appdir}/usr/lib/$(basename "${extra_library}")"
+        install -Dm755 "${extra_library}" "${extra_target}"
+        extra_deploy_args+=(--library "${extra_target}")
+    done
+fi
 
 desktop-file-validate \
     "${appdir}/usr/share/applications/dev.skycrafter.forevertas.desktop"
 appstreamcli validate --no-net \
     "${appdir}/usr/share/metainfo/dev.skycrafter.forevertas.appdata.xml"
-
-if [[ "${FOREVERTAS_ENABLE_CUDA:-OFF}" == "ON" ]]; then
-    nvrtc_builtins="${CUDA_PATH:?CUDA_PATH is required for a CUDA AppImage}/targets/${appimage_arch}-linux/lib/libnvrtc-builtins.so.12.8"
-    if [[ ! -e "${nvrtc_builtins}" ]]; then
-        echo "CUDA NVRTC builtins library does not exist: ${nvrtc_builtins}" >&2
-        exit 1
-    fi
-    nvrtc_builtins_real="$(readlink -f "${nvrtc_builtins}")"
-    mkdir -p "${appdir}/usr/lib"
-    cp -L "${nvrtc_builtins_real}" \
-        "${appdir}/usr/lib/$(basename "${nvrtc_builtins_real}")"
-    ln -sfn "$(basename "${nvrtc_builtins_real}")" \
-        "${appdir}/usr/lib/libnvrtc-builtins.so.12.8"
-fi
 
 version="$(sed -n 's/^CMAKE_PROJECT_VERSION:STATIC=//p' "${build_dir}/CMakeCache.txt")"
 if [[ -z "${version}" ]]; then
@@ -306,60 +247,25 @@ export LDAI_OUTPUT="${output}"
 export APPIMAGE_EXTRACT_AND_RUN=1
 export PATH="$(dirname "${qt_plugin}"):${PATH}"
 original_ld_library_path="${LD_LIBRARY_PATH-}"
-hip_deploy_args=()
-if [[ "${FOREVERTAS_ENABLE_HIP:-OFF}" == "ON" &&
-      "${HIP_PLATFORM:-amd}" == "amd" ]]; then
-    hip_root="${HIP_PATH:-${ROCM_PATH:-}}"
-    hip_runtime_dir="${hip_root}/lib"
-    hip_runtime="${hip_runtime_dir}/libamdhip64.so.7"
-    if [[ ! -f "${hip_runtime}" ]]; then
-        echo "AMD HIP runtime is missing: ${hip_runtime}" >&2
-        exit 1
-    fi
-    export LD_LIBRARY_PATH="${hip_runtime_dir}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
-    hip_deploy_args+=(--library "${hip_runtime}")
-    license_dir="${appdir}/usr/share/doc/ForeverTAS/licenses"
-    cp "${hip_root}/share/doc/hip/LICENSE.md" "${license_dir}/AMD-HIP-LICENSE.txt"
-    cp "${hip_root}/share/doc/hsa-rocr/LICENSE.md" "${license_dir}/AMD-ROCr-LICENSE.txt"
-    cp "${hip_root}/share/doc/rocprofiler-register/LICENSE.md" \
-        "${license_dir}/AMD-rocprofiler-register-LICENSE.txt"
-    cp /usr/share/doc/libdrm-amdgpu1/copyright \
-        "${license_dir}/libdrm-amdgpu-copyright.txt"
+if [[ ${#extra_deploy_args[@]} -gt 0 ]]; then
+    # extra libraries may need each other: linuxdeploy finds them where they were installed
+    export LD_LIBRARY_PATH="${appdir}/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 fi
-
 if [[ "${FOREVERTAS_ENABLE_STRIP:-0}" == "1" ]]; then
     unset NO_STRIP
 else
     export NO_STRIP=1
 fi
 
-# Bundle the portable loader, never a vendor GPU driver. An explicit library
-# also works when linuxdeploy's default exclusion list contains libvulkan.
-vulkan_deploy_args=()
 openssl_runtime="/usr/lib/$(gcc -print-multiarch)/libssl.so.3"
 if [[ ! -f "${openssl_runtime}" ]]; then
     echo "The AppImage requires the OpenSSL 3 runtime." >&2
     exit 1
 fi
 openssl_deploy_args=(--library "${openssl_runtime}")
-if [[ "${FOREVERTAS_ENABLE_HIP:-OFF}" == "ON" &&
-      "${FOREVERTAS_HIP_PLATFORM:-}" == "amd" ]]; then
-    # ROCm's runtime lives outside the loader's default search path in the
-    # build image; linuxdeploy must see it to bundle its transitive libraries.
-    export LD_LIBRARY_PATH="${HIP_PATH:-/opt/rocm}/lib:${LD_LIBRARY_PATH:-}"
-fi
-if grep -q 'FOREVERTAS_ENABLE_VULKAN:BOOL=ON' "${build_dir}/CMakeCache.txt"; then
-    vulkan_loader="$(ldd "${appdir}/usr/bin/ForeverTAS" |
-        awk '$1 == "libvulkan.so.1" { print $3 }')"
-    if [[ ! -f "${vulkan_loader}" ]]; then
-        echo "Vulkan-enabled AppImage requires a deployable Vulkan loader." >&2
-        exit 1
-    fi
-    vulkan_deploy_args+=(--library "${vulkan_loader}")
-fi
 
-"${linuxdeploy}" "${vulkan_deploy_args[@]}" "${hip_deploy_args[@]}" \
-    "${openssl_deploy_args[@]}" \
+"${linuxdeploy}" \
+    "${openssl_deploy_args[@]}" "${extra_deploy_args[@]}" \
     --appdir "${appdir}" \
     --desktop-file "${appdir}/usr/share/applications/dev.skycrafter.forevertas.desktop" \
     --icon-file "${appdir}/usr/share/icons/hicolor/256x256/apps/dev.skycrafter.forevertas.png" \
@@ -390,19 +296,13 @@ test -f "${extracted_appdir}/usr/plugins/wayland-graphics-integration-client/lib
 test -f "${extracted_appdir}/usr/plugins/wayland-decoration-client/libadwaita.so"
 test -f "${extracted_appdir}/usr/lib/libssl.so.3"
 test -f "${extracted_appdir}/usr/lib/libcrypto.so.3"
-if [[ "${FOREVERTAS_ENABLE_CUDA:-OFF}" == "ON" ]]; then
-    test -f "${extracted_appdir}/usr/lib/libnvrtc-builtins.so.12.8"
-fi
-if [[ "${FOREVERTAS_ENABLE_HIP:-OFF}" == "ON" &&
-      "${FOREVERTAS_HIP_PLATFORM:-}" == "amd" ]]; then
-    for library in libamdhip64.so.7 libhsa-runtime64.so.1 \
-            librocprofiler-register.so.0; do
-        test -f "${extracted_appdir}/usr/lib/${library}"
-    done
-fi
-
-if [[ ${#vulkan_deploy_args[@]} -ne 0 ]]; then
-    test -f "${extracted_appdir}/usr/lib/libvulkan.so.1"
+# GPU code comes as a module (src/compute), never inside the app.
+if find "${extracted_appdir}" \
+        \( -type f -o -type l \) \
+        \( -name 'libdrm_amdgpu.so*' -o -name 'libcudart*' -o -name 'libamdhip64*' \) \
+        -print -quit | grep -q .; then
+    echo "The AppImage must carry no GPU runtime (they come with GPU modules)." >&2
+    exit 1
 fi
 
 if find "${extracted_appdir}" \
@@ -441,7 +341,7 @@ QT_QPA_PLATFORM=offscreen \
 QSG_RHI_BACKEND=software \
 APPIMAGE_EXTRACT_AND_RUN=1 \
     "${output}" --qml-smoke-test
-echo "Validated AppImage startup without requiring an NVIDIA driver."
+echo "Validated AppImage startup without a GPU driver."
 rm -rf "${smoke_root}"
 trap - EXIT
 

@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "viewer/whiteboard_canvas_item.h"
 #include "viewer/whiteboard_model.h"
 #include "viewer/race_timeline_item.h"
@@ -88,7 +89,7 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName(
             QStringLiteral("Whiteboard Tests"));
     QStandardPaths::setTestModeEnabled(true);
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
 
     int failures = 0;
     const auto expect = [&failures](bool condition, const char *message) {
@@ -310,7 +311,7 @@ int main(int argc, char **argv) {
                            capacityModel.maximumCount(),
            "the item limit rejects overflow without corrupting drawings");
 
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     WhiteboardModel repositoryModel;
     repositoryModel.setMapIdentity(
             QStringLiteral("collision-sha256:stadium"),
@@ -573,7 +574,7 @@ int main(int argc, char **argv) {
                            versionTwoSet.size(),
            "version-two migration fixture is written");
     versionTwoSetFile.close();
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     WhiteboardModel versionTwoRepository;
     versionTwoRepository.setMapIdentity(
             QStringLiteral("collision-sha256:stadium"),
@@ -678,7 +679,7 @@ int main(int argc, char **argv) {
                                       "https://example.invalid/background.png"))),
            "background image saving rejects invalid image values and destinations");
 
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     WhiteboardModel importedRepository;
     importedRepository.setMapIdentity(
             QStringLiteral("collision-sha256:stadium"),
@@ -703,7 +704,7 @@ int main(int argc, char **argv) {
                            legacySet.size(),
            "legacy import fixture without map names is written");
     legacySetFile.close();
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     WhiteboardModel unrelatedLegacyImport;
     unrelatedLegacyImport.setMapIdentity(
             QStringLiteral("collision-sha256:other"),
@@ -835,7 +836,7 @@ int main(int argc, char **argv) {
                            mapNeutralSet.size(),
            "map-neutral import fixture is written");
     mapNeutralFile.close();
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     WhiteboardModel neutralRepository;
     expect(!neutralRepository.importBoardSet(
                    QUrl::fromLocalFile(mapNeutralPath)) &&
@@ -1547,7 +1548,7 @@ int main(int argc, char **argv) {
                "forcing an export plane leaves stored visibility unchanged");
     }
 
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     if (failures == 0) {
         std::cout << "whiteboard model and vector rendering tests passed\n";
     }

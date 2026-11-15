@@ -44,6 +44,8 @@ enum class SearchProgressStage : std::uint8_t {
     Mutations,
     FinalSamplingSetup,
     FinalSampling,
+    // Approximate physics: the last best rebuilt on exact physics.
+    ExactRebuild,
 };
 
 struct SearchProgress {
@@ -86,6 +88,16 @@ struct SearchTimelineFrame {
     std::optional<std::uint32_t> stuntsScore = std::nullopt;
 };
 
+// Approximate physics: what the twin (the faster copy of the physics the
+// candidates ran on) scored for the best, before the bridge rebuilt it on exact
+// physics, and how far the exact run strayed from the twin's path.
+struct ApproximateResult {
+    double score = 0.0;
+    std::string description;
+    // Unset for the baseline: its inputs are not rebuilt.
+    std::optional<double> driftMeters;
+};
+
 struct SearchLiveUpdate {
     SearchWinnerSource winnerSource = SearchWinnerSource::Baseline;
     std::optional<std::uint64_t> winningIterationIndex;
@@ -105,6 +117,7 @@ struct SearchLiveUpdate {
     std::vector<SearchTimelineFrame> bestTimeline;
     std::vector<double> objectiveScores;
     std::vector<double> metricValues;
+    std::optional<ApproximateResult> approximate;
 };
 
 struct SearchStatisticsUpdate {
@@ -128,6 +141,10 @@ struct SearchRunControl {
     std::function<void()> cudaWinnerResolved;
     std::function<std::optional<std::vector<SandboxInputEvent>>()>
             promotedBaselineInputs;
+    // Several GPUs on one search: the first of the next that many candidates
+    // (a GPU claims a block of its batches at a time), so no two GPUs try the
+    // same candidate.
+    std::function<std::uint64_t(std::uint32_t)> claimIterations;
     std::optional<std::uint64_t> iterationLimit;
     std::optional<std::int64_t> evaluationEndTimeLimitMs;
     std::uint64_t iterationIndexOffset = 0u;
@@ -163,7 +180,6 @@ struct SearchExecutionContext {
     const SearchRunControl *control = nullptr;
     std::uint32_t cudaBatchSize = 1u;
     bool calibrateCudaBatchSize = false;
-    bool useCudaSessionSpecialization = false;
     const std::vector<forevervalidator::experimental::
                               PhysicsSandboxCudaModifier>
             *cudaModifiers = nullptr;
@@ -179,7 +195,28 @@ struct SearchExecutionContext {
     std::uint32_t simulationHorizonMs = 6000u;
     const ConditionProgram *condition = nullptr;
     double searchStartedTimeSeconds = 0.0;
+    // Approximate physics: the sandbox is optimized CPU, the candidates run on
+    // the twin and each new best is rebuilt on exact physics. The twin runs on
+    // its GPU engine (CUDA, or HIP in builds without CUDA), or, with
+    // approximateCpuThreads, on that many CPU threads (the rebuild on one
+    // more: the multi-threaded CPU backend's last worker).
+    bool approximatePhysics = false;
+    std::uint32_t approximateCpuThreads = 0u;
 };
+
+// The backend the search's candidates run on.
+inline forevervalidator::SimulationBackend CandidateBackend(
+        const SearchExecutionContext &context) noexcept {
+#if FOREVERVALIDATOR_HAS_CUDA
+    constexpr auto twinBackend = forevervalidator::SimulationBackend::Cuda;
+#else
+    constexpr auto twinBackend = forevervalidator::SimulationBackend::Hip;
+#endif
+    if (!context.approximatePhysics) return context.sandbox.Backend();
+    return context.approximateCpuThreads != 0u
+            ? forevervalidator::SimulationBackend::OptimizedCpu
+            : twinBackend;
+}
 
 struct SearchResult {
     SearchWinnerSource winnerSource = SearchWinnerSource::Baseline;
@@ -201,6 +238,7 @@ struct SearchResult {
     forevervalidator::experimental::PhysicsSandboxState bestSnapshot;
     std::vector<double> objectiveScores;
     std::vector<double> metricValues;
+    std::optional<ApproximateResult> approximate;
 };
 
 class SearchAlgorithm {

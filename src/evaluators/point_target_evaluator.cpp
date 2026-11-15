@@ -94,11 +94,11 @@ std::optional<std::string> ValidatePointTargetOptionSettings(
         return keyError;
     }
     const auto parsed = ParseSettings(settings);
-    if (!parsed) return "point target settings contain invalid values";
+    if (!parsed) return kUnreadableSetting;
     return ValidateTimeWindow(parsed->minimumTimeMs,
                               parsed->maximumTimeMs,
                               tickDurationMs,
-                              "evaluation",
+                              "the minimum time",
                               true);
 }
 

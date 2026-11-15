@@ -14,8 +14,10 @@ ColumnLayout {
     spacing: 8
 
     TimeWindowSettings {
+        chainController: root.controller
+        chainKey: "target"
         settings: controller.evaluationTargetSettings
-        updateSetting: controller.setEvaluationTargetSetting
+        updateSetting: (key, value) => controller.setEvaluationTargetSetting(key, value)
         running: controller.running
         viewer: root.viewer
     }
@@ -23,7 +25,7 @@ ColumnLayout {
     Vector3Settings {
         title: qsTr("Target point")
         settings: controller.evaluationTargetSettings
-        updateSetting: controller.setEvaluationTargetSetting
+        updateSetting: (key, value) => controller.setEvaluationTargetSetting(key, value)
         running: controller.running
     }
 

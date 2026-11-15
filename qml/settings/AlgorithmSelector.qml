@@ -81,9 +81,11 @@ ColumnLayout {
                         "stunt-points": "trophy",
                         "precise-finish-time": "flag",
                         "checkpoint-time": "clock",
+                        "distance-target": "ruler",
                         "time": "timer",
                         "volume-entry-time": "box",
                         "custom-volume-entry-time": "pentagon",
+                        "gate-entry": "flag",
                         "point-target": "crosshair",
                         "pose-target": "axis-3d",
                         "scripted-target": "crosshair"
@@ -96,9 +98,11 @@ ColumnLayout {
                         "stunt-points": qsTr("Stunts"),
                         "precise-finish-time": qsTr("Finish"),
                         "checkpoint-time": qsTr("CP time"),
+                        "distance-target": qsTr("Distance"),
                         "time": qsTr("Time"),
                         "volume-entry-time": qsTr("Box entry"),
                         "custom-volume-entry-time": qsTr("Poly entry"),
+                        "gate-entry": qsTr("Gates"),
                         "point-target": qsTr("Point"),
                         "pose-target": qsTr("Pose"),
                         "scripted-target": qsTr("Custom")

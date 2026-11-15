@@ -4,7 +4,7 @@ Generated from the parser's symbol catalog. Regenerate with `forevertas-conditio
 
 ## Setup and Preflight
 
-ForeverTAS runs standalone against a readable installed TMUF Packs directory and a replay or Challenge.Gbx. No in-game plugin is required for local search. The scenario supplies the map, not the control script. An empty base script is valid and means no scripted controls; Extract inputs to script imports replay controls. Exported scripts are text; applying them in a game is a separate workflow and may require an external tool.
+ForeverTAS runs standalone against a readable installed TMUF Packs directory and a replay or Challenge.Gbx. No in-game plugin is required for local search. The scenario supplies the map, not the control script. An empty base script is valid and means no scripted controls; File > Extract inputs from replay imports replay controls. Exported scripts are text; applying them in a game is a separate workflow and may require an external tool.
 
 Start remains disabled while the validation message identifies invalid paths, script syntax, horizon, target/pass windows, conditions, or an unavailable backend. Correct that message and recheck. Device/runtime errors discovered during loading are reported separately. Choose CPU Reference or CPU Optimized when a GPU route is unavailable; this is not an automatic fallback.
 

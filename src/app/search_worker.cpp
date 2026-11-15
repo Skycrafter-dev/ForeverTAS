@@ -1,6 +1,8 @@
 #include "app/search_worker.h"
+#include "diagnostics/diagnostics_log.h"
 
 #include "app/compact_number_format.h"
+#include "app/compute_modules.h"
 #include "app/rolling_throughput.h"
 #include "app/search_session_store.h"
 #include "mutations/input_event_formatter.h"
@@ -50,7 +52,7 @@ QString LastImprovementText(const SearchLiveUpdate &live) {
 }
 
 QString FormatLive(const SearchLiveUpdate &live, const QString &heading) {
-    return QStringLiteral(
+    QString text = QStringLiteral(
                    "%1: %2\n"
                    "%3\n"
                    "Improvements: %4\n"
@@ -62,6 +64,17 @@ QString FormatLive(const SearchLiveUpdate &live, const QString &heading) {
             .arg(FormatCompactNumber(static_cast<double>(
                     live.mutationImprovementCount)))
             .arg(LastImprovementText(live));
+    if (live.approximate) {
+        text += QStringLiteral("\nApproximate: %1")
+                        .arg(QString::fromStdString(
+                                live.approximate->description));
+        if (live.approximate->driftMeters) {
+            text += QStringLiteral("\nDrift: %1 mm")
+                            .arg(*live.approximate->driftMeters * 1000.0,
+                                 0, 'f', 3);
+        }
+    }
+    return text;
 }
 
 SearchLiveUpdate ToLiveUpdate(const SearchResult &result) {
@@ -82,7 +95,8 @@ SearchLiveUpdate ToLiveUpdate(const SearchResult &result) {
             result.lastImprovementElapsed,
             {},
             result.objectiveScores,
-            result.metricValues};
+            result.metricValues,
+            result.approximate};
 }
 
 QString FormatResult(const SearchResult &result) {
@@ -107,6 +121,7 @@ SearchLiveUpdate RetainedResult(const SearchLiveUpdate &live) {
     result.lastImprovementElapsed = live.lastImprovementElapsed;
     result.objectiveScores = live.objectiveScores;
     result.metricValues = live.metricValues;
+    result.approximate = live.approximate;
     return result;
 }
 
@@ -118,30 +133,7 @@ QString FilePathFromUtf8(const std::string &path) {
 }  // namespace
 
 QString SearchStageStatus(SearchProgressStage stage,
-                          std::string_view backendId,
-                          bool useCudaSessionSpecialization) {
-    if (backendId == "vulkan") {
-        switch (stage) {
-        case SearchProgressStage::CreatingSimulation:
-            return QStringLiteral("Initializing Vulkan simulation...");
-        case SearchProgressStage::LoadingScenario:
-            return QStringLiteral("Loading the map onto Vulkan...");
-        case SearchProgressStage::RestoringSimulation:
-            return QStringLiteral("Restoring the prepared Vulkan simulation...");
-        case SearchProgressStage::ApplyingBaselineInputs:
-            return QStringLiteral("Applying baseline inputs to Vulkan...");
-        case SearchProgressStage::PreparingSearch:
-            return QStringLiteral("Preparing Vulkan search...");
-        case SearchProgressStage::Baseline:
-            return QStringLiteral("Evaluating Vulkan baseline...");
-        case SearchProgressStage::Calibration:
-            return QStringLiteral("Calibrating Vulkan throughput...");
-        case SearchProgressStage::Mutations:
-            return QStringLiteral("Searching on Vulkan...");
-        default:
-            break;
-        }
-    }
+                          std::string_view backendId) {
     const bool cuda = backendId == "cuda";
     const bool multiThreadedCpu =
             backendId == "multi-threaded-cpu";
@@ -161,11 +153,7 @@ QString SearchStageStatus(SearchProgressStage stage,
         return QStringLiteral("Initializing reference simulation...");
     case SearchProgressStage::LoadingScenario:
         if (cuda) {
-            return useCudaSessionSpecialization
-                    ? QStringLiteral(
-                              "Loading the map and building the fast CUDA "
-                              "kernel...")
-                    : QStringLiteral("Loading the map onto CUDA...");
+            return QStringLiteral("Loading the map onto CUDA...");
         }
         return QStringLiteral("Loading the map into the simulation...");
     case SearchProgressStage::RestoringSimulation:
@@ -182,9 +170,7 @@ QString SearchStageStatus(SearchProgressStage stage,
         return QStringLiteral("Applying the baseline input sequence...");
     case SearchProgressStage::PreparingSearch:
         if (cuda) {
-            return useCudaSessionSpecialization
-                    ? QStringLiteral("Preparing fast CUDA search...")
-                    : QStringLiteral("Preparing regular CUDA search...");
+            return QStringLiteral("Preparing CUDA search...");
         }
         if (multiThreadedCpu) {
             return QStringLiteral(
@@ -211,6 +197,8 @@ QString SearchStageStatus(SearchProgressStage stage,
                 : QStringLiteral("Preparing final best-run sampling...");
     case SearchProgressStage::FinalSampling:
         return QStringLiteral("Sampling best run...");
+    case SearchProgressStage::ExactRebuild:
+        return QStringLiteral("Rebuilding the best on exact physics...");
     }
     return QStringLiteral("Preparing search...");
 }
@@ -244,13 +232,15 @@ SearchWorker::SearchWorker(
         std::shared_ptr<std::atomic_bool> stopRequested,
         std::shared_ptr<std::atomic_bool> cancellationRequested,
         std::shared_ptr<std::atomic<SearchIterationPhase>> iterationPhase,
-        AutoRestartPolicy restartPolicy)
+        AutoRestartPolicy restartPolicy,
+        std::vector<SearchDevice> devices)
     : request_(std::move(request)),
       searchId_(searchId),
       stopRequested_(std::move(stopRequested)),
       cancellationRequested_(std::move(cancellationRequested)),
       iterationPhase_(std::move(iterationPhase)),
-      restartPolicy_(restartPolicy) {}
+      restartPolicy_(restartPolicy),
+      devices_(std::move(devices)) {}
 
 void SearchWorker::run() {
     emit stageChanged(QStringLiteral("Preparing search..."), true);
@@ -283,8 +273,7 @@ void SearchWorker::run() {
         emit stageChanged(
                 SearchStageStatus(
                         progress.stage,
-                        PhysicsBackendId(request_.backend),
-                        request_.useCudaSessionSpecialization),
+                        PhysicsBackendId(request_.backend)),
                 true);
     };
     control.cudaBatchSizeChanged = [this](std::uint32_t batchSize) {
@@ -337,7 +326,7 @@ void SearchWorker::run() {
                            latestSource = SearchWinnerSource::Baseline,
                            latestIteration =
                                    std::optional<std::uint64_t>{},
-                           publishImprovement](
+                           publishImprovement, currentRestart](
                                   const SearchLiveUpdate &live) mutable {
         if (!retainedResult || latestInputsText.isEmpty() ||
             latestSource != live.winnerSource ||
@@ -348,6 +337,7 @@ void SearchWorker::run() {
             latestSource = live.winnerSource;
             latestIteration = live.winningIterationIndex;
             retainedResult = RetainedResult(live);
+            retainedResult->bestTimeline = live.bestTimeline;   // the result's preview when the search is stopped
         } else {
             retainedResult->iterations = live.iterations;
             retainedResult->elapsed = live.elapsed;
@@ -357,8 +347,9 @@ void SearchWorker::run() {
         emit bestChanged(
                 FormatLive(live, QStringLiteral("Current best")),
                 latestInputsText);
+        emit liveRowChanged(SearchSessionStore::LiveRow(
+                request_, currentRestart->load(std::memory_order_relaxed), live));
     };
-#if FOREVERVALIDATOR_HAS_CUDA || FOREVERVALIDATOR_HAS_VULKAN || FOREVERVALIDATOR_HAS_HIP
     if (IsGpuBackend(request_.backend)) {
         control.improvementTimelineSampled =
                 [publishImprovement](const SearchLiveUpdate &live) {
@@ -367,7 +358,6 @@ void SearchWorker::run() {
                             PhysicsBackendId(kAuxiliarySimulationBackend));
                 };
     }
-#endif
 
     std::optional<SearchSessionLocation> activeSession;
     std::uint64_t restartNumber = 0;
@@ -434,8 +424,33 @@ void SearchWorker::run() {
                 }
             }
             currentRestart->store(restartNumber, std::memory_order_relaxed);
+            if (diagnostics::LogOpen()) {
+                std::string modifiers;
+                for (const OptionConfiguration &modifier : request_.modifiers) {
+                    modifiers += (modifiers.empty() ? "" : ", ") + modifier.id;
+                }
+                std::string backend(PhysicsBackendId(request_.backend));
+                if (devices_.size() >= 2u) {
+                    backend.clear();
+                    for (const SearchDevice &device : devices_) {
+                        backend += (backend.empty() ? "" : "+") + std::string(PhysicsBackendId(device.backend));
+                    }
+                }
+                diagnostics::Log("search %llu (restart %llu): %.*s%s, %s, target %s, modifiers %s, "
+                                 "horizon %u ms, batch %u%s, replay %s",
+                                 static_cast<unsigned long long>(searchId_),
+                                 static_cast<unsigned long long>(restartNumber),
+                                 static_cast<int>(backend.size()), backend.data(),
+                                 request_.approximatePhysics ? " approximate" : "",
+                                 request_.searchAlgorithm.id.c_str(),
+                                 request_.evaluationTarget.id.c_str(), modifiers.c_str(),
+                                 static_cast<unsigned>(request_.simulationHorizonMs),
+                                 static_cast<unsigned>(request_.parallelSampleCount),
+                                 request_.calibrateCudaParallelSampleCount ? " (calibrated)" : "",
+                                 request_.replayPath.c_str());
+            }
             try {
-                result.emplace(RunSearch(request_, &control));
+                result.emplace(ComputeModules::Instance().RunSearch(request_, devices_, &control));
             } catch (const NoEligibleEvaluation &) {
                 if (cancellationRequested_->load(std::memory_order_relaxed))
                     throw SearchCancelled();
@@ -452,6 +467,9 @@ void SearchWorker::run() {
             if (restartPolicy_.mode == AutoRestartPolicy::Mode::Off ||
                 stopRequested_->load(std::memory_order_relaxed)) break;
             ++restartNumber;
+            // The new restart has no best yet: not the last one's.
+            emit bestChanged(QString(), QString());
+            emit liveRowChanged(QVariantMap());
             emit stageChanged(
                     QStringLiteral("Starting restart %1...")
                             .arg(static_cast<qulonglong>(restartNumber)),
@@ -495,12 +513,33 @@ void SearchWorker::run() {
                 return;
             }
         }
-        emit cancelled();
+        if (retainedResult) {   // stopped: the best found so far is the result
+            auto completion = std::make_shared<SearchCompletion>();
+            completion->searchId = searchId_;
+            completion->summary = FormatLive(*retainedResult, QStringLiteral("Search stopped. Best"));
+            completion->inputsText = QString::fromStdString(FormatResultInputScript(
+                    retainedResult->bestInputs, request_.evaluationTarget.id, retainedResult->bestState));
+            completion->packsDirectory = FilePathFromUtf8(request_.packDirectory);
+            completion->replayPath = FilePathFromUtf8(request_.replayPath);
+            const std::string_view backendId = PhysicsBackendId(kAuxiliarySimulationBackend);
+            completion->simulationBackendId =
+                    QString::fromLatin1(backendId.data(), static_cast<qsizetype>(backendId.size()));
+            completion->bestInputs = std::move(retainedResult->bestInputs);
+            completion->bestTimeline = std::move(retainedResult->bestTimeline);
+            emit stopped(std::move(completion));
+        } else {
+            emit cancelled();
+        }
     } catch (const std::exception &error) {
+        diagnostics::Log("search %llu failed: %s", static_cast<unsigned long long>(searchId_),
+                         error.what());
         emit failed(QString::fromUtf8(error.what()));
     } catch (...) {
+        diagnostics::Log("search %llu failed: unknown exception",
+                         static_cast<unsigned long long>(searchId_));
         emit failed(QStringLiteral("Unexpected search failure"));
     }
+    diagnostics::Log("search %llu finished", static_cast<unsigned long long>(searchId_));
     emit finished();
 }
 

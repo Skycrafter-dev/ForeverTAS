@@ -85,13 +85,13 @@ std::optional<std::string> ValidateStuntPointsOptionSettings(
     }
     const auto deadline = ParseDeadline(settings);
     if (!deadline) {
-        return "stunt points target time is invalid";
+        return kUnreadableSetting;
     }
     return ValidateTimeWindow(
             *deadline,
             *deadline,
             tickDurationMs,
-            "stunt points target",
+            "the target time",
             true);
 }
 

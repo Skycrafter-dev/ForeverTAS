@@ -5,33 +5,70 @@ if(CMAKE_HOST_APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 project(ForeverTAS
-    VERSION 0.2.7
+    VERSION 0.3.0
     DESCRIPTION "Native TrackMania Nations Forever tool-assisted search tool"
     HOMEPAGE_URL "https://github.com/Skycrafter-dev/ForeverTAS"
     LANGUAGES CXX)
 
-option(FOREVERTAS_ENABLE_VULKAN
-    "Build ForeverTAS with the optional ForeverValidator Vulkan backend" ON)
 option(FOREVERTAS_ENABLE_CUDA
     "Build ForeverTAS with the optional ForeverValidator CUDA backend" OFF)
 option(FOREVERTAS_ENABLE_HIP
     "Build ForeverTAS with the optional ForeverValidator HIP backend" OFF)
+option(FOREVERTAS_ENABLE_TWIN
+    "Build ForeverTAS with ForeverValidator's twin engine (Approximate physics: CPU threads, CUDA or HIP)" OFF)
+# A GPU module (cuda or hip): only the search core with that backend, as a
+# library the app loads at run time; no Qt, no app. See src/compute.
+set(FOREVERTAS_COMPUTE_MODULE "" CACHE STRING "Build only a GPU module: cuda or hip")
+if(FOREVERTAS_COMPUTE_MODULE STREQUAL "cuda")
+    set(FOREVERTAS_ENABLE_CUDA ON CACHE BOOL "" FORCE)
+    set(FOREVERTAS_ENABLE_HIP OFF CACHE BOOL "" FORCE)
+elseif(FOREVERTAS_COMPUTE_MODULE STREQUAL "hip")
+    set(FOREVERTAS_ENABLE_CUDA OFF CACHE BOOL "" FORCE)
+    set(FOREVERTAS_ENABLE_HIP ON CACHE BOOL "" FORCE)
+elseif(FOREVERTAS_COMPUTE_MODULE)
+    message(FATAL_ERROR "FOREVERTAS_COMPUTE_MODULE must be cuda or hip")
+endif()
+if(FOREVERTAS_COMPUTE_MODULE)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+    # every GPU generation of a file at once (one module carries them all
+    # until it is split per generation)
+    if(FOREVERTAS_COMPUTE_MODULE STREQUAL "cuda")
+        # ptxas takes up to ~3.7 GB per generation on the twin's kernels:
+        # nvcc runs as many generations side by side as fit in ~5 GB each of
+        # the computer's memory (the rest is the computer's; all cores when
+        # it can: --threads=0), and ninja one CUDA file at a time
+        set(FOREVERTAS_CUDA_GENERATIONS_AT_ONCE "" CACHE STRING
+            "GPU generations nvcc compiles side by side (0: one per core; empty: from the memory)")
+        set(cuda_threads "${FOREVERTAS_CUDA_GENERATIONS_AT_ONCE}")
+        if(cuda_threads STREQUAL "")
+            cmake_host_system_information(RESULT memory_mb QUERY TOTAL_PHYSICAL_MEMORY)
+            cmake_host_system_information(RESULT cores QUERY NUMBER_OF_LOGICAL_CORES)
+            math(EXPR cuda_threads "${memory_mb} / 5120")
+            if(cuda_threads LESS 1)
+                set(cuda_threads 1)
+            elseif(cuda_threads GREATER_EQUAL cores)
+                set(cuda_threads 0)
+            endif()
+        endif()
+        set(FOREVERTAS_CUDA_FILES_AT_ONCE 1 CACHE STRING
+            "CUDA files compiled at the same time")
+        string(APPEND CMAKE_CUDA_FLAGS " --threads=${cuda_threads} --compress-mode=size")
+        find_package(Python3 COMPONENTS Interpreter REQUIRED)
+        set(CMAKE_CUDA_COMPILER_LAUNCHER
+            "${Python3_EXECUTABLE};${CMAKE_CURRENT_SOURCE_DIR}/cmake/compile_slots.py;${CMAKE_BINARY_DIR}/cuda-slots;${FOREVERTAS_CUDA_FILES_AT_ONCE};${CMAKE_CUDA_COMPILER_LAUNCHER}")
+    endif()
+endif()
 option(FOREVERTAS_QML_MODULE_EXTERNAL
     "Use the release's shared QML module instead of building it here" OFF)
 set(FOREVERTAS_COMMON_QML_DIR "" CACHE PATH
     "Directory containing the shared ForeverTAS QML module")
 set(FOREVERTAS_PREBUILT_VALIDATOR_DIR "" CACHE PATH
     "Directory containing a verified, matching Windows Validator build")
-set(FOREVERTAS_DISTRIBUTION_FLAVOR "" CACHE STRING
-    "Public package flavor: universal, nvidia-smNN, or amd-rx7000-rx9000")
 set(FOREVERTAS_WINDOWS_RUNTIME_DIR "" CACHE PATH
     "Directory containing non-Qt runtime DLLs for Windows packaging")
 set(FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR "" CACHE PATH
     "Directory containing redistributable MSVC runtime DLLs")
-set(FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR "" CACHE PATH
-    "Directory containing redistributable CUDA runtime DLLs")
-set(FOREVERTAS_WINDOWS_HIP_RUNTIME_DIR "" CACHE PATH
-    "Directory containing redistributable HIP runtime DLLs")
 
 if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
@@ -48,6 +85,7 @@ include(CTest)
 include(GNUInstallDirs)
 find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 find_package(ZLIB REQUIRED)
+if(NOT FOREVERTAS_COMPUTE_MODULE)
 find_package(SDL3 3.2 QUIET CONFIG)
 if(NOT SDL3_FOUND)
     set(SDL_SHARED OFF CACHE BOOL "Build bundled SDL statically")
@@ -55,6 +93,8 @@ if(NOT SDL3_FOUND)
     set(SDL_TESTS OFF CACHE BOOL "Disable SDL tests")
     set(SDL_EXAMPLES OFF CACHE BOOL "Disable SDL examples")
     set(SDL_INSTALL OFF CACHE BOOL "Install only the app's SDL notice")
+    # no precompiled header: ccache and sccache cannot keep files built with one
+    set(CMAKE_DISABLE_PRECOMPILE_HEADERS ON)
     FetchContent_Declare(SDL3
         GIT_REPOSITORY https://github.com/libsdl-org/SDL.git
         GIT_TAG f5e5f6588921eed3d7d048ce43d9eb1ff0da0ffc)
@@ -79,6 +119,8 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Quick3D
     QuickControls2
     Widgets)
+# The glass panels are drawn with custom shaders.
+find_package(Qt6 6.5 REQUIRED COMPONENTS ShaderTools)
 if(UNIX AND NOT APPLE)
     find_package(Qt6 6.5 REQUIRED COMPONENTS DBus)
 endif()
@@ -91,6 +133,7 @@ if(BUILD_TESTING)
 endif()
 qt_standard_project_setup(REQUIRES 6.5)
 qt_policy(SET QTP0004 NEW)
+endif()
 
 set(FOREVERVALIDATOR_BUILD_CLI OFF CACHE BOOL
     "Do not build the embedded ForeverValidator CLI" FORCE)
@@ -100,8 +143,19 @@ set(FOREVERVALIDATOR_ENABLE_CUDA ${FOREVERTAS_ENABLE_CUDA} CACHE BOOL
     "Enable the embedded ForeverValidator CUDA backend" FORCE)
 set(FOREVERVALIDATOR_ENABLE_HIP ${FOREVERTAS_ENABLE_HIP} CACHE BOOL
     "Enable the embedded ForeverValidator HIP backend" FORCE)
-set(FOREVERVALIDATOR_ENABLE_VULKAN ${FOREVERTAS_ENABLE_VULKAN} CACHE BOOL
+# ForeverValidator's Vulkan backend is not used by ForeverTAS.
+set(FOREVERVALIDATOR_ENABLE_VULKAN OFF CACHE BOOL
     "Enable the embedded ForeverValidator Vulkan backend" FORCE)
+# The twin runs on CPU threads in every build, and on the GPU with CUDA or HIP.
+set(FOREVERVALIDATOR_BUILD_TWIN ${FOREVERTAS_ENABLE_TWIN} CACHE BOOL
+    "Build the embedded ForeverValidator twin engine" FORCE)
+if(FOREVERTAS_ENABLE_TWIN AND (FOREVERTAS_ENABLE_CUDA OR FOREVERTAS_ENABLE_HIP))
+    set(forevertas_twin_gpu ON)
+else()
+    set(forevertas_twin_gpu OFF)
+endif()
+set(FOREVERVALIDATOR_BUILD_TWIN_GPU ${forevertas_twin_gpu} CACHE BOOL
+    "Build the embedded ForeverValidator twin's GPU engine" FORCE)
 if(WIN32 AND FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "nvidia")
     set(CMAKE_HIP_COMPILE_OPTIONS_MSVC_RUNTIME_LIBRARY_MultiThreaded
         -Xcompiler=-MT)
@@ -140,17 +194,10 @@ if(FOREVERTAS_PREBUILT_VALIDATOR_DIR)
     set_target_properties(forevervalidator_native PROPERTIES
         INTERFACE_LINK_LIBRARIES forevervalidator_core)
     set(validator_libraries OpenSSL::Crypto ZLIB::ZLIB)
-    if(FOREVERTAS_ENABLE_VULKAN)
-        find_package(Vulkan 1.2 REQUIRED)
-        list(APPEND validator_libraries Vulkan::Vulkan)
-    endif()
     if(FOREVERTAS_ENABLE_CUDA OR
             (FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "nvidia"))
         find_package(CUDAToolkit REQUIRED)
         list(APPEND validator_libraries CUDA::cudart)
-        if(FOREVERTAS_ENABLE_CUDA)
-            list(APPEND validator_libraries CUDA::nvrtc CUDA::nvJitLink)
-        endif()
     endif()
     if(FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
         file(TO_CMAKE_PATH "$ENV{HIP_PATH}/lib/amdhip64.lib" hip_runtime_library)
@@ -162,16 +209,26 @@ if(FOREVERTAS_PREBUILT_VALIDATOR_DIR)
     set_target_properties(forevervalidator_core PROPERTIES
         INTERFACE_LINK_LIBRARIES "${validator_libraries}"
         INTERFACE_COMPILE_DEFINITIONS
-            "FOREVERVALIDATOR_HAS_CUDA=$<BOOL:${FOREVERTAS_ENABLE_CUDA}>;FOREVERVALIDATOR_HAS_HIP=$<BOOL:${FOREVERTAS_ENABLE_HIP}>;FOREVERVALIDATOR_HAS_VULKAN=$<BOOL:${FOREVERTAS_ENABLE_VULKAN}>")
+            "FOREVERVALIDATOR_HAS_CUDA=$<BOOL:${FOREVERTAS_ENABLE_CUDA}>;FOREVERVALIDATOR_HAS_HIP=$<BOOL:${FOREVERTAS_ENABLE_HIP}>;FOREVERVALIDATOR_HAS_VULKAN=0")
     if(FOREVERTAS_ENABLE_HIP)
         find_path(FOREVERVALIDATOR_HIP_INCLUDE_DIR hip/hip_runtime.h
             HINTS "$ENV{HIP_PATH}/include" "$ENV{ROCM_PATH}/include" REQUIRED)
     endif()
 else()
+    if(WIN32 AND FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
+        # In cl driver mode, clang names every architecture's device image
+        # after the source when the object comes from /Fo, so each
+        # --offload-arch overwrites the previous image and every fat binary
+        # slot carries the last architecture's code. -o keeps one temporary
+        # image per architecture; the Validator inherits this rule.
+        enable_language(HIP)
+        string(REPLACE "/Fo<OBJECT>" "-o <OBJECT>"
+            CMAKE_HIP_COMPILE_OBJECT "${CMAKE_HIP_COMPILE_OBJECT}")
+    endif()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 6a51fdfb80872424d40abb3f57f55e1a13f635f1
+        GIT_TAG 543b94e64a47d40b007c221684d7b42d8042d074
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -193,11 +250,17 @@ add_library(forevertas_core STATIC
     src/evaluators/iteration_evaluator.h
     src/evaluators/custom_volume_entry_evaluator.cpp
     src/evaluators/custom_volume_entry_evaluator.h
+    src/evaluators/gate_entry_evaluator.cpp
+    src/evaluators/gate_entry_evaluator.h
     src/evaluators/evaluator_utils.h
     src/evaluators/precise_finish_time_evaluator.cpp
     src/evaluators/precise_finish_time_evaluator.h
     src/evaluators/checkpoint_time_evaluator.cpp
+    src/evaluators/around_walls_distance.cpp
+    src/evaluators/around_walls_distance.h
+    src/evaluators/distance_target_evaluator.cpp
     src/evaluators/checkpoint_time_evaluator.h
+    src/evaluators/distance_target_evaluator.h
     src/evaluators/time_evaluator.cpp
     src/evaluators/time_evaluator.h
     src/evaluators/point_target_evaluator.cpp
@@ -237,6 +300,7 @@ add_library(forevertas_core STATIC
     src/conditions/condition_catalog.cpp
     src/conditions/condition_catalog.h
     src/searches/algorithm_registry.cpp
+    src/searches/setting_labels.cpp
     src/searches/algorithm_registry.h
     src/searches/option_configuration.h
     src/searches/option_settings_utils.h
@@ -251,6 +315,11 @@ add_library(forevertas_core STATIC
     src/searches/cuda_search_configuration.cpp
     src/searches/cuda_search_configuration.h
     src/searches/search_runner.cpp
+    src/compute/compute_local.cpp
+    src/compute/compute_local.h
+    src/compute/compute_module_api.h
+    src/diagnostics/diagnostics_log.cpp
+    src/diagnostics/diagnostics_log.h
     src/searches/result_input_script.h
     src/time_format.h
     src/searches/search_runner.h)
@@ -274,6 +343,12 @@ if(FOREVERTAS_ENABLE_HIP)
     endif()
 endif()
 
+if(FOREVERTAS_COMPUTE_MODULE)
+    include(cmake/ComputeModule.cmake)
+    return()
+endif()
+include(cmake/ComputeAbi.cmake)
+
 add_library(forevertas_gui STATIC
     src/app/compact_number_format.cpp
     src/app/compact_number_format.h
@@ -289,9 +364,19 @@ add_library(forevertas_gui STATIC
     src/viewer/car_instancing.h
     src/viewer/race_geometry.cpp
     src/viewer/race_geometry.h
+    src/viewer/render_module_api.h
+    src/viewer/render_module_library.cpp
+    src/viewer/render_module_library.h
+    src/viewer/render_module_view.cpp
+    src/viewer/return_freed_memory.h
+    src/viewer/render_module_view.h
+    src/viewer/video_export_controller.cpp
+    src/viewer/video_export_controller.h
     src/viewer/ray_tracing_scene.cpp
     src/viewer/ray_tracing_scene.h
     src/viewer/race_timeline_item.cpp
+    src/viewer/pointer_lock.cpp
+    src/viewer/pointer_lock.h
     src/viewer/race_timeline_item.h
     src/viewer/race_viewer_controller.cpp
     src/viewer/race_viewer_controller.h
@@ -320,20 +405,46 @@ add_library(forevertas_gui STATIC
     src/app/pose_target_model.cpp
     src/app/pose_target_model.h
     src/app/search_completion.h
+    src/app/keyboard_layout.cpp
+    src/app/keyboard_layout.h
     src/app/input_preview_binding.cpp
     src/app/input_preview_binding.h
+    src/app/mcp_bridge.cpp
+    src/app/mcp_bridge.h
+    src/app/mcp_protocol.cpp
+    src/app/mcp_protocol.h
+    src/app/mcp_relay.cpp
+    src/app/mcp_relay.h
     src/app/search_controller.cpp
+    src/app/compute_modules.cpp
+    src/app/compute_modules.h
+    src/app/compute_archive.cpp
+    src/app/compute_archive.h
+    src/app/compute_check.cpp
+    src/app/compute_check.h
     src/app/search_controller.h
+    src/app/app_settings.cpp
+    src/app/app_settings.h
     src/app/search_diagnostic.cpp
     src/app/search_diagnostic.h
     src/app/packs_directory_finder.cpp
     src/app/packs_directory_finder.h
+    src/app/dock_layout.cpp
+    src/app/dock_layout.h
     src/app/panel_wheel_redirector.cpp
     src/app/panel_wheel_redirector.h
     src/app/rolling_throughput.h
     src/app/search_worker.cpp
     src/app/search_worker.h)
+target_include_directories(forevertas_gui PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+add_dependencies(forevertas_gui forevertas_compute_abi)
+# GPU modules arrive as .tar.zst
+find_path(FOREVERTAS_ZSTD_INCLUDE_DIR zstd.h REQUIRED)
+find_library(FOREVERTAS_ZSTD_LIBRARY NAMES zstd libzstd REQUIRED)
+target_include_directories(forevertas_gui PRIVATE "${FOREVERTAS_ZSTD_INCLUDE_DIR}")
+target_link_libraries(forevertas_gui PUBLIC "${FOREVERTAS_ZSTD_LIBRARY}")
 target_sources(forevertas_gui PRIVATE src/viewer/gamepad_input.cpp src/viewer/gamepad_input.h)
+target_sources(forevertas_gui PRIVATE src/viewer/go_to.cpp src/viewer/go_to.h)
 target_link_libraries(forevertas_gui PUBLIC SDL3::SDL3)
 
 file(GLOB_RECURSE FOREVERTAS_SIMULATION_DEBUG_SOURCE_FILES
@@ -376,6 +487,7 @@ target_link_libraries(forevertas_gui PUBLIC
     Qt6::Concurrent
     Qt6::Core
     Qt6::Gui
+    Qt6::Network
     Qt6::Quick
     Qt6::Quick3D
     Qt6::Widgets)
@@ -398,10 +510,10 @@ file(GLOB_RECURSE FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES
     "${forevervalidator_SOURCE_DIR}/src/validation/planning/*.cpp"
     "${forevervalidator_SOURCE_DIR}/src/platform/native/*.cpp")
 # The debugger executes the reference/native engine and deliberately does not
-# link CUDA. Driver dispatch and session specialization are CUDA host-side
-# facilities, not part of the editable reference simulation path.
+# link CUDA. Driver dispatch is a CUDA host-side facility, not part of the
+# editable reference simulation path.
 list(FILTER FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES EXCLUDE REGEX
-    "/src/simulation/backends/cuda/(cuda_driver_shim|cuda_session_specialization)\.cpp$")
+    "/src/simulation/backends/cuda/cuda_driver_shim\.cpp$")
 list(FILTER FOREVERTAS_DEBUG_WORKER_ENGINE_SOURCES EXCLUDE REGEX
     "/src/simulation/backends/hip/.*\.cpp$")
 add_executable(forevertas-simulation-debug-worker
@@ -443,6 +555,50 @@ else()
 endif()
 set_target_properties(forevertas-simulation-debug-worker PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
+# Wayland: the pointer held during the timeline's cursor drag (pointer
+# constraints and relative pointer, which Qt does not offer).
+if(UNIX AND NOT APPLE AND TARGET Qt6::GuiPrivate)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(FOREVERTAS_WAYLAND_CLIENT QUIET IMPORTED_TARGET wayland-client)
+        pkg_get_variable(FOREVERTAS_WAYLAND_PROTOCOLS_DIR wayland-protocols pkgdatadir)
+    endif()
+    find_program(FOREVERTAS_WAYLAND_SCANNER wayland-scanner)
+    if(FOREVERTAS_WAYLAND_CLIENT_FOUND AND FOREVERTAS_WAYLAND_SCANNER AND FOREVERTAS_WAYLAND_PROTOCOLS_DIR)
+        enable_language(C)   # the generated protocol code
+        set(forevertas_wayland_generated "${CMAKE_CURRENT_BINARY_DIR}/wayland-protocols")
+        file(MAKE_DIRECTORY "${forevertas_wayland_generated}")
+        foreach(protocol
+                "unstable/pointer-constraints/pointer-constraints-unstable-v1"
+                "unstable/relative-pointer/relative-pointer-unstable-v1")
+            get_filename_component(protocol_name "${protocol}" NAME)
+            set(protocol_xml "${FOREVERTAS_WAYLAND_PROTOCOLS_DIR}/${protocol}.xml")
+            add_custom_command(
+                OUTPUT "${forevertas_wayland_generated}/${protocol_name}-client-protocol.h"
+                       "${forevertas_wayland_generated}/${protocol_name}-protocol.c"
+                COMMAND "${FOREVERTAS_WAYLAND_SCANNER}" client-header "${protocol_xml}"
+                        "${forevertas_wayland_generated}/${protocol_name}-client-protocol.h"
+                COMMAND "${FOREVERTAS_WAYLAND_SCANNER}" private-code "${protocol_xml}"
+                        "${forevertas_wayland_generated}/${protocol_name}-protocol.c"
+                DEPENDS "${protocol_xml}"
+                VERBATIM)
+            target_sources(forevertas_gui PRIVATE
+                "${forevertas_wayland_generated}/${protocol_name}-client-protocol.h"
+                "${forevertas_wayland_generated}/${protocol_name}-protocol.c")
+        endforeach()
+        target_include_directories(forevertas_gui PRIVATE "${forevertas_wayland_generated}")
+        target_link_libraries(forevertas_gui PRIVATE PkgConfig::FOREVERTAS_WAYLAND_CLIENT)
+        target_compile_definitions(forevertas_gui PRIVATE FOREVERTAS_WAYLAND_POINTER_LOCK=1)
+    else()
+        message(STATUS "Wayland pointer lock off (needs wayland-client, wayland-protocols and wayland-scanner)")
+    endif()
+endif()
+# the car geometries' scene references, for the vanishing-car reports
+find_package(Qt6 QUIET COMPONENTS Quick3DPrivate)
+if(TARGET Qt6::Quick3DPrivate)
+    target_link_libraries(forevertas_gui PRIVATE Qt6::Quick3DPrivate)
+    target_compile_definitions(forevertas_gui PRIVATE FOREVERTAS_QUICK3D_PRIVATE=1)
+endif()
 if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools)
     target_compile_definitions(forevertas_gui PUBLIC
         FOREVERTAS_GPU_RAY_TRACING=1)
@@ -454,13 +610,18 @@ endif()
 
 qt_add_executable(forevertas
     src/app/main.cpp
+    src/app/diagnostics_startup.cpp
+    src/app/diagnostics_startup.h
+    src/app/stall_watch.cpp
+    src/app/stall_watch.h
     src/app/update_controller.cpp
     src/app/update_controller.h
     src/app/update_hardware.cpp
     src/app/update_hardware.h
     src/app/update_release.cpp
     src/app/update_release.h)
-add_dependencies(forevertas forevertas-simulation-debug-worker)
+add_dependencies(forevertas forevertas-simulation-debug-worker forevertas_compute_abi)
+target_include_directories(forevertas PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 
 set(forevertas_icon_svg
     "${CMAKE_CURRENT_SOURCE_DIR}/packaging/icons/${FOREVERTAS_APP_ID}.svg")
@@ -469,6 +630,34 @@ set_source_files_properties("${forevertas_icon_svg}" PROPERTIES
 qt_add_resources(forevertas "forevertas_app_resources"
     PREFIX "/"
     FILES "${forevertas_icon_svg}")
+
+# The documentation the MCP bridge serves (get_documentation): the topics it
+# names, and the README.
+set(forevertas_mcp_docs
+    MCP.md GATES.md SEARCH_COMPONENTS.md CONDITIONS.md CHECKPOINT_TIME.md
+    INPUT_INSERTION.md GPU_BACKENDS.md GPU_SAFETY.md)
+list(TRANSFORM forevertas_mcp_docs PREPEND "${CMAKE_CURRENT_SOURCE_DIR}/docs/")
+qt_add_resources(forevertas "forevertas_mcp_docs"
+    PREFIX "/mcp-docs"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/docs"
+    FILES ${forevertas_mcp_docs})
+set_source_files_properties("${CMAKE_CURRENT_SOURCE_DIR}/README.md" PROPERTIES
+    QT_RESOURCE_ALIAS "README.md")
+qt_add_resources(forevertas "forevertas_mcp_readme"
+    PREFIX "/mcp-docs"
+    FILES "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
+
+# The stdio MCP server for Windows (a console program: the app is a GUI one,
+# whose standard input and output Windows does not wire); elsewhere it is
+# ForeverTAS --mcp-stdio.
+if(WIN32)
+    add_executable(forevertas-mcp src/tools/forevertas_mcp_main.cpp)
+    target_link_libraries(forevertas-mcp PRIVATE forevertas_gui Qt6::Core Qt6::Network)
+    target_compile_definitions(forevertas-mcp PRIVATE FOREVERTAS_VERSION="${PROJECT_VERSION}")
+    set_target_properties(forevertas-mcp PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/bin")
+    add_dependencies(forevertas forevertas-mcp)
+    install(TARGETS forevertas-mcp RUNTIME DESTINATION ".")
+endif()
 
 if(WIN32)
     configure_file(
@@ -503,17 +692,33 @@ qt_add_qml_module(forevertas_qml
     QML_FILES
         qml/ConditionReference.qml
         qml/AppTheme.qml
+        qml/DockFrame.qml
+        qml/DockHeaderButton.qml
+        qml/DockPanel.qml
+        qml/DockSpace.qml
         qml/DurationDisplay.qml
         qml/settings/DurationField.qml
         qml/EvaluationOverlay.qml
         qml/EditHistory.qml
         qml/FailureNotice.qml
+        qml/Glass.qml
+        qml/GlassMenu.qml
+        qml/GlassMenuBar.qml
+        qml/GlassPopupBackground.qml
+        qml/GlassDialog.qml
+        qml/Gloss.qml
         qml/GraphicsInspector.qml
+        qml/VideoExportDialog.qml
         qml/Main.qml
+        qml/PreferencesDialog.qml
+        qml/RaceControls.qml
         qml/SearchSessionHistory.qml
+        qml/ResultFormat.js
+        qml/ResultTable.qml
         qml/SearchInputs.qml
         qml/SimulationDebuggerPanel.qml
         qml/SliderValueField.qml
+        qml/GoToField.qml
         qml/SteeringDisplay.qml
         qml/ThemedButton.qml
         qml/ThemedCheckBox.qml
@@ -539,6 +744,7 @@ qt_add_qml_module(forevertas_qml
         qml/settings/InputInsertionSettings.qml
         qml/settings/ModifierComposition.qml
         qml/settings/ModifierPassControls.qml
+        qml/settings/GateEntryEvaluationSettings.qml
         qml/settings/PointTargetEvaluationSettings.qml
         qml/settings/PoseTargetEvaluationSettings.qml
         qml/settings/RandomSteeringMutationSettings.qml
@@ -546,6 +752,9 @@ qt_add_qml_module(forevertas_qml
         qml/settings/ScriptedTargetEvaluationSettings.qml
         qml/settings/SettingCombo.qml
         qml/settings/SettingSlider.qml
+        qml/settings/PoseWeightsEditor.qml
+        qml/settings/DistanceTargetEvaluationSettings.qml
+        qml/settings/WindowChainButton.qml
         qml/settings/SteeringUnits.qml
         qml/settings/SettingSwitch.qml
         qml/settings/SettingTextField.qml
@@ -558,12 +767,22 @@ qt_add_qml_module(forevertas_qml
         qml/settings/Vector3Settings.qml
         qml/settings/VelocityEvaluationSettings.qml
         qml/settings/VolumeEntryEvaluationSettings.qml)
+# Bytecode only, no QML compiled to C++: Qt 6.9's garbage collector marks the
+# values compiled functions hold and can read one that is gone, then hangs or
+# aborts (Enter in a settings field, after a search;
+# forevertas-qml-module-tests).
+set_target_properties(forevertas_qml PROPERTIES QT_QMLCACHEGEN_ARGUMENTS "--only-bytecode")
 file(GLOB FOREVERTAS_REPLACEMENT_TEXTURES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials/*.png")
 qt_add_resources(forevertas_qml "replacement-materials"
     PREFIX "/materials"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials"
     FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
+# The map material of a render module's mode (RenderModuleView).
+qt_add_resources(forevertas_qml "module-screen-material"
+    PREFIX "/materials"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+    FILES shaders/module_screen.frag)
 file(GLOB FOREVERTAS_LUCIDE_ICONS CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons/*.svg")
 qt_add_resources(forevertas_qml "lucide-icons"
@@ -576,6 +795,12 @@ qt_add_resources(forevertas_qml "environment-textures"
     PREFIX "/environment"
     BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment"
     FILES ${FOREVERTAS_ENVIRONMENT_TEXTURES})
+qt_add_shaders(forevertas_qml "glass-shaders"
+    PREFIX "/glass"
+    FILES
+        shaders/ambient.frag
+        shaders/glass.frag
+        shaders/gloss.frag)
 if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools)
     qt_add_shaders(forevertas_qml "ray-tracing-shaders"
         PREFIX "/raytracing"
@@ -596,6 +821,15 @@ target_link_libraries(forevertas PRIVATE
     Qt6::QuickControls2)
 target_compile_definitions(forevertas PRIVATE
     FOREVERTAS_VERSION="${PROJECT_VERSION}")
+if(WIN32)
+    # The crash handler: stacks, module versions, display adapters, minidumps.
+    target_link_libraries(forevertas PRIVATE dbghelp version psapi dxgi)
+endif()
+if(MSVC)
+    # ForeverTAS.pdb stays with the build (not shipped) to read crash stacks
+    # and dumps from users' logs; the code is the same as without it.
+    target_link_options(forevertas PRIVATE /DEBUG:FULL /OPT:REF /OPT:ICF)
+endif()
 
 if(WIN32)
     set(forevertas_runtime_destination ".")
@@ -610,6 +844,14 @@ if(WIN32 AND TARGET SDL3::SDL3-shared)
 endif()
 install(TARGETS forevertas-simulation-debug-worker
     RUNTIME DESTINATION "${forevertas_runtime_destination}")
+# Optional files a Windows build ships beside the executable, such as an
+# optional render module and the DLLs it needs (the Linux AppImage takes
+# FOREVERTAS_EXTRA_LIBRARIES instead). Plain builds have none.
+set(FOREVERTAS_EXTRA_INSTALL_FILES "" CACHE STRING
+    "Files installed beside the executable on Windows (a list)")
+if(WIN32 AND FOREVERTAS_EXTRA_INSTALL_FILES)
+    install(FILES ${FOREVERTAS_EXTRA_INSTALL_FILES} DESTINATION ".")
+endif()
 if(NOT FOREVERTAS_QML_MODULE_EXTERNAL)
     install(TARGETS forevertas_qml
         LIBRARY DESTINATION "${forevertas_runtime_destination}/qml/ForeverTAS"
@@ -667,59 +909,13 @@ if(WIN32)
         "${FOREVERTAS_WINDOWS_RUNTIME_DIR}/z.dll"
         "${FOREVERTAS_WINDOWS_RUNTIME_DIR}/zlib.dll"
         "${FOREVERTAS_WINDOWS_RUNTIME_DIR}/zlib1.dll")
+    # GPU modules arrive as .tar.zst
+    file(GLOB forevertas_zstd_runtime_dlls
+        LIST_DIRECTORIES FALSE
+        "${FOREVERTAS_WINDOWS_RUNTIME_DIR}/zstd.dll")
     file(GLOB forevertas_msvc_runtime_dlls
         LIST_DIRECTORIES FALSE
         "${FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR}/*.dll")
-    if(FOREVERTAS_ENABLE_CUDA)
-        if(NOT FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR
-                AND CMAKE_CUDA_COMPILER)
-            get_filename_component(FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR
-                "${CMAKE_CUDA_COMPILER}" DIRECTORY)
-        endif()
-        if(NOT IS_DIRECTORY "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}")
-            message(FATAL_ERROR
-                "FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR must point to the "
-                "CUDA toolkit bin directory")
-        endif()
-        file(GLOB forevertas_cudart_runtime_dlls
-            LIST_DIRECTORIES FALSE
-            "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}/cudart64_*.dll")
-        file(GLOB forevertas_nvrtc_runtime_dlls
-            LIST_DIRECTORIES FALSE
-            "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}/nvrtc64_120_0.dll")
-        file(GLOB forevertas_nvrtc_builtins_runtime_dlls
-            LIST_DIRECTORIES FALSE
-            "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}/nvrtc-builtins64_*.dll")
-        file(GLOB forevertas_nvjitlink_runtime_dlls
-            LIST_DIRECTORIES FALSE
-            "${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}/nvJitLink_*.dll")
-        foreach(forevertas_cuda_runtime_component IN ITEMS
-                cudart nvrtc nvrtc_builtins nvjitlink)
-            list(LENGTH
-                forevertas_${forevertas_cuda_runtime_component}_runtime_dlls
-                forevertas_${forevertas_cuda_runtime_component}_runtime_dll_count)
-            if(NOT forevertas_${forevertas_cuda_runtime_component}_runtime_dll_count EQUAL 1)
-                message(FATAL_ERROR
-                    "Expected exactly one ${forevertas_cuda_runtime_component} "
-                    "runtime DLL in ${FOREVERTAS_WINDOWS_CUDA_RUNTIME_DIR}; "
-                    "found ${forevertas_${forevertas_cuda_runtime_component}_runtime_dll_count}")
-            endif()
-        endforeach()
-        set(forevertas_cuda_runtime_dlls
-            ${forevertas_cudart_runtime_dlls}
-            ${forevertas_nvrtc_runtime_dlls}
-            ${forevertas_nvrtc_builtins_runtime_dlls}
-            ${forevertas_nvjitlink_runtime_dlls})
-    endif()
-    if(FOREVERTAS_ENABLE_HIP AND CMAKE_HIP_PLATFORM STREQUAL "amd")
-        find_file(forevertas_hip_runtime_dll
-            NAMES amdhip64_7.dll amdhip64_6.dll amdhip64.dll
-            HINTS "${FOREVERTAS_WINDOWS_HIP_RUNTIME_DIR}"
-                  "$ENV{HIP_PATH}/bin"
-                  "$ENV{ROCM_PATH}/bin"
-            REQUIRED)
-        install(FILES "${forevertas_hip_runtime_dll}" DESTINATION ".")
-    endif()
     list(LENGTH forevertas_openssl_runtime_dlls
         forevertas_openssl_runtime_dll_count)
     list(LENGTH forevertas_zlib_runtime_dlls
@@ -739,18 +935,11 @@ if(WIN32)
             "No redistributable MSVC runtime DLLs found in "
             "${FOREVERTAS_WINDOWS_MSVC_RUNTIME_DIR}")
     endif()
-    if(FOREVERTAS_ENABLE_VULKAN)
-        find_file(forevertas_vulkan_runtime_dll
-            NAMES vulkan-1.dll
-            HINTS "${FOREVERTAS_WINDOWS_RUNTIME_DIR}" "$ENV{VULKAN_SDK}/Bin"
-            NO_DEFAULT_PATH REQUIRED)
-        install(FILES "${forevertas_vulkan_runtime_dll}" DESTINATION ".")
-    endif()
     install(FILES
         ${forevertas_openssl_runtime_dlls}
         ${forevertas_zlib_runtime_dlls}
+        ${forevertas_zstd_runtime_dlls}
         ${forevertas_msvc_runtime_dlls}
-        ${forevertas_cuda_runtime_dlls}
         DESTINATION ".")
 endif()
 
@@ -771,6 +960,14 @@ if(EXISTS "${forevervalidator_SOURCE_DIR}/LICENSE")
     install(FILES "${forevervalidator_SOURCE_DIR}/LICENSE"
         DESTINATION "${forevertas_license_destination}"
         RENAME ForeverValidator-LICENSE.txt)
+endif()
+# The licenses of the extra files a release ships (its In-game render module's
+# libraries). Plain builds have none.
+set(FOREVERTAS_EXTRA_LICENSE_FILES "" CACHE STRING
+    "License files installed with the app's, under render-module (a list)")
+if(FOREVERTAS_EXTRA_LICENSE_FILES)
+    install(FILES ${FOREVERTAS_EXTRA_LICENSE_FILES}
+        DESTINATION "${forevertas_license_destination}/render-module")
 endif()
 
 if(UNIX)
@@ -800,63 +997,13 @@ else()
     set(CPACK_GENERATOR "TGZ")
 endif()
 
-if(FOREVERTAS_DISTRIBUTION_FLAVOR)
-    if(FOREVERTAS_DISTRIBUTION_FLAVOR STREQUAL "universal")
-        if(FOREVERTAS_ENABLE_CUDA OR FOREVERTAS_ENABLE_HIP OR
-           NOT FOREVERTAS_ENABLE_VULKAN)
-            message(FATAL_ERROR "Universal packages require Vulkan without CUDA or HIP")
-        endif()
-    elseif(FOREVERTAS_DISTRIBUTION_FLAVOR MATCHES
-           "^nvidia-sm(50|52|53|60|61|62|70|72|75|80|86|87|89|90|100|101|120)$")
-        set(forevertas_package_sm "${CMAKE_MATCH_1}")
-        if(NOT FOREVERTAS_ENABLE_CUDA OR NOT FOREVERTAS_ENABLE_HIP OR
-           NOT FOREVERTAS_ENABLE_VULKAN OR
-           NOT CMAKE_HIP_PLATFORM STREQUAL "nvidia")
-            message(FATAL_ERROR "NVIDIA packages require CUDA, NVIDIA HIP, and Vulkan")
-        endif()
-        if(NOT CMAKE_CUDA_ARCHITECTURES STREQUAL
-               "${forevertas_package_sm}-real;${forevertas_package_sm}-virtual" OR
-           NOT CMAKE_HIP_ARCHITECTURES STREQUAL "${forevertas_package_sm}")
-            message(FATAL_ERROR "NVIDIA package must contain only its named SM target")
-        endif()
-    elseif(FOREVERTAS_DISTRIBUTION_FLAVOR STREQUAL "amd-rx7000-rx9000")
-        if(FOREVERTAS_ENABLE_CUDA OR NOT FOREVERTAS_ENABLE_HIP OR
-           NOT FOREVERTAS_ENABLE_VULKAN OR
-           NOT CMAKE_HIP_PLATFORM STREQUAL "amd")
-            message(FATAL_ERROR "AMD packages require AMD HIP and Vulkan without CUDA")
-        endif()
-        if(NOT CMAKE_HIP_ARCHITECTURES STREQUAL
-               "gfx1100;gfx1101;gfx1102;gfx1200;gfx1201")
-            message(FATAL_ERROR "AMD package must contain the RX 7000/9000 gfx targets")
-        endif()
-    else()
-        message(FATAL_ERROR "Unknown ForeverTAS distribution flavor")
-    endif()
-    set(forevertas_package_id "${FOREVERTAS_DISTRIBUTION_FLAVOR}")
-    set(forevertas_update_asset_parts
-        "${forevertas_package_platform};${forevertas_package_id}")
-else()
-    set(forevertas_package_id "legacy")
-    set(forevertas_update_asset_parts "${forevertas_package_platform}")
-    if(FOREVERTAS_ENABLE_CUDA)
-        list(APPEND forevertas_update_asset_parts "cuda")
-    endif()
-    if(FOREVERTAS_ENABLE_VULKAN)
-        list(APPEND forevertas_update_asset_parts "vulkan")
-    endif()
-    if(FOREVERTAS_ENABLE_HIP)
-        if(NOT CMAKE_HIP_PLATFORM MATCHES "^(amd|nvidia)$")
-            message(FATAL_ERROR "HIP updates require an AMD or NVIDIA HIP platform")
-        endif()
-        list(APPEND forevertas_update_asset_parts "hip-${CMAKE_HIP_PLATFORM}")
-    endif()
-endif()
+# One app per platform; its GPU code comes as a module (src/compute).
+set(forevertas_update_asset_parts "${forevertas_package_platform};universal")
 list(APPEND forevertas_update_asset_parts "${forevertas_package_arch}")
 list(JOIN forevertas_update_asset_parts "-" FOREVERTAS_UPDATE_ASSET_ID)
 set(FOREVERTAS_UPDATE_ASSET_ID "${FOREVERTAS_UPDATE_ASSET_ID}" CACHE INTERNAL
     "Platform and backend identity of public update artifacts" FORCE)
 target_compile_definitions(forevertas PRIVATE
-    FOREVERTAS_PACKAGE_ID="${forevertas_package_id}"
     FOREVERTAS_UPDATE_PLATFORM="${forevertas_package_platform}"
     FOREVERTAS_UPDATE_ARCH="${forevertas_package_arch}")
 
@@ -890,24 +1037,10 @@ if(FOREVERTAS_WARNING_OPTIONS)
 endif()
 
 if(BUILD_TESTING)
-    if(WIN32)
-        find_program(FOREVERTAS_POWERSHELL_EXECUTABLE NAMES pwsh.exe powershell.exe)
-        if(FOREVERTAS_POWERSHELL_EXECUTABLE)
-            add_test(NAME forevertas-windows-distribution-plan
-                COMMAND "${FOREVERTAS_POWERSHELL_EXECUTABLE}" -NoProfile -File
-                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows_distribution_plan.ps1")
-            add_test(NAME forevertas-windows-template-assembly
-                COMMAND "${FOREVERTAS_POWERSHELL_EXECUTABLE}" -NoProfile -File
-                        "${CMAKE_CURRENT_SOURCE_DIR}/tests/windows_template_assembly.ps1")
-        endif()
-    endif()
     if(Python3_Interpreter_FOUND)
-        add_test(NAME forevertas-distribution-matrix
+        add_test(NAME forevertas-release-tools
                  COMMAND "${Python3_EXECUTABLE}"
-                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/distribution_tests.py")
-        add_test(NAME forevertas-warm-build-seed
-                 COMMAND "${Python3_EXECUTABLE}"
-                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/warm_builds_tests.py")
+                         "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_tools_tests.py")
     endif()
     add_executable(forevertas-update-release-tests
         src/app/update_release.cpp
@@ -939,6 +1072,42 @@ if(BUILD_TESTING)
         target_compile_options(forevertas-condition-catalog-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
     endif()
     add_test(NAME forevertas-condition-catalog COMMAND forevertas-condition-catalog-tests)
+
+    add_executable(forevertas-gate-entry-tests tests/gate_entry_tests.cpp)
+    target_link_libraries(forevertas-gate-entry-tests PRIVATE forevertas_core)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-gate-entry-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-gate-entry COMMAND forevertas-gate-entry-tests)
+
+    add_executable(forevertas-go-to-tests tests/go_to_tests.cpp)
+    target_link_libraries(forevertas-go-to-tests PRIVATE forevertas_gui)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-go-to-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-go-to COMMAND forevertas-go-to-tests)
+
+    # the vanishing car's cause (needs a display: run under xvfb-run when there is one)
+    add_executable(forevertas-geometry-return-tests tests/geometry_return_tests.cpp)
+    target_link_libraries(forevertas-geometry-return-tests PRIVATE forevertas_gui)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-geometry-return-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    find_program(FOREVERTAS_XVFB_RUN xvfb-run)
+    if(FOREVERTAS_XVFB_RUN)
+        add_test(NAME forevertas-geometry-return
+                 COMMAND ${FOREVERTAS_XVFB_RUN} -a $<TARGET_FILE:forevertas-geometry-return-tests>)
+        set_tests_properties(forevertas-geometry-return PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=xcb;QSG_RHI_BACKEND=opengl;LIBGL_ALWAYS_SOFTWARE=1;__GLX_VENDOR_LIBRARY_NAME=mesa"
+            TIMEOUT 60)
+    endif()
+
+    add_executable(forevertas-dock-layout-tests tests/dock_layout_tests.cpp)
+    target_link_libraries(forevertas-dock-layout-tests PRIVATE forevertas_gui)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-dock-layout-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-dock-layout COMMAND forevertas-dock-layout-tests)
 
     # Manual benchmarks: need a copy of the persisted settings and game packs.
     add_executable(forevertas-node-cost-benchmark
@@ -976,6 +1145,14 @@ if(BUILD_TESTING)
         target_compile_options(forevertas-debugger-tools-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
     endif()
     add_test(NAME forevertas-debugger-tools COMMAND forevertas-debugger-tools-tests)
+    add_executable(forevertas-compute-archive-tests tests/compute_archive_tests.cpp src/app/compute_archive.cpp)
+    target_include_directories(forevertas-compute-archive-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src
+        "${FOREVERTAS_ZSTD_INCLUDE_DIR}")
+    target_link_libraries(forevertas-compute-archive-tests PRIVATE Qt6::Core "${FOREVERTAS_ZSTD_LIBRARY}")
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-compute-archive-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-compute-archive COMMAND forevertas-compute-archive-tests)
     target_include_directories(forevertas-shutdown-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
     target_link_libraries(forevertas-shutdown-tests PRIVATE Qt6::Core)
     if(FOREVERTAS_WARNING_OPTIONS)
@@ -1026,10 +1203,6 @@ if(BUILD_TESTING)
              COMMAND ${CMAKE_COMMAND}
                 -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
                 -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/system_file_dialog_control.cmake)
-    add_test(NAME forevertas-release-cache-control
-             COMMAND ${CMAKE_COMMAND}
-                -DFOREVERTAS_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/tests/release_cache_control.cmake)
     add_test(NAME forevertas-controller
              COMMAND forevertas-controller-tests)
     set_tests_properties(forevertas-controller PROPERTIES
@@ -1069,6 +1242,13 @@ if(BUILD_TESTING)
         "Replay paired with FOREVERTAS_TEST_CHALLENGE")
     set(FOREVERTAS_TEST_CHALLENGE "" CACHE FILEPATH
         "Standalone Challenge.Gbx used by optional scenario tests")
+    if(FOREVERTAS_ENABLE_TWIN)
+        # forevertas-approximate-search PACKS REPLAY BRANCH_MS WINDOW_MS [ATTEMPTS]
+        add_executable(forevertas-approximate-search
+            tests/approximate_search_tests.cpp)
+        target_link_libraries(forevertas-approximate-search PRIVATE
+            forevertas_core)
+    endif()
     if(FOREVERTAS_TEST_PACK_DIRECTORY AND FOREVERTAS_TEST_REPLAY)
         add_executable(forevertas-search-smoke
             tests/search_smoke.cpp)
@@ -1174,6 +1354,15 @@ if(BUILD_TESTING)
                 LABELS "cuda;calibration;parity;stadium"
                 RESOURCE_LOCK cuda
                 TIMEOUT 600)
+            add_test(NAME forevertas-gpu-pool
+                     COMMAND forevertas-cuda-search-parity
+                         --gpu-pool
+                         "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                         "${FOREVERTAS_TEST_REPLAY}")
+            set_tests_properties(forevertas-gpu-pool PROPERTIES
+                LABELS "cuda;stadium"
+                RESOURCE_LOCK cuda
+                TIMEOUT 60)
         endif()
         add_test(NAME forevertas-controller-lifecycle
                  COMMAND forevertas-controller-tests
@@ -1226,6 +1415,15 @@ if(BUILD_TESTING)
                  "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-gamepad PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
+        add_executable(forevertas-live-race-tests tests/live_race_tests.cpp)
+        target_link_libraries(forevertas-live-race-tests PRIVATE forevertas_gui Qt6::Gui)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-live-race-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-live-race COMMAND forevertas-live-race-tests
+                 "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-live-race PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 180)
         add_executable(forevertas-live-retention-tests tests/live_retention_tests.cpp)
         target_link_libraries(forevertas-live-retention-tests PRIVATE forevertas_gui Qt6::Gui)
         if(FOREVERTAS_WARNING_OPTIONS)
@@ -1261,6 +1459,25 @@ if(BUILD_TESTING)
                  COMMAND forevertas-checkpoint-time-tests
                      "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
         set_tests_properties(forevertas-checkpoint-time PROPERTIES TIMEOUT 240)
+        add_executable(forevertas-distance-around-walls-tests tests/distance_around_walls_tests.cpp)
+        target_link_libraries(forevertas-distance-around-walls-tests PRIVATE forevertas_core)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-distance-around-walls-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-distance-around-walls
+                 COMMAND forevertas-distance-around-walls-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-distance-around-walls PROPERTIES TIMEOUT 60)
+        # car.localvel on each CPU backend, also as the condition program reads it
+        add_executable(forevertas-local-velocity-tests tests/local_velocity_tests.cpp)
+        target_link_libraries(forevertas-local-velocity-tests PRIVATE forevertas_core Qt6::Gui)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-local-velocity-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-local-velocity
+                 COMMAND forevertas-local-velocity-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-local-velocity PROPERTIES TIMEOUT 60)
         if(FOREVERTAS_ENABLE_CUDA)
             # Both compare CPU results with CUDA sessions, whose memory
             # headroom check fails while other tests use the GPU.
@@ -1399,6 +1616,11 @@ if(BUILD_TESTING)
             BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials"
             FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
         qt_add_resources(forevertas-viewer-qml-smoke
+            "module-screen-material-test"
+            PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/shaders"
+            FILES shaders/module_screen.frag)
+        qt_add_resources(forevertas-viewer-qml-smoke
             "environment-textures-test"
             PREFIX "/environment"
             BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment"
@@ -1408,6 +1630,12 @@ if(BUILD_TESTING)
             PREFIX "/icons"
             BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons"
             FILES ${FOREVERTAS_LUCIDE_ICONS})
+        qt_add_shaders(forevertas-viewer-qml-smoke "glass-shaders-test"
+            PREFIX "/glass"
+            FILES
+                shaders/ambient.frag
+                shaders/glass.frag
+                shaders/gloss.frag)
         target_compile_definitions(forevertas-viewer-qml-smoke PRIVATE
             FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
         target_link_libraries(forevertas-viewer-qml-smoke PRIVATE
@@ -1429,6 +1657,89 @@ if(BUILD_TESTING)
         set_tests_properties(forevertas-viewer-qml PROPERTIES
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
             TIMEOUT 180)
+        # UI checks in the QML module the app runs: hidden headers come back;
+        # Enter in every settings field after a search: no hang, no runaway memory.
+        add_executable(forevertas-qml-module-tests tests/qml_module_tests.cpp)
+        add_dependencies(forevertas-qml-module-tests forevertas_qml)
+        target_compile_definitions(forevertas-qml-module-tests PRIVATE
+            FOREVERTAS_QML_IMPORT_DIR="${CMAKE_CURRENT_BINARY_DIR}/bin/qml")
+        target_link_libraries(forevertas-qml-module-tests PRIVATE
+            forevertas_gui Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Widgets)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-qml-module-tests PRIVATE
+                ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-qml-module
+                 COMMAND forevertas-qml-module-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}"
+                     "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-qml-module PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
+            TIMEOUT 60)
+        # MCP: the bridge and relay in process, and on a map.
+        add_executable(forevertas-mcp-tests tests/mcp_tests.cpp)
+        target_link_libraries(forevertas-mcp-tests PRIVATE
+            forevertas_gui Qt6::Gui Qt6::Network Qt6::Qml Qt6::Quick Qt6::Widgets)
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-mcp-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-mcp
+                 COMMAND forevertas-mcp-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-mcp PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+            TIMEOUT 60)
+        # The window thread's time per mouse move while dragging (not a test):
+        # forevertas-drag-benchmark PACKS REPLAY
+        add_executable(forevertas-drag-benchmark tests/drag_benchmark.cpp)
+        add_dependencies(forevertas-drag-benchmark forevertas_qml)
+        target_compile_definitions(forevertas-drag-benchmark PRIVATE
+            FOREVERTAS_QML_IMPORT_DIR="${CMAKE_CURRENT_BINARY_DIR}/bin/qml")
+        target_link_libraries(forevertas-drag-benchmark PRIVATE
+            forevertas_gui Qt6::Gui Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Widgets)
+        # Screenshots of UI states, by eye (not a test): forevertas-ui-capture PACKS REPLAY OUT_DIR STATE...
+        add_executable(forevertas-ui-capture tests/ui_capture.cpp src/app/diagnostics_startup.cpp)
+        qt_add_resources(forevertas-ui-capture "module-screen-material-capture" PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/shaders" FILES shaders/module_screen.frag)
+        qt_add_resources(forevertas-ui-capture "environment-textures-capture" PREFIX "/environment"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment" FILES ${FOREVERTAS_ENVIRONMENT_TEXTURES})
+        qt_add_resources(forevertas-ui-capture "replacement-materials-capture" PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials" FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
+        qt_add_resources(forevertas-ui-capture "lucide-icons-capture" PREFIX "/icons"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons" FILES ${FOREVERTAS_LUCIDE_ICONS})
+        qt_add_shaders(forevertas-ui-capture "glass-shaders-capture" PREFIX "/glass"
+            FILES shaders/ambient.frag shaders/glass.frag shaders/gloss.frag)
+        target_compile_definitions(forevertas-ui-capture PRIVATE FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_compile_definitions(forevertas-ui-capture PRIVATE FOREVERTAS_VERSION="${PROJECT_VERSION}")
+        if(WIN32)
+            target_link_libraries(forevertas-ui-capture PRIVATE dbghelp version psapi dxgi)
+        endif()
+        target_link_libraries(forevertas-ui-capture PRIVATE forevertas_gui Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Quick3D
+            Qt6::QuickControls2 Qt6::Widgets)
+        # The Export dialog's video export, by hand on a platform: forevertas-video-export PACKS REPLAY OUT.mp4 [W H FPS]
+        add_executable(forevertas-video-export tests/video_export_test.cpp)
+        target_link_libraries(forevertas-video-export PRIVATE forevertas_gui Qt6::Gui Qt6::Widgets)
+        # The vanishing car, hunted: forevertas-car-stress PACKS REPLAY OUT_DIR [STEPS [SEED]] (under a display)
+        add_executable(forevertas-car-stress tests/car_stress.cpp)
+        # the car geometries' scene references (a Qt Quick 3D reference count)
+        find_package(Qt6 QUIET COMPONENTS Quick3DPrivate)
+        if(TARGET Qt6::Quick3DPrivate)
+            target_link_libraries(forevertas-car-stress PRIVATE Qt6::Quick3DPrivate)
+            target_compile_definitions(forevertas-car-stress PRIVATE FOREVERTAS_QUICK3D_PRIVATE=1)
+        endif()
+        qt_add_resources(forevertas-car-stress "module-screen-material-stress" PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/shaders" FILES shaders/module_screen.frag)
+        qt_add_resources(forevertas-car-stress "environment-textures-stress" PREFIX "/environment"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/environment" FILES ${FOREVERTAS_ENVIRONMENT_TEXTURES})
+        qt_add_resources(forevertas-car-stress "replacement-materials-stress" PREFIX "/materials"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/materials" FILES ${FOREVERTAS_REPLACEMENT_TEXTURES})
+        qt_add_resources(forevertas-car-stress "lucide-icons-stress" PREFIX "/icons"
+            BASE "${CMAKE_CURRENT_SOURCE_DIR}/assets/icons" FILES ${FOREVERTAS_LUCIDE_ICONS})
+        qt_add_shaders(forevertas-car-stress "glass-shaders-stress" PREFIX "/glass"
+            FILES shaders/ambient.frag shaders/glass.frag shaders/gloss.frag)
+        target_compile_definitions(forevertas-car-stress PRIVATE FOREVERTAS_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+        target_link_libraries(forevertas-car-stress PRIVATE forevertas_gui Qt6::Gui Qt6::Qml Qt6::Quick Qt6::Quick3D
+            Qt6::QuickControls2 Qt6::Widgets)
         add_test(NAME forevertas-pass-management-qml
                  COMMAND forevertas-viewer-qml-smoke
                      "${FOREVERTAS_TEST_PACK_DIRECTORY}"
@@ -1443,22 +1754,4 @@ if(BUILD_TESTING)
     add_executable(forevertas-gpu-backend-tests tests/gpu_backend_tests.cpp)
     target_link_libraries(forevertas-gpu-backend-tests PRIVATE forevertas_core)
     add_test(NAME forevertas-gpu-backends COMMAND forevertas-gpu-backend-tests)
-    if(FOREVERTAS_ENABLE_VULKAN AND FOREVERTAS_TEST_PACK_DIRECTORY AND
-       FOREVERTAS_TEST_REPLAY)
-        add_executable(forevertas-vulkan-search-parity
-            tests/vulkan_search_parity_tests.cpp)
-        target_link_libraries(forevertas-vulkan-search-parity PRIVATE forevertas_core)
-        add_test(NAME forevertas-vulkan-search-parity
-            COMMAND forevertas-vulkan-search-parity
-                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
-        add_test(NAME forevertas-vulkan-precise-finish-parity
-            COMMAND forevertas-vulkan-search-parity --precise-finish-only
-                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
-        add_test(NAME forevertas-vulkan-calibration
-            COMMAND forevertas-vulkan-search-parity --calibration-only
-                "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
-        set_tests_properties(forevertas-vulkan-search-parity
-            forevertas-vulkan-precise-finish-parity forevertas-vulkan-calibration
-            PROPERTIES LABELS "vulkan;parity;stadium" RUN_SERIAL TRUE TIMEOUT 1200)
-    endif()
 endif()

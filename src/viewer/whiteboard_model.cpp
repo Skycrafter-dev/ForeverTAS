@@ -1,4 +1,5 @@
 #include "viewer/whiteboard_model.h"
+#include "app/app_settings.h"
 
 #include "viewer/whiteboard_canvas_item.h"
 
@@ -11,7 +12,6 @@
 #include <QJsonObject>
 #include <QPainter>
 #include <QSaveFile>
-#include <QSettings>
 #include <QUuid>
 
 #include <algorithm>
@@ -1743,7 +1743,7 @@ void WhiteboardModel::notifyItemsChanged(
 
 void WhiteboardModel::loadPersistedBoards() {
     const QByteArray data =
-            QSettings().value(QString::fromLatin1(
+            app::AppSettings::Instance().value(QString::fromLatin1(
                                       kPersistedBoardsKey))
                     .toByteArray();
     if (data.isEmpty()) {
@@ -1761,12 +1761,12 @@ void WhiteboardModel::loadPersistedBoards() {
 }
 
 bool WhiteboardModel::persistBoards() {
-    QSettings settings;
+    app::AppSettings &settings = app::AppSettings::Instance();
     settings.setValue(
             QString::fromLatin1(kPersistedBoardsKey),
             serializeBoards(
                     boards_, QStringLiteral("Persistent whiteboards")));
-    settings.sync();
+    // saved a moment later off this thread: this is the last save's outcome
     if (settings.status() != QSettings::NoError) {
         setOperationMessage(QStringLiteral(
                 "Whiteboards could not be persisted."));

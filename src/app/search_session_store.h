@@ -26,6 +26,10 @@ public:
     };
     static QVariantMap Session(const QString &directory);
     static QVariantMap Cycle(const QString &directory, std::uint64_t restart);
+    // The running restart's best as a table row (Cycle's keys, plus running,
+    // improvements and lastImprovementMs).
+    static QVariantMap LiveRow(const SearchRequest &request, std::uint64_t restart,
+                               const SearchLiveUpdate &live);
     static CyclePage ReadCyclePage(const QString &directory,
                                   std::optional<std::uint64_t> anchor = {}, bool older = true);
     static SearchSessionLocation Create(const SearchRequest &request,

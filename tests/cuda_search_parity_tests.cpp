@@ -5,6 +5,7 @@
 #include "physics_backend.h"
 #include "replay_file_io.h"
 #include "searches/algorithm_registry.h"
+#include "searches/result_input_script.h"
 #include "searches/search_runner.h"
 
 #include <forevervalidator/experimental/physics_sandbox.h>
@@ -13,6 +14,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cmath>
 #include <cstdint>
 #include <exception>
@@ -27,6 +29,10 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#if defined(__linux__)
+#include <pthread.h>
+#endif
 
 namespace {
 
@@ -83,7 +89,6 @@ SearchResult Run(const char *packs,
                          evaluationEndTimeLimitMs = std::nullopt,
                  bool *calibrationCompleted = nullptr,
                  bool stopAfterCalibration = false,
-                 bool useSessionSpecialization = true,
                  bool autoPromoteBest = false,
                  std::uint32_t simulationHorizonMs =
                          forevertas::kDefaultSimulationHorizonMs,
@@ -94,7 +99,6 @@ SearchResult Run(const char *packs,
     request.backend = backend;
     request.parallelSampleCount = batchSize;
     request.calibrateCudaParallelSampleCount = calibrate;
-    request.useCudaSessionSpecialization = useSessionSpecialization;
     request.simulationHorizonMs = simulationHorizonMs;
     request.searchAlgorithm.settings["autoPromoteBest"] =
             autoPromoteBest ? "true" : "false";
@@ -235,7 +239,9 @@ bool CheckParity(const char *packs,
                  double *cudaSeconds = nullptr,
                  std::optional<std::int64_t>
                          evaluationEndTimeLimitMs = std::nullopt,
-                 const std::string &conditionScript = {}) {
+                 const std::string &conditionScript = {},
+                 std::uint32_t simulationHorizonMs =
+                         forevertas::kDefaultSimulationHorizonMs) {
     const auto started = std::chrono::steady_clock::now();
     std::cout << "checking " << label << std::endl;
     std::future<SearchResult> reference = std::async(
@@ -255,9 +261,8 @@ bool CheckParity(const char *packs,
                         evaluationEndTimeLimitMs,
                         nullptr,
                         false,
-                        true,
                         false,
-                        forevertas::kDefaultSimulationHorizonMs,
+                        simulationHorizonMs,
                         conditionScript);
             });
     const auto cudaStarted = std::chrono::steady_clock::now();
@@ -265,8 +270,8 @@ bool CheckParity(const char *packs,
             packs, replay, forevertas::PhysicsBackend::Cuda,
             batchSize, iterations, modifiers, evaluator,
             false, nullptr, false, evaluationEndTimeLimitMs,
-            nullptr, false, true, false,
-            forevertas::kDefaultSimulationHorizonMs,
+            nullptr, false, false,
+            simulationHorizonMs,
             conditionScript);
     const SearchResult authoritative = reference.get();
     if (cudaSeconds != nullptr) {
@@ -362,7 +367,7 @@ bool CheckEquivalentDeletionPrefersFewerInputs(
             false,
             nullptr,
             false);
-    const SearchResult regularCuda = Run(
+    const SearchResult cuda = Run(
             packs,
             replay,
             forevertas::PhysicsBackend::Cuda,
@@ -375,23 +380,7 @@ bool CheckEquivalentDeletionPrefersFewerInputs(
             false,
             std::nullopt,
             nullptr,
-            false,
             false);
-    const SearchResult fastCuda = Run(
-            packs,
-            replay,
-            forevertas::PhysicsBackend::Cuda,
-            64u,
-            iterations,
-            {deletion},
-            stunt,
-            false,
-            nullptr,
-            false,
-            std::nullopt,
-            nullptr,
-            false,
-            true);
 
     const bool simplified =
             reference.winnerSource ==
@@ -422,58 +411,9 @@ bool CheckEquivalentDeletionPrefersFewerInputs(
             reference, multiThreaded,
             "equivalent deletion multi-threaded CPU");
     okay &= SameAuthoritativeResult(
-            reference, regularCuda,
-            "equivalent deletion regular CUDA");
-    okay &= SameAuthoritativeResult(
-            reference, fastCuda,
-            "equivalent deletion fast CUDA");
+            reference, cuda,
+            "equivalent deletion CUDA");
     return okay;
-}
-
-bool CheckCudaKernelModeParity(
-        const char *packs,
-        const char *replay) {
-    OptionConfiguration modifier = DefaultModifier(
-            forevertas::kRandomSteeringModifierId);
-    modifier.settings["minTimeMs"] = "1000";
-    modifier.settings["maxTimeMs"] = "1000";
-    OptionConfiguration evaluator = DefaultEvaluator(
-            forevertas::kVelocityEvaluationId);
-    evaluator.settings["minTimeMs"] = "1020";
-    evaluator.settings["maxTimeMs"] = "1020";
-
-    const SearchResult regular = Run(
-            packs,
-            replay,
-            forevertas::PhysicsBackend::Cuda,
-            8u,
-            8u,
-            {modifier},
-            evaluator,
-            false,
-            nullptr,
-            false,
-            std::nullopt,
-            nullptr,
-            false,
-            false);
-    const SearchResult specialized = Run(
-            packs,
-            replay,
-            forevertas::PhysicsBackend::Cuda,
-            8u,
-            8u,
-            {modifier},
-            evaluator,
-            false,
-            nullptr,
-            false,
-            std::nullopt,
-            nullptr,
-            false,
-            true);
-    return SameAuthoritativeResult(
-            regular, specialized, "regular/specialized CUDA");
 }
 
 bool CheckCancellation(const char *packs, const char *replay) {
@@ -503,6 +443,47 @@ bool CheckCancellation(const char *packs, const char *replay) {
     }
     std::cerr << "running CUDA batch ignored cancellation\n";
     return false;
+}
+
+// The Distance target around walls on the GPU (tables built on the CPU,
+// queried in the kernel) against the optimized CPU: the same winners and
+// scores, to a checkpoint the window reaches or to the finish.
+bool CheckDistanceAroundWallsParity(const char *packs, const char *replay,
+                                    const std::string &event) {
+    OptionConfiguration insertion = DefaultModifier(
+            forevertas::kInputInsertionModifierId);
+    insertion.settings["minTimeMs"] = "2000";
+    insertion.settings["maxTimeMs"] = "6000";
+    insertion.settings["steerMinCount"] = "1";
+    insertion.settings["steerMaxCount"] = "2";
+    OptionConfiguration distance = DefaultEvaluator(
+            forevertas::kDistanceTargetEvaluationId);
+    distance.settings["route"] =
+            std::getenv("FTAS_DISTANCE_ROUTE") ? std::getenv("FTAS_DISTANCE_ROUTE") : "around";
+    distance.settings["eventType"] = event;
+    distance.settings["checkpointIndex"] = "2";
+    distance.settings["minTimeMs"] = "1000";
+    const std::uint32_t horizon = event == "finish" ? 70000u : 12000u;
+    distance.settings["maxTimeMs"] = std::to_string(horizon);
+    const auto run = [&](forevertas::PhysicsBackend backend, std::uint32_t batch) {
+        const char *count = std::getenv("FTAS_DISTANCE_ITERATIONS");
+        return Run(packs, replay, backend, batch, count ? std::stoull(count) : 6u, {insertion},
+                   distance, false, nullptr,
+                   false, std::nullopt, nullptr, false, false, horizon);
+    };
+    const auto started = std::chrono::steady_clock::now();
+    const SearchResult cpu = run(forevertas::PhysicsBackend::OptimizedCpu, 1u);
+    const auto cudaStarted = std::chrono::steady_clock::now();
+    std::cout << "CPU done in " << std::chrono::duration<double>(cudaStarted - started).count()
+              << " s, score " << cpu.bestScore << std::endl;
+    const SearchResult cuda = run(forevertas::PhysicsBackend::Cuda, 4u);
+    std::cout << "distance around walls to " << event << ": score " << cuda.bestScore
+              << " (CPU " << cpu.bestScore << "), CPU "
+              << std::chrono::duration<double>(cudaStarted - started).count() << " s, CUDA "
+              << std::chrono::duration<double>(std::chrono::steady_clock::now() - cudaStarted)
+                         .count()
+              << " s" << std::endl;
+    return SameAuthoritativeResult(cpu, cuda, "distance around walls to " + event);
 }
 
 bool CheckCalibration(const char *packs, const char *replay) {
@@ -559,6 +540,196 @@ bool CheckCalibration(const char *packs, const char *replay) {
             calibrated.evaluatorCalls != 0u;
 }
 
+// One search on two GPUs (here twice this one): each takes its own candidates,
+// both search, and what they report adds up.
+bool CheckGpuPool(const char *packs, const char *replay) {
+    OptionConfiguration velocity = DefaultEvaluator(forevertas::kVelocityEvaluationId);
+    velocity.settings["minTimeMs"] = "2500";
+    velocity.settings["maxTimeMs"] = "2500";
+    OptionConfiguration steering = DefaultModifier(forevertas::kRandomSteeringModifierId);
+    steering.settings["minTimeMs"] = "500";
+    steering.settings["maxTimeMs"] = "2000";
+    SearchRequest request{packs, replay};
+    request.simulationHorizonMs = 2600u;
+    request.baseInputCommands = ReplayInputCommands(packs, replay);
+    request.backend = forevertas::PhysicsBackend::Cuda;
+    request.parallelSampleCount = 2048u;
+    request.searchAlgorithm.settings["autoPromoteBest"] = "true";
+    request.modifiers = {steering};
+    request.evaluationTarget = velocity;
+    const std::vector<forevertas::SearchDevice> devices{
+            {forevertas::PhysicsBackend::Cuda, 2048u, false},
+            {forevertas::PhysicsBackend::Cuda, 1024u, false}};
+    std::mutex mutex;
+    std::vector<std::pair<std::uint64_t, std::uint32_t>> claimed;
+    std::vector<std::uint64_t> workerIterations;
+    std::uint64_t sharedBests = 0u;
+    std::size_t smallestStack = SIZE_MAX;
+    const forevertas::DeviceSearchRunner runner =
+            [&](const SearchRequest &deviceRequest, const forevertas::SearchRunControl *control) {
+                // a search thread's stack (Windows gives a thread 1 MB: a GPU
+                // session's set-up overflowed it on an RX 9070 XT)
+                std::size_t stack = forevertas::kSearchThreadStackBytes;
+#if defined(__linux__)
+                pthread_attr_t attributes;
+                if (pthread_getattr_np(pthread_self(), &attributes) == 0) {
+                    pthread_attr_getstacksize(&attributes, &stack);
+                    pthread_attr_destroy(&attributes);
+                }
+#endif
+                {
+                    std::scoped_lock lock(mutex);
+                    smallestStack = std::min(smallestStack, stack);
+                }
+                forevertas::SearchRunControl watched = *control;
+                watched.claimIterations = [&, claim = control->claimIterations](std::uint32_t count) {
+                    const std::uint64_t first = claim(count);
+                    std::scoped_lock lock(mutex);
+                    claimed.emplace_back(first, count);
+                    return first;
+                };
+                watched.promotedBaselineInputs = [&, promoted = control->promotedBaselineInputs]() {
+                    auto inputs = promoted();
+                    if (inputs) {
+                        std::scoped_lock lock(mutex);
+                        ++sharedBests;
+                    }
+                    return inputs;
+                };
+                SearchResult result = forevertas::RunSearch(deviceRequest, &watched);
+                std::scoped_lock lock(mutex);
+                workerIterations.push_back(result.iterations);
+                return result;
+            };
+    forevertas::SearchRunControl control;
+    control.iterationLimit = 100000u;
+    const auto started = std::chrono::steady_clock::now();
+    const SearchResult result = forevertas::RunSearchOnDevices(request, devices, runner, &control);
+    std::sort(claimed.begin(), claimed.end());
+    bool disjoint = !claimed.empty();
+    for (std::size_t i = 1u; i < claimed.size(); ++i) {
+        disjoint &= claimed[i - 1u].first + claimed[i - 1u].second <= claimed[i].first;
+    }
+    std::uint64_t total = 0u;
+    for (const std::uint64_t iterations : workerIterations) total += iterations;
+    std::cout << "gpu pool: " << result.iterations << " attempts (" << workerIterations.size()
+              << " workers), " << claimed.size() << " batches, " << result.mutationImprovementCount
+              << " improvements, " << sharedBests << " shared bests offered, score " << result.bestScore
+              << ", " << std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count()
+              << " s" << std::endl;
+    const bool okay = smallestStack >= forevertas::kSearchThreadStackBytes &&
+            workerIterations.size() == 2u && workerIterations[0] != 0u && workerIterations[1] != 0u &&
+            total == result.iterations && disjoint &&
+            result.winnerSource == forevertas::SearchWinnerSource::Mutation &&
+            result.mutationImprovementCount != 0u;
+    if (!okay) {
+        std::cerr << "GPU pool: workers " << workerIterations.size() << ", total " << total << " vs "
+                  << result.iterations << ", disjoint " << disjoint << ", worker stack " << smallestStack
+                  << " bytes\n";
+    }
+    return okay;
+}
+
+// Attempts per second for a few seconds, and the time outside the batches
+// (with FOREVERTAS_CUDA_PROFILE=1 every batch's own time is printed).
+bool MeasureThroughput(const char *packs, const char *replay, bool approximate, bool cpu, double seconds) {
+    OptionConfiguration velocity = DefaultEvaluator(forevertas::kVelocityEvaluationId);
+    velocity.settings["minTimeMs"] = "1000";
+    velocity.settings["maxTimeMs"] = "1000";
+    SearchRequest request{packs, replay};
+    request.baseInputCommands = ReplayInputCommands(packs, replay);
+    request.backend = cpu ? forevertas::PhysicsBackend::MultiThreadedCpu : forevertas::PhysicsBackend::Cuda;
+    request.parallelSampleCount = cpu ? forevertas::DefaultCpuWorkerCount() : 12000u;
+    request.approximatePhysics = approximate;
+    request.simulationHorizonMs = 5000u;
+    const char *promote = std::getenv("FTAS_PROMOTE");
+    request.searchAlgorithm.settings["autoPromoteBest"] =
+            promote == nullptr || std::string(promote) != "0" ? "true" : "false";
+    request.modifiers = {DefaultModifier(forevertas::kInputDeletionModifierId),
+                         DefaultModifier(forevertas::kSmoothSteeringModifierId)};
+    // FTAS_MODIFIERS=id,id,...: those passes (their defaults); FTAS_EVAL_MS: the velocity's moment (the passes' window
+    // ends a tick before it); FTAS_WINDOW_FROM_MS: the window's start
+    if (const char *ids = std::getenv("FTAS_MODIFIERS")) {
+        request.modifiers.clear();
+        std::stringstream list(ids);
+        for (std::string id; std::getline(list, id, ',');) request.modifiers.push_back(DefaultModifier(id));
+    }
+    const long evaluationMs = std::getenv("FTAS_EVAL_MS") ? std::atol(std::getenv("FTAS_EVAL_MS")) : 1000;
+    const long windowFromMs = std::getenv("FTAS_WINDOW_FROM_MS") ? std::atol(std::getenv("FTAS_WINDOW_FROM_MS")) : 10;
+    velocity.settings["minTimeMs"] = velocity.settings["maxTimeMs"] = std::to_string(evaluationMs);
+    request.simulationHorizonMs = static_cast<std::uint32_t>(std::max(5000L, evaluationMs + 1000L));
+    for (OptionConfiguration &modifier : request.modifiers) {
+        modifier.settings["minTimeMs"] = std::to_string(windowFromMs);
+        modifier.settings["maxTimeMs"] = std::to_string(evaluationMs - 10);
+    }
+    request.evaluationTarget = velocity;
+    forevertas::SearchRunControl control;
+    std::chrono::steady_clock::time_point searching{};
+    control.progressChanged = [&](const forevertas::SearchProgress &progress) {
+        if (progress.stage == forevertas::SearchProgressStage::Mutations &&
+            searching == std::chrono::steady_clock::time_point{}) {
+            searching = std::chrono::steady_clock::now();
+        }
+    };
+    std::uint64_t attemptsAtStop = 0u;
+    std::uint64_t attemptsSoFar = 0u;
+    std::chrono::steady_clock::time_point stoppedAt{};
+    control.statisticsChanged = [&](const forevertas::SearchStatisticsUpdate &statistics) {
+        attemptsSoFar = statistics.iterations;
+    };
+    control.liveChanged = [&](const forevertas::SearchLiveUpdate &live) { attemptsSoFar = live.iterations; };
+    control.stopRequested = [&]() {
+        const bool stop = searching != std::chrono::steady_clock::time_point{} &&
+                std::chrono::steady_clock::now() - searching > std::chrono::duration<double>(seconds);
+        if (stop && stoppedAt == std::chrono::steady_clock::time_point{}) {
+            stoppedAt = std::chrono::steady_clock::now();
+            attemptsAtStop = attemptsSoFar;
+        }
+        return stop;
+    };
+    // FTAS_BASE_SECONDS=s: first a promoted search for s seconds; its best is this search's base run
+    if (const char *baseSeconds = std::getenv("FTAS_BASE_SECONDS"); baseSeconds != nullptr && std::atof(baseSeconds) > 0.0) {
+        SearchRequest first = request;
+        first.searchAlgorithm.settings["autoPromoteBest"] = "true";
+        forevertas::SearchRunControl firstControl;
+        const auto firstStarted = std::chrono::steady_clock::now();
+        const double firstSeconds = std::atof(baseSeconds);
+        firstControl.stopRequested = [&]() {
+            return std::chrono::steady_clock::now() - firstStarted > std::chrono::duration<double>(firstSeconds);
+        };
+        // FTAS_BASE_ATTEMPTS=n: that many attempts instead (the same base run every time)
+        if (const char *attempts = std::getenv("FTAS_BASE_ATTEMPTS"); attempts != nullptr) {
+            firstControl.stopRequested = {};
+            firstControl.iterationLimit = std::strtoull(attempts, nullptr, 10);
+        }
+        const SearchResult based = forevertas::RunSearch(first, &firstControl);
+        const forevertas::InputScriptParseResult parsed = forevertas::ParseInputScript(
+                forevertas::FormatResultInputScript(based.bestInputs, request.evaluationTarget.id, based.bestState));
+        if (!parsed) throw std::runtime_error(*parsed.error);
+        request.baseInputCommands = parsed.commands;
+        std::cout << "base run: the best of a promoted search, " << based.mutationImprovementCount << " improvements, "
+                  << based.bestEvaluationDescription << std::endl;
+    }
+    // FTAS_ATTEMPTS=n: that many attempts instead of SECONDS (the same search every time)
+    if (const char *attempts = std::getenv("FTAS_ATTEMPTS"); attempts != nullptr) {
+        control.stopRequested = {};
+        control.iterationLimit = std::strtoull(attempts, nullptr, 10);
+    }
+    const SearchResult result = forevertas::RunSearch(request, &control);
+    if (std::getenv("FTAS_ATTEMPTS") != nullptr) {
+        std::cout.precision(17);
+        std::cout << "result: score " << result.bestScore << ", " << result.bestInputs.size() << " inputs, "
+                  << result.mutationImprovementCount << " improvements, iteration "
+                  << result.winningIterationIndex.value_or(0u) << std::endl;
+    }
+    const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - searching).count();
+    std::cout << (cpu ? "cpu " : "gpu ") << (approximate ? "approximate" : "exact") << ": " << result.iterations << " attempts in "
+              << elapsed << " s searching, " << result.iterations / elapsed << " per second, "
+              << result.mutationImprovementCount << " improvements; while searching: "
+              << attemptsAtStop / std::chrono::duration<double>(stoppedAt - searching).count() << " per second" << std::endl;
+    return result.iterations != 0u;
+}
+
 bool CheckPreciseFinishParity(const char *packs, const char *replay) {
     constexpr std::uint64_t iterations = 32u;
     const std::vector<OptionConfiguration> modifiers{
@@ -578,7 +749,7 @@ bool CheckPreciseFinishParity(const char *packs, const char *replay) {
                         modifiers,
                         evaluator,
                         false, nullptr, false, std::nullopt,
-                        nullptr, false, true, true, 30000u);
+                        nullptr, false, true, 30000u);
             });
     std::future<SearchResult> optimizedFuture = std::async(
             std::launch::async,
@@ -592,7 +763,7 @@ bool CheckPreciseFinishParity(const char *packs, const char *replay) {
                         modifiers,
                         evaluator,
                         false, nullptr, false, std::nullopt,
-                        nullptr, false, true, true, 30000u);
+                        nullptr, false, true, 30000u);
             });
     const SearchResult cuda = Run(
             packs,
@@ -603,7 +774,7 @@ bool CheckPreciseFinishParity(const char *packs, const char *replay) {
             modifiers,
             evaluator,
             false, nullptr, false, std::nullopt,
-            nullptr, false, true, true, 30000u);
+            nullptr, false, true, 30000u);
     const SearchResult reference = referenceFuture.get();
     const SearchResult optimized = optimizedFuture.get();
     OptionConfiguration promotionModifier = DefaultModifier(
@@ -621,7 +792,7 @@ bool CheckPreciseFinishParity(const char *packs, const char *replay) {
             {promotionModifier},
             evaluator,
             false, nullptr, false, std::nullopt,
-            nullptr, false, true, true, 30000u);
+            nullptr, false, true, 30000u);
     if (promotionProbe.iterations != 40001u ||
         promotionProbe.mutationImprovementCount == 0u ||
         !promotionProbe.winningIterationIndex) {
@@ -681,7 +852,6 @@ bool CheckUnchangedIncumbentIsNotReconstructed(const char *packs,
             nullptr,
             false,
             false,
-            false,
             forevertas::kDefaultSimulationHorizonMs,
             "iterations = 0",
             &resolutions));
@@ -718,7 +888,6 @@ bool CheckCheckpointConditionParity(const char *packs,
             std::nullopt,
             nullptr,
             false,
-            true,
             false,
             probeHorizonMs);
     const auto checkpoint = std::find_if(
@@ -745,8 +914,7 @@ bool CheckCheckpointConditionParity(const char *packs,
                             static_cast<std::int64_t>(
                                     forevertas::kSearchTickDurationMs),
                     1000));
-    const auto run = [&](forevertas::PhysicsBackend backend,
-                         bool specialize) {
+    const auto run = [&](forevertas::PhysicsBackend backend) {
         return Run(
                 packs,
                 replay,
@@ -761,35 +929,59 @@ bool CheckCheckpointConditionParity(const char *packs,
                 std::nullopt,
                 nullptr,
                 false,
-                specialize,
                 false,
                 horizonMs,
                 condition);
     };
     const SearchResult reference = run(
-            forevertas::PhysicsBackend::Reference, false);
+            forevertas::PhysicsBackend::Reference);
     const SearchResult optimized = run(
-            forevertas::PhysicsBackend::OptimizedCpu, false);
+            forevertas::PhysicsBackend::OptimizedCpu);
     const SearchResult cudaRegular = run(
-            forevertas::PhysicsBackend::Cuda, false);
-    const SearchResult cudaSpecialized = run(
-            forevertas::PhysicsBackend::Cuda, true);
+            forevertas::PhysicsBackend::Cuda);
     return SameAuthoritativeResult(
                    reference, optimized,
                    "checkpoint condition optimized CPU") &&
             SameAuthoritativeResult(
                     reference, cudaRegular,
-                    "checkpoint condition regular CUDA") &&
-            SameAuthoritativeResult(
-                    reference, cudaSpecialized,
-                    "checkpoint condition fast CUDA");
+                    "checkpoint condition CUDA");
+}
+
+// car.localvel in a condition: a velocity search at 1 s that only counts a
+// car driving forward (its velocity along its own +Z) finds the same best on
+// every backend (the CPU backends read it as 0 everywhere).
+bool CheckLocalVelocityConditionParity(const char *packs, const char *replay) {
+    OptionConfiguration velocity = DefaultEvaluator(forevertas::kVelocityEvaluationId);
+    velocity.settings["minTimeMs"] = "1000";
+    velocity.settings["maxTimeMs"] = "1000";
+    OptionConfiguration random = DefaultModifier(forevertas::kRandomSteeringModifierId);
+    random.settings["minTimeMs"] = "0";
+    random.settings["maxTimeMs"] = "900";
+    const auto run = [&](forevertas::PhysicsBackend backend, const std::string &condition) {
+        std::cout << "  " << (backend == forevertas::PhysicsBackend::Cuda ? "CUDA"
+                              : backend == forevertas::PhysicsBackend::Reference ? "Reference" : "Optimized CPU")
+                  << ", " << condition << std::endl;
+        return Run(packs, replay, backend, backend == forevertas::PhysicsBackend::Cuda ? 32u : 1u, 32u,
+                   {random}, velocity, false, nullptr, false, std::nullopt, nullptr, false, false, 1010u,
+                   condition);
+    };
+    bool okay = true;
+    for (const std::string condition : {"car.localvel.z > 1", "car.localvel.x > 0"}) {
+        const SearchResult reference = run(forevertas::PhysicsBackend::Reference, condition);
+        const SearchResult optimized = run(forevertas::PhysicsBackend::OptimizedCpu, condition);
+        const SearchResult cuda = run(forevertas::PhysicsBackend::Cuda, condition);
+        std::cout << "local velocity condition \"" << condition << "\": best " << reference.bestScore << " ("
+                  << reference.bestEvaluationDescription << ")\n";
+        okay &= SameAuthoritativeResult(reference, optimized, "local velocity optimized CPU: " + condition) &&
+                SameAuthoritativeResult(reference, cuda, "local velocity CUDA: " + condition);
+    }
+    return okay;
 }
 
 SearchResult RunFixedScript(const char *packs,
                             const char *scenario,
                             const std::string &script,
                             forevertas::PhysicsBackend backend,
-                            bool specialize,
                             std::uint32_t horizonMs) {
     const forevertas::InputScriptParseResult parsed =
             forevertas::ParseInputScript(script);
@@ -798,7 +990,6 @@ SearchResult RunFixedScript(const char *packs,
     request.baseInputCommands = parsed.commands;
     request.backend = backend;
     request.parallelSampleCount = 1u;
-    request.useCudaSessionSpecialization = specialize;
     request.simulationHorizonMs = horizonMs;
     request.evaluationTarget =
             DefaultEvaluator(forevertas::kPreciseFinishTimeEvaluationId);
@@ -876,16 +1067,13 @@ bool DiagnoseFixedScript(const char *packs,
     std::ifstream file(scriptPath, std::ios::binary);
     if (!file) throw std::runtime_error("could not read input script");
     const std::string script(std::istreambuf_iterator<char>(file), {});
-    const std::array<std::pair<const char *, SearchResult>, 4> results{{
+    const std::array<std::pair<const char *, SearchResult>, 3> results{{
             {"reference", RunFixedScript(packs, scenario, script,
-                    forevertas::PhysicsBackend::Reference, false, horizonMs)},
+                    forevertas::PhysicsBackend::Reference, horizonMs)},
             {"optimized", RunFixedScript(packs, scenario, script,
-                    forevertas::PhysicsBackend::OptimizedCpu, false,
-                    horizonMs)},
-            {"cuda-regular", RunFixedScript(packs, scenario, script,
-                    forevertas::PhysicsBackend::Cuda, false, horizonMs)},
-            {"cuda-specialized", RunFixedScript(packs, scenario, script,
-                    forevertas::PhysicsBackend::Cuda, true, horizonMs)},
+                    forevertas::PhysicsBackend::OptimizedCpu, horizonMs)},
+            {"cuda", RunFixedScript(packs, scenario, script,
+                    forevertas::PhysicsBackend::Cuda, horizonMs)},
     }};
     for (const auto &[name, result] : results) {
         const auto finish = result.bestTimeline.empty()
@@ -958,7 +1146,6 @@ SearchResult RunMismatchMutation(const char *packs,
                                  const char *scenario,
                                  const std::string &script,
                                  forevertas::PhysicsBackend backend,
-                                 bool specialize,
                                  std::uint64_t iterations = 1u) {
     const forevertas::InputScriptParseResult parsed =
             forevertas::ParseInputScript(script);
@@ -970,7 +1157,6 @@ SearchResult RunMismatchMutation(const char *packs,
             ? static_cast<std::uint32_t>(
                       std::min<std::uint64_t>(iterations, 40000u))
             : 1u;
-    request.useCudaSessionSpecialization = specialize;
     request.simulationHorizonMs = 25000u;
     request.searchAlgorithm.settings["autoPromoteBest"] = "true";
     OptionConfiguration modifier = DefaultModifier(
@@ -1018,9 +1204,8 @@ bool DiagnoseMutationBackend(const char *packs,
             : name == "optimized"
             ? forevertas::PhysicsBackend::OptimizedCpu
             : forevertas::PhysicsBackend::Cuda;
-    const bool specialize = name == "cuda-specialized";
     const SearchResult result = RunMismatchMutation(
-            packs, scenario, script, backend, specialize, iterations);
+            packs, scenario, script, backend, iterations);
     std::cout << name << " winner="
               << (result.winnerSource ==
                                   forevertas::SearchWinnerSource::Mutation
@@ -1040,15 +1225,13 @@ bool DiagnoseMismatchMutation(const char *packs,
     std::ifstream file(scriptPath, std::ios::binary);
     if (!file) throw std::runtime_error("could not read input script");
     const std::string script(std::istreambuf_iterator<char>(file), {});
-    const std::array<std::pair<const char *, SearchResult>, 4> results{{
+    const std::array<std::pair<const char *, SearchResult>, 3> results{{
             {"reference", RunMismatchMutation(packs, scenario, script,
-                    forevertas::PhysicsBackend::Reference, false)},
+                    forevertas::PhysicsBackend::Reference)},
             {"optimized", RunMismatchMutation(packs, scenario, script,
-                    forevertas::PhysicsBackend::OptimizedCpu, false)},
-            {"cuda-regular", RunMismatchMutation(packs, scenario, script,
-                    forevertas::PhysicsBackend::Cuda, false)},
-            {"cuda-specialized", RunMismatchMutation(packs, scenario, script,
-                    forevertas::PhysicsBackend::Cuda, true)},
+                    forevertas::PhysicsBackend::OptimizedCpu)},
+            {"cuda", RunMismatchMutation(packs, scenario, script,
+                    forevertas::PhysicsBackend::Cuda)},
     }};
     bool okay = true;
     const std::string expected = forevertas::FormatInputScript(
@@ -1089,21 +1272,40 @@ int main(int argc, char **argv) {
     const bool calibrationOnly =
             argc == 4 &&
             std::string(argv[1]) == "--calibration-only";
+    const bool distanceOnly =
+            argc == 4 &&
+            (std::string(argv[1]) == "--distance-around-walls" ||
+             std::string(argv[1]) == "--distance-around-walls-finish");
     const bool preciseFinishOnly =
             argc == 4 &&
             std::string(argv[1]) == "--precise-finish-only";
+    const bool gpuPoolOnly = argc == 4 && std::string(argv[1]) == "--gpu-pool";
+    if (argc == 4 && std::string(argv[1]) == "--local-velocity") {
+        try {
+            return CheckLocalVelocityConditionParity(argv[2], argv[3]) ? 0 : 1;
+        } catch (const std::exception &error) {
+            std::cerr << error.what() << '\n';
+            return 1;
+        }
+    }
+    // --throughput [cpu-]exact|[cpu-]approximate SECONDS PACKS REPLAY (FTAS_PROMOTE=0: no promotion)
+    if (argc == 6 && std::string(argv[1]) == "--throughput") {
+        const std::string mode = argv[2];
+        return MeasureThroughput(argv[4], argv[5], mode.find("approximate") != std::string::npos,
+                                 mode.rfind("cpu-", 0) == 0, std::atof(argv[3])) ? 0 : 1;
+    }
     const bool ordinaryParity =
             argc == 3 ||
             (argc == 4 && std::string_view(argv[1]).find("--") != 0u);
     if ((!scriptParity && !mutationParity && !mutationBackend &&
-         !calibrationOnly &&
-         !preciseFinishOnly &&
+         !calibrationOnly && !distanceOnly &&
+         !preciseFinishOnly && !gpuPoolOnly &&
          !ordinaryParity) ||
-        ((calibrationOnly || preciseFinishOnly) && argc != 4)) {
+        ((calibrationOnly || preciseFinishOnly || distanceOnly || gpuPoolOnly) && argc != 4)) {
         std::cerr << "expected Packs directory and replay path\n";
         return 2;
     }
-    const bool focusedMode = calibrationOnly || preciseFinishOnly;
+    const bool focusedMode = calibrationOnly || preciseFinishOnly || distanceOnly || gpuPoolOnly;
     const char *const packs = argv[focusedMode ? 2 : 1];
     const char *const replay = argv[focusedMode ? 3 : 2];
     try {
@@ -1125,11 +1327,20 @@ int main(int argc, char **argv) {
         if (calibrationOnly) {
             return CheckCalibration(packs, replay) ? 0 : 1;
         }
+        if (distanceOnly) {
+            return CheckDistanceAroundWallsParity(
+                           packs, replay,
+                           std::string(argv[1]) == "--distance-around-walls-finish"
+                                   ? "finish" : "checkpoint")
+                    ? 0 : 1;
+        }
         if (preciseFinishOnly) {
             return CheckPreciseFinishParity(packs, replay) ? 0 : 1;
         }
-        bool okay = CheckCudaKernelModeParity(packs, replay);
-        okay &= CheckEquivalentDeletionPrefersFewerInputs(packs, replay);
+        if (gpuPoolOnly) {
+            return CheckGpuPool(packs, replay) ? 0 : 1;
+        }
+        bool okay = CheckEquivalentDeletionPrefersFewerInputs(packs, replay);
         if (ordinaryParity && argc == 4) {
             okay &= CheckCheckpointConditionParity(packs, argv[3]);
         }
@@ -1182,7 +1393,7 @@ int main(int argc, char **argv) {
                 forevertas::PhysicsBackend::Reference,
                 1u, 4u, {random}, coverageVelocity,
                 false, nullptr, false, shortEvaluationEndTimeMs,
-                nullptr, false, true, false,
+                nullptr, false, false,
                 forevertas::kDefaultSimulationHorizonMs,
                 "iterations > 0");
         const SearchResult conditionOptimized = Run(
@@ -1190,7 +1401,7 @@ int main(int argc, char **argv) {
                 forevertas::PhysicsBackend::OptimizedCpu,
                 1u, 4u, {random}, coverageVelocity,
                 false, nullptr, false, shortEvaluationEndTimeMs,
-                nullptr, false, true, false,
+                nullptr, false, false,
                 forevertas::kDefaultSimulationHorizonMs,
                 "iterations > 0");
         okay &= SameAuthoritativeResult(

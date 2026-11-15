@@ -48,7 +48,8 @@ class SearchController final : public QObject {
     Q_PROPERTY(QVariantMap replayInputFailure READ replayInputFailure NOTIFY
                        replayInputStateChanged)
     Q_PROPERTY(QVariantList simulationBackendOptions READ
-                       simulationBackendOptions CONSTANT)
+                       simulationBackendOptions NOTIFY
+                       computeBackendsChanged)
     Q_PROPERTY(QString simulationBackendId READ simulationBackendId WRITE
                        setSimulationBackendId NOTIFY simulationBackendIdChanged)
     Q_PROPERTY(QString simulationHorizonMs READ simulationHorizonMs WRITE
@@ -74,31 +75,33 @@ class SearchController final : public QObject {
     Q_PROPERTY(bool hipCalibrationEnabled READ hipCalibrationEnabled WRITE
                        setHipCalibrationEnabled NOTIFY
                        hipCalibrationEnabledChanged)
-    Q_PROPERTY(QString vulkanParallelSampleCount READ vulkanParallelSampleCount WRITE
-                       setVulkanParallelSampleCount NOTIFY
-                       vulkanParallelSampleCountChanged)
-    Q_PROPERTY(bool vulkanCalibrationEnabled READ vulkanCalibrationEnabled WRITE
-                       setVulkanCalibrationEnabled NOTIFY
-                       vulkanCalibrationEnabledChanged)
-    Q_PROPERTY(bool cudaSessionSpecializationEnabled READ
-                       cudaSessionSpecializationEnabled WRITE
-                       setCudaSessionSpecializationEnabled NOTIFY
-                       cudaSessionSpecializationEnabledChanged)
-    Q_PROPERTY(bool cudaAvailable READ cudaAvailable CONSTANT)
-    Q_PROPERTY(bool cudaFastModeAvailable READ cudaFastModeAvailable CONSTANT)
-    Q_PROPERTY(QString cudaStatusText READ cudaStatusText CONSTANT)
-    Q_PROPERTY(bool hipAvailable READ hipAvailable CONSTANT)
-    Q_PROPERTY(QString hipStatusText READ hipStatusText CONSTANT)
-    Q_PROPERTY(bool vulkanAvailable READ vulkanAvailable CONSTANT)
-    Q_PROPERTY(QString vulkanStatusText READ vulkanStatusText CONSTANT)
+    // CUDA: "Exact" (false) or "Approximate" (true) physics for the search.
+    Q_PROPERTY(bool approximatePhysics READ approximatePhysics WRITE
+                       setApproximatePhysics NOTIFY approximatePhysicsChanged)
+    Q_PROPERTY(bool approximatePhysicsAvailable READ
+                       approximatePhysicsAvailable NOTIFY
+                       computeBackendsChanged)
+    // The chosen GPU (or every ticked graphics card) can run Approximate physics.
+    Q_PROPERTY(bool approximatePhysicsOnGpu READ approximatePhysicsOnGpu NOTIFY gpuCardsChanged)
+    // An NVIDIA and an AMD graphics card: the "GPU" backend, a box per card.
+    Q_PROPERTY(bool multipleGpus READ multipleGpus NOTIFY computeBackendsChanged)
+    Q_PROPERTY(QString cudaCardName READ cudaCardName NOTIFY computeBackendsChanged)
+    Q_PROPERTY(QString hipCardName READ hipCardName NOTIFY computeBackendsChanged)
+    Q_PROPERTY(bool cudaCardEnabled READ cudaCardEnabled WRITE setCudaCardEnabled NOTIFY gpuCardsChanged)
+    Q_PROPERTY(bool hipCardEnabled READ hipCardEnabled WRITE setHipCardEnabled NOTIFY gpuCardsChanged)
+    // The twin on CPU threads (the multi-threaded CPU backend, two workers or more).
+    Q_PROPERTY(bool approximatePhysicsCpuAvailable READ
+                       approximatePhysicsCpuAvailable CONSTANT)
+    Q_PROPERTY(bool cudaAvailable READ cudaAvailable NOTIFY computeBackendsChanged)
+    Q_PROPERTY(QString cudaStatusText READ cudaStatusText NOTIFY computeBackendsChanged)
+    Q_PROPERTY(bool hipAvailable READ hipAvailable NOTIFY computeBackendsChanged)
+    Q_PROPERTY(QString hipStatusText READ hipStatusText NOTIFY computeBackendsChanged)
     Q_PROPERTY(bool randomizeSeedsOnStart READ randomizeSeedsOnStart WRITE
                        setRandomizeSeedsOnStart NOTIFY
                        randomizeSeedsOnStartChanged)
     Q_PROPERTY(bool drawTargetsThroughBlocks READ drawTargetsThroughBlocks WRITE
                        setDrawTargetsThroughBlocks NOTIFY
                        drawTargetsThroughBlocksChanged)
-    Q_PROPERTY(bool darkMode READ darkMode WRITE setDarkMode NOTIFY
-                       darkModeChanged)
     Q_PROPERTY(bool viewerVisible READ viewerVisible WRITE setViewerVisible NOTIFY viewerVisibleChanged)
     Q_PROPERTY(bool targetMouseEditingLocked READ targetMouseEditingLocked WRITE
                        setTargetMouseEditingLocked NOTIFY targetMouseEditingLockedChanged)
@@ -113,6 +116,9 @@ class SearchController final : public QObject {
                        setEvaluationTargetId NOTIFY evaluationTargetIdChanged)
     Q_PROPERTY(QVariantMap searchAlgorithmSettings READ searchAlgorithmSettings
                        NOTIFY searchAlgorithmSettingsChanged)
+    // Bumped whenever a window chain changes, for bindings on windowChain().
+    Q_PROPERTY(int windowChainRevision READ windowChainRevision NOTIFY
+                       windowChainsChanged)
     Q_PROPERTY(QVariantList modifierPasses READ modifierPasses NOTIFY
                        modifierPassesChanged)
     Q_PROPERTY(QVariantMap evaluationTargetSettings READ
@@ -130,7 +136,6 @@ class SearchController final : public QObject {
     Q_PROPERTY(bool canStart READ canStart NOTIFY canStartChanged)
     Q_PROPERTY(bool running READ running NOTIFY runningChanged)
     Q_PROPERTY(bool stopping READ stopping NOTIFY stoppingChanged)
-    Q_PROPERTY(bool aborting READ aborting NOTIFY stoppingChanged)
     Q_PROPERTY(bool progressIndeterminate READ progressIndeterminate NOTIFY
                        progressChanged)
     Q_PROPERTY(double progressValue READ progressValue NOTIFY progressChanged)
@@ -159,6 +164,9 @@ class SearchController final : public QObject {
     Q_PROPERTY(QString selectedSessionDirectory READ
                        selectedSessionDirectory NOTIFY historyChanged)
     Q_PROPERTY(QVariantList cycleRows READ cycleRows NOTIFY historyChanged)
+    // The current search's best as a table row (SearchSessionStore::LiveRow);
+    // "running" turns false when the search ends. Empty before a search.
+    Q_PROPERTY(QVariantMap liveRow READ liveRow NOTIFY liveRowChanged)
     Q_PROPERTY(bool evaluatingBase READ evaluatingBase NOTIFY baseEvaluationChanged)
     Q_PROPERTY(bool canEvaluateBase READ canEvaluateBase NOTIFY baseEvaluationChanged)
     Q_PROPERTY(QString baseEvaluationText READ baseEvaluationText NOTIFY baseEvaluationChanged)
@@ -194,21 +202,23 @@ public:
     QString cpuWorkerCount() const;
     QString cudaParallelSampleCount() const;
     QString hipParallelSampleCount() const;
-    QString vulkanParallelSampleCount() const;
     bool cudaCalibrationEnabled() const;
     bool hipCalibrationEnabled() const;
-    bool vulkanCalibrationEnabled() const;
-    bool cudaSessionSpecializationEnabled() const;
+    bool approximatePhysics() const;
+    bool approximatePhysicsAvailable() const;
+    bool approximatePhysicsCpuAvailable() const;
     bool cudaAvailable() const;
     bool hipAvailable() const;
-    bool vulkanAvailable() const;
-    bool cudaFastModeAvailable() const;
+    bool approximatePhysicsOnGpu() const;
+    bool multipleGpus() const;
+    QString cudaCardName() const;
+    QString hipCardName() const;
+    bool cudaCardEnabled() const;
+    bool hipCardEnabled() const;
     QString cudaStatusText() const;
     QString hipStatusText() const;
-    QString vulkanStatusText() const;
     bool randomizeSeedsOnStart() const;
     bool drawTargetsThroughBlocks() const;
-    bool darkMode() const;
     bool viewerVisible() const;
     bool targetMouseEditingLocked() const;
     QVariantList searchAlgorithmOptions() const;
@@ -234,7 +244,6 @@ public:
     QVariantMap baseEvaluationResult() const { return baseEvaluationResult_; }
     bool running() const;
     bool stopping() const;
-    bool aborting() const;
     bool progressIndeterminate() const;
     double progressValue() const;
     QString validationMessage() const;
@@ -255,6 +264,7 @@ public:
     QVariantList sessionOptions() const;
     QString selectedSessionDirectory() const;
     QVariantList cycleRows() const;
+    QVariantMap liveRow() const;
     bool historyHasOlder() const { return historyHasOlder_; }
     bool historyHasNewer() const { return historyHasNewer_; }
     qint64 selectedCycleRestart() const { return selectedCycleRestart_; }
@@ -271,29 +281,37 @@ public slots:
     void setCpuWorkerCount(const QString &value);
     void setCudaParallelSampleCount(const QString &value);
     void setHipParallelSampleCount(const QString &value);
-    void setVulkanParallelSampleCount(const QString &value);
     void setCudaCalibrationEnabled(bool value);
     void setHipCalibrationEnabled(bool value);
-    void setVulkanCalibrationEnabled(bool value);
-    void setCudaSessionSpecializationEnabled(bool value);
+    void setCudaCardEnabled(bool value);
+    void setHipCardEnabled(bool value);
+    void setApproximatePhysics(bool value);
     void setRandomizeSeedsOnStart(bool value);
     void setAutoRestartMode(const QString &value);
     void setAutoRestartDuration(const QString &value);
     void setAutoRestartAttempts(const QString &value);
     void setDrawTargetsThroughBlocks(bool value);
-    void setDarkMode(bool value);
     void setViewerVisible(bool value);
     void setTargetMouseEditingLocked(bool value);
     void setSearchAlgorithmId(const QString &value);
     void setEvaluationTargetId(const QString &value);
 
-    Q_INVOKABLE void browseForPacksDirectory();
+    // Both return whether a path was picked.
+    Q_INVOKABLE bool browseForPacksDirectory();
     Q_INVOKABLE void applyAutoDetectedPacksDirectory();
-    Q_INVOKABLE void browseForReplay();
+    Q_INVOKABLE bool browseForReplay();
+    // Saved window and panel preferences (panel layout, zoom, glass look).
+    Q_INVOKABLE QVariant uiSetting(const QString &key,
+                                   const QVariant &fallback) const;
+    Q_INVOKABLE void setUiSetting(const QString &key, const QVariant &value);
+    // Whether the keyboard's letters sit like AZERTY's (for default keys).
+    Q_INVOKABLE bool keyboardIsAzerty() const;
     Q_INVOKABLE QString formatCompactNumber(double value) const;
     Q_INVOKABLE bool extendSimulationHorizon();
     Q_INVOKABLE void previewBaseInputs();
     Q_INVOKABLE QString formatSpeed(double metersPerSecond) const;
+    // Where the search starts judging its target (ms); -1 when unknown.
+    Q_INVOKABLE double evaluationStartMs() const;
     Q_INVOKABLE void extractReplayInputs();
     Q_INVOKABLE bool undoBaseInputScript();
     Q_INVOKABLE void setSearchAlgorithmSetting(const QString &key,
@@ -306,6 +324,13 @@ public slots:
     Q_INVOKABLE void setModifierPassSetting(int index,
                                             const QString &key,
                                             const QString &value);
+    // Window chains (as in TICK): windows linked in the same color change
+    // together. Keys: "pass:<index>", "target", "searchEnd",
+    // "previewExtent". A chain is {color, linked}.
+    Q_INVOKABLE QVariantMap windowChain(const QString &key) const;
+    int windowChainRevision() const { return windowChainRevision_; }
+    Q_INVOKABLE void setWindowChain(const QString &key, const QString &color,
+                                    bool linked);
     Q_INVOKABLE void setEvaluationTargetSetting(const QString &key,
                                                 const QString &value);
     Q_INVOKABLE void focusSelectedCuboid();
@@ -314,16 +339,20 @@ public slots:
     Q_INVOKABLE void finishCustomVolumeDrawing();
     Q_INVOKABLE void cancelCustomVolumeDrawing();
     Q_INVOKABLE void focusSelectedPoseTarget();
+    // GPU backends again (after a GPU module was installed)
+    Q_INVOKABLE void refreshComputeBackends();
     Q_INVOKABLE void startSearch();
     Q_INVOKABLE void evaluateBase();
     Q_INVOKABLE void cancelBaseEvaluation();
     Q_INVOKABLE void stopSearch();
-    Q_INVOKABLE void abortSearch();
     Q_INVOKABLE void selectSession(int index);
     Q_INVOKABLE void selectCycle(int index);
     Q_INVOKABLE void changeCyclePage(bool older);
 
 signals:
+    // a GPU backend came or went (a GPU module was installed)
+    void computeBackendsChanged();
+    void gpuCardsChanged();
     void baseEvaluationChanged();
     void packsDirectoryChanged();
     void autoDetectedPacksDirectoryChanged();
@@ -338,20 +367,18 @@ signals:
     void cpuWorkerCountChanged();
     void cudaParallelSampleCountChanged();
     void hipParallelSampleCountChanged();
-    void vulkanParallelSampleCountChanged();
     void cudaCalibrationEnabledChanged();
     void hipCalibrationEnabledChanged();
-    void vulkanCalibrationEnabledChanged();
-    void cudaSessionSpecializationEnabledChanged();
+    void approximatePhysicsChanged();
     void randomizeSeedsOnStartChanged();
     void drawTargetsThroughBlocksChanged();
-    void darkModeChanged();
     void viewerVisibleChanged();
     void targetMouseEditingLockedChanged();
     void searchAlgorithmIdChanged();
     void evaluationTargetIdChanged();
     void searchAlgorithmSettingsChanged();
     void modifierPassesChanged();
+    void windowChainsChanged();
     void evaluationTargetSettingsChanged();
     void canStartChanged();
     void runningChanged();
@@ -363,6 +390,7 @@ signals:
     void resultChanged();
     void autoRestartChanged();
     void historyChanged();
+    void liveRowChanged();
     void searchSessionReset();
     void searchStarted(std::uint64_t searchId);
     void basePreviewRequested();
@@ -378,10 +406,30 @@ signals:
                                   const QVector3D &size);
 
 private:
+    struct ChainWindow {
+        bool hasStart = false;
+        QString start;
+        QString end;
+        QString endMode;
+    };
+    QStringList windowChainKeys() const;
+    std::optional<ChainWindow> chainWindow(const QString &key) const;
+    void applyChainWindow(const QString &key, const ChainWindow &window);
+    void propagateWindowChain(const QString &key);
+    bool propagatingWindowChain_ = false;
+    int windowChainRevision_ = 0;
+
     struct ValidationResult {
         std::optional<SearchRequest> request;
         QString error;
+        // the "GPU" backend with two cards ticked: both (the request is the first's)
+        std::vector<SearchDevice> devices = {};
     };
+    // The "GPU" backend (two cards) is chosen: simulationBackend_ is then the
+    // first ticked card's.
+    bool gpusChosen() const;
+    void setGpusChosen(bool chosen);
+    QString deviceSettings(PhysicsBackend backend, SearchDevice *device) const;
 
     ValidationResult validate(bool baselineOnly = false) const;
     void refreshValidation();
@@ -415,6 +463,7 @@ private:
                                       const QString &value);
     void applyBaseInputScript(const QString &value, bool recordUndo);
     void refreshSessions();
+    void readComputeBackends();
 
     QString packsDirectory_;
     QString autoDetectedPacksDirectory_;
@@ -438,20 +487,20 @@ private:
             kDefaultCudaParallelSampleCount);
     bool cudaCalibrationEnabled_ = false;
     bool hipCalibrationEnabled_ = false;
-    bool cudaSessionSpecializationEnabled_ = true;
+    bool approximatePhysics_ = false;
     bool cudaAvailable_ = false;
-    bool cudaFastModeAvailable_ = false;
     QString cudaStatusText_;
     bool hipAvailable_ = false;
+    bool cudaApproximate_ = false;
+    bool gpusMode_ = false;
+    bool cudaCardEnabled_ = true;
+    bool hipCardEnabled_ = true;
+    QString cudaCardName_;
+    QString hipCardName_;
+    bool hipApproximate_ = false;
     QString hipStatusText_;
-    QString vulkanParallelSampleCount_ = QString::number(
-            kDefaultCudaParallelSampleCount);
-    bool vulkanCalibrationEnabled_ = false;
-    bool vulkanAvailable_ = false;
-    QString vulkanStatusText_;
     bool randomizeSeedsOnStart_ = true;
     bool drawTargetsThroughBlocks_ = false;
-    bool darkMode_ = false;
     bool viewerVisible_ = true;
     bool targetMouseEditingLocked_ = false;
     SearchConfigurationModel configuration_;
@@ -472,6 +521,7 @@ private:
     QString autoRestartAttempts_ = QStringLiteral("1000");
     QVariantList sessionOptions_;
     QVariantList cycleRows_;
+    QVariantMap liveRow_;
     bool historyHasOlder_ = false;
     bool historyHasNewer_ = false;
     bool historySelectionExplicit_ = false;

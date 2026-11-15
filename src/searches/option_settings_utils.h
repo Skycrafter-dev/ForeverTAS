@@ -15,19 +15,23 @@
 
 namespace forevertas {
 
+// A component's reason when one of its settings could not be read: the
+// configuration then finds and names that setting (ExplainSettingsProblem).
+inline constexpr char kUnreadableSetting[] = "a setting could not be read";
+
 inline std::optional<std::string> ValidateOptionSettingKeys(
         const OptionSettings &settings,
         const OptionSettings &defaults) {
     for (const auto &[key, value] : defaults) {
         static_cast<void>(value);
         if (settings.find(key) == settings.end()) {
-            return "missing setting: " + key;
+            return "the setting \"" + key + "\" is missing";
         }
     }
     for (const auto &[key, value] : settings) {
         static_cast<void>(value);
         if (defaults.find(key) == defaults.end()) {
-            return "unknown setting: " + key;
+            return "the setting \"" + key + "\" is not one this version knows";
         }
     }
     return std::nullopt;
@@ -135,22 +139,23 @@ inline std::optional<std::string> ValidateTimeWindow(
         std::int64_t minimum,
         std::int64_t maximum,
         std::uint32_t tickDurationMs,
-        const std::string &name,
+        // what the minimum is called ("the minimum time")
+        const std::string &minimumName,
         bool allowTimelineOrigin = false) {
-    if (tickDurationMs == 0u) return "tick duration must be greater than zero";
+    if (tickDurationMs == 0u) return "the tick length is 0";
     const std::int64_t earliest =
             allowTimelineOrigin
             ? 0 : static_cast<std::int64_t>(tickDurationMs);
     if (minimum < earliest) {
         if (allowTimelineOrigin) {
-            return name + " minimum must not be negative";
+            return minimumName + " can't be below 0";
         }
-        return name + " minimum must be at least one tick";
+        return minimumName + " must be " + std::to_string(tickDurationMs) + " ms or later";
     }
-    if (maximum < minimum) return name + " maximum must not precede minimum";
+    if (maximum < minimum) return "the maximum time is before the minimum time";
     const std::int64_t tick = static_cast<std::int64_t>(tickDurationMs);
     if (minimum % tick != 0 || maximum % tick != 0) {
-        return name + " times must align to whole ticks";
+        return "times must be in steps of " + std::to_string(tickDurationMs) + " ms";
     }
     return std::nullopt;
 }

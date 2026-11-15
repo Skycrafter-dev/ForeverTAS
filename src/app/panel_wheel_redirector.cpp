@@ -58,6 +58,42 @@ QQuickItem *ScrollableFlickableAt(QQuickItem *item,
     return nullptr;
 }
 
+// The deepest visible item under a scene point, front to back by z: what
+// the pointer is over. The popup overlay only counts while it shows a popup.
+QQuickItem *TopmostItemAt(QQuickItem *item, const QPointF &scenePosition) {
+    QList<QQuickItem *> children = item->childItems();
+    std::stable_sort(children.begin(), children.end(),
+                     [](const QQuickItem *a, const QQuickItem *b) {
+                         return a->z() < b->z();
+                     });
+    for (auto it = children.crbegin(); it != children.crend(); ++it) {
+        QQuickItem *const child = *it;
+        if (!child->isVisible() || child->opacity() <= 0.0) {
+            continue;
+        }
+        if (child->inherits("QQuickOverlay")) {
+            const QList<QQuickItem *> popups = child->childItems();
+            if (std::none_of(popups.cbegin(), popups.cend(),
+                             [](const QQuickItem *popup) {
+                                 return popup->isVisible();
+                             })) {
+                continue;
+            }
+        }
+        if (child->clip() &&
+            !child->contains(child->mapFromScene(scenePosition))) {
+            continue;
+        }
+        if (QQuickItem *const deeper = TopmostItemAt(child, scenePosition)) {
+            return deeper;
+        }
+        if (child->contains(child->mapFromScene(scenePosition))) {
+            return child;
+        }
+    }
+    return nullptr;
+}
+
 }  // namespace
 
 PanelWheelRedirector::PanelWheelRedirector(QQuickItem *parent)
@@ -100,6 +136,13 @@ bool PanelWheelRedirector::eventFilter(QObject *watched, QEvent *event) {
     auto *const wheel = static_cast<QWheelEvent *>(event);
     const QPointF local = mapFromScene(wheel->position());
     if (!contains(local)) return false;
+    // Panels can overlap: leave the wheel to whatever covers this one.
+    QQuickItem *const pointed =
+            TopmostItemAt(filteredWindow_->contentItem(), wheel->position());
+    if (pointed != nullptr && pointed != parentItem() &&
+        !parentItem()->isAncestorOf(pointed)) {
+        return false;
+    }
 
     double deltaY = static_cast<double>(wheel->pixelDelta().y()) * 2.5;
     if (deltaY == 0.0) {

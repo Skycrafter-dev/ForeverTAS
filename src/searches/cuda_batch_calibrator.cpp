@@ -6,29 +6,24 @@
 namespace forevertas {
 namespace {
 
-constexpr std::size_t kMinimumSamplesPerBatchSize = 5u;
-constexpr std::size_t kMaximumSamplesPerBatchSize = 9u;
-constexpr std::size_t kWarmupSamplesPerBatchSize = 2u;
-constexpr double kMaximumCentralSpread = 1.15;
-constexpr std::uint32_t kMaximumRefinementRounds = 8u;
-
-std::uint32_t Midpoint(std::uint32_t left, std::uint32_t right) {
-    return left + (right - left) / 2u;
-}
-
-std::uint32_t FractionPoint(
-        std::uint32_t left,
-        std::uint32_t right,
-        std::uint32_t numerator,
-        std::uint32_t denominator) {
-    const std::uint64_t span =
-            static_cast<std::uint64_t>(right) - left;
-    return static_cast<std::uint32_t>(
-            static_cast<std::uint64_t>(left) +
-            span * numerator / denominator);
-}
+// A doubling that gains less than this ends the growth.
+constexpr double kMinimumDoublingGain = 1.03;
+// A predicted doubling past the measurements is taken while it gains this.
+constexpr double kMinimumPredictedGain = 1.08;
+// Short batches are noisy: the median of three below this, the better of
+// two below kTwoSampleSeconds, one batch above.
+constexpr double kThreeSampleSeconds = 0.15;
+constexpr double kTwoSampleSeconds = 0.5;
+// A disturbed batch is measured again while it is this short.
+constexpr double kRetryDisturbedSeconds = 1.0;
+constexpr std::uint32_t kMaximumRetries = 2u;
 
 }  // namespace
+
+CudaBatchCalibrator::CudaBatchCalibrator(const Settings &settings)
+    : settings_(settings),
+      currentBatchSize_(std::max(settings.startBatchSize, 1u)),
+      bestBatchSize_(std::max(settings.startBatchSize, 1u)) {}
 
 std::uint32_t CudaBatchCalibrator::CurrentBatchSize() const noexcept {
     return currentBatchSize_;
@@ -47,8 +42,16 @@ CudaBatchCalibrator::ReliableMeasurementCount() const noexcept {
     return measurements_.size();
 }
 
+double CudaBatchCalibrator::SpentSeconds() const noexcept {
+    return spentSeconds_;
+}
+
 bool CudaBatchCalibrator::Complete() const noexcept {
     return phase_ == Phase::Complete;
+}
+
+bool CudaBatchCalibrator::Confirming() const noexcept {
+    return phase_ == Phase::Confirm;
 }
 
 bool CudaBatchCalibrator::HasReliableMeasurement() const noexcept {
@@ -57,12 +60,9 @@ bool CudaBatchCalibrator::HasReliableMeasurement() const noexcept {
 
 void CudaBatchCalibrator::Observe(
         std::uint32_t candidateCount,
-        std::chrono::steady_clock::duration elapsed) {
+        std::chrono::steady_clock::duration elapsed,
+        Disturbance disturbance) {
     if (Complete() || candidateCount != currentBatchSize_) {
-        return;
-    }
-    if (warmupSamplesRemaining_ != 0u) {
-        --warmupSamplesRemaining_;
         return;
     }
     const double seconds =
@@ -70,215 +70,202 @@ void CudaBatchCalibrator::Observe(
     if (seconds <= 0.0) {
         return;
     }
-    samples_.push_back(
-            static_cast<double>(candidateCount) / seconds);
-    if (samples_.size() < kMinimumSamplesPerBatchSize) {
+    if (phase_ != Phase::Confirm) {   // the confirming batch is the search's
+        spentSeconds_ += seconds;
+    }
+    // measured again: a possibly disturbed batch when it is short, a disturbed one while most of the budget is left
+    const bool again = disturbance == Disturbance::Possible ? seconds < kRetryDisturbedSeconds
+            : disturbance == Disturbance::Certain           ? spentSeconds_ <= settings_.budgetSeconds * 0.6
+                                                            : false;
+    if (again && retries_ < kMaximumRetries) {
+        ++retries_;
         return;
     }
-    std::vector<double> sorted = samples_;
-    std::sort(sorted.begin(), sorted.end());
-    const std::size_t lowerIndex = sorted.size() / 4u;
-    const std::size_t upperIndex =
-            sorted.size() - 1u - lowerIndex;
-    const bool repeatable =
-            sorted[lowerIndex] > 0.0 &&
-            sorted[upperIndex] <=
-                    sorted[lowerIndex] *
-                            kMaximumCentralSpread;
-    if (!repeatable &&
-        samples_.size() < kMaximumSamplesPerBatchSize) {
+    samples_.push_back(static_cast<double>(candidateCount) / seconds);
+    sampleSeconds_.push_back(seconds);
+    const std::size_t wanted = seconds < kThreeSampleSeconds ? 3u
+            : seconds < kTwoSampleSeconds                    ? 2u
+                                                             : 1u;
+    if (samples_.size() < wanted &&
+        spentSeconds_ < settings_.budgetSeconds) {
         return;
     }
-    if (!repeatable) {
-        RejectCurrent(false);
+    std::vector<double> rates = samples_;
+    std::vector<double> times = sampleSeconds_;
+    std::sort(rates.begin(), rates.end());
+    std::sort(times.begin(), times.end());
+    // two samples: the faster (a slower one met interference)
+    const std::size_t at = rates.size() == 2u ? 1u : rates.size() / 2u;
+    Record(rates[at], times[times.size() - 1u - at]);
+}
+
+void CudaBatchCalibrator::Record(double throughput, double seconds) {
+    measurements_.push_back({currentBatchSize_, throughput, seconds});
+    const bool better = throughput > bestThroughput_;
+    if (better) {
+        bestThroughput_ = throughput;
+        bestBatchSize_ = currentBatchSize_;
+    }
+    if (phase_ == Phase::Confirm) {
+        Finish();
         return;
     }
-    FinishMeasurement(sorted[sorted.size() / 2u]);
+    if (phase_ == Phase::Probe) {
+        Stop();
+        return;
+    }
+    Grow();
+}
+
+void CudaBatchCalibrator::Grow() {
+    const Measurement &last = measurements_.back();
+    if (measurements_.size() >= 2u &&
+        last.throughput <
+                measurements_[measurements_.size() - 2u].throughput *
+                        kMinimumDoublingGain) {
+        Finish();
+        return;
+    }
+    if (currentBatchSize_ > std::numeric_limits<std::uint32_t>::max() / 2u ||
+        (unavailableBatchSize_ &&
+         currentBatchSize_ * 2u >= *unavailableBatchSize_)) {
+        Finish();
+        return;
+    }
+    // the next batch takes about twice this one; when it does not fit, a half
+    // batch (cheaper) gives the model its second point
+    if (spentSeconds_ + 2.0 * last.seconds > settings_.budgetSeconds) {
+        const std::uint32_t half = currentBatchSize_ / 2u;
+        if (measurements_.size() == 1u && half >= 256u &&
+            spentSeconds_ + last.seconds <= settings_.budgetSeconds) {
+            phase_ = Phase::Probe;
+            SetCurrent(half);
+            return;
+        }
+        Stop();
+        return;
+    }
+    SetCurrent(currentBatchSize_ * 2u);
+}
+
+// The budget ends while doubling still pays: the model's larger size, which
+// the next search batch confirms.
+void CudaBatchCalibrator::Stop() {
+    const std::uint32_t target = Extrapolated();
+    if (target <= bestBatchSize_) {
+        Finish();
+        return;
+    }
+    phase_ = Phase::Confirm;
+    SetCurrent(target);
+}
+
+void CudaBatchCalibrator::Finish() {
+    phase_ = Phase::Complete;
+    SetCurrent(bestBatchSize_);
+}
+
+// Batch time = latency + size / rate through the last measurement (the
+// latency from the last two measurements, else the baseline's); doublings
+// while the predicted gain holds and a batch stays short enough.
+std::uint32_t CudaBatchCalibrator::Extrapolated() const {
+    if (measurements_.empty()) {
+        return bestBatchSize_;
+    }
+    std::vector<Measurement> sorted = measurements_;
+    std::sort(sorted.begin(), sorted.end(),
+              [](const Measurement &a, const Measurement &b) { return a.batchSize < b.batchSize; });
+    const Measurement &last = sorted.back();
+    double latency = -1.0;
+    if (sorted.size() >= 2u) {
+        const Measurement &previous = sorted[sorted.size() - 2u];
+        if (last.batchSize > previous.batchSize &&
+            last.seconds > previous.seconds) {
+            const double slope = (last.seconds - previous.seconds) /
+                    static_cast<double>(last.batchSize - previous.batchSize);
+            latency = last.seconds - slope * last.batchSize;
+        }
+    }
+    if (latency < 0.0 && settings_.latencySeconds > 0.0) {
+        latency = std::min(settings_.latencySeconds, last.seconds * 0.95);
+    }
+    if (latency < 0.0) {
+        return bestBatchSize_;
+    }
+    const double perCandidate =
+            (last.seconds - latency) / static_cast<double>(last.batchSize);
+    if (perCandidate <= 0.0) {
+        return bestBatchSize_;
+    }
+    std::uint64_t size = last.batchSize;
+    double rate = last.throughput;
+    std::uint32_t chosen = bestBatchSize_;
+    while (size <= std::numeric_limits<std::uint32_t>::max() / 2u) {
+        const std::uint64_t next = size * 2u;
+        if (unavailableBatchSize_ && next >= *unavailableBatchSize_) {
+            break;
+        }
+        const double seconds = latency + perCandidate * static_cast<double>(next);
+        const double nextRate = static_cast<double>(next) / seconds;
+        if (seconds > settings_.maximumBatchSeconds ||
+            nextRate < rate * kMinimumPredictedGain) {
+            break;
+        }
+        size = next;
+        rate = nextRate;
+        chosen = static_cast<std::uint32_t>(size);
+    }
+    return chosen;
 }
 
 void CudaBatchCalibrator::CapacityUnavailable() {
-    RejectCurrent(true);
+    RejectUnsafeCurrent();
 }
 
 void CudaBatchCalibrator::RejectUnsafeCurrent() {
-    RejectCurrent(true);
+    if (Complete()) {
+        return;
+    }
+    if (!unavailableBatchSize_ || currentBatchSize_ < *unavailableBatchSize_) {
+        unavailableBatchSize_ = currentBatchSize_;
+    }
+    const std::uint32_t half = currentBatchSize_ / 2u;
+    if (phase_ == Phase::Probe) {
+        Stop();
+        return;
+    }
+    if (phase_ == Phase::Confirm) {
+        if (half > bestBatchSize_) {
+            SetCurrent(half);
+        } else {
+            Finish();
+        }
+        return;
+    }
+    if (measurements_.empty()) {
+        if (half == 0u) {
+            phase_ = Phase::Complete;
+            return;
+        }
+        SetCurrent(half);
+        return;
+    }
+    Finish();
 }
 
 bool CudaBatchCalibrator::CompleteWithBestMeasurement() {
     if (measurements_.empty()) {
         return false;
     }
-    phase_ = Phase::Complete;
-    SetCurrent(bestBatchSize_);
+    Finish();
     return true;
-}
-
-void CudaBatchCalibrator::RejectCurrent(bool upperBound) {
-    if (Complete()) {
-        return;
-    }
-    if (upperBound &&
-        (!unavailableBatchSize_ ||
-         currentBatchSize_ < *unavailableBatchSize_)) {
-        unavailableBatchSize_ = currentBatchSize_;
-    }
-    if (phase_ == Phase::Refinement) {
-        AdvanceRefinement();
-    } else {
-        BeginRefinement();
-    }
-}
-
-void CudaBatchCalibrator::FinishMeasurement(
-        double sustainedThroughput) {
-    measurements_.push_back(
-            {currentBatchSize_, sustainedThroughput});
-    if (bestThroughput_ == 0.0 ||
-        sustainedThroughput > bestThroughput_ ||
-        (sustainedThroughput == bestThroughput_ &&
-         currentBatchSize_ < bestBatchSize_)) {
-        bestThroughput_ = sustainedThroughput;
-        bestBatchSize_ = currentBatchSize_;
-    }
-
-    if (phase_ == Phase::Seed) {
-        BeginGrowth();
-        return;
-    }
-    if (phase_ == Phase::Refinement) {
-        AdvanceRefinement();
-        return;
-    }
-    if (phase_ != Phase::Growth) {
-        return;
-    }
-
-    ++growthSteps_;
-    const bool belowBest =
-            currentBatchSize_ != bestBatchSize_ &&
-            sustainedThroughput < bestThroughput_ * 0.98;
-    declineSteps_ = belowBest ? declineSteps_ + 1u : 0u;
-    if ((growthSteps_ >= 2u &&
-         declineSteps_ >= 2u) ||
-        currentBatchSize_ >
-                std::numeric_limits<std::uint32_t>::max() / 2u) {
-        BeginRefinement();
-        return;
-    }
-    SetCurrent(currentBatchSize_ * 2u);
-}
-
-void CudaBatchCalibrator::BeginGrowth() {
-    phase_ = Phase::Growth;
-    SetCurrent(2u);
-}
-
-void CudaBatchCalibrator::BeginRefinement() {
-    refinementRound_ = 0u;
-    BeginRefinementRound();
-}
-
-void CudaBatchCalibrator::BeginRefinementRound() {
-    refinementQueue_.clear();
-    refinementIndex_ = 0u;
-    if (refinementRound_ >= kMaximumRefinementRounds) {
-        phase_ = Phase::Complete;
-        SetCurrent(bestBatchSize_);
-        return;
-    }
-    std::sort(
-            measurements_.begin(),
-            measurements_.end(),
-            [](const Measurement &left, const Measurement &right) {
-                return left.batchSize < right.batchSize;
-            });
-    const auto best = std::find_if(
-            measurements_.begin(),
-            measurements_.end(),
-            [this](const Measurement &measurement) {
-                return measurement.batchSize == bestBatchSize_;
-            });
-    if (best != measurements_.end()) {
-        const std::uint32_t lower =
-                best == measurements_.begin()
-                ? best->batchSize
-                : (best - 1)->batchSize;
-        std::uint32_t upper =
-                best + 1 == measurements_.end()
-                ? best->batchSize
-                : (best + 1)->batchSize;
-        const bool hasUnavailableUpperBound =
-                best + 1 == measurements_.end() &&
-                unavailableBatchSize_ &&
-                *unavailableBatchSize_ > best->batchSize;
-        if (hasUnavailableUpperBound) {
-            upper = *unavailableBatchSize_;
-        }
-        const std::uint32_t span = upper - lower;
-        const std::uint32_t minimumUsefulSpan =
-                std::max<std::uint32_t>(
-                        2u, bestBatchSize_ / 50u);
-        if (span <= minimumUsefulSpan) {
-            phase_ = Phase::Complete;
-            SetCurrent(bestBatchSize_);
-            return;
-        }
-
-        const auto enqueue = [this](std::uint32_t candidate) {
-            if (candidate != 0u && !Measured(candidate) &&
-                std::find(
-                        refinementQueue_.begin(),
-                        refinementQueue_.end(),
-                        candidate) == refinementQueue_.end()) {
-                refinementQueue_.push_back(candidate);
-            }
-        };
-        if (hasUnavailableUpperBound) {
-            enqueue(Midpoint(best->batchSize, upper));
-            enqueue(Midpoint(lower, best->batchSize));
-        } else if (best == measurements_.begin() ||
-                   best + 1 == measurements_.end()) {
-            enqueue(FractionPoint(lower, upper, 1u, 4u));
-            enqueue(Midpoint(lower, upper));
-            enqueue(FractionPoint(lower, upper, 3u, 4u));
-        } else {
-            enqueue(Midpoint(lower, best->batchSize));
-            enqueue(Midpoint(best->batchSize, upper));
-        }
-    }
-    if (refinementQueue_.empty()) {
-        phase_ = Phase::Complete;
-        SetCurrent(bestBatchSize_);
-        return;
-    }
-    phase_ = Phase::Refinement;
-    SetCurrent(refinementQueue_.front());
-}
-
-void CudaBatchCalibrator::AdvanceRefinement() {
-    ++refinementIndex_;
-    if (refinementIndex_ >= refinementQueue_.size()) {
-        ++refinementRound_;
-        BeginRefinementRound();
-        return;
-    }
-    SetCurrent(refinementQueue_[refinementIndex_]);
 }
 
 void CudaBatchCalibrator::SetCurrent(std::uint32_t batchSize) {
     currentBatchSize_ = std::max(batchSize, 1u);
     samples_.clear();
-    warmupSamplesRemaining_ =
-            kWarmupSamplesPerBatchSize;
-}
-
-bool CudaBatchCalibrator::Measured(std::uint32_t batchSize) const {
-    return std::any_of(
-            measurements_.begin(),
-            measurements_.end(),
-            [batchSize](const Measurement &measurement) {
-                return measurement.batchSize == batchSize;
-            });
+    sampleSeconds_.clear();
+    retries_ = 0u;
 }
 
 }  // namespace forevertas

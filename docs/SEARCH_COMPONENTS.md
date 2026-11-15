@@ -23,6 +23,11 @@ Base-input timestamps accept decimal seconds, `mm:ss.mmm`, and `hh:mm:ss.mmm`
 must align to the 10 ms input tick. Non-leading clock components are in
 `0..59`. Export remains decimal seconds for compatibility.
 
+A timestamp can also be a TMInterface range, `<start>-<end>`: the command at
+the start and its undoing at the end (`0-1.50 press up` presses then
+releases; `2.00-2.30 steer -20000` returns the steering to 0 at 2.30, `gas`
+likewise). `rel` and `press enter` take no range.
+
 Volume entry times use six fractional second digits in results and stored
 result descriptions; preview overlays keep the same precision in the chosen
 time unit. These are interpolated crossing estimates,
@@ -436,7 +441,7 @@ composite to every pass:
 - `anchors`: when set, an ordinary draw appends one `MutationAnchor` per
   applied item: the earliest input time the item changes, the pass index,
   and a modifier-defined count slot. Recording must not consume random
-  numbers, so ordinary draws stay identical to the CUDA, Vulkan, and HIP
+  numbers, so ordinary draws stay identical to the CUDA and HIP
   samplers.
 - `segment`: when set, the pass draws only `slotCounts[passIndex][slot]`
   items whose anchors fall inside `anchorRange`, applying each item in full
@@ -613,7 +618,7 @@ an intermediate empty run or ellipsoid model would detach nested Qt Quick 3D
 render nodes. QML mirrors ellipsoid transforms into a stable `ListModel`, updates
 roles in place, and retains inactive delegates when vehicle shape counts shrink.
 The controller and QML regressions perform three real first-second-first loads;
-the QML test invokes the actual **Load map** button for every load and checks
+the QML test runs the same map load as **File > Open map or replay** for every load and checks
 current shape transforms and map rendering on a capable graphics backend.
 
 The settings pane uses one window-level wheel redirector over its entire visible
@@ -775,8 +780,8 @@ No search-loop or controller branch should be added for the target.
   and makes it happen as early (`earliest`) or as late (`latest`) as possible.
   Its value comes only from the Conditions, so the app requires at least one.
   The run stops at that first match. It observes ticks before the first
-  mutation, because a later first match would misreport that run. CPU, CUDA,
-  HIP and Vulkan all score the same first-match tick.
+  mutation, because a later first match would misreport that run. CPU, CUDA
+  and HIP all score the same first-match tick.
 
 Spatial target models expose atomic absolute-placement operations. Their QML
 editors receive the viewport's rendered camera pose and the viewer's simulated

@@ -5,12 +5,14 @@
 #include "searches/search_runner.h"
 
 #include <QObject>
+#include <QVariantMap>
 #include <QString>
 
 #include <atomic>
 #include <chrono>
 #include <memory>
 #include <string_view>
+#include <vector>
 
 namespace forevertas::app {
 
@@ -22,8 +24,7 @@ struct AutoRestartPolicy {
 };
 
 QString SearchStageStatus(SearchProgressStage stage,
-                          std::string_view backendId,
-                          bool useCudaSessionSpecialization = false);
+                          std::string_view backendId);
 bool TryBeginSearchIteration(
         const std::shared_ptr<std::atomic<SearchIterationPhase>> &phase);
 bool TryCancelBeforeSearchIteration(
@@ -39,7 +40,8 @@ public:
                  std::shared_ptr<std::atomic_bool> cancellationRequested,
                  std::shared_ptr<std::atomic<SearchIterationPhase>>
                          iterationPhase,
-                 AutoRestartPolicy restartPolicy = {});
+                 AutoRestartPolicy restartPolicy = {},
+                 std::vector<SearchDevice> devices = {});
 
 public slots:
     void run();
@@ -53,6 +55,8 @@ signals:
     void iterationCountChanged(qulonglong count);
     void cudaBatchSizeChanged(std::uint32_t batchSize);
     void bestChanged(const QString &summary, const QString &inputsText);
+    // The running restart's best as a History row (SearchSessionStore::LiveRow).
+    void liveRowChanged(const QVariantMap &row);
     void improvementFound(
             forevertas::app::SearchImprovementPtr improvement);
     void cycleSaved(const QString &mapKey, const QString &directory,
@@ -60,6 +64,8 @@ signals:
     void sessionCreated(const QString &mapKey, const QString &directory);
     void succeeded(forevertas::app::SearchCompletionPtr completion);
     void cancelled();
+    // Stopped after it had a best: that best as the result.
+    void stopped(forevertas::app::SearchCompletionPtr completion);
     void failed(const QString &message);
     void finished();
 
@@ -70,6 +76,8 @@ private:
     std::shared_ptr<std::atomic_bool> cancellationRequested_;
     std::shared_ptr<std::atomic<SearchIterationPhase>> iterationPhase_;
     AutoRestartPolicy restartPolicy_;
+    // several GPUs on the search (two or more), or none: the request's backend
+    std::vector<SearchDevice> devices_;
 };
 
 }  // namespace forevertas::app

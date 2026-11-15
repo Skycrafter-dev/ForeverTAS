@@ -182,18 +182,28 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
                 "CUDA evaluator tick duration must be greater than zero");
     }
     const OptionSettings &settings = configuration.settings;
+    const auto setting = [&settings](const char *key,
+                                     const char *fallback) {
+        const auto found = settings.find(key);
+        return found == settings.end() ? std::string(fallback)
+                                       : found->second;
+    };
     if (configuration.id == kVelocityEvaluationId) {
         const double x = Number(settings, "directionX");
         const double y = Number(settings, "directionY");
         const double z = Number(settings, "directionZ");
         const double length = std::sqrt((x * x + y * y) + z * z);
+        const bool towardsPoint = setting("directionMode", "fixed") == "point";
         return PhysicsSandboxCudaVelocityEvaluator{
                 settings.at("mode") == "projected",
                 *ParseBoolean(settings.at("alignmentEnabled")),
                 {length <= 1e-12 ? 0.0 : x / length,
                  length <= 1e-12 ? 0.0 : y / length,
                  length <= 1e-12 ? 0.0 : z / length},
-                Number(settings, "minAlignmentPercent") / 100.0};
+                Number(settings, "minAlignmentPercent") / 100.0,
+                towardsPoint,
+                towardsPoint ? Vector(settings, "x", "y", "z")
+                             : PhysicsSandboxCudaVector3{}};
     }
     if (configuration.id == kPointTargetEvaluationId) {
         return PhysicsSandboxCudaPointEvaluator{
@@ -223,7 +233,13 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
                 cp * sy * cr - sp * cy * sr,
                 cp * cy * sr - sp * sy * cr,
                 cp * cy * cr + sp * sy * sr,
-                Number(settings, "rotationWeightPercent") / 100.0};
+                Number(settings, "rotationWeightPercent") / 100.0,
+                {{Number(settings, "weightX") / 100.0,
+                  Number(settings, "weightY") / 100.0,
+                  Number(settings, "weightZ") / 100.0,
+                  Number(settings, "weightYaw") / 100.0,
+                  Number(settings, "weightPitch") / 100.0,
+                  Number(settings, "weightRoll") / 100.0}}};
     }
     if (configuration.id == kVolumeEntryEvaluationId) {
         const double centerX = Number(settings, "centerX");
@@ -234,10 +250,24 @@ std::optional<PhysicsSandboxCudaEvaluator> BuildCudaEvaluator(
         const double halfZ = Number(settings, "sizeZ") * 0.5;
         return PhysicsSandboxCudaVolumeEntryEvaluator{
                 {centerX - halfX, centerY - halfY, centerZ - halfZ},
-                {centerX + halfX, centerY + halfY, centerZ + halfZ}};
+                {centerX + halfX, centerY + halfY, centerZ + halfZ},
+                setting("measure", "time") == "speed"};
     }
     if (configuration.id == kCustomVolumeEntryEvaluationId) {
-        return BuildCudaCustomVolumeEntryEvaluator(settings, tickDurationMs);
+        auto volume = BuildCudaCustomVolumeEntryEvaluator(settings, tickDurationMs);
+        volume.entrySpeed = setting("measure", "time") == "speed";
+        return volume;
+    }
+    if (configuration.id == kDistanceTargetEvaluationId) {
+        PhysicsSandboxCudaDistanceEvaluator distance;
+        distance.finish = settings.at("eventType") == "finish";
+        distance.checkpointIndex =
+                *ParseUnsignedDecimal32(settings.at("checkpointIndex")) - 1u;
+        distance.lap = *ParseUnsignedDecimal32(settings.at("lap"));
+        if (settings.at("checkpointSlot") != "-1")
+            distance.checkpointSlot = *ParseUnsignedDecimal32(settings.at("checkpointSlot"));
+        distance.eventIndex = *ParseUnsignedDecimal64(settings.at("eventIndex"));
+        return distance;
     }
     if (configuration.id == kPreciseFinishTimeEvaluationId ||
         configuration.id == "finish-time") {

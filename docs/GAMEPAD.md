@@ -1,6 +1,6 @@
 # Gamepad Driving
 
-Select a controller with the gamepad button in Base / Preferences. Left stick X steers;
+Select a controller in Edit > Preferences > Gamepad. Left stick X steers;
 right trigger or the south face button accelerates, and left trigger or the
 east face button brakes. Trigger activation is digital, matching the existing
 drive controls. Steering is rescaled outside the adjustable deadzone and

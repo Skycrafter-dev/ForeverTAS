@@ -13,6 +13,13 @@ Rectangle {
     property string renderMode: "textured"
     property bool rayTracingSupported: false
     property string rayTracingStatus: ""
+    // A render module's mode, when the build ships one (empty otherwise).
+    property string moduleRenderLabel: ""
+    // Loading, or why that mode is not showing yet.
+    property string moduleRenderStatus: ""
+    // Whether that mode draws the selected run's car as the game does.
+    property bool moduleGameCar: true
+    signal moduleGameCarRequested(bool show)
     readonly property var carPalette:
         ["#ff8a3d", "#3d8dff", "#63c77b", "#c57aeb",
          "#e7c24f", "#54c7c1", "#f56f70", "#7186f1",
@@ -313,20 +320,19 @@ Rectangle {
                 objectName: "renderModeSelector"
                 Layout.fillWidth: true
                 enabled: root.viewer && root.viewer.loaded
-                model: root.rayTracingSupported
-                    ? [{ text: qsTr("Textured"), value: "textured" },
-                       { text: qsTr("Textured (RT)"), value: "textured-rt" },
-                       { text: qsTr("Neutral"), value: "neutral" },
-                       { text: qsTr("Collision"), value: "collision" },
-                       { text: qsTr("Wireframe"), value: "wireframe" },
-                       { text: qsTr("High Contrast"),
-                         value: "material-debug" }]
-                    : [{ text: qsTr("Textured"), value: "textured" },
-                       { text: qsTr("Neutral"), value: "neutral" },
-                       { text: qsTr("Collision"), value: "collision" },
-                       { text: qsTr("Wireframe"), value: "wireframe" },
-                       { text: qsTr("High Contrast"),
-                         value: "material-debug" }]
+                model: {
+                    const modes = [{ text: qsTr("Textured"), value: "textured" }]
+                    if (root.moduleRenderLabel.length > 0)
+                        modes.push({ text: root.moduleRenderLabel, value: "module" })
+                    if (root.rayTracingSupported)
+                        modes.push({ text: qsTr("Textured (RT)"), value: "textured-rt" })
+                    modes.push({ text: qsTr("Neutral"), value: "neutral" },
+                               { text: qsTr("Collision"), value: "collision" },
+                               { text: qsTr("Wireframe"), value: "wireframe" },
+                               { text: qsTr("High Contrast"),
+                                 value: "material-debug" })
+                    return modes
+                }
                 textRole: "text"
                 valueRole: "value"
                 Component.onCompleted: root.syncRenderMode()
@@ -336,7 +342,39 @@ Rectangle {
             }
         }
 
+        Label {
+            objectName: "moduleRenderStatus"
+            Layout.fillWidth: true
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            Layout.topMargin: -4
+            Layout.bottomMargin: 10
+            visible: root.renderMode === "module"
+                     && root.moduleRenderStatus.length > 0
+            text: root.moduleRenderStatus
+            wrapMode: Text.WordWrap
+            color: AppTheme.textMuted
+            font.pixelSize: 11
+        }
+
+        ThemedCheckBox {
+            objectName: "moduleGameCar"
+            visible: root.renderMode === "module"
+            Layout.fillWidth: true
+            Layout.leftMargin: 12
+            Layout.rightMargin: 12
+            Layout.topMargin: -4
+            Layout.bottomMargin: 8
+            text: qsTr("Game car for the selected run")
+            checked: root.moduleGameCar
+            onToggled: root.moduleGameCarRequested(checked)
+        }
+
         TabBar {
+
+            // On glass: no band behind the tabs.
+
+            background: Item {}
             Layout.fillWidth: true
             Layout.leftMargin: 10
             Layout.rightMargin: 10

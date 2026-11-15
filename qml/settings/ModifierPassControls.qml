@@ -62,7 +62,7 @@ ColumnLayout {
             ToolTip.text: Accessible.name
             onClicked: addPassMenu.popup(addPassButton, 0, addPassButton.height)
 
-            Menu {
+            ThemeControls.GlassMenu {
                 id: addPassMenu
 
                 objectName: "addModifierMenu"

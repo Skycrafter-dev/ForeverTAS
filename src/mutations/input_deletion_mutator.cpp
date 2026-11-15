@@ -126,12 +126,12 @@ std::optional<std::string> ValidateInputDeletionSettings(
     if (const auto error = ValidateOptionSettingKeys(
                 settings, DefaultInputDeletionSettings())) return error;
     const auto parsed = ParseSettings(settings);
-    if (!parsed) return "input deletion settings are invalid";
+    if (!parsed) return kUnreadableSetting;
     if (const auto error = ValidateModifierWindow(parsed->window,
                                                    tickDurationMs)) return error;
     if (!parsed->steering.enabled && !parsed->accelerate.enabled &&
         !parsed->brake.enabled) {
-        return "input deletion must enable at least one channel";
+        return "turn on at least one kind of input to delete";
     }
     return std::nullopt;
 }

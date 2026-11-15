@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
 #include "app/search_controller.h"
@@ -157,10 +158,36 @@ bool TestBasePreviewReturn(const QString &packs, const QString &replay) {
     viewer.setPreviewingHistory(true);
     viewer.loadMap(packs, otherReplay);
     controller.previewBaseInputs();
-    return WaitUntil([&]() {
+    if (!WaitUntil([&]() {
         return viewer.loaded() && !viewer.loading() && viewer.loadedReplayPath() == replay &&
                 !viewer.previewingHistory() && viewer.selectedRunId() == "preview" &&
                 viewer.inputSample(5).accelerate > 0.99f;
+    })) return false;
+    // An edit of the base inputs while a session's inputs are previewed
+    // (users' edits had no effect until a restart): the edit is shown.
+    viewer.setPreviewingHistory(true);
+    viewer.setPreviewInputScript("0.00 press down");
+    if (!WaitUntil([&]() { return viewer.inputSample(5).brake > 0.99f; })) return false;
+    const QString edited = QStringLiteral("0.00 press up\n0.21 rel up");
+    controller.setBaseInputScript(edited);
+    if (!WaitUntil([&]() {
+        return !viewer.previewingHistory() && viewer.previewInputScript() == edited &&
+                viewer.inputSample(15).accelerate > 0.99f && viewer.inputSample(5).brake < 0.01f;
+    })) return false;
+    // An edit while another run is watched (a drive, then its attempt): the
+    // base inputs' run is shown (a tester's edits changed nothing they saw).
+    viewer.startManualDrive();
+    if (!WaitUntil([&]() { return viewer.manualDriving() && viewer.currentTick() > 5; })) return false;
+    viewer.stopManualDrive();
+    if (viewer.selectedRunId() == "preview") {
+        std::cerr << "the drive left the base inputs' run selected; the check needs another run\n";
+        return false;
+    }
+    const QString again = QStringLiteral("0.00 press up\n0.31 rel up");
+    controller.setBaseInputScript(again);
+    return WaitUntil([&]() {
+        return viewer.selectedRunId() == "preview" && viewer.previewInputScript() == again &&
+                viewer.inputSample(25).accelerate > 0.99f && viewer.inputSample(35).accelerate < 0.01f;
     });
 }
 
@@ -227,8 +254,20 @@ bool PixelIsAnyRulerMark(const QImage &image, int x, int y) {
             pixel == QColor(QStringLiteral("#343b37"));
 }
 
+// The ruler's background: two dark washes over a transparent image, as the
+// timeline paints it on its glass panel.
+QColor RulerBackground() {
+    QImage image(1, 1, QImage::Format_ARGB32);
+    image.fill(Qt::transparent);
+    QPainter painter(&image);
+    painter.fillRect(QRectF(0, 0, 1, 1), QColor(0, 0, 0, 56));
+    painter.fillRect(QRectF(0, 0, 1, 1), QColor(0, 0, 0, 46));
+    painter.end();
+    return image.pixelColor(0, 0);
+}
+
 int RulerMarkLengthNear(const QImage &image, int expectedY) {
-    const QColor rulerBackground(QStringLiteral("#0c100e"));
+    const QColor rulerBackground = RulerBackground();
     int longest = 0;
     for (int y = expectedY - 1; y <= expectedY + 1; ++y) {
         if (y < 0 || y >= image.height()) {
@@ -288,11 +327,11 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName(
             QStringLiteral("ViewerSmoke"));
     QStandardPaths::setTestModeEnabled(true);
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
     if (basePreviewOnly) {
         const bool okay = TestBasePreviewReturn(QString::fromLocal8Bit(argv[2]), QString::fromLocal8Bit(argv[3]));
         if (!okay) std::cerr << "return to base preview failed\n";
-        QSettings().clear();
+        forevertas::app::AppSettings::Instance().clear();
         return okay ? 0 : 1;
     }
     {
@@ -1135,8 +1174,8 @@ int main(int argc, char **argv) {
                         viewer.setSelectedRunId(
                                 QStringLiteral("preview"));
                         viewer.setCurrentTick(1);
-                        viewer.setTakeOverOnInput(false);
                         viewer.play();
+                        // A key let go takes nothing over: only a press does.
                         viewer.setManualInput(
                                 QStringLiteral("left"), false);
                         const bool disabledTakeoverIgnored =
@@ -1147,14 +1186,15 @@ int main(int argc, char **argv) {
                                 !viewer.manualLongitudinalTakenOver() &&
                                 viewer.selectedRunId() ==
                                         QStringLiteral("preview");
-                        viewer.pause();
-                        viewer.setTakeOverOnInput(true);
-                        viewer.play();
+                        // A steering key takes over the steering only, and
+                        // the race runs on.
+                        viewer.setManualInput(
+                                QStringLiteral("left"), true);
                         viewer.setManualInput(
                                 QStringLiteral("left"), false);
                         const bool releaseStartedSteeringTakeover =
                                 viewer.manualDriving() &&
-                                !viewer.playing() &&
+                                viewer.playing() &&
                                 viewer.manualSteeringTakenOver() &&
                                 !viewer.manualLongitudinalTakenOver() &&
                                 !viewer.manualLeft() &&
@@ -1183,6 +1223,8 @@ int main(int argc, char **argv) {
                                             viewer.manualDriving() &&
                                             viewer.manualSteeringTakenOver() &&
                                             !viewer.manualLongitudinalTakenOver();
+                                    viewer.setManualInput(
+                                            QStringLiteral("brake"), true);
                                     viewer.setManualInput(
                                             QStringLiteral("brake"), false);
                                     const bool releaseStartedLongitudinalTakeover =
@@ -1347,6 +1389,9 @@ int main(int argc, char **argv) {
                                                             viewer.play();
                                                             viewer.setManualInput(
                                                                     QStringLiteral("left"),
+                                                                    true);
+                                                            viewer.setManualInput(
+                                                                    QStringLiteral("left"),
                                                                     false);
                                                             const bool bestRestartTakeoverStarted =
                                                                     viewer.manualDriving() &&
@@ -1502,20 +1547,15 @@ int main(int argc, char **argv) {
                     RaceTimelineItem timeline;
                     timeline.setWidth(252);
                     timeline.setHeight(600);
-                    const QImage lightTimelineImage =
-                            RenderTimeline(timeline);
-                    timeline.setDarkMode(true);
-                    const QImage darkTimelineImage =
+                    // The timeline sits on glass: its background is a
+                    // translucent dark wash, not an opaque fill.
+                    const QImage emptyTimelineImage =
                             RenderTimeline(timeline);
                     const bool timelineThemePalette =
-                            PixelIs(lightTimelineImage,
+                            PixelIs(emptyTimelineImage,
                                     0,
                                     0,
-                                    QColor(QStringLiteral("#f4f5f2"))) &&
-                            PixelIs(darkTimelineImage,
-                                    0,
-                                    0,
-                                    QColor(QStringLiteral("#101412")));
+                                    QColor(0, 0, 0, 56));
                     timeline.setViewer(&viewer);
                     const qint64 leftSteeringTick =
                             FindActivityTick(viewer, 'l');
@@ -1808,6 +1848,10 @@ int main(int argc, char **argv) {
                     }
                     const QVariantList overlaySamples =
                             viewer.selectedRunSamples();
+                    // The map's checkpoint and finish triggers reach the
+                    // race view (the Distance target labels them).
+                    const bool distanceTargetValid =
+                            !viewer.checkpointTriggers().isEmpty();
                     const QVariantMap supportedCondition =
                             viewer.conditionPreview(QStringLiteral(
                                     "car.x >= -10000000"));
@@ -1817,6 +1861,7 @@ int main(int argc, char **argv) {
                     const QVariantMap booleanCondition = viewer.conditionPreview(
                             QStringLiteral("# retained\n(car.speed >= 0 OR car.laps != 0) AND car.x >= -10000000 // valid"));
                     const bool overlayDataValid =
+                            distanceTargetValid &&
                             !overlaySamples.isEmpty() &&
                             viewer.conditionPreview(QStringLiteral("# disabled\n// disabled")).isEmpty() &&
                             booleanCondition.value(QStringLiteral("available")).toBool() &&

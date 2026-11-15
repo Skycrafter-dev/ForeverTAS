@@ -97,4 +97,9 @@ void RaceGeometry::clearMesh() {
     update();
 }
 
+QSSGRenderGraphObject *RaceGeometry::updateSpatialNode(QSSGRenderGraphObject *node) {
+    if (node == nullptr) setVertexData(vertexData());
+    return QQuick3DGeometry::updateSpatialNode(node);
+}
+
 }  // namespace forevertas::viewer

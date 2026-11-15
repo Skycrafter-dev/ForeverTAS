@@ -352,22 +352,22 @@ std::optional<std::string> ValidateExistingEventPerturbationSettings(
         return error;
     }
     const auto parsed = ParseSettings(settings);
-    if (!parsed) return "existing-event perturbation settings are invalid";
+    if (!parsed) return kUnreadableSetting;
     if (const auto error = ValidateModifierWindow(parsed->window,
                                                    tickDurationMs)) {
         return error;
     }
     if (parsed->minimumCount > parsed->maximumCount) {
-        return "minimum perturbation count must not exceed maximum";
+        return "the minimum event count is above the maximum";
     }
     if (parsed->maximumTimeShiftMs < 0 ||
         parsed->maximumTimeShiftMs % tickDurationMs != 0) {
-        return "maximum timing shift must be a non-negative whole-tick value";
+        return "the maximum timing shift must be 0 ms or more, in steps of " + std::to_string(tickDurationMs) + " ms";
     }
     if (parsed->steeringDeltaMinimum > parsed->steeringDeltaMaximum ||
         parsed->steeringAbsoluteMinimum >
                 parsed->steeringAbsoluteMaximum) {
-        return "steering ranges are invalid";
+        return "a steering minimum is above its maximum";
     }
     return std::nullopt;
 }

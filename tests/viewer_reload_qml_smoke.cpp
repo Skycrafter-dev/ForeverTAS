@@ -1,3 +1,4 @@
+#include "app/app_settings.h"
 #include "app/input_preview_binding.h"
 #include "app/search_controller.h"
 #include "viewer/race_timeline_item.h"
@@ -64,9 +65,16 @@ bool PreviewSceneIsVisible(
     return okay;
 }
 
-bool ClickLoadButton(QObject *button) {
-    return button != nullptr && button->property("enabled").toBool() &&
-            QMetaObject::invokeMethod(button, "clicked", Qt::DirectConnection);
+bool TriggerMenuItem(QObject *item) {
+    return item != nullptr && item->property("enabled").toBool() &&
+            QMetaObject::invokeMethod(item, "triggered", Qt::DirectConnection);
+}
+
+// File > Open map or replay picks a file, then loads it the same way.
+bool LoadMap(QObject *root) {
+    return root->property("canOpenMap").toBool() &&
+            QMetaObject::invokeMethod(root, "loadMapIfReady",
+                                      Qt::DirectConnection);
 }
 
 }  // namespace
@@ -89,7 +97,7 @@ int main(int argc, char **argv) {
     QCoreApplication::setApplicationName(
             QStringLiteral("ViewerReloadQmlSmoke"));
     QStandardPaths::setTestModeEnabled(true);
-    QSettings().clear();
+    forevertas::app::AppSettings::Instance().clear();
 
     const QString packs = QString::fromLocal8Bit(argv[1]);
     const QString replays[]{
@@ -126,14 +134,12 @@ int main(int argc, char **argv) {
         return 1;
     }
     QObject *const root = engine.rootObjects().front();
-    QObject *const loadButton = root->findChild<QObject *>(
-            QStringLiteral("loadMapButton"));
-    QObject *const extractButton = root->findChild<QObject *>(
-            QStringLiteral("extractReplayInputsButton"));
+    QObject *const extractMenuItem = root->findChild<QObject *>(
+            QStringLiteral("extractInputsMenuItem"));
     QObject *const replaceDialog = root->findChild<QObject *>(
             QStringLiteral("replaceBaseInputScriptDialog"));
-    if (!ClickLoadButton(extractButton)) {
-        std::cerr << "Extract inputs button click failed\n";
+    if (!TriggerMenuItem(extractMenuItem)) {
+        std::cerr << "File > Extract inputs from replay failed\n";
         return 1;
     }
     QCoreApplication::processEvents();
@@ -197,9 +203,9 @@ int main(int argc, char **argv) {
                     if (currentLoad < 3) {
                         controller.setReplayPath(replays[currentLoad]);
                         QCoreApplication::processEvents();
-                        if (!ClickLoadButton(loadButton)) {
+                        if (!LoadMap(root)) {
                             finished = true;
-                            std::cerr << "Load map button click "
+                            std::cerr << "map load "
                                       << currentLoad + 1 << " failed\n";
                             application.quit();
                         }
@@ -214,8 +220,10 @@ int main(int argc, char **argv) {
                     application.quit();
                 });
             });
-    if (!ClickLoadButton(loadButton)) {
-        std::cerr << "first Load map button click failed\n";
+    if (!LoadMap(root)) {
+        std::cerr << "first map load failed (can open="
+                  << root->property("canOpenMap").toBool()
+                  << ", loading=" << viewer.loading() << ")\n";
         return 1;
     }
 

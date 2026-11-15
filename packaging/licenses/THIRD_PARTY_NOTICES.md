@@ -13,6 +13,9 @@ The AMD HIP Linux AppImage bundles the HIP runtime, ROCr HSA runtime,
 rocprofiler-register, and libdrm-amdgpu. Their license notices are included
 beside this file in that bundle.
 
+Release builds also ship the In-game render mode and the libraries it uses;
+their licenses are in the `render-module` folder beside this file.
+
 Additional system libraries collected into a Linux AppImage retain their own
 licenses. Release builders must inspect the generated AppDir and include any
 notices required by those libraries before publishing a release.

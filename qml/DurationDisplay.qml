@@ -1,15 +1,11 @@
 pragma Singleton
 
 import QtQuick
-import QtCore
+import ForeverTAS.Viewer 1.0
 
 QtObject {
-    property alias unit: preferences.unit
-    property Settings storage: Settings {
-        id: preferences
-        category: "timeDisplay"
-        property string unit: "ms"
-    }
+    property string unit: AppSettings.value("timeDisplay/unit", "ms")
+    onUnitChanged: AppSettings.setValue("timeDisplay/unit", unit)
 
     function parse(text) {
         let source = String(text).trim().toLowerCase()

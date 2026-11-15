@@ -85,44 +85,58 @@ ColumnLayout {
         }
     }
 
-    RowLayout {
+    // The pose's position and its rotation, each taken from the camera or
+    // the car on its own.
+    GridLayout {
         Layout.fillWidth: true
-        spacing: 6
+        columns: 3
+        columnSpacing: 6
+        rowSpacing: 6
 
         Label {
-            text: qsTr("Move to")
+            text: qsTr("Position from")
             color: ThemeControls.AppTheme.textMuted
         }
-
         ThemeControls.ThemedButton {
-            objectName: "movePoseTargetToCameraButton"
+            objectName: "poseTargetPositionFromCameraButton"
             Layout.fillWidth: true
             text: qsTr("Camera")
             enabled: !root.controller.running && root.viewport
             onClicked: {
                 const position = root.viewport.sceneCameraPosition
-                root.targets.moveSelectedTo(
-                    position.x,
-                    position.y,
-                    position.z,
-                    root.viewport.sceneCameraRotation)
+                root.targets.moveSelectedPositionTo(position.x, position.y, position.z)
             }
         }
-
         ThemeControls.ThemedButton {
-            objectName: "movePoseTargetToCarButton"
+            objectName: "poseTargetPositionFromCarButton"
             Layout.fillWidth: true
             text: qsTr("Car")
             enabled: !root.controller.running
                      && root.viewer && root.viewer.loaded
             onClicked: {
                 const position = root.viewer.carPosition
-                root.targets.moveSelectedTo(
-                    position.x,
-                    position.y,
-                    position.z,
-                    root.viewer.carRotation)
+                root.targets.moveSelectedPositionTo(position.x, position.y, position.z)
             }
+        }
+
+        Label {
+            text: qsTr("Rotation from")
+            color: ThemeControls.AppTheme.textMuted
+        }
+        ThemeControls.ThemedButton {
+            objectName: "poseTargetRotationFromCameraButton"
+            Layout.fillWidth: true
+            text: qsTr("Camera")
+            enabled: !root.controller.running && root.viewport
+            onClicked: root.targets.turnSelectedTo(root.viewport.sceneCameraCarRotation)
+        }
+        ThemeControls.ThemedButton {
+            objectName: "poseTargetRotationFromCarButton"
+            Layout.fillWidth: true
+            text: qsTr("Car")
+            enabled: !root.controller.running
+                     && root.viewer && root.viewer.loaded
+            onClicked: root.targets.turnSelectedTo(root.viewer.carRotation)
         }
     }
 
@@ -206,9 +220,11 @@ ColumnLayout {
     }
 
     TimeWindowSettings {
+        chainController: root.controller
+        chainKey: "target"
         viewer: root.viewer
         settings: root.settings
-        updateSetting: root.controller.setEvaluationTargetSetting
+        updateSetting: (key, value) => root.controller.setEvaluationTargetSetting(key, value)
         running: root.controller.running
     }
 
@@ -224,5 +240,12 @@ ColumnLayout {
         onEdited: value =>
             root.controller.setEvaluationTargetSetting(
                 "rotationWeightPercent", value)
+    }
+
+    PoseWeightsEditor {
+        settings: root.settings
+        running: root.controller.running
+        onEdited: (key, value) =>
+            root.controller.setEvaluationTargetSetting(key, value)
     }
 }

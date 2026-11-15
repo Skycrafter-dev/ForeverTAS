@@ -56,6 +56,10 @@ CudaCalibrationDeviceLimits QueryHipCalibrationDeviceLimits() {
     limits.maximumBlocksPerMultiprocessor =
             properties.maxBlocksPerMultiProcessor;
     limits.multiprocessorCount = properties.multiProcessorCount;
+    // CUDA's occupancy model (registers, blocks and threads per multiprocessor)
+    // does not hold on AMD, which counts them per SIMD and wave: an RX 7600 XT
+    // had valid launches refused. HIP rejects an invalid launch itself.
+    limits.requireCudaExecutionLimits = false;
     return limits;
 }
 

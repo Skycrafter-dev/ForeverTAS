@@ -21,7 +21,6 @@ int main(int argc, char **argv) {
     try {
         SearchRequest request(argv[1], argv[2]);
         request.backend = PhysicsBackend::OptimizedCpu;
-        request.useCudaSessionSpecialization = false;
         request.simulationHorizonMs = 3000;
         // Each mutation changes a real event after both tested entries, so the
         // candidates are evaluated but tie the baseline instead of being no-ops.
@@ -45,9 +44,6 @@ int main(int argc, char **argv) {
         const auto probe = RunSearch(request, &control);
         std::vector<PhysicsBackend> backends{PhysicsBackend::OptimizedCpu};
         if (!hipTargetsOnly) backends.insert(backends.begin(), PhysicsBackend::Reference);
-#if FOREVERVALIDATOR_HAS_VULKAN
-        if (!hipTargetsOnly && forevervalidator::QueryVulkanBackendDiagnostics().IsSearchReady()) backends.push_back(PhysicsBackend::Vulkan);
-#endif
 #if FOREVERVALIDATOR_HAS_CUDA
         if (!hipTargetsOnly && forevervalidator::QueryCudaBackendDiagnostics().IsReady()) backends.push_back(PhysicsBackend::Cuda);
 #endif
@@ -83,9 +79,6 @@ int main(int argc, char **argv) {
             }
             std::optional<SearchResult> expected;
             for (const auto backend : backends) {
-#if FOREVERVALIDATOR_HAS_VULKAN
-                if (custom && backend == PhysicsBackend::Vulkan) continue;
-#endif
                 request.backend = backend;
                 request.parallelSampleCount = IsGpuBackend(backend) ? 4u : 1u;
                 control.iterationLimit = 4;
@@ -108,9 +101,6 @@ int main(int argc, char **argv) {
         request.condition = CompileConditionScript("car.speed < 0").program;
         control.sampleBestTimeline = false;
         for (const auto backend : backends) {
-#if FOREVERVALIDATOR_HAS_VULKAN
-            if (custom && backend == PhysicsBackend::Vulkan) continue;
-#endif
             request.backend = backend;
             request.parallelSampleCount = 1u;
             try {

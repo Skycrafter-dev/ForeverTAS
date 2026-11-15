@@ -3,6 +3,7 @@
 
 #include <QPointer>
 #include <QString>
+#include <QRectF>
 #include <QVector3D>
 
 #if FOREVERTAS_GPU_RAY_TRACING
@@ -31,6 +32,10 @@ class GpuRayTracingView : public QQuickItem {
                        WRITE setCameraTarget NOTIFY cameraChanged)
     Q_PROPERTY(QVector3D cameraUp READ cameraUp WRITE setCameraUp
                        NOTIFY cameraChanged)
+    // The part of the view the camera frames, in item coordinates, its
+    // field of view spanning that part's height (empty: the whole view).
+    Q_PROPERTY(QRectF framing READ framing WRITE setFraming NOTIFY
+                       cameraChanged)
     Q_PROPERTY(float fieldOfView READ fieldOfView WRITE setFieldOfView NOTIFY
                        cameraChanged)
 
@@ -51,6 +56,8 @@ public:
     void setCameraUp(const QVector3D &direction);
     float fieldOfView() const;
     void setFieldOfView(float value);
+    QRectF framing() const;
+    void setFraming(const QRectF &framing);
     RaceViewerController *viewerController() const;
 
 #if FOREVERTAS_GPU_RAY_TRACING
@@ -69,6 +76,7 @@ private:
     QVector3D cameraTarget_{};
     QVector3D cameraUp_{0.0f, 1.0f, 0.0f};
     float fieldOfView_ = 55.0f;
+    QRectF framing_;
     bool active_ = false;
 };
 

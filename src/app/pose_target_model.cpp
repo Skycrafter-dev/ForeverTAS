@@ -1,10 +1,10 @@
 #include "app/pose_target_model.h"
+#include "app/app_settings.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSet>
-#include <QSettings>
 #include <QUuid>
 
 #include <algorithm>
@@ -324,6 +324,21 @@ bool PoseTargetModel::moveSelectedTo(
     return true;
 }
 
+bool PoseTargetModel::moveSelectedPositionTo(double x, double y, double z) {
+    if (selectedIndex_ < 0 || selectedIndex_ >= count()) {
+        return false;
+    }
+    return moveSelectedTo(x, y, z, Rotation(targets_[static_cast<std::size_t>(selectedIndex_)]));
+}
+
+bool PoseTargetModel::turnSelectedTo(const QQuaternion &rotation) {
+    if (selectedIndex_ < 0 || selectedIndex_ >= count()) {
+        return false;
+    }
+    const QVector3D position = targets_[static_cast<std::size_t>(selectedIndex_)].position;
+    return moveSelectedTo(position.x(), position.y(), position.z(), rotation);
+}
+
 bool PoseTargetModel::rotateSelected(const QString &axis,
                                      double degrees) {
     if (!editingEnabled_ || selectedIndex_ < 0 ||
@@ -430,7 +445,7 @@ QString PoseTargetModel::nextDefaultName() const {
 
 void PoseTargetModel::load(const QVariantMap &legacySettings) {
     const QJsonDocument document = QJsonDocument::fromJson(
-            QSettings().value(QLatin1String(kPoseTargetsKey)).toByteArray());
+            AppSettings::Instance().value(QLatin1String(kPoseTargetsKey)).toByteArray());
     QString selectedId;
     QSet<QString> loadedIds;
     if (document.isObject()) {
@@ -546,7 +561,7 @@ void PoseTargetModel::persist() const {
                          target.pitchDegrees,
                          target.rollDegrees}}});
     }
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kPoseTargetsKey),
             QJsonDocument(QJsonObject{
                     {QStringLiteral("version"), kVersion},

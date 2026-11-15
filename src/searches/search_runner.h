@@ -22,6 +22,9 @@ inline constexpr std::uint32_t kDefaultCudaParallelSampleCount = 256u;
 inline constexpr std::uint32_t kMaximumCpuWorkerCount = 256u;
 inline constexpr std::uint32_t kDefaultSimulationHorizonMs = 6000u;
 inline constexpr std::uint32_t kMaximumSimulationHorizonMs = 2147481040u;
+// A search thread's stack: searches run deep with large frames (a GPU
+// session's set-up alone takes more than the 1 MB Windows gives a thread).
+inline constexpr std::size_t kSearchThreadStackBytes = 64u * 1024u * 1024u;
 
 inline std::uint32_t DefaultCpuWorkerCount() noexcept {
     const std::uint32_t detected = std::thread::hardware_concurrency();
@@ -40,7 +43,7 @@ struct SearchRequest {
     std::string replayPath;
     PhysicsBackend backend = PhysicsBackend::Reference;
     std::uint32_t parallelSampleCount = 1u;
-    // Legacy API name: batch calibration also applies to Vulkan and HIP.
+    // Legacy API name: batch calibration also applies to HIP.
     bool calibrateCudaParallelSampleCount = false;
     OptionConfiguration searchAlgorithm =
             DefaultSearchAlgorithmConfiguration();
@@ -49,7 +52,9 @@ struct SearchRequest {
     OptionConfiguration evaluationTarget =
             DefaultEvaluationTargetConfiguration();
     std::vector<ParsedInputCommand> baseInputCommands = {};
-    bool useCudaSessionSpecialization = true;
+    // CUDA only: candidates on the twin's GPU engine, each new best rebuilt on
+    // exact physics (optimized CPU) before it is reported ("Approximate").
+    bool approximatePhysics = false;
     std::uint32_t simulationHorizonMs = kDefaultSimulationHorizonMs;
     std::optional<ConditionProgram> condition;
 };
@@ -58,10 +63,37 @@ SearchResult RunSearch(
         const SearchRequest &request,
         const SearchRunControl *control = nullptr);
 
+// One GPU of a search on several: its backend and batch settings.
+struct SearchDevice {
+    PhysicsBackend backend = PhysicsBackend::Cuda;
+    std::uint32_t parallelSampleCount = 1u;
+    bool calibrate = false;
+};
+
+// Runs a search request on one GPU (its backend's module).
+using DeviceSearchRunner =
+        std::function<SearchResult(const SearchRequest &, const SearchRunControl *)>;
+
+// One search on several GPUs at once, sharing its best like CPU workers: each
+// GPU runs the request through runOnDevice, with its own backend and batch
+// settings and its own candidates.
+SearchResult RunSearchOnDevices(
+        const SearchRequest &request,
+        const std::vector<SearchDevice> &devices,
+        const DeviceSearchRunner &runOnDevice,
+        const SearchRunControl *control = nullptr);
+
 // Uses the search evaluator and condition, without mutation, promotion, or sampling.
 // Auxiliary evaluation is always Optimized CPU, independently of the search device.
 std::optional<SearchResult> EvaluateBaseline(
         const SearchRequest &request, const SearchRunControl *control = nullptr);
+
+// Where a search starts judging its target: the earliest input any pass may
+// change (what came before is the base run's, the same in every iteration).
+// Nullopt when a pass's settings are invalid.
+std::optional<std::int64_t> EvaluationStartMs(
+        const std::vector<OptionConfiguration> &modifiers,
+        std::uint32_t simulationHorizonMs);
 
 }  // namespace forevertas
 

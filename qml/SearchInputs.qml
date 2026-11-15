@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
+import "ResultFormat.js" as ResultFormat
 
 // Results panel: the Current best / History tabs switch everything below
 // them. History-only content (sessions and restarts) is placed by the user
@@ -12,6 +13,7 @@ ColumnLayout {
     default property alias historyContent: historyColumn.data
     property alias selectedSource: sourceTabs.currentIndex
     readonly property bool showingHistory: selectedSource === 1
+    readonly property var liveRow: controller.liveRow ?? ({})
     readonly property string script: showingHistory
         ? controller.selectedInputsText : controller.bestInputsText
     spacing: 6
@@ -26,6 +28,8 @@ ColumnLayout {
     RowLayout {
         Layout.fillWidth: true
         TabBar {
+            // On glass: no band behind the tabs.
+            background: Item {}
             id: sourceTabs
             objectName: "bestInputsSourceTabs"
             Layout.fillWidth: true
@@ -44,6 +48,46 @@ ColumnLayout {
             }
         }
     }
+    // Current best: the search's best as one row of the History table, and
+    // how it got there
+    ColumnLayout {
+        objectName: "currentBestRow"
+        Layout.fillWidth: true
+        visible: !root.showingHistory && root.liveRow.columns !== undefined
+        spacing: 4
+        ScrollView {
+            Layout.fillWidth: true
+            Layout.preferredHeight: currentBest.implicitHeight + 14
+            clip: true
+            ScrollBar.horizontal.policy: ScrollBar.AsNeeded
+            ScrollBar.vertical.policy: ScrollBar.AlwaysOff
+            contentWidth: currentBest.implicitWidth
+            ResultTable {
+                id: currentBest
+                sortable: false
+                liveRow: root.liveRow.columns !== undefined ? root.liveRow : null
+                onCopyRequested: {
+                    bestInputsArea.selectAll()
+                    bestInputsArea.copy()
+                    bestInputsArea.select(0, 0)
+                }
+            }
+        }
+        Label {
+            Layout.fillWidth: true
+            readonly property var live: root.liveRow
+            readonly property int count: Number(live.improvements ?? 0)
+            text: count === 0 ? qsTr("No improvement yet")
+                : (count === 1 ? qsTr("1 improvement") : qsTr("%1 improvements").arg(count))
+                  + (live.lastImprovementMs !== undefined
+                     ? qsTr(", the last after %1").arg(
+                           ResultFormat.format("elapsed", live.lastImprovementMs, 1))
+                     : "")
+            color: AppTheme.textMuted
+            font.pixelSize: 11
+        }
+    }
+
     ColumnLayout {
         id: historyColumn
         objectName: "historyContent"

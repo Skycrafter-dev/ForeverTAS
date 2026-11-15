@@ -40,6 +40,9 @@ layout(std140, binding = 0) uniform CameraData {
     vec4 ellipsoidCenter[MAX_CAR_ELLIPSOIDS];
     vec4 ellipsoidRadii[MAX_CAR_ELLIPSOIDS];
     vec4 ellipsoidInverseRotation[MAX_CAR_ELLIPSOIDS];
+    // The framed part of the view: its centre (xy, -1..1) and its share of
+    // the view (zw); the field of view spans its height.
+    vec4 framing;
 } camera;
 
 layout(std430, binding = 1) readonly buffer BvhNodes {
@@ -413,7 +416,8 @@ void main() {
     if (pixel.x >= imageSizeValue.x || pixel.y >= imageSizeValue.y) return;
 
     vec2 pixelPosition = vec2(pixel) + vec2(0.5);
-    vec2 screen = pixelPosition / camera.viewportFrame.xy * 2.0 - 1.0;
+    vec2 screen = (pixelPosition / camera.viewportFrame.xy * 2.0 - 1.0 -
+                   camera.framing.xy) / camera.framing.zw;
     float aspect = camera.renderInfo.w;
     vec3 direction = normalize(
             camera.cameraForward.xyz +

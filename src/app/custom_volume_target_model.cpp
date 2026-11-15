@@ -1,4 +1,5 @@
 #include "app/custom_volume_target_model.h"
+#include "app/app_settings.h"
 
 #include "viewer/custom_volume_geometry.h"
 
@@ -7,7 +8,6 @@
 #include <QJsonObject>
 #include <QLineF>
 #include <QSet>
-#include <QSettings>
 #include <QUuid>
 
 #include <algorithm>
@@ -820,7 +820,7 @@ void CustomVolumeTargetModel::rebuildGeometry(Target *target) {
 
 void CustomVolumeTargetModel::load(const QVariantMap &legacySettings) {
     const QJsonDocument document = QJsonDocument::fromJson(
-            QSettings().value(QLatin1String(kCustomVolumesKey)).toByteArray());
+            AppSettings::Instance().value(QLatin1String(kCustomVolumesKey)).toByteArray());
     QString selectedId;
     QSet<QString> loadedIds;
     if (document.isObject()) {
@@ -979,7 +979,7 @@ void CustomVolumeTargetModel::persist() const {
                 {QStringLiteral("depth"), target.depth},
                 {QStringLiteral("vertices"), vertices}});
     }
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kCustomVolumesKey),
             QJsonDocument(QJsonObject{
                     {QStringLiteral("version"), kVersion},

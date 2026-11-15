@@ -78,6 +78,9 @@ struct alignas(16) RayTracingUniforms {
             ellipsoidRadii{};
     std::array<std::array<float, 4>, kMaximumCarEllipsoids>
             ellipsoidInverseRotation{};
+    // Where the framed part's centre is (x, y in -1..1, y up) and its share
+    // of the view (z, w).
+    std::array<float, 4> framing{{0.0f, 0.0f, 1.0f, 1.0f}};
 };
 
 class GpuRayTracingRenderer final : public QQuickRhiItemRenderer {
@@ -101,6 +104,7 @@ private:
     QVector3D cameraUp_{0.0f, 1.0f, 0.0f};
     float fieldOfView_ = 55.0f;
     float viewportAspect_ = 1.0f;
+    std::array<float, 4> framing_{{0.0f, 0.0f, 1.0f, 1.0f}};
     bool active_ = false;
     bool failureReported_ = false;
     bool sceneDirty_ = true;
@@ -209,9 +213,22 @@ void GpuRayTracingRenderer::synchronize(QQuickRhiItem *rhiItem) {
     const QVector3D nextTarget = item->cameraTarget();
     const QVector3D nextUp = item->cameraUp();
     const float nextFieldOfView = item->fieldOfView();
+    // The framed part, as a share of the view.
+    const QRectF framed = item->framing().isEmpty() || item->width() <= 0.0 ||
+                    item->height() <= 0.0
+            ? QRectF(0.0, 0.0, item->width(), item->height())
+            : item->framing();
+    const std::array<float, 4> nextFraming = item->width() > 0.0 &&
+                    item->height() > 0.0
+            ? std::array<float, 4>{
+                      static_cast<float>(2.0 * framed.center().x() / item->width() - 1.0),
+                      static_cast<float>(1.0 - 2.0 * framed.center().y() / item->height()),
+                      static_cast<float>(framed.width() / item->width()),
+                      static_cast<float>(framed.height() / item->height())}
+            : std::array<float, 4>{{0.0f, 0.0f, 1.0f, 1.0f}};
     const float nextViewportAspect =
-            item->height() > 0.0
-            ? static_cast<float>(item->width() / item->height())
+            framed.height() > 0.0
+            ? static_cast<float>(framed.width() / framed.height())
             : 1.0f;
     const bool carChanged =
             nextEllipsoids.size() != carEllipsoids_.size() ||
@@ -229,12 +246,13 @@ void GpuRayTracingRenderer::synchronize(QQuickRhiItem *rhiItem) {
         !NearlyEqual(cameraUp_, nextUp) ||
         !qFuzzyCompare(fieldOfView_, nextFieldOfView) ||
         !qFuzzyCompare(viewportAspect_, nextViewportAspect) ||
-        carChanged) {
+        framing_ != nextFraming || carChanged) {
         cameraPosition_ = nextPosition;
         cameraTarget_ = nextTarget;
         cameraUp_ = nextUp;
         fieldOfView_ = nextFieldOfView;
         viewportAspect_ = nextViewportAspect;
+        framing_ = nextFraming;
         carEllipsoids_ = std::move(nextEllipsoids);
     }
     active_ = item->active();
@@ -504,6 +522,7 @@ RayTracingUniforms GpuRayTracingRenderer::uniforms(
             static_cast<float>(carEllipsoids_.size()),
             viewportAspect_};
     value.carColor = {0.12f, 0.78f, 0.68f, 0.24f};
+    value.framing = framing_;
     for (std::size_t index = 0; index < carEllipsoids_.size();
          ++index) {
         const CarEllipsoid &ellipsoid = carEllipsoids_[index];
@@ -668,6 +687,15 @@ void GpuRayTracingView::setCameraUp(
 }
 
 float GpuRayTracingView::fieldOfView() const { return fieldOfView_; }
+
+QRectF GpuRayTracingView::framing() const { return framing_; }
+
+void GpuRayTracingView::setFraming(const QRectF &framing) {
+    if (framing_ == framing) return;
+    framing_ = framing;
+    emit cameraChanged();
+    update();
+}
 
 void GpuRayTracingView::setFieldOfView(float value) {
     if (qFuzzyCompare(fieldOfView_, value)) return;

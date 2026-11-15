@@ -1,4 +1,5 @@
 #include "viewer/simulation_debugger_model.h"
+#include "app/app_settings.h"
 #include "viewer/debugger_tools.h"
 
 #include "simulation_debug_sources.h"
@@ -12,7 +13,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
-#include <QSettings>
 #include <QTemporaryFile>
 #include <QTimer>
 #include <QUuid>
@@ -239,11 +239,11 @@ void SimulationDebuggerModel::saveWatches() {
         const auto row = watch.toMap();
         persisted.append(QJsonObject{{"id", row.value("id").toString()}, {"expression", row.value("expression").toString()}});
     }
-    QSettings().setValue(QStringLiteral("simulationDebugger/watchesV1"), QJsonDocument(persisted).toJson(QJsonDocument::Compact));
+    app::AppSettings::Instance().setValue(QStringLiteral("simulationDebugger/watchesV1"), QJsonDocument(persisted).toJson(QJsonDocument::Compact));
 }
 
 void SimulationDebuggerModel::loadWatches() {
-    const auto persisted = QJsonDocument::fromJson(QSettings().value(QStringLiteral("simulationDebugger/watchesV1")).toByteArray()).array();
+    const auto persisted = QJsonDocument::fromJson(app::AppSettings::Instance().value(QStringLiteral("simulationDebugger/watchesV1")).toByteArray()).array();
     QSet<QString> ids, paths;
     for (const auto &value : persisted) {
         const auto row = value.toObject();
@@ -349,19 +349,6 @@ qint64 SimulationDebuggerModel::executionTick() const {
     return executionTick_;
 }
 
-bool SimulationDebuggerModel::darkMode() const {
-    return darkMode_;
-}
-
-void SimulationDebuggerModel::setDarkMode(bool value) {
-    if (darkMode_ == value) {
-        return;
-    }
-    darkMode_ = value;
-    emit themeChanged();
-    emit linesChanged();
-}
-
 bool SimulationDebuggerModel::hasEdits() const {
     return std::any_of(
             sources_.begin(), sources_.end(),
@@ -401,8 +388,7 @@ QVariantList SimulationDebuggerModel::lines() const {
                 {QStringLiteral("text"), text},
                 {QStringLiteral("original"), original},
                 {QStringLiteral("highlighted"),
-                 (darkMode_ ? source->highlightedDark
-                            : source->highlightedLight)[index]},
+                 source->highlighted[index]},
                 {QStringLiteral("active"),
                  active_ && source->path == activeFilePath_ &&
                          line == activeLine_},
@@ -472,8 +458,7 @@ bool SimulationDebuggerModel::updateLine(int lineNumber, const QString &text) {
     const int anchorLine = source->anchorLineNumbers[index];
     source->currentLines[index] = text;
     ++sourceRevision_;
-    source->highlightedLight[index] = syntaxHighlighted(text, false);
-    source->highlightedDark[index] = syntaxHighlighted(text, true);
+    source->highlighted[index] = syntaxHighlighted(text);
     source->inlineValueLines[index] = inlineValues(text);
     const QString original =
             sourceLine > 0 && sourceLine <= source->originalLines.size()
@@ -536,8 +521,7 @@ int SimulationDebuggerModel::insertLineAfter(int lineNumber) {
     const qint64 effectiveTick =
             effectiveTickForBoundary(*source, anchorLine);
     source->currentLines.insert(insertIndex, QString());
-    source->highlightedLight.insert(insertIndex, QString());
-    source->highlightedDark.insert(insertIndex, QString());
+    source->highlighted.insert(insertIndex, QString());
     source->inlineValueLines.insert(insertIndex, QString());
     source->lineIds.insert(insertIndex, lineId);
     source->sourceLineNumbers.insert(insertIndex, 0);
@@ -583,8 +567,7 @@ bool SimulationDebuggerModel::deleteLine(int lineNumber) {
                                    source->originalLines[sourceLine - 1])});
     }
     source->currentLines.removeAt(index);
-    source->highlightedLight.removeAt(index);
-    source->highlightedDark.removeAt(index);
+    source->highlighted.removeAt(index);
     source->inlineValueLines.removeAt(index);
     source->lineIds.removeAt(index);
     source->sourceLineNumbers.removeAt(index);
@@ -688,23 +671,19 @@ void SimulationDebuggerModel::resetEdits() {
             }
         }
         source.currentLines = source.originalLines;
-        source.highlightedLight.clear();
-        source.highlightedDark.clear();
+        source.highlighted.clear();
         source.inlineValueLines.clear();
         source.lineIds.clear();
         source.sourceLineNumbers.clear();
         source.anchorLineNumbers.clear();
-        source.highlightedLight.reserve(source.originalLines.size());
-        source.highlightedDark.reserve(source.originalLines.size());
+        source.highlighted.reserve(source.originalLines.size());
         source.inlineValueLines.resize(source.originalLines.size());
         source.lineIds.reserve(source.originalLines.size());
         source.sourceLineNumbers.reserve(source.originalLines.size());
         source.anchorLineNumbers.reserve(source.originalLines.size());
         for (int index = 0; index < source.originalLines.size(); ++index) {
-            source.highlightedLight.push_back(
-                    syntaxHighlighted(source.originalLines[index], false));
-            source.highlightedDark.push_back(
-                    syntaxHighlighted(source.originalLines[index], true));
+            source.highlighted.push_back(
+                    syntaxHighlighted(source.originalLines[index]));
             source.lineIds.push_back(static_cast<quint64>(index + 1));
             source.sourceLineNumbers.push_back(index + 1);
             source.anchorLineNumbers.push_back(index + 1);
@@ -955,8 +934,7 @@ void SimulationDebuggerModel::pause() {
     }
 }
 
-QString SimulationDebuggerModel::syntaxHighlighted(const QString &text,
-                                                   bool darkMode) {
+QString SimulationDebuggerModel::syntaxHighlighted(const QString &text) {
     QString escaped = HtmlEscape(text);
     static const QRegularExpression stringPattern(
             QStringLiteral("(\".*?\"|'.*?')"));
@@ -969,14 +947,10 @@ QString SimulationDebuggerModel::syntaxHighlighted(const QString &text,
             "private|protected|public|return|sizeof|static|struct|"
             "switch|template|this|throw|true|try|typename|using|"
             "void|while)\\b"));
-    const QString stringColor =
-            darkMode ? QStringLiteral("#e9b86c") : QStringLiteral("#8a4f27");
-    const QString numberColor =
-            darkMode ? QStringLiteral("#d9a0e8") : QStringLiteral("#8b3fa3");
-    const QString keywordColor =
-            darkMode ? QStringLiteral("#80b9ef") : QStringLiteral("#235f9e");
-    const QString commentColor =
-            darkMode ? QStringLiteral("#91a092") : QStringLiteral("#6b786b");
+    const QString stringColor = QStringLiteral("#e9b86c");
+    const QString numberColor = QStringLiteral("#d9a0e8");
+    const QString keywordColor = QStringLiteral("#80b9ef");
+    const QString commentColor = QStringLiteral("#91a092");
     escaped.replace(stringPattern,
                     QStringLiteral("<span style=\"color:%1\">\\1</span>")
                             .arg(stringColor));
@@ -1225,17 +1199,17 @@ int SimulationDebuggerModel::depth(const QString &path) {
 }
 
 QString SimulationDebuggerModel::configuredLldbPath() const {
-    return QSettings().value(QStringLiteral("simulationDebugger/lldbPath")).toString();
+    return app::AppSettings::Instance().value(QStringLiteral("simulationDebugger/lldbPath")).toString();
 }
 
 QString SimulationDebuggerModel::configuredTerminalPath() const {
-    return QSettings().value(QStringLiteral("simulationDebugger/terminalPath")).toString();
+    return app::AppSettings::Instance().value(QStringLiteral("simulationDebugger/terminalPath")).toString();
 }
 
 void SimulationDebuggerModel::configureTools(const QString &lldb, const QString &terminal) {
     if (active_ || preparing_) return;
-    QSettings().setValue(QStringLiteral("simulationDebugger/lldbPath"), lldb.trimmed());
-    QSettings().setValue(QStringLiteral("simulationDebugger/terminalPath"), terminal.trimmed());
+    app::AppSettings::Instance().setValue(QStringLiteral("simulationDebugger/lldbPath"), lldb.trimmed());
+    app::AppSettings::Instance().setValue(QStringLiteral("simulationDebugger/terminalPath"), terminal.trimmed());
     refreshDebuggerTools();
 }
 
@@ -1696,23 +1670,19 @@ void SimulationDebuggerModel::loadSources() {
             if (!lines.isEmpty() && lines.back().isEmpty()) {
                 lines.removeLast();
             }
-            QStringList highlightedLight;
-            QStringList highlightedDark;
+            QStringList highlighted;
             QStringList inlineValueLines;
-            highlightedLight.reserve(lines.size());
-            highlightedDark.reserve(lines.size());
+            highlighted.reserve(lines.size());
             inlineValueLines.resize(lines.size());
             for (const QString &line : lines) {
-                highlightedLight.push_back(syntaxHighlighted(line, false));
-                highlightedDark.push_back(syntaxHighlighted(line, true));
+                highlighted.push_back(syntaxHighlighted(line));
             }
             SourceFile source;
             source.path = path;
             source.absolutePath = QDir(root).filePath(path);
             source.originalLines = lines;
             source.currentLines = lines;
-            source.highlightedLight = highlightedLight;
-            source.highlightedDark = highlightedDark;
+            source.highlighted = highlighted;
             source.inlineValueLines = inlineValueLines;
             source.lineIds.reserve(lines.size());
             source.sourceLineNumbers.reserve(lines.size());
@@ -1734,7 +1704,7 @@ void SimulationDebuggerModel::loadSources() {
 
 void SimulationDebuggerModel::restoreBreakpoints() {
     const QStringList persisted =
-            QSettings()
+            app::AppSettings::Instance()
                     .value(QStringLiteral("simulationDebugger/"
                                           "breakpointsV1"))
                     .toStringList();
@@ -1771,7 +1741,7 @@ void SimulationDebuggerModel::saveBreakpoints() const {
         }
     }
     std::sort(persisted.begin(), persisted.end());
-    QSettings().setValue(QStringLiteral("simulationDebugger/breakpointsV1"),
+    app::AppSettings::Instance().setValue(QStringLiteral("simulationDebugger/breakpointsV1"),
                          persisted);
 }
 

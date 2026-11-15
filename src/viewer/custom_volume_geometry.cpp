@@ -185,4 +185,9 @@ void CustomVolumeGeometry::setVolume(
     addAttribute(Attribute::PositionSemantic, 0, Attribute::F32Type);
 }
 
+QSSGRenderGraphObject *CustomVolumeGeometry::updateSpatialNode(QSSGRenderGraphObject *node) {
+    if (node == nullptr) setVertexData(vertexData());
+    return QQuick3DGeometry::updateSpatialNode(node);
+}
+
 }  // namespace forevertas::viewer

@@ -51,6 +51,9 @@ public:
     bool moveModifierPass(int fromIndex, int toIndex);
     bool setModifierPassId(int index, const QString &id);
     bool setModifierPassEnabled(int index, bool enabled);
+    // A pass's window chain: {color, linked}; empty when never chained.
+    QVariantMap modifierPassChain(int index) const;
+    bool setModifierPassChain(int index, const QVariantMap &chain);
     bool setModifierPassSetting(int index,
                                 const QString &key,
                                 const QString &value);

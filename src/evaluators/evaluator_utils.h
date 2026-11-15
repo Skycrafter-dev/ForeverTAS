@@ -74,6 +74,24 @@ inline double Length(const EvaluationVector3 &value) {
     return std::sqrt(Dot(value, value));
 }
 
+// Speed at a fraction of the tick from previous to current, as an
+// interpolated entry time is.
+inline double InterpolatedSpeed(
+        const forevervalidator::experimental::PhysicsSandboxStateView &previous,
+        const forevervalidator::experimental::PhysicsSandboxStateView &current,
+        double fraction) {
+    const EvaluationVector3 from = VelocityOf(previous);
+    const EvaluationVector3 to = VelocityOf(current);
+    return Length({from.x + (to.x - from.x) * fraction,
+                   from.y + (to.y - from.y) * fraction,
+                   from.z + (to.z - from.z) * fraction});
+}
+
+inline EvaluationVector3 Difference(const EvaluationVector3 &left,
+                                    const EvaluationVector3 &right) {
+    return {left.x - right.x, left.y - right.y, left.z - right.z};
+}
+
 inline double Distance(const EvaluationVector3 &left,
                        const EvaluationVector3 &right) {
     return Length({left.x - right.x, left.y - right.y, left.z - right.z});

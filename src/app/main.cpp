@@ -1,25 +1,57 @@
 #include "app/search_controller.h"
+#include "app/app_settings.h"
+#include "app/compute_check.h"
+#include "app/diagnostics_startup.h"
+#include "app/stall_watch.h"
+#include "diagnostics/diagnostics_log.h"
 #include "app/input_preview_binding.h"
+#include "app/mcp_bridge.h"
+#include "app/mcp_protocol.h"
+#include "app/mcp_relay.h"
 #include "app/update_controller.h"
 #include "app/shutdown_controller.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
+#include "viewer/render_module_library.h"
 
 #include <QApplication>
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QIcon>
 #include <QQmlApplicationEngine>
+#include <QQuickWindow>
+#include <QSGRendererInterface>
 #include <QQuickStyle>
 #include <QSslSocket>
 #include <QTimer>
 #include <QThreadPool>
 #include <QVariant>
 #include <QJSValue>
+#include <QLockFile>
 #include <iostream>
 #include <cstdlib>
 
 int main(int argc, char **argv) {
+    // The stdio MCP server an MCP client runs (no window; see app/mcp_relay.h).
+    if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--mcp-stdio")) {
+        return forevertas::app::RunMcpRelay(argc, argv, QStringLiteral(FOREVERTAS_VERSION));
+    }
+    if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-compute-module")) {
+        QCoreApplication checker(argc, argv);
+        return forevertas::app::CheckComputeModule(argc, argv);
+    }
+    // A release's In-game render module: found and loaded by this app, with what it calls
+    if (argc == 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-render-module")) {
+        QCoreApplication checker(argc, argv);
+        const forevertas::viewer::RenderModuleLibrary &module = forevertas::viewer::LoadedRenderModule();
+        if (!module.loaded || module.create == nullptr || module.render == nullptr || module.carState == nullptr) {
+            std::cerr << "the render module is missing, cannot be loaded, or is older than this app\n";
+            return 1;
+        }
+        std::cout << "render module: " << module.label.toStdString()
+                  << (module.exportVideo != nullptr ? ", video export" : "") << '\n';
+        return 0;
+    }
 #if defined(Q_OS_LINUX)
     if (argc == 4 && QString::fromLocal8Bit(argv[1]) ==
                              QStringLiteral("--apply-update")) {
@@ -53,8 +85,19 @@ int main(int argc, char **argv) {
             QStringLiteral(FOREVERTAS_VERSION));
     application.setWindowIcon(
             QIcon(QStringLiteral(":/icons/forevertas.svg")));
+    const bool smokeTest = application.arguments().contains(
+            QStringLiteral("--qml-smoke-test"));
+    if (!smokeTest) forevertas::app::StartDiagnostics();
+    forevertas::app::DiagnosticsLogs logs;
+
+    // Held while this window runs (MCP on or not): the MCP relay then knows
+    // not to start another.
+    QLockFile presence(forevertas::app::McpPresenceLockPath());
+    presence.setStaleLockTime(0);
+    static_cast<void>(presence.tryLock(200));
 
     forevertas::app::SearchController controller;
+    forevertas::app::LogLoadedGpuRuntimes();
     forevertas::app::UpdateController updates;
     forevertas::viewer::RaceViewerController viewer;
     forevertas::app::ShutdownController shutdown(
@@ -62,7 +105,13 @@ int main(int argc, char **argv) {
             [&] { return controller.shutdownReady() && viewer.shutdownReady() &&
                          QThreadPool::globalInstance()->activeThreadCount() == 0; },
             [&] { controller.flushSettings(); },
-            [] { std::_Exit(EXIT_SUCCESS); });
+            [] {
+                forevertas::app::AppSettings::Instance().shutDown();
+                forevertas::app::StopStallWatch();
+                forevertas::diagnostics::Log("closed");
+                forevertas::app::FinishDiagnostics();
+                std::_Exit(EXIT_SUCCESS);
+            });
     forevertas::app::BindInputPreview(controller, viewer);
     QObject::connect(&controller, &forevertas::app::SearchController::searchStarted,
                      &viewer, &forevertas::viewer::RaceViewerController::beginSearchPreview);
@@ -93,7 +142,18 @@ int main(int argc, char **argv) {
                 viewer.completeSearchPreview(std::move(completion));
             });
     forevertas::viewer::RegisterRaceViewerQmlTypes();
+    // A render module draws with OpenGL inside the window's own frame.
+    if (forevertas::viewer::LoadedRenderModule().loaded &&
+        forevertas::viewer::RenderModuleOpenGlUsable()) {
+        forevertas::diagnostics::Log("render module loaded: the window draws with OpenGL");
+        QQuickWindow::setGraphicsApi(QSGRendererInterface::OpenGL);
+    }
     QQmlApplicationEngine engine;
+    // MCP: off unless turned on in Preferences, or for this session when an
+    // MCP client started the window (--enable-mcp).
+    forevertas::app::McpBridge mcp(controller, &engine,
+                                   application.arguments().contains(QStringLiteral("--enable-mcp")) &&
+                                           !smokeTest);
     engine.addImportPath(QCoreApplication::applicationDirPath() +
                          QStringLiteral("/qml"));
     engine.setInitialProperties({
@@ -103,7 +163,11 @@ int main(int argc, char **argv) {
             {QStringLiteral("viewer"),
              QVariant::fromValue(static_cast<QObject *>(&viewer))},
             {QStringLiteral("updater"),
-             QVariant::fromValue(static_cast<QObject *>(&updates))}});
+             QVariant::fromValue(static_cast<QObject *>(&updates))},
+            {QStringLiteral("logs"),
+             QVariant::fromValue(static_cast<QObject *>(&logs))},
+            {QStringLiteral("mcp"),
+             QVariant::fromValue(static_cast<QObject *>(&mcp))}});
     QObject::connect(
             &engine,
             &QQmlApplicationEngine::objectCreationFailed,
@@ -112,9 +176,13 @@ int main(int argc, char **argv) {
             Qt::QueuedConnection);
     engine.loadFromModule(QStringLiteral("ForeverTAS"),
                           QStringLiteral("Main"));
+    forevertas::diagnostics::Log("window loaded");
+    forevertas::app::LogQmlSetup(engine);
+    forevertas::app::WatchWindow(
+            qobject_cast<QQuickWindow *>(engine.rootObjects().value(0)));
+    if (!smokeTest) forevertas::app::StartStallWatch();
 
-    if (application.arguments().contains(
-                QStringLiteral("--qml-smoke-test"))) {
+    if (smokeTest) {
         QTimer::singleShot(100, &application, [&]() {
             QObject *const root = engine.rootObjects().value(0);
             QObject *const inspector = root != nullptr
@@ -137,8 +205,16 @@ int main(int argc, char **argv) {
             QCoreApplication::exit(valid ? 0 : 1);
         });
     } else {
+        QObject::connect(&updates, &forevertas::app::UpdateController::computeModulesChanged,
+                         &controller, &forevertas::app::SearchController::refreshComputeBackends);
         QTimer::singleShot(0, &updates,
                            &forevertas::app::UpdateController::checkForUpdates);
+        QTimer::singleShot(0, &updates,
+                           &forevertas::app::UpdateController::installComputeModule);
     }
-    return application.exec();
+    const int exitCode = application.exec();
+    forevertas::app::StopStallWatch();
+    forevertas::diagnostics::Log("closed (%d)", exitCode);
+    forevertas::app::FinishDiagnostics();
+    return exitCode;
 }

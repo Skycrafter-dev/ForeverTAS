@@ -46,3 +46,6 @@ __pycache__/
 *.Replay.Gbx
 *.Pak
 *.pak
+
+# This computer's release settings (the private render module's repository and commit)
+/packaging/release/release.local.json

@@ -66,7 +66,8 @@ public:
         return std::make_unique<VolumeEntrySession>(*this);
     }
 
-    explicit VolumeEntrySession(Box box) : box_(box) {}
+    VolumeEntrySession(Box box, bool entrySpeed)
+        : box_(box), entrySpeed_(entrySpeed) {}
     bool IsComplete() const override { return reported_; }
 
     std::optional<EvaluationSample> Observe(
@@ -78,7 +79,11 @@ public:
         if (reported_) return std::nullopt;
         const EvaluationVector3 currentPosition = PositionOf(current);
         if (!previous) {
-            if (!Contains(box_, currentPosition)) return std::nullopt;
+            // Entry speed needs the car seen entering: one already inside
+            // when the window starts (a restored state) has not entered.
+            if (entrySpeed_ || !Contains(box_, currentPosition)) {
+                return std::nullopt;
+            }
             reported_ = true;
             const double time = static_cast<double>(current.timeMs);
             return EvaluationSample{
@@ -96,6 +101,14 @@ public:
         const double time = static_cast<double>(previous->timeMs) +
                 *fraction * static_cast<double>(
                         current.timeMs - previous->timeMs);
+        if (entrySpeed_) {
+            const double speed =
+                    InterpolatedSpeed(*previous, current, *fraction);
+            return EvaluationSample{
+                    speed, time,
+                    MetricDescription("Volume entry speed", speed, "m/s",
+                                      time)};
+        }
         return EvaluationSample{
                 time,
                 time,
@@ -104,12 +117,14 @@ public:
 
 private:
     Box box_;
+    bool entrySpeed_ = false;
     bool reported_ = false;
 };
 
 class VolumeEntryEvaluator final : public IterationEvaluator {
 public:
-    explicit VolumeEntryEvaluator(Box box) : box_(box) {}
+    VolumeEntryEvaluator(Box box, bool entrySpeed)
+        : box_(box), entrySpeed_(entrySpeed) {}
 
     EvaluationPlan Plan(std::int64_t simulationHorizonMs,
                         std::int64_t earliestMutationTimeMs,
@@ -120,22 +135,25 @@ public:
 
     std::unique_ptr<IterationEvaluationSession> CreateSession()
             const override {
-        return std::make_unique<VolumeEntrySession>(box_);
+        return std::make_unique<VolumeEntrySession>(box_, entrySpeed_);
     }
 
     bool IsBetter(const EvaluationSample &iteration,
                   const EvaluationSample &incumbent) const override {
-        return iteration.score < incumbent.score;
+        return entrySpeed_ ? iteration.score > incumbent.score
+                           : iteration.score < incumbent.score;
     }
 
-    // Entry samples report their own entry time, so later attempts lose.
+    // Entry times: later attempts lose. Entry speeds: any entry may win.
     std::optional<double> LatestImprovingTimeMs(
             const EvaluationSample &incumbent) const override {
+        if (entrySpeed_) return std::nullopt;
         return incumbent.timeMs;
     }
 
 private:
     Box box_;
+    bool entrySpeed_ = false;
 };
 
 std::optional<Box> ParseBox(const OptionSettings &settings) {
@@ -166,7 +184,8 @@ OptionSettings DefaultVolumeEntryOptionSettings() {
             {"centerZ", "0"},
             {"sizeX", "10"},
             {"sizeY", "10"},
-            {"sizeZ", "10"}};
+            {"sizeZ", "10"},
+            {"measure", "time"}};
 }
 
 std::optional<std::string> ValidateVolumeEntryOptionSettings(
@@ -178,7 +197,11 @@ std::optional<std::string> ValidateVolumeEntryOptionSettings(
         return error;
     }
     if (!ParseBox(settings)) {
-        return "volume center must be finite and all sizes must be positive";
+        return "the box needs a center and sizes above 0";
+    }
+    if (const std::string &measure = settings.at("measure");
+        measure != "time" && measure != "speed") {
+        return "choose time or speed to measure";
     }
     return std::nullopt;
 }
@@ -190,7 +213,8 @@ std::unique_ptr<IterationEvaluator> CreateVolumeEntryEvaluator(
                 ValidateVolumeEntryOptionSettings(settings, tickDurationMs)) {
         throw std::invalid_argument(*error);
     }
-    return std::make_unique<VolumeEntryEvaluator>(*ParseBox(settings));
+    return std::make_unique<VolumeEntryEvaluator>(
+            *ParseBox(settings), settings.at("measure") == "speed");
 }
 
 }  // namespace forevertas

@@ -27,8 +27,7 @@ event produces no eligible evaluation, not a later substitute. Observation
 starts at the first simulation tick, even when mutations begin later.
 
 Reference, Optimized CPU, Multi-threaded CPU, CUDA and HIP searches are supported.
-Vulkan searches are explicitly rejected for this target. Evaluate base
-uses Optimized CPU and remains available.
+Evaluate base uses Optimized CPU.
 
 CUDA and HIP have no event journal; their kernels name each accepted event from the race
 counters before and after the tick (lap checkpoint count, global event count,
@@ -50,7 +49,7 @@ time and finish flag. `AdvanceTicks(n)` returns only the last tick's journal;
 consumers needing every event must advance one tick at a time. GPU views have
 no accepted-event journal; `PhysicsSandboxCudaCheckpointEvaluator` reconstructs
 the selected event inside the CUDA (and generated HIP) search kernel as
-described above, and Vulkan rejects it.
+described above.
 
 The journal is recorded at the engine's acceptance boundary, including the
 Shortcut finish path. It is cleared before each tick and copied with runtime

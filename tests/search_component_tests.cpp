@@ -9,6 +9,8 @@
 #include "mutations/input_event_utils.h"
 #include "mutations/modifier_utils.h"
 #include "replay_file_io.h"
+#include "mutations/input_insertion_mutator.h"
+#include "searches/setting_labels.h"
 #include "searches/algorithm_registry.h"
 #include "searches/basic_brute_force_search.h"
 #include "searches/cuda_batch_calibrator.h"
@@ -569,6 +571,118 @@ bool TestEvaluationTargets() {
         current.car.position = {0.0f, 0.0f, 0.0f};
         okay &= Check(session->Observe(previous, current) && session->IsComplete(),
                       "later eligible volume crossing did not complete");
+    }
+
+    {
+        // Fastest entry: the speed at the interpolated entry, and only a
+        // car seen entering counts.
+        OptionSettings settings =
+                forevertas::FindEvaluationTarget(
+                        forevertas::kVolumeEntryEvaluationId)->defaultSettings;
+        settings["sizeX"] = "2";
+        settings["sizeY"] = "2";
+        settings["sizeZ"] = "2";
+        settings["measure"] = "speed";
+        auto evaluator = Evaluator(
+                forevertas::kVolumeEntryEvaluationId, &settings);
+        PhysicsSandboxStateView previous;
+        previous.timeMs = 100u;
+        previous.car.position = {-10.0f, 0.0f, 0.0f};
+        previous.car.linearSpeed = {10.0f, 0.0f, 0.0f};
+        PhysicsSandboxStateView current = previous;
+        current.timeMs = 110u;
+        current.car.position = {0.0f, 0.0f, 0.0f};
+        current.car.linearSpeed = {20.0f, 0.0f, 0.0f};
+        auto session = evaluator->CreateSession();
+        const auto sample = session->Observe(previous, current);
+        okay &= Check(sample && std::abs(sample->score - 19.0) < 1e-6 &&
+                              std::abs(sample->timeMs - 109.0) < 1e-9,
+                      "volume entry speed was incorrect");
+        auto restored = evaluator->CreateSession();
+        okay &= Check(!restored->Observe(std::nullopt, current),
+                      "a car already inside counted as a fast entry");
+        okay &= Check(!restored->Observe(current, current),
+                      "a car staying inside counted as a fast entry");
+        if (sample) {
+            forevertas::EvaluationSample slower = *sample;
+            slower.score = 15.0;
+            okay &= Check(evaluator->IsBetter(*sample, slower) &&
+                                  !evaluator->LatestImprovingTimeMs(*sample),
+                          "a faster entry did not win");
+        }
+
+        OptionSettings custom =
+                forevertas::FindEvaluationTarget(
+                        forevertas::kCustomVolumeEntryEvaluationId)
+                        ->defaultSettings;
+        custom["measure"] = "speed";
+        auto customEvaluator = Evaluator(
+                forevertas::kCustomVolumeEntryEvaluationId, &custom);
+        PhysicsSandboxStateView inside;
+        inside.timeMs = 100u;
+        inside.car.position = {0.0f, 1.0f, 0.0f};
+        auto customSession = customEvaluator->CreateSession();
+        okay &= Check(!customSession->Observe(std::nullopt, inside),
+                      "a car already inside a custom volume counted as an "
+                      "entry");
+    }
+
+    {
+        // Velocity towards a point: the direction follows the car.
+        OptionSettings settings =
+                forevertas::FindEvaluationTarget(
+                        forevertas::kVelocityEvaluationId)->defaultSettings;
+        settings["mode"] = "projected";
+        settings["directionMode"] = "point";
+        settings["x"] = "10";
+        settings["y"] = "0";
+        settings["z"] = "10";
+        auto evaluator = Evaluator(
+                forevertas::kVelocityEvaluationId, &settings);
+        auto session = evaluator->CreateSession();
+        PhysicsSandboxStateView state;
+        state.timeMs = 1000u;
+        state.car.position = {10.0f, 0.0f, 0.0f};
+        state.car.linearSpeed = {6.0f, 0.0f, 8.0f};
+        const auto sample = session->Observe(std::nullopt, state);
+        okay &= Check(sample && std::abs(sample->score - 8.0) < 1e-6,
+                      "velocity towards a point was incorrect");
+    }
+
+    {
+        // Pose axis weights: 0 ignores an axis; all at 100 is the plain
+        // distance and angle.
+        OptionSettings settings =
+                forevertas::FindEvaluationTarget(
+                        forevertas::kPoseTargetEvaluationId)->defaultSettings;
+        settings["rotationWeightPercent"] = "50";
+        PhysicsSandboxStateView state;
+        state.timeMs = 1000u;
+        state.car.position = {3.0f, 4.0f, 0.0f};
+        // 20 degrees of yaw.
+        state.car.rotationY = 0.17364818f;
+        state.car.rotationW = 0.98480775f;
+        const auto score = [&](const OptionSettings &values) {
+            auto evaluator = Evaluator(
+                    forevertas::kPoseTargetEvaluationId, &values);
+            const auto sample =
+                    evaluator->CreateSession()->Observe(std::nullopt, state);
+            return sample ? sample->score : -1.0;
+        };
+        const double yaw = 20.0 * 3.14159265358979323846 / 180.0;
+        okay &= Check(std::abs(score(settings) - (0.5 * 5.0 + 0.5 * yaw)) < 1e-5,
+                      "default pose weights changed the pose error");
+        OptionSettings weighted = settings;
+        weighted["weightX"] = "0";
+        weighted["weightYaw"] = "0";
+        okay &= Check(std::abs(score(weighted) - 0.5 * 4.0) < 1e-5,
+                      "pose axis weights were not applied");
+        weighted["weightRoll"] = "101";
+        okay &= Check(forevertas::FindEvaluationTarget(
+                              forevertas::kPoseTargetEvaluationId)
+                              ->validateSettings(weighted, 10u)
+                              .has_value(),
+                      "a pose axis weight above 100 was accepted");
     }
 
     {
@@ -1498,6 +1612,36 @@ bool TestInputScriptParsingAndBaseline() {
                       "clock input timestamp was not parsed exactly");
     }
 
+    // TMInterface's ranges: the command at the start, undone at the end.
+    {
+        const auto ranges = forevertas::ParseInputScript(
+                "0-1.50 press up\n1:02.00-1:02.50 press left\n2.00-2.30 steer -20000\n"
+                "3.00-3.10 gas 40000");
+        okay &= Check(ranges && ranges.commands.size() == 8u, "ranges were not parsed");
+        if (ranges && ranges.commands.size() == 8u) {
+            const auto &c = ranges.commands;
+            using forevervalidator::experimental::PhysicsSandboxSwitchState;
+            okay &= Check(c[0].userTimeMs == 0 && c[1].userTimeMs == 1500 &&
+                                  c[0].value.switchState == PhysicsSandboxSwitchState::Pressed &&
+                                  c[1].value.switchState == PhysicsSandboxSwitchState::Released &&
+                                  c[1].action == SandboxInputAction::Accelerate &&
+                                  c[2].userTimeMs == 62000 && c[3].userTimeMs == 62500 &&
+                                  c[3].action == SandboxInputAction::SteerLeft &&
+                                  c[3].value.switchState == PhysicsSandboxSwitchState::Released &&
+                                  c[4].value.analog == -20000 && c[5].userTimeMs == 2300 &&
+                                  c[5].value.analog == 0 && c[6].value.analog == 40000 &&
+                                  c[7].action == SandboxInputAction::Gas && c[7].value.analog == 0 &&
+                                  c[1].sourceLine == 1u && c[7].sourceLine == 4u,
+                          "a range did not give its start and end commands");
+        }
+    }
+    expectError("1.00-1.00 press up", "end after it starts");
+    expectError("1.00-0.50 press up", "end after it starts");
+    expectError("1.00-2.00 rel up", "range needs press");
+    expectError("1.00-2.00 press enter", "range needs press");
+    expectError("1.00-2.005 press up", "10 ms-aligned");
+    expectError("1.00- press up", "10 ms-aligned");
+
     const forevertas::InputScriptParseResult tooLate =
             forevertas::ParseInputScript("2.00 press up");
     const forevertas::InputScriptBaselineResult lateInput =
@@ -1725,7 +1869,7 @@ bool TestRegistries() {
                           tree->settingsComponent ==
                                   "TreeSearchSettings.qml",
                   "tree search registration is incomplete");
-    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 10u &&
+    okay &= Check(forevertas::EvaluationTargetRegistry().size() == 11u &&
                           forevertas::FindEvaluationTarget(forevertas::kTimeEvaluationId) != nullptr,
                   "not all required evaluation targets are registered");
     return okay;
@@ -1885,172 +2029,92 @@ bool TestRollingThroughput() {
 }
 
 bool TestCudaBatchCalibrationStrategy() {
-    const auto observe = [](
-                                 forevertas::CudaBatchCalibrator *calibrator,
-                                 double throughput) {
-        const std::uint32_t batchSize =
-                calibrator->CurrentBatchSize();
-        const auto elapsed =
-                std::chrono::duration_cast<
-                        std::chrono::steady_clock::duration>(
-                        std::chrono::duration<double>(
-                                static_cast<double>(batchSize) /
-                                throughput));
-        for (int sample = 0; sample < 7; ++sample) {
-            calibrator->Observe(batchSize, elapsed);
+    using Calibrator = forevertas::CudaBatchCalibrator;
+    // A device: a batch of n takes latency + n / rate, floored at one wave's latency.
+    struct Device {
+        double latency, rate;
+        std::uint32_t capacity;
+        double Seconds(std::uint32_t n) const {
+            return std::max(latency, static_cast<double>(n) / rate) + latency * 0.2;
         }
     };
-
-    const auto realisticThroughput = [](std::uint32_t batchSize) {
-        if (batchSize <= 7500u) {
-            constexpr double saturationScale = 1000.0;
-            constexpr double peakSize = 7500.0;
-            const double size = static_cast<double>(batchSize);
-            return 9100.0 *
-                    (size / (size + saturationScale)) /
-                    (peakSize / (peakSize + saturationScale));
-        }
-        const double distance = std::abs(
-                static_cast<double>(batchSize) - 7500.0);
-        return 9100.0 - distance * (950.0 / 5300.0);
-    };
-
-    const auto calibrate = [&observe](
-                                   const auto &throughputForSize,
-                                   std::uint32_t capacity) {
-        forevertas::CudaBatchCalibrator calibrator;
-        for (int measurement = 0;
-             measurement < 128 && !calibrator.Complete();
-             ++measurement) {
-            const std::uint32_t batchSize =
-                    calibrator.CurrentBatchSize();
-            if (batchSize > capacity) {
+    // Runs the search loop's calibration; the batches' total time and the pick's throughput.
+    const auto calibrate = [](const Device &device, Calibrator::Settings settings, double *spent) {
+        settings.latencySeconds = device.Seconds(1u);
+        Calibrator calibrator(settings);
+        *spent = 0.0;
+        for (int batch = 0; batch < 256 && !calibrator.Complete(); ++batch) {
+            const std::uint32_t n = calibrator.CurrentBatchSize();
+            if (n > device.capacity) {
                 calibrator.CapacityUnavailable();
-            } else {
-                observe(
-                        &calibrator,
-                        throughputForSize(batchSize));
+                continue;
             }
+            const double seconds = device.Seconds(n);
+            *spent += seconds;
+            calibrator.Observe(n, std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                                          std::chrono::duration<double>(seconds)));
         }
         return calibrator;
     };
-
-    auto calibrator = calibrate(
-            realisticThroughput,
-            102400u);
-    const std::uint32_t calibratedSize =
-            calibrator.BestBatchSize();
-    bool okay = Check(
-            calibrator.Complete(),
-            "CUDA calibration did not converge");
-    okay &= Check(
-            calibratedSize >= 7000u &&
-                    calibratedSize <= 8000u,
-            "CUDA calibration missed the measured peak");
-    okay &= Check(
-            realisticThroughput(calibratedSize) >
-                    realisticThroughput(12800u),
-            "CUDA calibration retained the slower coarse batch");
-    okay &= Check(
-            calibrator.CurrentBatchSize() == calibratedSize,
-            "CUDA calibration did not restore its measured winner");
-
-    forevertas::CudaBatchCalibrator capacityLimited;
-    for (std::uint32_t batchSize = 1u;
-         batchSize <= 4096u;
-         batchSize *= 2u) {
-        observe(
-                &capacityLimited,
-                static_cast<double>(batchSize));
-    }
-    okay &= Check(
-            capacityLimited.CurrentBatchSize() == 8192u,
-            "CUDA calibration did not grow from the universal minimum");
-    capacityLimited.CapacityUnavailable();
-    okay &= Check(
-            capacityLimited.CurrentBatchSize() > 4096u &&
-                    capacityLimited.CurrentBatchSize() < 8192u,
-            "CUDA calibration discarded the allocation boundary");
-    for (int measurement = 0;
-         measurement < 64 && !capacityLimited.Complete();
-         ++measurement) {
-        observe(
-                &capacityLimited,
-                static_cast<double>(
-                        capacityLimited.CurrentBatchSize()));
-    }
-    okay &= Check(
-            capacityLimited.Complete() &&
-                    capacityLimited.BestBatchSize() > 4096u &&
-                    capacityLimited.BestBatchSize() < 8192u,
-            "CUDA calibration did not approach its measured capacity");
-
-    const auto slowlyIncreasing = [](std::uint32_t batchSize) {
-        return 1000.0 + std::log2(
-                                static_cast<double>(batchSize));
-    };
-    const auto boundaryMaximizer =
-            calibrate(slowlyIncreasing, 128u);
-    okay &= Check(
-            boundaryMaximizer.Complete() &&
-                    boundaryMaximizer.BestBatchSize() > 120u,
-            "CUDA calibration stopped on a throughput plateau instead "
-            "of maximizing the measured safe range");
-
-    forevertas::CudaBatchCalibrator isolatedFastPass;
-    const auto observeSamples = [](
-                                        forevertas::CudaBatchCalibrator
-                                                *candidate,
-                                        const std::vector<double>
-                                                &throughputs) {
-        const std::uint32_t size =
-                candidate->CurrentBatchSize();
-        for (double throughput : throughputs) {
-            const auto elapsed =
-                    std::chrono::duration_cast<
-                            std::chrono::steady_clock::duration>(
-                            std::chrono::duration<double>(
-                                    static_cast<double>(size) /
-                                    throughput));
-            candidate->Observe(size, elapsed);
+    // The best power of two the device holds (what tuning by hand finds).
+    const auto handTuned = [](const Device &device) {
+        double best = 0.0;
+        for (std::uint32_t n = 1u; n <= device.capacity; n *= 2u) {
+            best = std::max(best, n / device.Seconds(n));
         }
+        return best;
     };
-    observeSamples(
-            &isolatedFastPass,
-            {100.0, 100.0,
-             100.0, 100.0, 100.0, 100.0, 100.0});
-    observeSamples(
-            &isolatedFastPass,
-            {100.0, 100.0,
-             100.0, 100.0, 100.0, 100.0, 1000.0});
-    okay &= Check(
-            isolatedFastPass.BestBatchSize() == 1u,
-            "CUDA calibration selected an isolated fast pass");
+    bool okay = true;
+    const Device devices[] = {
+            {0.038, 105000.0, 65536u},   // short timeline (RTX 5060: 150 ticks)
+            {1.7, 6000.0, 65536u},       // long timeline (1700 ticks)
+            {0.3, 40000.0, 16384u},      // memory-bound
+            {0.01, 2000000.0, 1u << 22}, // tiny timeline, big device
+    };
+    for (const Device &device : devices) {
+        Calibrator::Settings settings;
+        settings.startBatchSize = 8192u;
+        double spent = 0.0;
+        const Calibrator calibrator = calibrate(device, settings, &spent);
+        const std::uint32_t picked = calibrator.CurrentBatchSize();
+        okay &= Check(calibrator.Complete(), "GPU calibration did not complete");
+        okay &= Check(picked <= device.capacity, "GPU calibration picked a batch the device cannot hold");
+        okay &= Check(picked / device.Seconds(picked) >= 0.9 * handTuned(device),
+                      "GPU calibration picked a batch under 90% of the best by hand");
+        okay &= Check(spent <= settings.budgetSeconds + device.Seconds(picked),
+                      "GPU calibration overran its time budget");
+    }
 
-    forevertas::CudaBatchCalibrator budgetLimited;
-    okay &= Check(
-            !budgetLimited.CompleteWithBestMeasurement(),
-            "CUDA calibration completed without a reliable measurement");
-    observe(&budgetLimited, 100.0);
-    observe(&budgetLimited, 200.0);
-    okay &= Check(
-            budgetLimited.CompleteWithBestMeasurement() &&
-                    budgetLimited.Complete() &&
-                    budgetLimited.BestBatchSize() == 2u &&
-                    budgetLimited.CurrentBatchSize() == 2u,
-            "CUDA calibration did not select its best measured batch "
-            "when the candidate budget was reached");
+    // Noise: one fast pass among short batches does not decide.
+    Calibrator noisy(Calibrator::Settings{1024u, 0.05, 10.0, 10.0});
+    const auto observeRate = [](Calibrator *c, double rate) {
+        const std::uint32_t n = c->CurrentBatchSize();
+        c->Observe(n, std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                              std::chrono::duration<double>(n / rate)));
+    };
+    for (double rate : {20000.0, 20000.0, 200000.0}) observeRate(&noisy, rate);   // 1024: median 20000
+    for (double rate : {21000.0, 21000.0, 21000.0}) observeRate(&noisy, rate);    // 2048: +5%
+    for (double rate : {21100.0, 21100.0, 21100.0}) observeRate(&noisy, rate);    // 4096: +0.5%: done
+    okay &= Check(noisy.Complete() && noisy.BestBatchSize() == 4096u,
+                  "GPU calibration followed an isolated fast pass");
 
-    forevertas::CudaBatchCalibrator unstable;
-    observeSamples(
-            &unstable,
-            {100.0, 100.0,
-             100.0, 1000.0, 100.0, 1000.0, 100.0,
-             1000.0, 100.0, 1000.0, 100.0});
-    okay &= Check(
-            unstable.Complete() &&
-                    !unstable.HasReliableMeasurement(),
-            "CUDA calibration accepted irrepeatable throughput");
+    // A disturbed short batch is measured again.
+    Calibrator disturbed(Calibrator::Settings{1024u, 0.05, 10.0, 10.0});
+    disturbed.Observe(1024u, std::chrono::milliseconds(500), Calibrator::Disturbance::Possible);
+    okay &= Check(!disturbed.HasReliableMeasurement(), "GPU calibration measured a disturbed batch");
+
+    // The candidate budget ends calibration with the best measurement, never without one.
+    Calibrator budget(Calibrator::Settings{1024u, 0.05, 10.0, 10.0});
+    okay &= Check(!budget.CompleteWithBestMeasurement(), "GPU calibration completed without a measurement");
+    for (int i = 0; i < 3; ++i) observeRate(&budget, 10000.0);
+    okay &= Check(budget.CompleteWithBestMeasurement() && budget.CurrentBatchSize() == 1024u,
+                  "GPU calibration did not keep its best measured batch");
+
+    // Nothing the device holds: halved until it does.
+    Calibrator small(Calibrator::Settings{4096u, 0.05, 10.0, 10.0});
+    small.CapacityUnavailable();
+    okay &= Check(!small.Complete() && small.CurrentBatchSize() == 2048u,
+                  "GPU calibration did not halve an unavailable first batch");
     return okay;
 }
 
@@ -3157,11 +3221,42 @@ bool TestEvaluationSessionClones() {
     return okay;
 }
 
+// Every setting has the window's name, so a refused one can be named.
+bool TestSettingLabels() {
+    using namespace forevertas;
+    bool okay = true;
+    const auto check = [&okay](const std::string &id, const OptionSettings &defaults) {
+        for (const auto &[key, value] : defaults) {
+            static_cast<void>(value);
+            if (SettingLabel(id, key).empty()) {
+                std::cerr << id << ": setting " << key << " has no label (src/searches/setting_labels.cpp)\n";
+                okay = false;
+            }
+        }
+    };
+    for (const auto &registration : SearchAlgorithmRegistry()) check(registration.id, registration.defaultSettings);
+    for (const auto &registration : ModifierRegistry()) check(registration.id, registration.defaultSettings);
+    for (const auto &registration : EvaluationTargetRegistry()) check(registration.id, registration.defaultSettings);
+    // a count that is not whole, named with its value
+    OptionSettings settings = DefaultInputInsertionSettings();
+    settings["steerMinCount"] = "3.5";
+    const auto problem = ValidateInputInsertionSettings(settings, 10u);
+    const std::string explained = problem ? ExplainSettingsProblem(
+            kInputInsertionModifierId, settings, DefaultInputInsertionSettings(), *problem,
+            [](const OptionSettings &candidate) { return ValidateInputInsertionSettings(candidate, 10u); }) : "";
+    if (explained != "\"Minimum steering insertions\" can't be \"3.5\": it takes a whole number, 0 or more") {
+        std::cerr << "a refused count was explained as: " << explained << '\n';
+        okay = false;
+    }
+    return okay;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && std::string(argv[1]) == "--gpu-targets-only") {
         return TestEvaluationTargets() && TestCudaConfigurationCoverage() ? 0 : 1;
     }
-    const bool okay = TestInputOnlyTimelineTimeOrigin() &&
+    const bool okay = TestSettingLabels() &&
+            TestInputOnlyTimelineTimeOrigin() &&
             TestHumanDurationFormatting() &&
             TestDenseNormalization() &&
             TestRedundantSteeringInsertion() &&

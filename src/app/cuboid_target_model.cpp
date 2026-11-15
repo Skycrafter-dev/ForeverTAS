@@ -1,9 +1,9 @@
 #include "app/cuboid_target_model.h"
+#include "app/app_settings.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
-#include <QSettings>
 #include <QUuid>
 
 #include <algorithm>
@@ -439,7 +439,7 @@ QString CuboidTargetModel::nextDefaultName() const {
 }
 
 void CuboidTargetModel::load(const QVariantMap &legacySettings) {
-    const QByteArray encoded = QSettings()
+    const QByteArray encoded = AppSettings::Instance()
             .value(QLatin1String(kCuboidTargetsKey))
             .toByteArray();
     const QJsonDocument document = QJsonDocument::fromJson(encoded);
@@ -566,7 +566,7 @@ void CuboidTargetModel::persist() {
             selectedIndex_ >= 0 && selectedIndex_ < count()
             ? targets_[static_cast<std::size_t>(selectedIndex_)].id
             : QString{};
-    QSettings().setValue(
+    AppSettings::Instance().setValue(
             QLatin1String(kCuboidTargetsKey),
             QJsonDocument(QJsonObject{
                     {QStringLiteral("version"), kPersistenceVersion},

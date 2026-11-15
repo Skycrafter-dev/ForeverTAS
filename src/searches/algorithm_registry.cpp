@@ -3,8 +3,10 @@
 #include "input_timeline_time.h"
 #include "evaluators/precise_finish_time_evaluator.h"
 #include "evaluators/checkpoint_time_evaluator.h"
+#include "evaluators/distance_target_evaluator.h"
 #include "evaluators/time_evaluator.h"
 #include "evaluators/custom_volume_entry_evaluator.h"
+#include "evaluators/gate_entry_evaluator.h"
 #include "evaluators/point_target_evaluator.h"
 #include "evaluators/pose_target_evaluator.h"
 #include "evaluators/scripted_target_evaluator.h"
@@ -52,7 +54,7 @@ std::optional<std::string> ValidateConfiguredSettings(
         SettingsEffect effect,
         SettingsValidator validateSimulationSettings) {
     if (tickDurationMs == 0u) {
-        return "tick duration must be greater than zero";
+        return "the tick length is 0";
     }
     const std::optional<OptionSettings> simulationSettings =
             PrepareConfiguredSettings(userSettings, tickDurationMs, effect);
@@ -291,6 +293,14 @@ const std::vector<EvaluationTargetRegistration> &EvaluationTargetRegistry() {
              {},
              &ValidateCustomVolumeEntryOptionSettings,
              &CreateCustomVolumeEntryEvaluator},
+            {kGateEntryEvaluationId,
+             {},
+             "Gate entry time",
+             "GateEntryEvaluationSettings.qml",
+             DefaultGateEntryOptionSettings(),
+             {},
+             &ValidateGateEntryOptionSettings,
+             &CreateGateEntryEvaluator},
             {kPointTargetEvaluationId,
              {},
              "Point target",
@@ -315,6 +325,14 @@ const std::vector<EvaluationTargetRegistration> &EvaluationTargetRegistry() {
              {},
              &ValidateScriptedTargetOptionSettings,
              &CreateScriptedTargetEvaluator},
+            {kDistanceTargetEvaluationId,
+             {},
+             "Distance to checkpoint/finish",
+             "DistanceTargetEvaluationSettings.qml",
+             DefaultDistanceTargetOptionSettings(),
+             {},
+             &ValidateDistanceTargetOptionSettings,
+             &CreateDistanceTargetEvaluator},
             {kCheckpointTimeEvaluationId,
              {},
              "Checkpoint time",
