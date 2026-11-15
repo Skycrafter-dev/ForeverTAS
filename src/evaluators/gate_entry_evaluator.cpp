@@ -105,7 +105,7 @@ std::optional<GateConfig> ParseConfig(const OptionSettings &settings,
     GateConfig config;
     const auto gates = settings.find("gates");
     if (gates == settings.end()) {
-        if (error) *error = "gate target needs a 'gates' setting";
+        if (error) *error = "there is no gate list";
         return std::nullopt;
     }
     auto parsed = ParseGateList(gates->second, error);
@@ -114,7 +114,7 @@ std::optional<GateConfig> ParseConfig(const OptionSettings &settings,
     if (const auto soft = settings.find("soft"); soft != settings.end()) {
         const auto value = ParseBool(soft->second);
         if (!value) {
-            if (error) *error = "gate target 'soft' must be true or false";
+            if (error) *error = kUnreadableSetting;
             return std::nullopt;
         }
         config.soft = *value;
@@ -301,11 +301,11 @@ std::optional<std::vector<GateSpec>> ParseGateList(const std::string &text,
             }
             const std::size_t equals = field.find('=');
             if (equals == std::string::npos) {
-                return fail("gate field '" + field + "' is not key=value");
+                return fail("\"" + field + "\" is not name=value");
             }
             const std::string key = field.substr(0u, equals);
             const auto value = ParseGateNumber(field.substr(equals + 1u));
-            if (!value) return fail("gate field '" + field + "' has an invalid number");
+            if (!value) return fail("\"" + field + "\" needs a number after =");
             if (key == "x") { gate.x = *value; hasX = true; }
             else if (key == "y") { gate.y = *value; hasY = true; }
             else if (key == "z") { gate.z = *value; hasZ = true; }
@@ -320,7 +320,7 @@ std::optional<std::vector<GateSpec>> ParseGateList(const std::string &text,
             else if (key == "yawmin") yawMin = *value;
             else if (key == "yawmax") yawMax = *value;
             else if (key == "wheels") gate.minimumWheels = static_cast<int>(std::lround(*value));
-            else return fail("unknown gate field '" + key + "'");
+            else return fail("\"" + key + "\" is not a gate field");
             if (comma == chunk.size()) break;
         }
         if (!hasX || !hasY || !hasZ || !hasDir) {
@@ -331,12 +331,12 @@ std::optional<std::vector<GateSpec>> ParseGateList(const std::string &text,
         }
         gate.yawMinDeg = yawMin;
         gate.yawMaxDeg = yawMax;
-        if (!(gate.lateralMin < gate.lateralMax)) return fail("gate needs lmin < lmax");
-        if (!(gate.heightMin < gate.heightMax)) return fail("gate needs ymin < ymax");
-        if (gate.speedMinKmh > gate.speedMaxKmh) return fail("gate needs vmin <= vmax");
-        if (gate.minimumWheels < 0 || gate.minimumWheels > 4) return fail("gate wheels must be 0..4");
+        if (!(gate.lateralMin < gate.lateralMax)) return fail("lmin must be below lmax");
+        if (!(gate.heightMin < gate.heightMax)) return fail("ymin must be below ymax");
+        if (gate.speedMinKmh > gate.speedMaxKmh) return fail("vmin can't be above vmax");
+        if (gate.minimumWheels < 0 || gate.minimumWheels > 4) return fail("wheels must be 0 to 4");
         gates.push_back(gate);
-        if (gates.size() > kMaximumGates) return fail("at most 32 gates");
+        if (gates.size() > kMaximumGates) return fail("32 gates at most");
         if (end == text.size()) break;
     }
     if (gates.empty()) return fail("no gates given");

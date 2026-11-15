@@ -194,7 +194,7 @@ inline std::optional<std::string> ValidateModifierWindow(
     return ValidateTimeWindow(window.minimumTimeMs,
                               window.maximumTimeMs,
                               tickDurationMs,
-                              "mutation");
+                              "the minimum time");
 }
 
 inline bool IsAccelerateAction(SandboxInputAction action) {

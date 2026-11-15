@@ -16,6 +16,12 @@ QtObject {
     // action id -> [{ key, modifiers } or { pad }] (pad: an SDL gamepad button)
     property var bindings: ({})
     property int revision: 0
+    // The last place gone to by typing it ("Go to again" goes there again:
+    // "+5" then makes a five-second skip).
+    property string lastGoTo: String(controller.uiSetting("goToLast", ""))
+
+    // "Go to..." was pressed: the window asks where.
+    signal goToRequested()
 
     readonly property var fixedActions: [
         { id: "accelerate", label: qsTr("Accelerate") },
@@ -29,7 +35,11 @@ QtObject {
         { id: "stepBack", label: qsTr("One tick back") },
         { id: "stepForward", label: qsTr("One tick forward") },
         { id: "slower", label: qsTr("Slower") },
-        { id: "faster", label: qsTr("Faster") }
+        { id: "faster", label: qsTr("Faster") },
+        { id: "goTo", label: qsTr("Go to... (type a time, +2, cp 3, finish...)") },
+        { id: "goToAgain", label: qsTr("Go to again (the last place typed)") },
+        { id: "nextCheckpoint", label: qsTr("Next checkpoint") },
+        { id: "previousCheckpoint", label: qsTr("Previous checkpoint") }
     ]
     // Every action, savestates included, in the order shown.
     readonly property var actions: {
@@ -73,7 +83,11 @@ QtObject {
             stepBack: [key(Qt.Key_D)],
             stepForward: [key(Qt.Key_F)],
             slower: [key(azerty ? Qt.Key_A : Qt.Key_Q)],
-            faster: [key(Qt.Key_E)]
+            faster: [key(Qt.Key_E)],
+            goTo: [{ key: Qt.Key_G, modifiers: Qt.ControlModifier }],
+            goToAgain: [],
+            nextCheckpoint: [key(Qt.Key_PageDown)],
+            previousCheckpoint: [key(Qt.Key_PageUp)]
         }
         const pads = defaultPadBindings()
         for (const id in pads)
@@ -96,8 +110,12 @@ QtObject {
             saved = {}
         }
         const merged = {}
+        // Actions newer than the saved keys get their defaults, on keys nothing uses.
+        const savedUses = b => Object.values(saved).some(list => Array.isArray(list)
+                                                         && list.some(o => sameBinding(o, b)))
         for (const id in defaults)
-            merged[id] = Array.isArray(saved[id]) ? saved[id] : defaults[id]
+            merged[id] = Array.isArray(saved[id]) ? saved[id]
+                       : stored ? defaults[id].filter(b => !savedUses(b)) : defaults[id]
         // Keys saved before the gamepad had actions: its defaults join them, on the buttons nothing uses.
         const padsAdded = !stored || Boolean(controller.uiSetting("racePadDefaults", false))
         if (!padsAdded) {
@@ -307,12 +325,39 @@ QtObject {
             if (once)
                 viewer.faster()
             break
+        case "goTo":
+            if (once)
+                goToRequested()
+            break
+        case "goToAgain":
+            if (pressed && lastGoTo.length)
+                viewer.goTo(lastGoTo)
+            break
+        case "nextCheckpoint":
+            if (pressed)
+                viewer.goTo("next")
+            break
+        case "previousCheckpoint":
+            if (pressed)
+                viewer.goTo("prev")
+            break
         default:
             if (once && action.startsWith("load"))
                 viewer.loadState(Number(action.substring(4)) - 1)
             else if (once && action.startsWith("save"))
                 viewer.saveState(Number(action.substring(4)) - 1)
         }
+    }
+
+    // Goes where the text says; "" when it went, else why not. Kept for "Go
+    // to again".
+    function goTo(text) {
+        const error = viewer.goTo(text)
+        if (!error.length) {
+            lastGoTo = text.trim()
+            controller.setUiSetting("goToLast", lastGoTo)
+        }
+        return error
     }
 
     Component.onCompleted: load()

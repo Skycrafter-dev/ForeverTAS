@@ -463,8 +463,14 @@ bool TestDisabledModifierPasses() {
     configuration.setEvaluationTargetSetting("maxTimeMs", "20");
     configuration.addModifierPass("smooth-steering");
     configuration.setModifierPassSetting(1, "minTimeMs", "not a time");
-    bool okay = Check(!configuration.validate(10, 1000).configuration,
-                      "invalid enabled pass was accepted");
+    const auto refused = configuration.validate(10, 1000);
+    bool okay = Check(!refused.configuration, "invalid enabled pass was accepted");
+    // the setting at fault named as the window shows it, with its value
+    if (refused.error != QStringLiteral("Pass 2 (Smooth steering deformation): \"Minimum time\" can't be "
+                                        "\"not a time\": it takes a whole number, 0 or more."))
+        std::cerr << "refused as: " << refused.error.toStdString() << '\n';
+    okay &= Check(refused.error.startsWith(QStringLiteral("Pass 2 (Smooth steering deformation): \"Minimum time\"")),
+                  "the refused pass setting was not named");
     configuration.setModifierPassEnabled(1, false);
     const QVariant disabled = configuration.modifierPasses().at(1);
     const auto active = configuration.validate(10, 1000);
@@ -479,7 +485,7 @@ bool TestDisabledModifierPasses() {
                           .value("enabled").toBool(),
                   "reorder or type change enabled a disabled pass");
     configuration.setModifierPassEnabled(1, false);
-    okay &= Check(configuration.validate(10, 1000).error.contains("Enable at least one"),
+    okay &= Check(configuration.validate(10, 1000).error.contains("Turn on at least one"),
                   "all-disabled composition lacked an actionable error");
     forevertas::app::SearchConfigurationModel restored;
     okay &= Check(restored.modifierPasses() == configuration.modifierPasses(),
@@ -1342,7 +1348,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     controller.setSimulationHorizonMs(QStringLiteral("5000"));
     okay &= Check(!controller.canStart() &&
                           controller.validationMessage().contains(
-                                  QStringLiteral("Evaluation maximum time")),
+                                  QStringLiteral("past the simulation horizon")),
                   "evaluation window beyond the Simulation horizon was accepted");
     controller.setSimulationHorizonMs(QStringLiteral("6010"));
     okay &= Check(controller.canStart(),
@@ -1437,7 +1443,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
             "auto-promote search mode was unexpectedly enabled by default");
     okay &= Check(controller.modifierOptions().size() == 5,
                   "required modifier options were not exposed");
-    okay &= Check(controller.evaluationTargetOptions().size() == 11 &&
+    okay &= Check(controller.evaluationTargetOptions().size() == 12 &&
                           HasOption(controller.evaluationTargetOptions(),
                                     QStringLiteral("time"),
                                     QStringLiteral("TimeEvaluationSettings.qml")),
@@ -1666,7 +1672,7 @@ bool TestRegistryAndValidation(const QString &packsDirectory,
     okay &= Check(
             !controller.canStart() &&
                     controller.validationMessage().contains(
-                            QStringLiteral("first modifier time")),
+                            QStringLiteral("before any pass changes an input")),
             "stunt target accepted a deadline before any mutation");
     controller.setEvaluationTargetSetting(
             QStringLiteral("targetTimeMs"), QStringLiteral("4320"));

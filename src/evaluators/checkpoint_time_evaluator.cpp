@@ -88,17 +88,17 @@ OptionSettings DefaultCheckpointTimeOptionSettings() {
 std::optional<std::string> ValidateCheckpointTimeOptionSettings(
         const OptionSettings &settings, std::uint32_t tickDurationMs) {
     if (const auto error = ValidateOptionSettingKeys(settings, DefaultCheckpointTimeOptionSettings())) return error;
-    if (tickDurationMs == 0) return "checkpoint time requires a positive tick duration";
+    if (tickDurationMs == 0) return "the tick length is 0";
     if (settings.at("eventType") != "checkpoint" && settings.at("eventType") != "finish")
-        return "select a checkpoint or finish event";
+        return "choose a checkpoint or the finish";
     const auto checkpoint = ParseUnsignedDecimal32(settings.at("checkpointIndex"));
     const auto lap = ParseUnsignedDecimal32(settings.at("lap"));
     if (!checkpoint || *checkpoint == 0 || !lap || *lap == 0)
-        return "checkpoint number and lap must be positive 32-bit whole numbers";
+        return "the checkpoint number and the lap start at 1";
     if (settings.at("checkpointSlot") != "-1" && !ParseUnsignedDecimal32(settings.at("checkpointSlot")))
-        return "checkpoint slot must be -1 (any) or a non-negative 32-bit whole number";
+        return "the map slot must be -1 (any) or a whole number, 0 or more";
     if (!ParseUnsignedDecimal64(settings.at("eventIndex")))
-        return "accepted event index must be a non-negative 64-bit whole number (0 selects any)";
+        return "the event index must be 0 (any) or a whole number above it";
     return std::nullopt;
 }
 

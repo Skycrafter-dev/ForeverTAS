@@ -109,7 +109,7 @@ std::optional<VelocitySettings> ParseSettings(
         !alignmentEnabled || !point ||
         (mode != "total" && mode != "projected") ||
         (directionMode != "fixed" && directionMode != "point")) {
-        if (error) *error = "velocity settings contain invalid values";
+        if (error) *error = kUnreadableSetting;
         return std::nullopt;
     }
     const bool projected = mode == "projected";
@@ -117,11 +117,11 @@ std::optional<VelocitySettings> ParseSettings(
     const EvaluationVector3 normalized = Normalize(*direction);
     if (!towardsPoint && (projected || *alignmentEnabled) &&
         Length(normalized) <= 1e-12) {
-        if (error) *error = "velocity direction must be non-zero";
+        if (error) *error = "the direction can't be zero";
         return std::nullopt;
     }
     if (*alignment < -100.0 || *alignment > 100.0) {
-        if (error) *error = "minimum alignment must be between -100 and 100";
+        if (error) *error = "the minimum alignment must be between -100 and 100";
         return std::nullopt;
     }
     return VelocitySettings{*minimum,
@@ -164,7 +164,7 @@ std::optional<std::string> ValidateVelocityOptionSettings(
     return ValidateTimeWindow(parsed->minimumTimeMs,
                               parsed->maximumTimeMs,
                               tickDurationMs,
-                              "evaluation",
+                              "the minimum time",
                               true);
 }
 

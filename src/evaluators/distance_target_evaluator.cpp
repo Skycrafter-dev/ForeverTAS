@@ -609,12 +609,12 @@ std::optional<std::string> ValidateDistanceTargetOptionSettings(
     }
     const auto parsed = ParseSettings(settings);
     if (!parsed) {
-        return "distance target settings contain invalid values";
+        return kUnreadableSetting;
     }
     return ValidateTimeWindow(parsed->minimumTimeMs,
                               parsed->maximumTimeMs,
                               tickDurationMs,
-                              "evaluation",
+                              "the minimum time",
                               true);
 }
 

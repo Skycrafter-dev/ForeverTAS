@@ -647,9 +647,20 @@ bool MeasureThroughput(const char *packs, const char *replay, bool approximate, 
             promote == nullptr || std::string(promote) != "0" ? "true" : "false";
     request.modifiers = {DefaultModifier(forevertas::kInputDeletionModifierId),
                          DefaultModifier(forevertas::kSmoothSteeringModifierId)};
+    // FTAS_MODIFIERS=id,id,...: those passes (their defaults); FTAS_EVAL_MS: the velocity's moment (the passes' window
+    // ends a tick before it); FTAS_WINDOW_FROM_MS: the window's start
+    if (const char *ids = std::getenv("FTAS_MODIFIERS")) {
+        request.modifiers.clear();
+        std::stringstream list(ids);
+        for (std::string id; std::getline(list, id, ',');) request.modifiers.push_back(DefaultModifier(id));
+    }
+    const long evaluationMs = std::getenv("FTAS_EVAL_MS") ? std::atol(std::getenv("FTAS_EVAL_MS")) : 1000;
+    const long windowFromMs = std::getenv("FTAS_WINDOW_FROM_MS") ? std::atol(std::getenv("FTAS_WINDOW_FROM_MS")) : 10;
+    velocity.settings["minTimeMs"] = velocity.settings["maxTimeMs"] = std::to_string(evaluationMs);
+    request.simulationHorizonMs = static_cast<std::uint32_t>(std::max(5000L, evaluationMs + 1000L));
     for (OptionConfiguration &modifier : request.modifiers) {
-        modifier.settings["minTimeMs"] = "10";
-        modifier.settings["maxTimeMs"] = "990";
+        modifier.settings["minTimeMs"] = std::to_string(windowFromMs);
+        modifier.settings["maxTimeMs"] = std::to_string(evaluationMs - 10);
     }
     request.evaluationTarget = velocity;
     forevertas::SearchRunControl control;

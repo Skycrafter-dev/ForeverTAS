@@ -54,7 +54,7 @@ std::optional<ScriptedSettings> ParseSettings(
         tickDurationMs == 0u ||
         *minimum % tickDurationMs != 0 ||
         *maximum % tickDurationMs != 0) {
-        *error = "custom target times must be non-negative, ordered, and aligned to whole ticks";
+        *error = "times can't be below 0, the maximum can't be before the minimum, and they go in steps of 10 ms";
         return std::nullopt;
     }
     ScriptedSettings parsed{*minimum, *maximum, {}};
@@ -83,27 +83,27 @@ std::optional<ScriptedSettings> ParseSettings(
             const std::string targetText(source.substr(0, valueEnd));
             const auto target = ParseFiniteDouble(targetText);
             if (!target || valueEnd == std::string_view::npos) {
-                *error = "Custom target line " +
+                *error = "line " +
                         std::to_string(lineNumber) +
-                        ": expected target VALUE EXPRESSION";
+                        ": write it as target VALUE EXPRESSION";
                 return std::nullopt;
             }
             objective.target = *target;
             source = Trim(source.substr(valueEnd));
         } else {
-            *error = "Custom target line " + std::to_string(lineNumber) +
-                    ": expected min, max, or target";
+            *error = "line " + std::to_string(lineNumber) +
+                    ": it must start with min, max or target";
             return std::nullopt;
         }
         if (source.empty()) {
-            *error = "Custom target line " + std::to_string(lineNumber) +
-                    ": missing expression";
+            *error = "line " + std::to_string(lineNumber) +
+                    ": there is nothing after it";
             return std::nullopt;
         }
         objective.expression = std::string(source);
         auto compiled = CompileScalarExpression(objective.expression);
         if (!compiled.program) {
-            *error = "Custom target line " + std::to_string(lineNumber) +
+            *error = "line " + std::to_string(lineNumber) +
                     ": " + compiled.error.value_or("invalid expression");
             return std::nullopt;
         }
@@ -116,9 +116,9 @@ std::optional<ScriptedSettings> ParseSettings(
                  instruction.value == PhysicsSandboxCudaConditionValue::LastImprovementTime ||
                  instruction.value == PhysicsSandboxCudaConditionValue::LastRestartTime ||
                  instruction.value == PhysicsSandboxCudaConditionValue::CurrentTime)) {
-                *error = "Custom target line " +
+                *error = "line " +
                         std::to_string(lineNumber) +
-                        ": search-time variables are not car-state metrics";
+                        ": search values (like the best so far) can't be targets, only the car's state";
                 return std::nullopt;
             }
         }
@@ -126,7 +126,7 @@ std::optional<ScriptedSettings> ParseSettings(
         parsed.objectives.push_back(std::move(objective));
     }
     if (parsed.objectives.empty()) {
-        *error = "Custom target needs at least one min, max, or target directive";
+        *error = "write at least one min, max or target line";
         return std::nullopt;
     }
     return parsed;

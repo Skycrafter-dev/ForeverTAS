@@ -297,6 +297,10 @@ public:
     QQuick3DGeometry *trackWireGeometry();
     QQuick3DGeometry *ellipsoidFilledGeometry();
     QQuick3DGeometry *selectedEllipsoidFilledGeometry();
+    // For the vanishing-car reports: whether the selected car's geometry is
+    // in the scene (Qt counts the models using it; at 0 it leaves the scene
+    // and no car using it is drawn), with its count.
+    Q_INVOKABLE QString carGeometryState();
     QVariantList ellipsoidFilledGeometries() const;
     QQuick3DGeometry *ellipsoidWireGeometry();
     WhiteboardModel *whiteboard();
@@ -478,6 +482,9 @@ public slots:
     Q_INVOKABLE void play();
     Q_INVOKABLE void pause();
     Q_INVOKABLE void togglePlayback();
+    // Goes to a place typed as it comes to mind (viewer/go_to.h: 30, 1:02.35,
+    // +2, cp 3, next, finish, 50%...); "" when it went, else why not.
+    Q_INVOKABLE QString goTo(const QString &text);
     Q_INVOKABLE void jumpToStart();
     Q_INVOKABLE void jumpToEnd();
     Q_INVOKABLE void startManualDrive();
@@ -502,6 +509,9 @@ public slots:
     void clearSearchResults();
     Q_INVOKABLE void refreshInputPreview();
     Q_INVOKABLE void focusInputPreview();
+    // The base inputs' run shown at the same time (a drive ended, its attempt
+    // kept), whatever run was watched: after an edit of the base inputs.
+    void showInputPreview();
     Q_INVOKABLE void loadMap(const QString &packsDirectory,
                             const QString &replayPath);
     Q_INVOKABLE void loadMap(const QString &packsDirectory,

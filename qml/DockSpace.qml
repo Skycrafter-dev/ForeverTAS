@@ -79,7 +79,7 @@ Item {
     function panels() {
         const out = []
         for (let i = 0; i < children.length; ++i)
-            if (children[i].isDockPanel === true)
+            if (children[i] && children[i].isDockPanel === true)
                 out.push(children[i])
         return out
     }

@@ -223,12 +223,12 @@ std::optional<std::string> ValidatePoseTargetOptionSettings(
     }
     const auto parsed = ParseSettings(settings);
     if (!parsed) {
-        return "pose settings must be finite and weights must be between 0 and 100";
+        return "positions and angles must be numbers, and weights between 0 and 100";
     }
     return ValidateTimeWindow(parsed->minimumTimeMs,
                               parsed->maximumTimeMs,
                               tickDurationMs,
-                              "evaluation",
+                              "the minimum time",
                               true);
 }
 

@@ -169,19 +169,53 @@ GlassDialog {
             StyledComboBox {
                 objectName: "gamepadDeviceSelector"
                 Layout.fillWidth: true
-                model: [{id: 0, name: qsTr("None")}].concat(dialog.gamepad.devices)
+                model: {
+                    const pads = dialog.gamepad.devices
+                    const choice = dialog.gamepad.choice
+                    let items = [{ choice: "auto", name: qsTr("Automatic (the first connected)") },
+                                 { choice: "none", name: qsTr("None") }]
+                    for (const pad of pads)
+                        items.push({ choice: pad.identity, name: pad.name })
+                    if (choice !== "auto" && choice !== "none" && dialog.gamepad.selectedId === 0)
+                        items.push({ choice: choice, name: qsTr("The chosen gamepad (not connected)") })
+                    return items
+                }
                 textRole: "name"
-                valueRole: "id"
+                valueRole: "choice"
                 // Once the list is there.
                 currentIndex: {
                     count
-                    return Math.max(0, indexOfValue(dialog.gamepad.selectedId))
+                    const choice = dialog.gamepad.choice
+                    let index = indexOfValue(choice)
+                    // the chosen one, found on another port
+                    for (let i = 0; index < 0 && i < dialog.gamepad.devices.length; ++i) {
+                        if (dialog.gamepad.devices[i].id === dialog.gamepad.selectedId)
+                            index = i + 2
+                    }
+                    return Math.max(0, index)
                 }
-                onActivated: dialog.gamepad.selectedId = currentValue
+                onActivated: dialog.gamepad.choice = currentValue
             }
             Label {
                 Layout.fillWidth: true
                 text: dialog.gamepad.status
+                wrapMode: Text.Wrap
+                color: AppTheme.textMuted
+            }
+            Label {
+                objectName: "gamepadLastButton"
+                Layout.fillWidth: true
+                visible: dialog.gamepad.selectedId !== 0
+                text: dialog.gamepad.lastButton.length > 0
+                      ? qsTr("Last button pressed: %1").arg(dialog.gamepad.lastButton)
+                      : qsTr("Press a button to check it reaches ForeverTAS.")
+                color: AppTheme.text
+            }
+            Label {
+                objectName: "gamepadUnmapped"
+                Layout.fillWidth: true
+                visible: dialog.gamepad.unmapped.length > 0
+                text: qsTr("Seen, but without a gamepad layout (cannot drive): %1").arg(dialog.gamepad.unmapped.join(", "))
                 wrapMode: Text.Wrap
                 color: AppTheme.textMuted
             }

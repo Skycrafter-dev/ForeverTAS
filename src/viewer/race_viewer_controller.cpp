@@ -1,4 +1,9 @@
 #include "viewer/race_viewer_controller.h"
+#include "viewer/go_to.h"
+
+#ifdef FOREVERTAS_QUICK3D_PRIVATE
+#include <QtQuick3D/private/qquick3dobject_p.h>
+#endif
 #include "app/app_settings.h"
 #include "diagnostics/diagnostics_log.h"
 
@@ -2391,6 +2396,21 @@ QQuick3DGeometry *RaceViewerController::selectedEllipsoidFilledGeometry() {
     return ellipsoidFilledGeometryForRun(selectedRunColorIndex());
 }
 
+QString RaceViewerController::carGeometryState() {
+    QQuick3DGeometry *const geometry = selectedEllipsoidFilledGeometry();
+    if (geometry == nullptr) return QStringLiteral("no car geometry");
+    const auto found = std::find_if(ellipsoidFilledGeometries_.begin(), ellipsoidFilledGeometries_.end(),
+                                    [geometry](const auto &each) { return each.get() == geometry; });
+    const QString name = QStringLiteral("geometry %1").arg(found - ellipsoidFilledGeometries_.begin());
+#ifdef FOREVERTAS_QUICK3D_PRIVATE
+    const auto *d = QQuick3DObjectPrivate::get(geometry);
+    return d->sceneManager ? QStringLiteral("%1 in the scene (%2 references)").arg(name).arg(d->sceneRefCount)
+                           : QStringLiteral("%1 NOT IN THE SCENE (%2 references)").arg(name).arg(d->sceneRefCount);
+#else
+    return name + QStringLiteral(" (scene state unknown)");
+#endif
+}
+
 QVariantList RaceViewerController::ellipsoidFilledGeometries() const {
     QVariantList geometries;
     geometries.reserve(
@@ -3971,6 +3991,35 @@ void RaceViewerController::focusInputPreview() {
     selectNextInputPreview_ = true;
     setSelectedRunId(QStringLiteral("preview"));
     jumpToStart();
+}
+
+QString RaceViewerController::goTo(const QString &text) {
+    GoToContext context;
+    context.currentMs = timeMs_;
+    context.durationMs = durationMs_;
+    context.tickMs = kViewerTickDurationMs;
+    if (const RaceViewerRun *const run = selectedRun()) {
+        for (const RaceViewerSplit &split : run->checkpointSplits)
+            context.marks.push_back({split.timeMs, static_cast<int>(split.index), split.isFinish});
+    }
+    const GoToResult result = ResolveGoTo(text, context);
+    if (!result.timeMs) return result.error;
+    // the race being driven stands still to be looked at earlier
+    if (manualDriving_ && playing_) pause();
+    setTimeMs(*result.timeMs);
+    return {};
+}
+
+void RaceViewerController::showInputPreview() {
+    if (selectedRunId_ == QStringLiteral("preview") && !manualDriving_) return;
+    if (manualDriving_) stopManualDrive();
+    if (findRun(QStringLiteral("preview")) != nullptr) {
+        const qint64 tick = currentTick();
+        setSelectedRunId(QStringLiteral("preview"));
+        setCurrentTick(tick);
+    } else {
+        selectNextInputPreview_ = true;
+    }
 }
 
 void RaceViewerController::setSimulationHorizonMs(qint64 value) {

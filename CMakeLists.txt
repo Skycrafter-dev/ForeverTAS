@@ -228,7 +228,7 @@ else()
     FetchContent_Declare(
         ForeverValidator
         GIT_REPOSITORY https://github.com/Skycrafter-dev/ForeverValidator.git
-        GIT_TAG 703ce475a0091b5563478a97ee3db1b384907c6c
+        GIT_TAG 543b94e64a47d40b007c221684d7b42d8042d074
         GIT_SHALLOW FALSE)
     FetchContent_MakeAvailable(ForeverValidator)
 endif()
@@ -300,6 +300,7 @@ add_library(forevertas_core STATIC
     src/conditions/condition_catalog.cpp
     src/conditions/condition_catalog.h
     src/searches/algorithm_registry.cpp
+    src/searches/setting_labels.cpp
     src/searches/algorithm_registry.h
     src/searches/option_configuration.h
     src/searches/option_settings_utils.h
@@ -443,6 +444,7 @@ find_library(FOREVERTAS_ZSTD_LIBRARY NAMES zstd libzstd REQUIRED)
 target_include_directories(forevertas_gui PRIVATE "${FOREVERTAS_ZSTD_INCLUDE_DIR}")
 target_link_libraries(forevertas_gui PUBLIC "${FOREVERTAS_ZSTD_LIBRARY}")
 target_sources(forevertas_gui PRIVATE src/viewer/gamepad_input.cpp src/viewer/gamepad_input.h)
+target_sources(forevertas_gui PRIVATE src/viewer/go_to.cpp src/viewer/go_to.h)
 target_link_libraries(forevertas_gui PUBLIC SDL3::SDL3)
 
 file(GLOB_RECURSE FOREVERTAS_SIMULATION_DEBUG_SOURCE_FILES
@@ -591,6 +593,12 @@ if(UNIX AND NOT APPLE AND TARGET Qt6::GuiPrivate)
         message(STATUS "Wayland pointer lock off (needs wayland-client, wayland-protocols and wayland-scanner)")
     endif()
 endif()
+# the car geometries' scene references, for the vanishing-car reports
+find_package(Qt6 QUIET COMPONENTS Quick3DPrivate)
+if(TARGET Qt6::Quick3DPrivate)
+    target_link_libraries(forevertas_gui PRIVATE Qt6::Quick3DPrivate)
+    target_compile_definitions(forevertas_gui PRIVATE FOREVERTAS_QUICK3D_PRIVATE=1)
+endif()
 if(TARGET Qt6::GuiPrivate AND TARGET Qt6::ShaderTools)
     target_compile_definitions(forevertas_gui PUBLIC
         FOREVERTAS_GPU_RAY_TRACING=1)
@@ -710,6 +718,7 @@ qt_add_qml_module(forevertas_qml
         qml/SearchInputs.qml
         qml/SimulationDebuggerPanel.qml
         qml/SliderValueField.qml
+        qml/GoToField.qml
         qml/SteeringDisplay.qml
         qml/ThemedButton.qml
         qml/ThemedCheckBox.qml
@@ -1070,6 +1079,28 @@ if(BUILD_TESTING)
         target_compile_options(forevertas-gate-entry-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
     endif()
     add_test(NAME forevertas-gate-entry COMMAND forevertas-gate-entry-tests)
+
+    add_executable(forevertas-go-to-tests tests/go_to_tests.cpp)
+    target_link_libraries(forevertas-go-to-tests PRIVATE forevertas_gui)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-go-to-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    add_test(NAME forevertas-go-to COMMAND forevertas-go-to-tests)
+
+    # the vanishing car's cause (needs a display: run under xvfb-run when there is one)
+    add_executable(forevertas-geometry-return-tests tests/geometry_return_tests.cpp)
+    target_link_libraries(forevertas-geometry-return-tests PRIVATE forevertas_gui)
+    if(FOREVERTAS_WARNING_OPTIONS)
+        target_compile_options(forevertas-geometry-return-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+    endif()
+    find_program(FOREVERTAS_XVFB_RUN xvfb-run)
+    if(FOREVERTAS_XVFB_RUN)
+        add_test(NAME forevertas-geometry-return
+                 COMMAND ${FOREVERTAS_XVFB_RUN} -a $<TARGET_FILE:forevertas-geometry-return-tests>)
+        set_tests_properties(forevertas-geometry-return PROPERTIES
+            ENVIRONMENT "QT_QPA_PLATFORM=xcb;QSG_RHI_BACKEND=opengl;LIBGL_ALWAYS_SOFTWARE=1;__GLX_VENDOR_LIBRARY_NAME=mesa"
+            TIMEOUT 60)
+    endif()
 
     add_executable(forevertas-dock-layout-tests tests/dock_layout_tests.cpp)
     target_link_libraries(forevertas-dock-layout-tests PRIVATE forevertas_gui)
@@ -1690,6 +1721,12 @@ if(BUILD_TESTING)
         target_link_libraries(forevertas-video-export PRIVATE forevertas_gui Qt6::Gui Qt6::Widgets)
         # The vanishing car, hunted: forevertas-car-stress PACKS REPLAY OUT_DIR [STEPS [SEED]] (under a display)
         add_executable(forevertas-car-stress tests/car_stress.cpp)
+        # the car geometries' scene references (a Qt Quick 3D reference count)
+        find_package(Qt6 QUIET COMPONENTS Quick3DPrivate)
+        if(TARGET Qt6::Quick3DPrivate)
+            target_link_libraries(forevertas-car-stress PRIVATE Qt6::Quick3DPrivate)
+            target_compile_definitions(forevertas-car-stress PRIVATE FOREVERTAS_QUICK3D_PRIVATE=1)
+        endif()
         qt_add_resources(forevertas-car-stress "module-screen-material-stress" PREFIX "/materials"
             BASE "${CMAKE_CURRENT_SOURCE_DIR}/shaders" FILES shaders/module_screen.frag)
         qt_add_resources(forevertas-car-stress "environment-textures-stress" PREFIX "/environment"

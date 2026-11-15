@@ -411,12 +411,12 @@ std::optional<std::string> ValidateCustomVolumeEntryOptionSettings(
         return error;
     }
     if (!ParsePrism(settings)) {
-        return "custom volume requires a simple polygon, a valid plane, "
-               "finite origin, and positive extrusion depth";
+        return "the shape needs an outline whose edges don't cross, a plane, "
+               "an origin and a depth above 0";
     }
     if (const std::string &measure = settings.at("measure");
         measure != "time" && measure != "speed") {
-        return "custom volume entry measure must be time or speed";
+        return "choose time or speed to measure";
     }
     return std::nullopt;
 }

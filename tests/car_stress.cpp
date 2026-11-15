@@ -29,6 +29,9 @@
 #include <QStandardPaths>
 #include <QTimer>
 #include <QVector3D>
+#ifdef FOREVERTAS_QUICK3D_PRIVATE
+#include <QtQuick3D/private/qquick3dobject_p.h>
+#endif
 
 #include <cmath>
 #include <functional>
@@ -102,6 +105,23 @@ int main(int argc, char **argv) {
     forevertas::app::SearchController controller;
     forevertas::viewer::RaceViewerController viewer;
     forevertas::app::BindInputPreview(controller, viewer);
+    // the search's runs reach the viewer as in the app (src/app/main.cpp)
+    QObject::connect(&controller, &forevertas::app::SearchController::searchStarted,
+                     &viewer, &forevertas::viewer::RaceViewerController::beginSearchPreview);
+    QObject::connect(&controller, &forevertas::app::SearchController::runningChanged, &viewer, [&]() {
+        if (!controller.running()) viewer.endSearchPreview();
+    });
+    QObject::connect(&controller, &forevertas::app::SearchController::searchImprovement, &viewer,
+                     [&viewer](forevertas::app::SearchImprovementPtr improvement) {
+                         viewer.addSearchImprovement(improvement->packsDirectory, improvement->replayPath,
+                                                     improvement->timeline, improvement->simulationBackendId,
+                                                     improvement->searchId, improvement->improvementNumber,
+                                                     improvement->restartNumber, improvement->generatedAt);
+                     });
+    QObject::connect(&controller, &forevertas::app::SearchController::searchCompleted, &viewer,
+                     [&viewer](forevertas::app::SearchCompletionPtr completion) {
+                         viewer.completeSearchPreview(std::move(completion));
+                     });
     forevertas::viewer::RegisterRaceViewerQmlTypes();
     QQmlApplicationEngine engine;
     QObject::connect(&engine, &QQmlApplicationEngine::warnings, [](const QList<QQmlError> &warnings) {
@@ -177,7 +197,49 @@ int main(int argc, char **argv) {
             {"search", [&] {
                  if (controller.running()) controller.stopSearch(); else controller.startSearch();
              }},
+            // driving: a key pressed while a race plays takes it over (a user's
+            // car vanished there, the race left behind playing on as a ghost)
+            {"takeover", [&] {
+                 viewer.play();
+                 Wait(200 + pick(800));
+                 viewer.setManualInput(QStringLiteral("accelerate"), true);
+             }},
+            {"steer", [&] {
+                 const QString side = pick(2) ? QStringLiteral("left") : QStringLiteral("right");
+                 if (!viewer.playing()) viewer.play();
+                 viewer.setManualInput(side, true);
+                 Wait(150 + pick(700));
+                 viewer.setManualInput(side, false);
+             }},
+            {"lift", [&] { viewer.setManualInput(QStringLiteral("accelerate"), false); }},
+            {"drive", [&] { viewer.startManualDrive(); viewer.setManualInput(QStringLiteral("accelerate"), true); }},
+            {"stopdrive", [&] { viewer.releaseManualInputs(); viewer.stopManualDrive(); }},
+            {"respawn", [&] { viewer.respawnManualDrive(); }},
+            // a search until it has a best, the best selected, the search
+            // stopped (the next one clears the best: a car of that color goes
+            // and comes back, as users' searches do)
+            {"best", [&] {
+                 if (controller.running()) controller.stopSearch();
+                 WaitUntil([&] { return !controller.running(); }, 10000);
+                 controller.startSearch();
+                 Wait(10000);
+                 controller.stopSearch();
+                 const auto hasBest = [&] {
+                     for (const QVariant &run : viewer.runOptions())
+                         if (run.toMap().value("id").toString() == QLatin1String("best")) return true;
+                     return false;
+                 };
+                 if (!WaitUntil(hasBest, 15000))
+                     std::cerr << "no best run appeared (" << controller.validationMessage().toStdString() << ")\n";
+                 viewer.setSelectedRunId(QStringLiteral("best"));
+                 viewer.setTimeMs(viewer.durationMs() * (2 + pick(6)) / 10);
+             }},
     };
+    // STRESS_TARGET=velocity: that target (a best is found within seconds)
+    if (const char *target = std::getenv("STRESS_TARGET")) {
+        controller.setEvaluationTargetId(QString::fromLatin1(target));
+        controller.setSimulationBackendId(QStringLiteral("multi-threaded-cpu"));
+    }
 
     // STRESS_SCRIPT=a,b,render:wireframe,...: these actions in order instead of random ones
     std::vector<std::string> script;
@@ -222,6 +284,31 @@ int main(int argc, char **argv) {
 
         // What the view should show: the car's own conditions, as the QML has them.
         const bool shouldShow = carRoot->property("visible").toBool();
+#ifdef FOREVERTAS_QUICK3D_PRIVATE
+        // Every car geometry stays in the scene while a car uses it (Qt counts
+        // the references; a count gone to 0 takes it out and the car is not drawn).
+        {
+            std::string counts;
+            bool detached = false;
+            for (const QVariant &value : viewer.ellipsoidFilledGeometries()) {
+                auto *geometry = qobject_cast<QQuick3DObject *>(value.value<QObject *>());
+                if (geometry == nullptr) continue;
+                const auto *d = QQuick3DObjectPrivate::get(geometry);
+                counts += std::to_string(d->sceneRefCount) + (d->sceneManager ? "" : "!") + " ";
+                if (geometry == viewer.selectedEllipsoidFilledGeometry() && !d->sceneManager) detached = true;
+            }
+            if (std::getenv("STRESS_TRACE")) {
+                QVariant state;
+                QMetaObject::invokeMethod(root, "selectedCarState", Q_RETURN_ARG(QVariant, state));
+                std::cerr << "  geometry references " << counts << "\n  " << state.toString().toStdString() << '\n';
+            }
+            if (detached && shouldShow) {
+                ++misses;
+                std::cerr << "MISS (the selected car's geometry left the scene: references " << counts
+                          << ") at step " << step << " after: " << history << '\n';
+            }
+        }
+#endif
         const bool carCamera = viewport->property("carCameraActive").toBool();
         if (!viewer.loaded() || viewer.runCount() == 0 || !shouldShow || !rasterView->isVisible()) {
             if (viewer.loaded() && viewer.runCount() > 0 && !shouldShow && carCamera && !viewer.hideSelectedCar()) {
@@ -241,17 +328,35 @@ int main(int argc, char **argv) {
         const QPointF onWindow = rasterView->mapToScene(QPointF(screen.x(), screen.y()));
         const bool inView = screen.z() > 0.0f && onWindow.x() >= 0 && onWindow.y() >= 0 &&
                             onWindow.x() < window->width() && onWindow.y() < window->height();
+        // the other cars are hidden for the pictures; one of the selected
+        // car's own style drawn where it is (the same inputs so far) may cover it
+        bool covered = false;
+        QStringList otherStyles;
+        for (const QVariant &value : viewer.runPoses()) {
+            const QVariantMap pose = value.toMap();
+            if (pose.value("selected").toBool() || pose.value("hidden").toBool()) continue;
+            const QString style = pose.value("styleId").toString();
+            if (style != viewer.selectedRunStyleId()) {
+                if (!otherStyles.contains(style)) otherStyles << style;
+            } else if ((pose.value("position").value<QVector3D>() - viewer.carPosition()).length() < 3.0f) {
+                covered = true;
+            }
+        }
         // Only the trailing car cameras: an orbit or free camera may look at the car through the map.
-        if (!inView || !carCamera || viewer.hideSelectedCar()) {
+        if (!inView || !carCamera || viewer.hideSelectedCar() || covered) {
+            if (covered && std::getenv("STRESS_TRACE")) std::cerr << "  covered by another car: not checked\n";
             if (wasPlaying) viewer.play();
             continue;
         }
+        for (const QString &other : otherStyles) viewer.setVisualStyle(QStringLiteral("car:") + other, QStringLiteral("visible"), false);
+        Wait(120);
         const QImage shown = window->grabWindow();
         const QString style = QStringLiteral("car:") + viewer.selectedRunStyleId();
         viewer.setVisualStyle(style, QStringLiteral("visible"), false);
         Wait(120);
         const QImage hidden = window->grabWindow();
         viewer.setVisualStyle(style, QStringLiteral("visible"), true);
+        for (const QString &other : otherStyles) viewer.setVisualStyle(QStringLiteral("car:") + other, QStringLiteral("visible"), true);
         Wait(60);
         const qreal ratio = shown.devicePixelRatio();
         const QRect around(static_cast<int>((onWindow.x() - 80) * ratio), static_cast<int>((onWindow.y() - 80) * ratio),

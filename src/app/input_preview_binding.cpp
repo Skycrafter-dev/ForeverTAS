@@ -50,8 +50,10 @@ QMetaObject::Connection BindInputPreview(
             [&controller, &viewer]() {
                 // An edit of the base inputs (typed, pasted, the current
                 // race copied) shows them, also over a session's inputs
-                // being previewed (a history row chosen or copied).
+                // being previewed (a history row chosen or copied) and
+                // whatever run was watched (an attempt, the best, a drive).
                 viewer.setPreviewingHistory(false);
+                viewer.showInputPreview();
                 viewer.setPreviewInputScript(controller.baseInputScript());
             });
 }

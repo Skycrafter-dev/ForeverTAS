@@ -1205,48 +1205,46 @@ std::optional<std::string> ValidateTreeSearchOptionSettings(
         return keyError;
     }
     if (!ParseBoolean(settings.at("autoPromoteBest"))) {
-        return "auto-promote best must be true or false";
+        return kUnreadableSetting;
     }
     const auto segmentCount =
             ParseUnsignedDecimal32(settings.at("segmentCount"));
     if (!segmentCount || *segmentCount < kMinimumTreeSegmentCount ||
         *segmentCount > kMaximumTreeSegmentCount) {
-        return "segment count must be a whole number between " +
-                std::to_string(kMinimumTreeSegmentCount) + " and " +
+        return "\"Segments\" must be a whole number from " +
+                std::to_string(kMinimumTreeSegmentCount) + " to " +
                 std::to_string(kMaximumTreeSegmentCount);
     }
     const auto leafCount = ParseUnsignedDecimal32(settings.at("leafCount"));
     if (!leafCount || *leafCount > kMaximumTreeLeafCount) {
-        return "leaves per tree must be 0 (automatic) or a whole number up "
+        return "\"Leaves per tree\" must be 0 (automatic) or a whole number up "
                "to " + std::to_string(kMaximumTreeLeafCount);
     }
     const auto branchedSegmentCount =
             ParseUnsignedDecimal32(settings.at("branchedSegmentCount"));
     if (!branchedSegmentCount || *branchedSegmentCount > *segmentCount) {
-        return "branched segments must be 0 (all) or a whole number up to "
-               "the segment count";
+        return "\"Segments changed per attempt\" must be 0 (all) or at most "
+               "\"Segments\"";
     }
     if (!ParseBoolean(settings.at("varyBranchedSegmentCount"))) {
-        return "varying branched segments must be true or false";
+        return kUnreadableSetting;
     }
     const std::string &unbranched = settings.at("unbranchedSegments");
     if (unbranched != "draw" && unbranched != "keep") {
-        return "unbranched segments must be draw or keep";
+        return kUnreadableSetting;
     }
     const auto flatWorkerCount =
             ParseUnsignedDecimal32(settings.at("flatWorkerCount"));
     if (!flatWorkerCount ||
         *flatWorkerCount > kMaximumTreeFlatWorkerCount) {
-        return "flat workers must be a whole number up to " +
+        return "\"Basic bruteforce workers\" must be a whole number up to " +
                 std::to_string(kMaximumTreeFlatWorkerCount);
     }
     if (!ParseTreeSettings(settings)) {
-        return "tree strategy settings are invalid: distribution must be "
-               "uniform or geometric, segment choice random, bandit, or "
-               "late, item share 1-100 percent, and counts whole numbers";
+        return kUnreadableSetting;
     }
     if (tickDurationMs == 0u) {
-        return "tick duration must be greater than zero";
+        return "the tick length is 0";
     }
     return std::nullopt;
 }
@@ -1308,28 +1306,28 @@ std::optional<std::string> ValidateAdaptiveEscalationOptionSettings(
         return keyError;
     }
     if (!ParseBoolean(settings.at("autoPromoteBest"))) {
-        return "auto-promote best must be true or false";
+        return kUnreadableSetting;
     }
     const auto segmentCount =
             ParseUnsignedDecimal32(settings.at("segmentCount"));
     if (!segmentCount || *segmentCount < kMinimumTreeSegmentCount ||
         *segmentCount > kMaximumTreeSegmentCount) {
-        return "segment count must be a whole number between " +
-                std::to_string(kMinimumTreeSegmentCount) + " and " +
+        return "\"Segments\" must be a whole number from " +
+                std::to_string(kMinimumTreeSegmentCount) + " to " +
                 std::to_string(kMaximumTreeSegmentCount);
     }
     const auto escalateAfterTrees =
             ParseUnsignedDecimal32(settings.at("escalateAfterTrees"));
     if (!escalateAfterTrees || *escalateAfterTrees == 0u ||
         *escalateAfterTrees > kMaximumEscalateAfterTrees) {
-        return "trees before escalating must be a whole number between 1 "
-               "and " + std::to_string(kMaximumEscalateAfterTrees);
+        return "\"Trees without improvement before widening\" must be a whole "
+               "number from 1 to " + std::to_string(kMaximumEscalateAfterTrees);
     }
     if (!ParseUnsignedDecimal32(settings.at("migrationSeconds"))) {
-        return "island migration must be a whole number of seconds";
+        return kUnreadableSetting;
     }
     if (tickDurationMs == 0u) {
-        return "tick duration must be greater than zero";
+        return "the tick length is 0";
     }
     return std::nullopt;
 }

@@ -206,17 +206,17 @@ std::optional<std::string> ValidateSmoothSteeringSettings(
     if (const auto error = ValidateOptionSettingKeys(
                 settings, DefaultSmoothSteeringSettings())) return error;
     const auto parsed = ParseSettings(settings);
-    if (!parsed) return "smooth steering settings are invalid";
+    if (!parsed) return kUnreadableSetting;
     if (const auto error = ValidateModifierWindow(parsed->window,
                                                    tickDurationMs)) return error;
     if (parsed->deformationCount == 0u) {
-        return "smooth steering deformation count must be greater than zero";
+        return "the deformation count must be 1 or more";
     }
     if (parsed->radiusMs < 0 || parsed->radiusMs % tickDurationMs != 0) {
-        return "smooth steering radius must be a non-negative whole-tick value";
+        return "the radius must be 0 ms or more, in steps of " + std::to_string(tickDurationMs) + " ms";
     }
     if (parsed->amplitudeMinimum > parsed->amplitudeMaximum) {
-        return "smooth steering amplitude minimum must not exceed maximum";
+        return "the amplitude minimum is above the maximum";
     }
     return std::nullopt;
 }

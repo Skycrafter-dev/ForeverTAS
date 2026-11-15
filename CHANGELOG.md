@@ -10,6 +10,16 @@
   until turned on in Edit > Preferences > MCP, which shows the client
   configuration to copy; with ForeverTAS closed, a client opens it. See
   docs/MCP.md. (From a contribution by thirkle.)
+- **Faster promoted approximate searches on the GPU:** a promotion no longer
+  throws away the batch the GPU already computed: about 11% more attempts a
+  second in a promoting search (RTX 5060, 0.90M to 1.01M), same results run
+  to run.
+- **Go to:** type where to go and press Enter: a time (30, 1:02.35, 1500ms),
+  from where you are (+2, -0.5), a checkpoint (cp 3, next, prev, finish), a
+  share of the race (50%) or a tick (tick 120). In the Playback panel when it
+  is wide enough, and from the race view with Ctrl+G. Bindable in Controls:
+  Go to..., Go to again (the last place typed: type +5 once for a five-second
+  skip key), Next checkpoint (Page Down) and Previous checkpoint (Page Up).
 - **Gates target:** an ordered list of gates (position, heading, and limits
   across, up, on speed, heading and wheels on the ground): the car must cross
   each earlier one honestly and in order, and the search lowers the time it
@@ -54,6 +64,31 @@
 
 ### Fixes
 
+- **Plain error messages:** when a search can't start, the message says where
+  (Search, Target, or Pass 2 with its kind) and what, in plain words; a setting
+  that can't be read is named as the window shows it, with its value and what
+  it takes ("Minimum steering insertions" can't be "3.5": it takes a whole
+  number, 0 or more), instead of "input insertion settings are invalid".
+- Editing the base inputs (typing, pasting, Copy current race, Keep) now
+  shows the base inputs' run at the same moment, whatever you were watching:
+  an attempt, the best, or a drive (which ends, its attempt kept). Before, the
+  edit changed nothing on screen until you picked the run yourself.
+- Number fields store what they show: a number typed out of a field's range
+  or with decimals where whole numbers go was kept as typed (and refused by
+  the search, "settings are invalid") while the field showed it corrected. A
+  value saved that way now shows as it is stored.
+- **The vanishing car:** a car (the best, a drive after a takeover, any
+  car) could stop being drawn while everything else showed, until another
+  run was chosen. Qt Quick 3D gives a car shape that comes back into the view
+  (no car of that color was shown for a while: a search's best cleared, a
+  drive ended) an empty copy and never fills it. ForeverTAS now fills it
+  again. The same held for every 3D shape it draws (trajectories, targets).
+- **Gamepad:** a connected gamepad now drives and can be bound straight away
+  (Preferences > Gamepad, Device: Automatic, the first connected), where before
+  nothing happened until one was picked by hand. The tab shows the last button
+  pressed and names controllers seen without a gamepad layout; the log lists
+  every controller and which one is in use. A chosen gamepad plugged into
+  another port is found again.
 - Session rows show finish times in seconds under "Finish time", including
   previously saved sessions.
 - Autorestart continues after cycles where no iteration meets the conditions.

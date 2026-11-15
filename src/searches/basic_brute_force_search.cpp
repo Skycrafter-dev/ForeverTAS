@@ -1742,10 +1742,10 @@ std::optional<std::string> ValidateBasicBruteForceOptionSettings(
         return keyError;
     }
     if (!ParseBoolean(settings.at("autoPromoteBest"))) {
-        return "auto-promote best must be true or false";
+        return kUnreadableSetting;
     }
     if (tickDurationMs == 0u) {
-        return "tick duration must be greater than zero";
+        return "the tick length is 0";
     }
     return std::nullopt;
 }

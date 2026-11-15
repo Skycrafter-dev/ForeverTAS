@@ -24,7 +24,7 @@ std::optional<RandomSteeringSettings> ParseRandomSteeringSettings(
     }
     const auto window = ParseModifierWindow(settings);
     if (!window) {
-        *error = "random steering window or seed is invalid";
+        *error = kUnreadableSetting;
         return std::nullopt;
     }
     return RandomSteeringSettings{
@@ -54,7 +54,7 @@ std::optional<std::string> ValidateRandomSteeringOptionSettings(
                     parsed->minimumTimeMs,
                     parsed->maximumTimeMs,
                     tickDurationMs,
-                    "mutation")) {
+                    "the minimum time")) {
             error = *windowError;
         }
     }

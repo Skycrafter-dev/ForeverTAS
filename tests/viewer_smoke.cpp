@@ -170,9 +170,24 @@ bool TestBasePreviewReturn(const QString &packs, const QString &replay) {
     if (!WaitUntil([&]() { return viewer.inputSample(5).brake > 0.99f; })) return false;
     const QString edited = QStringLiteral("0.00 press up\n0.21 rel up");
     controller.setBaseInputScript(edited);
-    return WaitUntil([&]() {
+    if (!WaitUntil([&]() {
         return !viewer.previewingHistory() && viewer.previewInputScript() == edited &&
                 viewer.inputSample(15).accelerate > 0.99f && viewer.inputSample(5).brake < 0.01f;
+    })) return false;
+    // An edit while another run is watched (a drive, then its attempt): the
+    // base inputs' run is shown (a tester's edits changed nothing they saw).
+    viewer.startManualDrive();
+    if (!WaitUntil([&]() { return viewer.manualDriving() && viewer.currentTick() > 5; })) return false;
+    viewer.stopManualDrive();
+    if (viewer.selectedRunId() == "preview") {
+        std::cerr << "the drive left the base inputs' run selected; the check needs another run\n";
+        return false;
+    }
+    const QString again = QStringLiteral("0.00 press up\n0.31 rel up");
+    controller.setBaseInputScript(again);
+    return WaitUntil([&]() {
+        return viewer.selectedRunId() == "preview" && viewer.previewInputScript() == again &&
+                viewer.inputSample(25).accelerate > 0.99f && viewer.inputSample(35).accelerate < 0.01f;
     });
 }
 

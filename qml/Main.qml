@@ -134,6 +134,8 @@ ApplicationWindow {
             problems.push("no car shape")
         if (!viewer.selectedEllipsoidFilledGeometry)
             problems.push("no car geometry")
+        else if (viewer.carGeometryState().indexOf("NOT IN THE SCENE") >= 0)
+            problems.push("its " + viewer.carGeometryState())
         if (!style.throughBlocks) {
             if (!root.visible)
                 problems.push("car node hidden")
@@ -167,6 +169,20 @@ ApplicationWindow {
                + " rot (" + q.scalar.toFixed(3) + ", " + q.x.toFixed(3) + ", " + q.y.toFixed(3) + ", " + q.z.toFixed(3) + ")"
                + ", camera (" + c.x.toFixed(2) + ", " + c.y.toFixed(2) + ", " + c.z.toFixed(2) + ")"
                + ", time " + viewer.timeMs + " ms" + (viewer.playing ? " playing" : "")
+               + ", " + viewer.carGeometryState()
+    }
+    // Another car drawn within a few meters of the selected one (the same
+    // inputs so far): it may cover it, so the picture can't tell.
+    function selectedCarCovered() {
+        const p = viewer.carPosition
+        for (const pose of viewer.runPoses) {
+            if (!pose || pose.selected || pose.hidden)
+                continue
+            const o = pose.position
+            if ((o.x - p.x) * (o.x - p.x) + (o.y - p.y) * (o.y - p.y) + (o.z - p.z) * (o.z - p.z) < 9)
+                return true
+        }
+        return false
     }
     readonly property bool selectedCarExpected: viewer.loaded && viewer.runCount > 0
                                                 && viewport.carCameraActive && !viewer.hideSelectedCar
@@ -223,6 +239,10 @@ ApplicationWindow {
                                        + (p.z - c.z) * (p.z - c.z))
             if (!(distance > 0.5) || center.z < 0)
                 return
+            if (window.selectedCarCovered()) {
+                window.noteCarProbe("covered", "car probe: not checking: another car is drawn where the car is")
+                return
+            }
             // a quarter-size picture; half a meter around the car's center
             const scale = 0.25
             const pixelsPerMeter = rasterMapView.height
@@ -1489,6 +1509,34 @@ ApplicationWindow {
         id: raceControls
         controller: window.controller
         viewer: window.viewer
+        onGoToRequested: goToPopup.open()
+    }
+
+    // "Go to..." from the race keys: a box over the race view, the last
+    // place typed ready to go to again or change.
+    Popup {
+        id: goToPopup
+        objectName: "goToPopup"
+        parent: Overlay.overlay
+        x: Math.round((parent.width - width) / 2)
+        y: Math.round(parent.height * 0.18)
+        width: 340
+        padding: 12
+        focus: true
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        background: GlassPopupBackground {}
+        onOpened: {
+            goToBox.error = ""
+            goToBox.field.text = raceControls.lastGoTo
+            goToBox.field.selectAll()
+            goToBox.field.forceActiveFocus()
+        }
+        onClosed: manualInputFocus.forceActiveFocus()
+        contentItem: GoToField {
+            id: goToBox
+            raceControls: raceControls
+            onWent: goToPopup.close()
+        }
     }
 
     PreferencesDialog {
@@ -5270,12 +5318,15 @@ ApplicationWindow {
                     id: playbackDock
                     objectName: "playbackDock"
                     readonly property bool compact: width < 400
+                    // room for the Go to field beside the buttons
+                    readonly property bool roomForGoTo: width >= 440
                     anchors.fill: parent
                     color: "transparent"
 
                     GridLayout {
                         anchors.centerIn: parent
-                        columns: playbackDock.compact ? 4 : 5
+                        width: playbackDock.roomForGoTo ? parent.width - 20 : implicitWidth
+                        columns: playbackDock.compact ? 4 : playbackDock.roomForGoTo ? 6 : 5
                         columnSpacing: 8
                         rowSpacing: 4
 
@@ -5549,6 +5600,15 @@ ApplicationWindow {
                                 ToolTip.text: qsTr("Faster (%1)").arg(raceControls.keyText("faster"))
                                 onClicked: window.viewer.faster()
                             }
+                        }
+
+                        GoToField {
+                            objectName: "playbackGoTo"
+                            visible: playbackDock.roomForGoTo
+                            Layout.fillWidth: true
+                            Layout.minimumWidth: 90
+                            raceControls: raceControls
+                            enabled: window.viewer.runCount > 0
                         }
                     }
                 }

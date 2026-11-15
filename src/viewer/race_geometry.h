@@ -35,6 +35,13 @@ public:
             const QVector3D &boundsMax,
             const std::vector<std::pair<int, int>> &subsets);
     void clearMesh();
+
+protected:
+    // Qt Quick 3D (6.9) gives a geometry a new, empty renderer node when it
+    // comes back into a scene (no Model used it for a while, then one does)
+    // and never sends it the data it already has: the car (or anything)
+    // using it is then not drawn. A new node gets the data again.
+    QSSGRenderGraphObject *updateSpatialNode(QSSGRenderGraphObject *node) override;
 };
 
 }  // namespace forevertas::viewer

@@ -54,7 +54,7 @@ std::optional<std::string> ValidateConfiguredSettings(
         SettingsEffect effect,
         SettingsValidator validateSimulationSettings) {
     if (tickDurationMs == 0u) {
-        return "tick duration must be greater than zero";
+        return "the tick length is 0";
     }
     const std::optional<OptionSettings> simulationSettings =
             PrepareConfiguredSettings(userSettings, tickDurationMs, effect);

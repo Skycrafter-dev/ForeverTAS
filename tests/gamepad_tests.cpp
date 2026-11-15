@@ -58,7 +58,21 @@ int main(int argc, char **argv) {
         SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_LEFT_TRIGGER, -32768);
         SDL_SetJoystickVirtualAxis(joystick, SDL_GAMEPAD_AXIS_RIGHT_TRIGGER, -32768);
         pad.poll();
-        Check(!pad.devices().isEmpty() && pad.selectedId() == 0, "enumeration or explicit selection failed");
+        // Automatic by default: the first connected drives at once.
+        Check(!pad.devices().isEmpty() && pad.choice() == "auto" && pad.selectedId() == id,
+              "the first gamepad was not used automatically");
+        int pressedButtons = 0;
+        QObject::connect(&pad, &GamepadInput::buttonChanged, [&](int, bool pressed) { pressedButtons += pressed; });
+        SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_NORTH, true);
+        pad.poll();
+        SDL_SetJoystickVirtualButton(joystick, SDL_GAMEPAD_BUTTON_NORTH, false);
+        pad.poll();
+        Check(pressedButtons == 1 && !pad.lastButton().isEmpty(), "a button press was not seen or shown");
+        // None chosen: nothing drives, and it is kept.
+        pad.setChoice("none");
+        pad.poll();
+        Check(pad.selectedId() == 0 && forevertas::app::AppSettings::Instance().value("drive/gamepadIdentity").toString() == "none",
+              "None did not stop the gamepad");
         pad.setSelectedId(id);
         pad.setDeadzone(.2);
         Check(pad.selectedId() == id && forevertas::app::AppSettings::Instance().value("drive/gamepadDeadzone").toDouble() == .2 &&

@@ -197,11 +197,11 @@ std::optional<std::string> ValidateVolumeEntryOptionSettings(
         return error;
     }
     if (!ParseBox(settings)) {
-        return "volume center must be finite and all sizes must be positive";
+        return "the box needs a center and sizes above 0";
     }
     if (const std::string &measure = settings.at("measure");
         measure != "time" && measure != "speed") {
-        return "volume entry measure must be time or speed";
+        return "choose time or speed to measure";
     }
     return std::nullopt;
 }

@@ -9,6 +9,8 @@
 #include "mutations/input_event_utils.h"
 #include "mutations/modifier_utils.h"
 #include "replay_file_io.h"
+#include "mutations/input_insertion_mutator.h"
+#include "searches/setting_labels.h"
 #include "searches/algorithm_registry.h"
 #include "searches/basic_brute_force_search.h"
 #include "searches/cuda_batch_calibrator.h"
@@ -3219,11 +3221,42 @@ bool TestEvaluationSessionClones() {
     return okay;
 }
 
+// Every setting has the window's name, so a refused one can be named.
+bool TestSettingLabels() {
+    using namespace forevertas;
+    bool okay = true;
+    const auto check = [&okay](const std::string &id, const OptionSettings &defaults) {
+        for (const auto &[key, value] : defaults) {
+            static_cast<void>(value);
+            if (SettingLabel(id, key).empty()) {
+                std::cerr << id << ": setting " << key << " has no label (src/searches/setting_labels.cpp)\n";
+                okay = false;
+            }
+        }
+    };
+    for (const auto &registration : SearchAlgorithmRegistry()) check(registration.id, registration.defaultSettings);
+    for (const auto &registration : ModifierRegistry()) check(registration.id, registration.defaultSettings);
+    for (const auto &registration : EvaluationTargetRegistry()) check(registration.id, registration.defaultSettings);
+    // a count that is not whole, named with its value
+    OptionSettings settings = DefaultInputInsertionSettings();
+    settings["steerMinCount"] = "3.5";
+    const auto problem = ValidateInputInsertionSettings(settings, 10u);
+    const std::string explained = problem ? ExplainSettingsProblem(
+            kInputInsertionModifierId, settings, DefaultInputInsertionSettings(), *problem,
+            [](const OptionSettings &candidate) { return ValidateInputInsertionSettings(candidate, 10u); }) : "";
+    if (explained != "\"Minimum steering insertions\" can't be \"3.5\": it takes a whole number, 0 or more") {
+        std::cerr << "a refused count was explained as: " << explained << '\n';
+        okay = false;
+    }
+    return okay;
+}
+
 int main(int argc, char **argv) {
     if (argc == 2 && std::string(argv[1]) == "--gpu-targets-only") {
         return TestEvaluationTargets() && TestCudaConfigurationCoverage() ? 0 : 1;
     }
-    const bool okay = TestInputOnlyTimelineTimeOrigin() &&
+    const bool okay = TestSettingLabels() &&
+            TestInputOnlyTimelineTimeOrigin() &&
             TestHumanDurationFormatting() &&
             TestDenseNormalization() &&
             TestRedundantSteeringInsertion() &&

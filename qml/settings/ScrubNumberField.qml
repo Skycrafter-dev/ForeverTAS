@@ -51,6 +51,9 @@ TextField {
                 && !Number.isSafeInteger(Number(text))
     }
 
+    // A stored value the field would show changed (out of its range, or not
+    // whole where a whole number is needed) is shown as stored, so what the
+    // search refuses is what is seen.
     function displayValue() {
         const raw = control.value.toString()
         if (raw.trim().length === 0)
@@ -58,7 +61,21 @@ TextField {
         if (control.isExactLargeInteger(raw))
             return raw
         const numeric = parseNumber(raw)
-        return Number.isFinite(numeric) ? control.formatNumber(numeric) : raw
+        if (!Number.isFinite(numeric))
+            return raw
+        if (!control.valueFormatter && (numeric !== control.clampNumber(numeric)
+                || (control.integer && !/^-?[0-9]+$/.test(raw.trim()))))
+            return raw
+        return control.formatNumber(numeric)
+    }
+
+    // What a typed number is stored as: as shown (in range, rounded as the
+    // field rounds); text that is no number is stored as typed (and refused).
+    function committedText(text) {
+        if (control.isExactLargeInteger(text.trim()))
+            return text.trim()
+        const numeric = parseNumber(text)
+        return Number.isFinite(numeric) && text.trim().length > 0 ? control.formatNumber(numeric) : text
     }
 
     function parseNumber(text) {
@@ -106,10 +123,13 @@ TextField {
     Component.onCompleted: synchronizeText()
 
     onEditingFinished: {
-        if (text !== displayValue())
-            edited(text)
-        else
-            synchronizeText()
+        const committed = committedText(text)
+        if (committed !== displayValue()) {
+            edited(committed)
+            text = committed
+        } else {
+            text = displayValue()
+        }
     }
 
     Label {

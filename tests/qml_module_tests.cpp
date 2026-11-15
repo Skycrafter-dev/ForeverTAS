@@ -21,6 +21,9 @@
 
 #include <QApplication>
 #include <QElapsedTimer>
+#include <QJSValue>
+#include <QUrl>
+#include <QQmlComponent>
 #include <QKeyEvent>
 #include <QMouseEvent>
 #include <QQmlApplicationEngine>
@@ -490,6 +493,80 @@ int main(int argc, char **argv) {
     if (slowest > limit) {
         std::cerr << "an Enter took longer than " << limit << " ms\n";
         return 1;
+    }
+
+    // "Go to": a typed place is gone to, a wrong one says why, and the key's
+    // box opens over the race view (needs the replay loaded).
+    if (argc == 3 && !drawn) {
+        QObject *const controls = window->findChild<QObject *>(QStringLiteral("raceControls"));
+        QVariant error;
+        QMetaObject::invokeMethod(controls, "goTo", Q_RETURN_ARG(QVariant, error),
+                                  Q_ARG(QVariant, QStringLiteral("0:01.5")));
+        Settle(50);
+        if (!error.toString().isEmpty() || viewer.timeMs() != 1500) {
+            std::cerr << "go to 0:01.5 landed at " << viewer.timeMs() << " ms: " << error.toString().toStdString()
+                      << '\n';
+            return 1;
+        }
+        QMetaObject::invokeMethod(controls, "goTo", Q_RETURN_ARG(QVariant, error),
+                                  Q_ARG(QVariant, QStringLiteral("+0.5")));
+        QVariant wrong;
+        QMetaObject::invokeMethod(controls, "goTo", Q_RETURN_ARG(QVariant, wrong),
+                                  Q_ARG(QVariant, QStringLiteral("banana")));
+        if (viewer.timeMs() != 2000 || wrong.toString().isEmpty()) {
+            std::cerr << "go to +0.5 or a wrong place failed\n";
+            return 1;
+        }
+        QMetaObject::invokeMethod(controls, "goToRequested");
+        Settle(100);
+        QObject *const box = window->findChild<QObject *>(QStringLiteral("goToPopup"));
+        QObject *const field = box ? box->findChild<QObject *>(QStringLiteral("goToField")) : nullptr;
+        if (box == nullptr || !box->property("opened").toBool() || field == nullptr ||
+            field->property("text").toString() != QStringLiteral("+0.5")) {
+            std::cerr << "the Go to box did not open with the last place\n";
+            return 1;
+        }
+        QMetaObject::invokeMethod(box, "close");
+        std::cout << "go to: typed places, a wrong one explained, the key's box\n";
+    }
+
+    // A number typed out of range or not whole is stored as the field shows
+    // it (a tester's pass showed valid numbers the search refused).
+    if (!drawn) {
+        // a whole-number field from 0 to 10 that stores what it is edited to
+        QQmlComponent component(&engine);
+        component.setData("import QtQuick\nimport \"" +
+                                  QUrl::fromLocalFile(QStringLiteral(FOREVERTAS_QML_IMPORT_DIR) +
+                                                      QStringLiteral("/ForeverTAS/qml/settings")).toString().toUtf8() +
+                                  "\"\nScrubNumberField { width: 120; height: 30; integer: true; minimum: 0;"
+                                  " maximum: 10; value: \"1\"; onEdited: edited => value = edited }",
+                          QUrl());
+        auto *const whole = qobject_cast<QQuickItem *>(component.create());
+        if (whole == nullptr) {
+            std::cerr << "no number field: " << component.errorString().toStdString() << '\n';
+            return 1;
+        }
+        whole->setParentItem(window->contentItem());
+        whole->setZ(1e6);
+        const qint64 minimum = qint64(whole->property("minimum").toDouble());
+        const std::pair<QString, QString> cases[] = {
+                {QStringLiteral("-5"), QString::number(minimum)},
+                {QString::number(minimum + 2) + QStringLiteral(".6"), QString::number(minimum + 3)},
+                {QStringLiteral("25"), QStringLiteral("10")}};
+        for (const auto &[typed, stored] : cases) {
+            whole->forceActiveFocus();
+            whole->setProperty("text", typed);
+            PressEnter(window);
+            Settle(50);
+            const QString value = whole->property("value").toString();
+            const QString text = whole->property("text").toString();
+            if (value != stored || text != stored) {
+                std::cerr << "typed " << typed.toStdString() << " in " << whole->objectName().toStdString() << ": stored "
+                          << value.toStdString() << ", shown " << text.toStdString() << '\n';
+                return 1;
+            }
+        }
+        std::cout << "typed numbers are stored as the field shows them\n";
     }
     return 0;
 }
