@@ -5,7 +5,7 @@ if(CMAKE_HOST_APPLE OR CMAKE_SYSTEM_NAME STREQUAL "Darwin")
 endif()
 
 project(ForeverTAS
-    VERSION 0.2.7
+    VERSION 0.3.0
     DESCRIPTION "Native TrackMania Nations Forever tool-assisted search tool"
     HOMEPAGE_URL "https://github.com/Skycrafter-dev/ForeverTAS"
     LANGUAGES CXX)
