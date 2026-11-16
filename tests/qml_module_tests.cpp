@@ -14,6 +14,8 @@
 //   crash, or an Enter slower than 500 ms.
 #include "app/input_preview_binding.h"
 #include "app/mcp_bridge.h"
+#include "app/remote/remote_search.h"
+#include "app/remote/remote_worker.h"
 #include "app/search_controller.h"
 #include "viewer/race_timeline_item.h"
 #include "viewer/race_viewer_controller.h"
@@ -44,6 +46,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <QJsonArray>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -269,8 +272,11 @@ int main(int argc, char **argv) {
     });
     engine.addImportPath(QStringLiteral(FOREVERTAS_QML_IMPORT_DIR));
     forevertas::app::McpBridge mcp(controller, &engine, false);
+    forevertas::app::remote::RemoteSearch remote;
+    controller.setRemoteSearch(&remote);
     engine.setInitialProperties({
             {QStringLiteral("mcp"), QVariant::fromValue(static_cast<QObject *>(&mcp))},
+            {QStringLiteral("remote"), QVariant::fromValue(static_cast<QObject *>(&remote))},
             {QStringLiteral("controller"), QVariant::fromValue(static_cast<QObject *>(&controller))},
             {QStringLiteral("viewer"), QVariant::fromValue(static_cast<QObject *>(&viewer))}});
     engine.loadFromModule(QStringLiteral("ForeverTAS"), QStringLiteral("Main"));
@@ -374,6 +380,66 @@ int main(int argc, char **argv) {
                 Settle(400);
                 window->grabWindow().save(qEnvironmentVariable("FTAS_PICTURE").replace(
                         QStringLiteral(".png"), QStringLiteral("-mcp.png")));
+                // and Remote, a room opened on the relay (-remote)
+                preferences->setProperty("section", 3);
+                remote.setOpen(true);
+                QElapsedTimer opening;
+                opening.start();
+                while (remote.code().isEmpty() && opening.elapsed() < 10000) Settle(50);
+                // a machine joins the room (a GPU and four CPU threads)
+                QThread machineThread;
+                auto *machine = new forevertas::app::remote::RemoteWorker(
+                        QString(), [](const forevertas::SearchRequest &, const forevertas::SearchRunControl *)
+                                -> forevertas::SearchResult { throw std::runtime_error("a picture's machine searches nothing"); },
+                        QJsonObject{{"gpus", QJsonArray{QJsonObject{{"backend", "cuda"}, {"name", "Tesla T4"}}}},
+                                    {"cpu", QJsonObject{{"name", "Intel Xeon"}, {"threads", 4}}},
+                                    {"machine", "colab"}});
+                machine->moveToThread(&machineThread);
+                QObject::connect(&machineThread, &QThread::finished, machine, &QObject::deleteLater);
+                machineThread.start();
+                const QString code = remote.code();
+                QMetaObject::invokeMethod(machine, [machine, code] {
+                    machine->connectTo(forevertas::app::remote::WorkerUrl(code));
+                }, Qt::QueuedConnection);
+                opening.restart();
+                while (remote.roomMachines().isEmpty() && opening.elapsed() < 10000) Settle(50);
+                if (QObject *const scroll = window->findChild<QObject *>(QStringLiteral("remoteScroll"))) {
+                    if (QObject *const flick = scroll->property("contentItem").value<QObject *>())
+                        flick->setProperty("contentY", 420.0);
+                }
+                Settle(300);
+                window->grabWindow().save(qEnvironmentVariable("FTAS_PICTURE").replace(
+                        QStringLiteral(".png"), QStringLiteral("-room.png")));
+                machineThread.quit();
+                machineThread.wait();
+                Settle(300);
+                window->grabWindow().save(qEnvironmentVariable("FTAS_PICTURE").replace(
+                        QStringLiteral(".png"), QStringLiteral("-remote.png")));
+                remote.setOpen(false);
+                // and its groups (-groups): one made here, the public pool, scrolled to
+                remote.createGroup(QStringLiteral("Route 43"));
+                remote.joinGroup(QStringLiteral("public"));
+                opening.restart();
+                while (remote.groups().size() < 2 && opening.elapsed() < 15000) Settle(50);
+                remote.setSearching(remote.groups().front().toMap().value("id").toString(), true);
+                remote.refreshGroups();
+                Settle(2000);
+                // (the tab from top to bottom: -groups-1.png, -2, -3, ...)
+                if (QObject *const scroll = window->findChild<QObject *>(QStringLiteral("remoteScroll"))) {
+                    if (QObject *const flick = scroll->property("contentItem").value<QObject *>()) {
+                        const double height = flick->property("height").toDouble();
+                        const double content = flick->property("contentHeight").toDouble();
+                        int page = 1;
+                        for (double y = 0.0;; y += height * 0.85, ++page) {
+                            flick->setProperty("contentY", std::min(y, std::max(0.0, content - height)));
+                            Settle(300);
+                            window->grabWindow().save(qEnvironmentVariable("FTAS_PICTURE").replace(
+                                    QStringLiteral(".png"), QStringLiteral("-groups-%1.png").arg(page)));
+                            if (y + height >= content) break;
+                        }
+                    }
+                }
+                for (const QVariant &group : remote.groups()) remote.leaveGroup(group.toMap().value("id").toString());
                 QMetaObject::invokeMethod(preferences, "close");
                 Settle(200);
             }
@@ -531,7 +597,7 @@ int main(int argc, char **argv) {
     }
 
     // A number typed out of range or not whole is stored as the field shows
-    // it (a tester's pass showed valid numbers the search refused).
+    // it (never a valid-looking number the search refuses).
     if (!drawn) {
         // a whole-number field from 0 to 10 that stores what it is edited to
         QQmlComponent component(&engine);

@@ -1294,7 +1294,8 @@ SearchResult RunGpuBasicBruteForce(
                 context.control, SearchProgressStage::Mutations, 0u);
     }
 
-    std::uint64_t iterationIndex = 0u;
+    // (a machine of a group starts at its own range; GPUs sharing a sequence claim instead)
+    std::uint64_t iterationIndex = context.control != nullptr ? context.control->iterationIndexOffset : 0u;
     bool sessionChanged = true;   // the next batch is the first since the session was made or grown
     // What the session mutates: the base run, then each promoted best.
     std::vector<PhysicsSandboxInputEvent> mutationBaseline = originalBaselineInputs;
@@ -1307,12 +1308,14 @@ SearchResult RunGpuBasicBruteForce(
         // Several GPUs on one search: another GPU's better run becomes what
         // this one mutates and has to beat. This GPU's own best stays what it
         // reports, so the run is credited to the GPU that found it.
-        if (autoPromoteBest && !context.approximatePhysics && context.control != nullptr &&
-            context.control->promotedBaselineInputs) {
+        // (approximate physics: the twin's session carries over to the new baseline)
+        if (autoPromoteBest && context.control != nullptr && context.control->promotedBaselineInputs) {
             std::optional<std::vector<PhysicsSandboxInputEvent>> shared =
                     context.control->promotedBaselineInputs();
             if (shared && !std::equal(shared->begin(), shared->end(), mutationBaseline.begin(),
                                       mutationBaseline.end(), SameInputEvent)) {
+                std::optional<PhysicsSandboxCudaSearchSession> previous;
+                if (context.approximatePhysics) previous = std::move(session);
                 session.reset();
                 Require(context.sandbox.RestoreState(branch),
                         "restoring GPU branch for a shared best");
@@ -1321,8 +1324,10 @@ SearchResult RunGpuBasicBruteForce(
                 configuration.maximumBatchSize = sessionCapacity;
                 configuration.incumbent.reset();
                 session.emplace(Require(
-                        CreatePhysicsSandboxCudaSearchSession(
-                                context.sandbox, configuration),
+                        previous ? PromotePhysicsSandboxCudaSearchSession(
+                                           context.sandbox, std::move(*previous), configuration)
+                                 : CreatePhysicsSandboxCudaSearchSession(
+                                           context.sandbox, configuration),
                         "creating GPU search session from a shared best"));
                 const PhysicsSandboxCudaSearchBatch adopted = Require(
                         session->EvaluateBaseline(cancelSubmission),
@@ -2083,9 +2088,22 @@ SearchResult BasicBruteForceSearch::Run(
     std::vector<PhysicsSandboxInputEvent> mutationBaselineInputs =
             baselineInputs;
     std::uint64_t mutationBaselineGeneration = 0u;
+    // Several devices on one search (this thread one of a CPU device's): the
+    // candidates come from the search's one sequence, a block at a time.
+    const bool claiming = context.control != nullptr &&
+            static_cast<bool>(context.control->claimIterations);
+    std::uint64_t claimedNext = 0u, claimedEnd = 0u;
     while (!StopRequested(context.control) &&
            !IterationLimitReached(context.control, iterations)) {
         BeginIteration(context.control);
+        if (claiming) {
+            if (claimedNext == claimedEnd) {
+                constexpr std::uint32_t kClaimedBlock = 256u;
+                claimedNext = context.control->claimIterations(kClaimedBlock);
+                claimedEnd = claimedNext + kClaimedBlock;
+            }
+            iterationIndex = claimedNext++;
+        }
         Require(context.sandbox.RestoreState(branch),
                 "restoring branch state");
         MutationResult mutation = context.mutator.Mutate(
@@ -2159,6 +2177,7 @@ SearchResult BasicBruteForceSearch::Run(
             }
         }
         reportLive(false);
+        if (claiming) continue;
         if (iterationIndex >
             std::numeric_limits<std::uint64_t>::max() -
                     iterationIndexStride) {

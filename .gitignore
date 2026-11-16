@@ -47,5 +47,5 @@ __pycache__/
 *.Pak
 *.pak
 
-# This computer's release settings (the private render module's repository and commit)
+# This computer's release settings (the private render module, the Windows builder)
 /packaging/release/release.local.json

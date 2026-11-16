@@ -43,7 +43,7 @@ struct SearchRequest {
     std::string replayPath;
     PhysicsBackend backend = PhysicsBackend::Reference;
     std::uint32_t parallelSampleCount = 1u;
-    // Legacy API name: batch calibration also applies to HIP.
+    // Batch calibration, on CUDA and HIP alike.
     bool calibrateCudaParallelSampleCount = false;
     OptionConfiguration searchAlgorithm =
             DefaultSearchAlgorithmConfiguration();
@@ -57,6 +57,9 @@ struct SearchRequest {
     bool approximatePhysics = false;
     std::uint32_t simulationHorizonMs = kDefaultSimulationHorizonMs;
     std::optional<ConditionProgram> condition;
+    // A device of a search on several devices that runs on another computer
+    // (its remote worker's id); empty: this computer.
+    std::string remoteDevice;
 };
 
 SearchResult RunSearch(
@@ -68,6 +71,8 @@ struct SearchDevice {
     PhysicsBackend backend = PhysicsBackend::Cuda;
     std::uint32_t parallelSampleCount = 1u;
     bool calibrate = false;
+    // A remote worker's id (docs/REMOTE.md): the device runs there.
+    std::string remote;
 };
 
 // Runs a search request on one GPU (its backend's module).
@@ -85,6 +90,10 @@ SearchResult RunSearchOnDevices(
 
 // Uses the search evaluator and condition, without mutation, promotion, or sampling.
 // Auxiliary evaluation is always Optimized CPU, independently of the search device.
+// Whether a best beats another, as a search on `request` ranks them (from its
+// target's settings alone: no map needed).
+std::function<bool(const SearchLiveUpdate &, const SearchLiveUpdate &)> LiveImproves(const SearchRequest &request);
+
 std::optional<SearchResult> EvaluateBaseline(
         const SearchRequest &request, const SearchRunControl *control = nullptr);
 

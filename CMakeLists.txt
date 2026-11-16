@@ -118,6 +118,7 @@ find_package(Qt6 6.5 REQUIRED COMPONENTS
     Quick
     Quick3D
     QuickControls2
+    WebSockets
     Widgets)
 # The glass panels are drawn with custom shaders.
 find_package(Qt6 6.5 REQUIRED COMPONENTS ShaderTools)
@@ -414,6 +415,12 @@ add_library(forevertas_gui STATIC
     src/app/mcp_protocol.cpp
     src/app/mcp_protocol.h
     src/app/mcp_relay.cpp
+    src/app/remote/remote_codec.cpp
+    src/app/remote/remote_hub.cpp
+    src/app/remote/group_search.cpp
+    src/app/remote/remote_groups.cpp
+    src/app/remote/remote_search.cpp
+    src/app/remote/remote_worker.cpp
     src/app/mcp_relay.h
     src/app/search_controller.cpp
     src/app/compute_modules.cpp
@@ -446,6 +453,10 @@ target_link_libraries(forevertas_gui PUBLIC "${FOREVERTAS_ZSTD_LIBRARY}")
 target_sources(forevertas_gui PRIVATE src/viewer/gamepad_input.cpp src/viewer/gamepad_input.h)
 target_sources(forevertas_gui PRIVATE src/viewer/go_to.cpp src/viewer/go_to.h)
 target_link_libraries(forevertas_gui PUBLIC SDL3::SDL3)
+if(WIN32)
+    # lending in an AppContainer (src/app/remote/remote_groups.cpp)
+    target_link_libraries(forevertas_gui PUBLIC userenv advapi32 psapi ole32)
+endif()
 
 file(GLOB_RECURSE FOREVERTAS_SIMULATION_DEBUG_SOURCE_FILES
     CONFIGURE_DEPENDS
@@ -490,6 +501,7 @@ target_link_libraries(forevertas_gui PUBLIC
     Qt6::Network
     Qt6::Quick
     Qt6::Quick3D
+    Qt6::WebSockets
     Qt6::Widgets)
 if(UNIX AND NOT APPLE)
     target_link_libraries(forevertas_gui PUBLIC Qt6::DBus)
@@ -711,6 +723,7 @@ qt_add_qml_module(forevertas_qml
         qml/VideoExportDialog.qml
         qml/Main.qml
         qml/PreferencesDialog.qml
+        qml/RemoteSettings.qml
         qml/RaceControls.qml
         qml/SearchSessionHistory.qml
         qml/ResultFormat.js
@@ -1677,6 +1690,18 @@ if(BUILD_TESTING)
             ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QSG_RHI_BACKEND=software"
             TIMEOUT 60)
         # MCP: the bridge and relay in process, and on a map.
+        # Remote searching (docs/REMOTE.md): workers, rooms and groups
+        add_executable(forevertas-remote-tests tests/remote_tests.cpp)
+        target_link_libraries(forevertas-remote-tests PRIVATE forevertas_gui Qt6::Core Qt6::WebSockets)
+        target_compile_definitions(forevertas-remote-tests PRIVATE FOREVERTAS_VERSION="${PROJECT_VERSION}")
+        if(FOREVERTAS_WARNING_OPTIONS)
+            target_compile_options(forevertas-remote-tests PRIVATE ${FOREVERTAS_WARNING_OPTIONS})
+        endif()
+        add_test(NAME forevertas-remote
+                 COMMAND forevertas-remote-tests
+                     "${FOREVERTAS_TEST_PACK_DIRECTORY}" "${FOREVERTAS_TEST_REPLAY}")
+        set_tests_properties(forevertas-remote PROPERTIES TIMEOUT 60)
+
         add_executable(forevertas-mcp-tests tests/mcp_tests.cpp)
         target_link_libraries(forevertas-mcp-tests PRIVATE
             forevertas_gui Qt6::Gui Qt6::Network Qt6::Qml Qt6::Quick Qt6::Widgets)

@@ -25,8 +25,8 @@ bool WaitUntil(Predicate predicate, int timeout = 120000) {
 }
 }
 
-// Each check covers one way a car used to drop out of the scene while it
-// should still have been shown.
+// Each check covers one way a car could drop out of the scene while it
+// should still be shown.
 int main(int argc, char **argv) {
     if (argc != 3) return 2;
     QGuiApplication app(argc, argv);

@@ -1,4 +1,4 @@
-# The Windows half of a release, on the builder VM; release.py runs it over
+# The Windows half of a release, on the Windows builder; release.py runs it over
 # ssh. Root holds sources.tar (from release.py), the synced sources, the
 # build folders and caches (kept between releases) and out\windows.
 #
@@ -8,7 +8,7 @@
 # Tools (found by default, or set): Visual Studio 2022 Build Tools, LLVM
 # (clang-cl), Qt 6.11.1 msvc2022_64 (FOREVERTAS_QT), vcpkg
 # (FOREVERTAS_VCPKG), the HIP SDK (HIP_PATH), Inno Setup 6, Python 3,
-# sccache (FOREVERTAS_SCCACHE). CUDA 12.8 is fetched by
+# sccache (-Sccache or FOREVERTAS_SCCACHE). CUDA 12.8 is fetched by
 # ensure-windows-cuda.ps1 (pinned archives) into Root\cache\cuda.
 param(
     [Parameter(Mandatory = $true)][string]$Root,
@@ -18,6 +18,7 @@ param(
     [string]$HipGfx = "",
     [long]$SourceDateEpoch = 0,
     [string]$VcpkgCommit = "",
+    [string]$Sccache = "",
     [switch]$Check,
     # -Check: the app ships the In-game render module (release.py: a release does)
     [switch]$ExpectRenderModule
@@ -92,7 +93,7 @@ if (-not $VcpkgRoot -and -not $Check) {
                                          git -C $VcpkgRoot checkout -q --detach --force $VcpkgCommit }
     Invoke-Native "bootstrapping vcpkg" { & (Join-Path $VcpkgRoot "bootstrap-vcpkg.bat") -disableMetrics }
 }
-$Sccache = Find-First @($env:FOREVERTAS_SCCACHE, "C:\lab\sccache\sccache.exe",
+$Sccache = Find-First @($Sccache, $env:FOREVERTAS_SCCACHE,
                         (Get-Command sccache.exe -ErrorAction SilentlyContinue | ForEach-Object Source)) "sccache"
 $Llvm = Find-First @("C:\Program Files\LLVM\bin") "LLVM (clang-cl)"
 $App = Join-Path $Build "app-install"

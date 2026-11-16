@@ -13,7 +13,8 @@ GlassDialog {
     required property var gamepad
     // The MCP bridge (null in tests that do not make one).
     property var mcp: null
-    // 0: Controls, 1: Gamepad, 2: MCP.
+    property var remote: null
+    // 0: Controls, 1: Gamepad, 2: MCP, 3: Remote.
     property alias section: sections.currentIndex
     // [action, index] while waiting for a key.
     property var capturing: null
@@ -33,11 +34,13 @@ GlassDialog {
         TabBar {
             id: sections
             objectName: "preferencesSections"
+            onCurrentIndexChanged: if (currentIndex === 3 && dialog.remote) dialog.remote.refreshGroups()
             Layout.fillWidth: true
             background: Item {}
             ThemedTabButton { text: qsTr("Controls") }
             ThemedTabButton { text: qsTr("Gamepad") }
             ThemedTabButton { text: qsTr("MCP") }
+            ThemedTabButton { text: qsTr("Remote") }
         }
 
         StackLayout {
@@ -319,6 +322,12 @@ GlassDialog {
                 }
             }
             Item { Layout.fillHeight: true }
+        }
+
+        RemoteSettings {
+            remote: dialog.remote
+            Layout.preferredWidth: 720
+            Layout.preferredHeight: Math.min(640, dialog.parent ? dialog.parent.height - 160 : 640)
         }
         }
 

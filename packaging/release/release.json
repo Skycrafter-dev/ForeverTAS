@@ -28,7 +28,6 @@
   ]
  },
  "windows": {
-  "host": "builder@192.168.122.50",
   "root": "C:/forevertas-release",
   "vcpkg_commit": "39344dff01c5a5a0134caf2624cdd492f05d30ea"
  }

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### New and improved
+
+- **Searching on other computers:** Edit > Preferences > Remote. Your own
+  machines (a Google Colab or Kaggle notebook, a rented GPU, another computer)
+  join with a code and search for every search started here, beside this
+  computer: **Open in Colab** opens the notebook, which asks only for the code
+  and your Packs folder. Every search feature works remotely, exact and
+  approximate, on their GPUs and CPU threads. See docs/REMOTE.md.
+- **ForeverTAS@home:** lend your computer to a group, or search with the
+  computers its members lend. Make a group and share its invite, or join the
+  public pool (anyone lends, anyone searches). Lent computers search in a
+  sandbox, pause while you search on your own GPU, and every best they find
+  is checked here before it counts. One machine can lend to several groups
+  and the public pool at once, one search at a time.
+- **This computer** in the Remote tab: its graphics cards, its processor and
+  thread count, and what it lends (its GPU, how many CPU threads).
+- On a CPU backend, this computer's CPU searches beside the remote machines.
+
 ## 0.3.0
 
 ### New and improved

@@ -175,7 +175,7 @@ bool TestBasePreviewReturn(const QString &packs, const QString &replay) {
                 viewer.inputSample(15).accelerate > 0.99f && viewer.inputSample(5).brake < 0.01f;
     })) return false;
     // An edit while another run is watched (a drive, then its attempt): the
-    // base inputs' run is shown (a tester's edits changed nothing they saw).
+    // base inputs' run is shown (an edit always shows on screen).
     viewer.startManualDrive();
     if (!WaitUntil([&]() { return viewer.manualDriving() && viewer.currentTick() > 5; })) return false;
     viewer.stopManualDrive();

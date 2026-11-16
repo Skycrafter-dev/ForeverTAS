@@ -2,7 +2,7 @@
 """ForeverTAS releases: one app per platform, GPU code as modules.
 
     release.py build            build everything that changed (Linux in a
-                                container here, Windows on the builder VM)
+                                container here, Windows on the Windows builder)
     release.py check            check what was built (see below)
     release.py publish          upload it (GitHub; asks before anything)
     release.py render-module    build the In-game render module alone (in a
@@ -262,9 +262,21 @@ def build_linux(args, epoch: int, out: Path, render: Path | None) -> None:
 
 # --- Windows -----------------------------------------------------------------
 
+def local_windows() -> dict:
+    """This computer's Windows builder, from release.local.json: {"host": "user@address", "sccache": "C:/..."}."""
+    return json.loads(LOCAL.read_text()).get("windows", {}) if LOCAL.exists() else {}
+
+
+def windows_host(args) -> str:
+    host = args.windows_host or local_windows().get("host")
+    if not host:
+        raise SystemExit(f"no Windows builder: pass --windows-host or set windows.host in {LOCAL.name}")
+    return host
+
+
 def build_windows(args, epoch: int, out: Path, render: Path | None) -> None:
     cache = Path(args.cache).expanduser()
-    host = args.windows_host or CONFIG["windows"]["host"]
+    host = windows_host(args)
     root = CONFIG["windows"]["root"]
     log(f"Windows on {host}: {' '.join(args.parts)}")
     bundle = cache / "windows-sources.tar"
@@ -285,7 +297,8 @@ def build_windows(args, epoch: int, out: Path, render: Path | None) -> None:
     subprocess.run([*ssh, f"powershell -NoProfile -ExecutionPolicy Bypass -File '{root}/build-windows.ps1' "
                           f"-Root '{root}' -Parts '{' '.join(args.parts)}' -CudaSm '{sm}' "
                           f"-CudaPtx {CONFIG['cuda']['ptx']} -HipGfx '{gfx}' -SourceDateEpoch {epoch} "
-                          f"-VcpkgCommit {CONFIG['windows']['vcpkg_commit']}"],
+                          f"-VcpkgCommit {CONFIG['windows']['vcpkg_commit']}"
+                          + (f" -Sccache '{local_windows()['sccache']}'" if local_windows().get("sccache") else "")],
                    check=True)
     target = out / "windows"
     shutil.rmtree(target, ignore_errors=True)
@@ -412,7 +425,9 @@ def release_notes() -> str:
     downloads = (f"## Downloads\n\n"
                  f"- **Windows:** [the installer](https://github.com/{repository}/releases/download/v{version()}/ForeverTAS-Windows-Setup.exe)\n"
                  f"- **Linux:** [the AppImage](https://github.com/{repository}/releases/download/v{version()}/ForeverTAS-Linux.AppImage)\n\n"
-                 "Installed ForeverTAS updates itself, and installs the GPU support for your graphics card.\n")
+                 "Installed ForeverTAS updates itself, and installs the GPU support for your graphics card.\n\n"
+                 "To search on Google Colab's GPU (or lend it to a group, or the public pool): "
+                 f"[open the notebook in Colab](https://colab.research.google.com/github/{repository}/blob/v{version()}/worker/colab.ipynb).\n")
     return f"# ForeverTAS {version()}\n\n{downloads}{match.group(1).rstrip()}\n"
 
 
@@ -473,7 +488,7 @@ def check_linux_modules(args, out: Path) -> list[str]:
 
 
 def check_windows_modules(args, out: Path) -> list[str]:
-    host = args.windows_host or CONFIG["windows"]["host"]
+    host = windows_host(args)
     root = CONFIG["windows"]["root"]
     result = subprocess.run(
             ["ssh", "-o", "BatchMode=yes", host,
@@ -510,7 +525,9 @@ def publish(args) -> None:
     new_modules = [entry["path"] for platform in ("linux", "windows")
                    for entry in modules(out, platform) if entry["file"] not in hosted]
     apps = [out / platform / app_asset(platform) for platform in ("linux", "windows")]
-    print(f"{tag}: {len(apps)} apps, updates.json; {len(new_modules)} new GPU modules "
+    # the worker kit (docs/REMOTE.md): what a notebook, a server or a container fetches from the release
+    kit = [ROOT / "worker" / "forevertas_worker.py", ROOT / "worker" / "colab.ipynb", ROOT / "worker" / "kaggle.ipynb"]
+    print(f"{tag}: {len(apps)} apps, updates.json, the worker kit; {len(new_modules)} new GPU modules "
           f"({sum(path.stat().st_size for path in new_modules) / 1e6:.0f} MB) for {modules_release}")
     if args.dry_run or input("publish? [y/N] ").strip().lower() != "y":
         return
@@ -528,7 +545,7 @@ def publish(args) -> None:
             shutil.copy2(source, copy)
         subprocess.run([*gh, "release", "create", tag, "--draft", "--title", f"ForeverTAS {version()}",
                         "--notes-file", str(out / "notes.md") if (out / "notes.md").exists() else "/dev/null",
-                        *map(str, apps), *map(str, copies), str(updates)], check=True)
+                        *map(str, apps), *map(str, copies), str(updates), *map(str, kit)], check=True)
     print(f"{tag} is a draft: check it on GitHub, then publish it there")
 
 

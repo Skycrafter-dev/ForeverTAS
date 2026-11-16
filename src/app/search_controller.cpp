@@ -1,4 +1,5 @@
 #include "app/search_controller.h"
+#include "app/remote/remote_search.h"
 #include "app/app_settings.h"
 #include "diagnostics/diagnostics_log.h"
 
@@ -450,6 +451,21 @@ void SearchController::refreshComputeBackends() {
 bool SearchController::multipleGpus() const {
     return ComputeModules::Instance().Has(PhysicsBackend::Cuda) &&
             ComputeModules::Instance().Has(PhysicsBackend::Hip);
+}
+
+void SearchController::setRemoteSearch(remote::RemoteSearch *remoteSearch) {
+    remoteSearch_ = remoteSearch;
+    if (remoteSearch_ == nullptr) return;
+    connect(remoteSearch_, &remote::RemoteSearch::devicesChanged, this, &SearchController::refreshValidation);
+    // lent machines use this window's Packs, and wait while this computer searches on its GPU
+    const auto lending = [this] {
+        remoteSearch_->setPacksDirectory(packsDirectory_);
+        remoteSearch_->setLocalGpuBusy(running() && IsGpuBackend(simulationBackend_));
+    };
+    connect(this, &SearchController::packsDirectoryChanged, remoteSearch_, lending);
+    connect(this, &SearchController::runningChanged, remoteSearch_, lending);
+    lending();
+    refreshValidation();
 }
 
 bool SearchController::gpusChosen() const {
@@ -2030,7 +2046,8 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
     }
     // The Gates target has no GPU or twin version.
     if (!baselineOnly && configuration.evaluationTarget.id == kGateEntryEvaluationId &&
-        (IsGpuBackend(simulationBackend_) || approximatePhysics_)) {
+        (IsGpuBackend(simulationBackend_) || approximatePhysics_ ||
+         (remoteSearch_ != nullptr && !remoteSearch_->devices().empty()))) {
         return {{}, QStringLiteral("The Gates target runs on the CPU backends with exact physics: "
                                    "choose Optimized CPU, Multi-threaded CPU or Reference, and turn "
                                    "Approximate physics off.")};
@@ -2098,10 +2115,22 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
             }
             devices.push_back(device);
         }
+    }
+    // Machines that joined the room (docs/REMOTE.md): devices too, beside this computer's GPUs, or alone
+    // when this computer searches on a CPU backend.
+    const std::vector<SearchDevice> remoteDevices =
+            !baselineOnly && remoteSearch_ != nullptr ? remoteSearch_->devices() : std::vector<SearchDevice>{};
+    // on a CPU backend this computer's CPU searches beside them, one device on all its threads (approximate
+    // physics on the CPU needs two: one rebuilds)
+    const bool localCpu = !remoteDevices.empty() && !IsGpuBackend(simulationBackend_) &&
+            (!approximatePhysics_ || (approximatePhysicsCpuAvailable() && parallelSampleCount >= 2u));
+    if (localCpu) devices.push_back(SearchDevice{simulationBackend_, parallelSampleCount, false, {}});
+    devices.insert(devices.end(), remoteDevices.begin(), remoteDevices.end());
+    if (!devices.empty()) {
         // the first device runs the request, the others join it
         parallelSampleCount = devices.front().parallelSampleCount;
         calibrateCudaParallelSampleCount = devices.front().calibrate;
-        if (devices.size() < 2u) devices.clear();
+        if (devices.size() < 2u && remoteDevices.empty()) devices.clear();
     }
 
     // Approximate physics: the twin on the GPU, or on every multi-threaded CPU
@@ -2110,11 +2139,13 @@ SearchController::ValidationResult SearchController::validate(bool baselineOnly)
             simulationBackend_ == PhysicsBackend::MultiThreadedCpu &&
             parallelSampleCount >= 2u;
     const bool approximate = !baselineOnly && approximatePhysics_ &&
-            (approximatePhysicsOnGpu() || approximateOnCpu);
+            (approximatePhysicsOnGpu() || approximateOnCpu || !remoteDevices.empty());
     SearchRequest request{
             packsInfo.absoluteFilePath().toUtf8().toStdString(),
             replayInfo.absoluteFilePath().toUtf8().toStdString()};
-    request.backend = baselineOnly ? kAuxiliarySimulationBackend : simulationBackend_;
+    request.backend = baselineOnly ? kAuxiliarySimulationBackend
+            : !remoteDevices.empty() && !IsGpuBackend(simulationBackend_) && !localCpu ? remoteDevices.front().backend
+                                                                          : simulationBackend_;
     request.approximatePhysics = approximate;
     request.parallelSampleCount = parallelSampleCount;
     request.calibrateCudaParallelSampleCount =

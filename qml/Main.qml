@@ -19,6 +19,8 @@ ApplicationWindow {
     property var logs: null
     // The MCP bridge (Edit > Preferences > MCP).
     property var mcp: null
+    // Other machines searching for this one (docs/REMOTE.md)
+    property var remote: null
     // a GPU's own settings: its backend, or "GPU" with its card ticked
     readonly property bool cudaSettingsShown: controller.simulationBackendId === "cuda"
             || (controller.simulationBackendId === "gpus" && controller.cudaCardEnabled)
@@ -1264,8 +1266,7 @@ ApplicationWindow {
             window.controller.extractReplayInputs()
     }
 
-    // Code runs the simulation debugger while its panel is on screen (it
-    // used to run while the Code tab was selected).
+    // Code runs the simulation debugger while its panel is on screen.
     function updateSimulationDebugger() {
         if (codePanel.onTop) {
             if (window.viewer.loaded)
@@ -1546,6 +1547,7 @@ ApplicationWindow {
         anchors.centerIn: parent
         width: Math.min(560, window.width - 32)
         mcp: window.mcp
+        remote: window.remote
         raceControls: raceControls
         gamepad: window.viewer.gamepad
     }
@@ -6278,6 +6280,22 @@ ApplicationWindow {
                                 }
 
                                 Label {
+                                    objectName: "remoteMachinesLabel"
+                                    readonly property int machines: window.remote === null ? 0
+                                        : new Set(window.remote.workers.filter(worker => worker.used).map(worker => worker.id)).size
+                                    readonly property var groups: window.remote === null ? []
+                                        : window.remote.groups.filter(group => group.search && group.connected).map(group => group.name)
+                                    Layout.fillWidth: true
+                                    visible: machines > 0 || groups.length > 0
+                                    text: [machines > 0 ? qsTr("+ %n other machine(s) searching too", "", machines) : "",
+                                           groups.length > 0 ? qsTr("+ the machines lent to %1").arg(groups.join(", ")) : ""]
+                                          .filter(part => part.length > 0).join("; ") + qsTr(" (Edit > Preferences > Remote)")
+                                    wrapMode: Text.WordWrap
+                                    color: AppTheme.textMuted
+                                    font.pixelSize: 11
+                                }
+
+                                Label {
                                     visible: physicsModeCombo.visible
                                     text: qsTr("Physics")
                                     font.weight: Font.Medium
@@ -7238,7 +7256,7 @@ ApplicationWindow {
         }
     }
 
-    // The menu bar as drawn, in the log (a tester's showed no Help menu).
+    // The menu bar as drawn, in the log (which menus a user's window shows).
     Timer {
         interval: 2000
         running: window.logs !== null

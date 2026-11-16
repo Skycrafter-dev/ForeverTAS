@@ -6,6 +6,7 @@
 
 #include <QString>
 
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -30,6 +31,11 @@ public:
     SearchResult RunSearch(const SearchRequest &request, const std::vector<SearchDevice> &devices,
                            const SearchRunControl *control) const;
 
+    // Runs a remote device (SearchDevice::remote) of a search on several
+    // devices: the app's remote hub (docs/REMOTE.md).
+    using RemoteRunner = std::function<SearchResult(const SearchRequest &, const SearchRunControl *)>;
+    void SetRemoteRunner(RemoteRunner runner) { remoteRunner_ = std::move(runner); }
+
     // Where modules are installed: one folder per module, with module.json.
     static QString InstallDirectory();
     // The installed module's id for a backend ("cuda-sm86"), empty if none.
@@ -40,6 +46,7 @@ private:
     struct Loaded;
     std::unique_ptr<Loaded> cuda_;
     std::unique_ptr<Loaded> hip_;
+    RemoteRunner remoteRunner_;
     const Loaded *ModuleFor(PhysicsBackend backend) const;
 };
 

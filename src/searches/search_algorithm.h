@@ -145,6 +145,14 @@ struct SearchRunControl {
     // (a GPU claims a block of its batches at a time), so no two GPUs try the
     // same candidate.
     std::function<std::uint64_t(std::uint32_t)> claimIterations;
+    // Several devices on one search: whether the first best is the better, as
+    // the search ranks them (a device made of several machines, a group's,
+    // keeps the best of theirs).
+    std::function<bool(const SearchLiveUpdate &, const SearchLiveUpdate &)>
+            preferLive;
+    // Several devices on one search: the search's best so far (a group's
+    // machines learn it, whichever device found it).
+    std::function<std::optional<SearchLiveUpdate>()> searchBest;
     std::optional<std::uint64_t> iterationLimit;
     std::optional<std::int64_t> evaluationEndTimeLimitMs;
     std::uint64_t iterationIndexOffset = 0u;

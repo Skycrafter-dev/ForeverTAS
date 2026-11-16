@@ -42,9 +42,7 @@ watermarks, baked directional light, or cast shadows.
 | Glass | Pale cool-cyan tempered safety glass with broad manufacturing waviness, cleaning arcs, and restrained hairline wear. | `call_O9Lx9cMJ5gYd2tCKyPTwnkzN.png` |
 | Water | Clear cyan-teal stadium-pool water viewed from above with layered wind ripples and coherent wave interference. | `call_ZzGO2kv0FwGXRl13BlPGmpsB.png` |
 
-The listed source images remain under
-`/home/mikael/.codex/generated_images/019f9782-1b58-71b1-a2ba-8ccd3c0aafe4/`.
-The committed files are resized copies under `assets/materials`.
+The committed files are resized copies of the generated images, under `assets/materials`.
 
 ## Intentional flat concrete
 

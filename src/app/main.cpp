@@ -8,6 +8,8 @@
 #include "app/mcp_bridge.h"
 #include "app/mcp_protocol.h"
 #include "app/mcp_relay.h"
+#include "app/remote/remote_search.h"
+#include "app/remote/remote_worker.h"
 #include "app/update_controller.h"
 #include "app/shutdown_controller.h"
 #include "viewer/race_timeline_item.h"
@@ -35,6 +37,10 @@ int main(int argc, char **argv) {
     // The stdio MCP server an MCP client runs (no window; see app/mcp_relay.h).
     if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--mcp-stdio")) {
         return forevertas::app::RunMcpRelay(argc, argv, QStringLiteral(FOREVERTAS_VERSION));
+    }
+    // A remote worker (docs/REMOTE.md): no window, searches for a client.
+    if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--worker")) {
+        return forevertas::app::remote::RunRemoteWorker(argc, argv, QStringLiteral(FOREVERTAS_VERSION));
     }
     if (argc >= 2 && QString::fromLocal8Bit(argv[1]) == QStringLiteral("--check-compute-module")) {
         QCoreApplication checker(argc, argv);
@@ -151,6 +157,9 @@ int main(int argc, char **argv) {
     QQmlApplicationEngine engine;
     // MCP: off unless turned on in Preferences, or for this session when an
     // MCP client started the window (--enable-mcp).
+    // Other machines searching for this one (docs/REMOTE.md): off until a room is opened
+    forevertas::app::remote::RemoteSearch remote;
+    controller.setRemoteSearch(&remote);
     forevertas::app::McpBridge mcp(controller, &engine,
                                    application.arguments().contains(QStringLiteral("--enable-mcp")) &&
                                            !smokeTest);
@@ -167,7 +176,9 @@ int main(int argc, char **argv) {
             {QStringLiteral("logs"),
              QVariant::fromValue(static_cast<QObject *>(&logs))},
             {QStringLiteral("mcp"),
-             QVariant::fromValue(static_cast<QObject *>(&mcp))}});
+             QVariant::fromValue(static_cast<QObject *>(&mcp))},
+            {QStringLiteral("remote"),
+             QVariant::fromValue(static_cast<QObject *>(&remote))}});
     QObject::connect(
             &engine,
             &QQmlApplicationEngine::objectCreationFailed,

@@ -59,7 +59,7 @@ RUN python3 -m pip install --no-cache-dir \
         "py7zr==1.0.0" \
     && aqt install-qt -O /opt/Qt \
         linux desktop 6.9.3 linux_gcc_64 \
-        -m qtquick3d qtshadertools
+        -m qtquick3d qtshadertools qtwebsockets
 
 # ccache: caches C++, CUDA (nvcc) and HIP compiles across releases.
 RUN curl --fail --location --retry 3 \

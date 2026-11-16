@@ -167,10 +167,14 @@ SearchResult ComputeModules::RunSearch(const SearchRequest &request,
 SearchResult ComputeModules::RunSearch(const SearchRequest &request,
                                        const std::vector<SearchDevice> &devices,
                                        const SearchRunControl *control) const {
-    if (devices.size() < 2u) return RunSearch(request, control);
+    if (devices.size() < 2u && (devices.empty() || devices.front().remote.empty())) return RunSearch(request, control);
     return RunSearchOnDevices(
             request, devices,
             [this](const SearchRequest &deviceRequest, const SearchRunControl *deviceControl) {
+                if (!deviceRequest.remoteDevice.empty()) {
+                    if (!remoteRunner_) throw std::runtime_error("remote searching is not available");
+                    return remoteRunner_(deviceRequest, deviceControl);
+                }
                 return RunSearch(deviceRequest, deviceControl);
             },
             control);

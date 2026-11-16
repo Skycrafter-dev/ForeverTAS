@@ -558,8 +558,8 @@ bool CheckGpuPool(const char *packs, const char *replay) {
     request.modifiers = {steering};
     request.evaluationTarget = velocity;
     const std::vector<forevertas::SearchDevice> devices{
-            {forevertas::PhysicsBackend::Cuda, 2048u, false},
-            {forevertas::PhysicsBackend::Cuda, 1024u, false}};
+            {forevertas::PhysicsBackend::Cuda, 2048u, false, {}},
+            {forevertas::PhysicsBackend::Cuda, 1024u, false, {}}};
     std::mutex mutex;
     std::vector<std::pair<std::uint64_t, std::uint32_t>> claimed;
     std::vector<std::uint64_t> workerIterations;

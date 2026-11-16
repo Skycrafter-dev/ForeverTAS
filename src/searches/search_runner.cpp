@@ -1050,8 +1050,16 @@ SearchResult RunWorkerPool(
     std::condition_variable stateChanged;
     std::vector<CpuWorkerState> states(workerCount);
     std::atomic_bool internalCancellation{false};
+    // A custom (scripted) target ranks every attempt in order; on a CPU device
+    // of a larger search (its candidates claimed from the search's sequence)
+    // the search ranks them all, so this pool passes them up instead.
+    const bool scriptedDevice = request.evaluationTarget.id ==
+                    kScriptedTargetEvaluationId &&
+            !gpu && control != nullptr && control->claimIterations &&
+            control->attemptCompleted;
     const bool scripted = request.evaluationTarget.id ==
-            kScriptedTargetEvaluationId;
+                    kScriptedTargetEvaluationId &&
+            !scriptedDevice;
     std::optional<SearchLiveUpdate> scriptedBest;
     std::map<std::uint64_t, std::optional<SearchLiveUpdate>>
             scriptedPending;
@@ -1083,7 +1091,11 @@ SearchResult RunWorkerPool(
     }
     // GPU workers take their candidates from one sequence, a batch at a time.
     std::atomic<std::uint64_t> nextGpuIteration{0u};
+    // the first GPU device's own stages (loading, calibrating) show until the
+    // search's first result: a remote one's take seconds
+    std::atomic_bool deviceStagesShown{gpu};
     std::optional<EvaluationSample> promotedEvaluation;
+    std::optional<SearchLiveUpdate> sharedBest;   // the search's best so far (devices of other machines learn it)
     std::vector<SandboxInputEvent> promotedInputs;
     std::uint64_t revision = 0u;
     std::size_t finishedWorkerCount = 0u;
@@ -1101,6 +1113,7 @@ SearchResult RunWorkerPool(
                         workerRequest.backend = device.backend;
                         workerRequest.parallelSampleCount = device.parallelSampleCount;
                         workerRequest.calibrateCudaParallelSampleCount = device.calibrate;
+                        workerRequest.remoteDevice = device.remote;
                     } else {
                         workerRequest.backend = PhysicsBackend::OptimizedCpu;
                         workerRequest.parallelSampleCount = 1u;
@@ -1144,7 +1157,27 @@ SearchResult RunWorkerPool(
                                 return !upstreamBegin || upstreamBegin();
                             };
                     workerControl.progressChanged = {};
+                    if (gpu && workerIndex == 0u) {
+                        workerControl.progressChanged =
+                                [&](const SearchProgress &progress) {
+                                    if (!deviceStagesShown.load()) return;
+                                    std::lock_guard<std::mutex> guard(
+                                            upstreamControlMutex);
+                                    ReportProgress(control, progress.stage,
+                                                   progress.completedWork,
+                                                   progress.totalWork);
+                                };
+                    }
                     workerControl.cudaBatchSizeChanged = {};
+                    workerControl.searchBest = [&]() -> std::optional<SearchLiveUpdate> {
+                        std::lock_guard<std::mutex> guard(stateMutex);
+                        return sharedBest;
+                    };
+                    workerControl.preferLive =
+                            [&](const SearchLiveUpdate &candidate,
+                                const SearchLiveUpdate &incumbent) {
+                                return preferShared(candidate, incumbent);
+                            };
                     workerControl.statisticsChanged =
                             [&, workerIndex](
                                     const SearchStatisticsUpdate &statistics) {
@@ -1159,6 +1192,7 @@ SearchResult RunWorkerPool(
                                 std::lock_guard<std::mutex> guard(
                                         stateMutex);
                                 if (autoPromoteBest && !scripted &&
+                                    !scriptedDevice &&
                                     live.winnerSource ==
                                             SearchWinnerSource::Mutation &&
                                     (!promotedEvaluation ||
@@ -1230,6 +1264,15 @@ SearchResult RunWorkerPool(
                                 if (!autoPromoteBest) {
                                     return std::nullopt;
                                 }
+                                // a device of a larger search (a machine's
+                                // CPU): the search's shared best first
+                                if (!gpu && control != nullptr &&
+                                    control->promotedBaselineInputs) {
+                                    if (std::optional<std::vector<SandboxInputEvent>> shared =
+                                                control->promotedBaselineInputs()) {
+                                        return shared;
+                                    }
+                                }
                                 // Islands: between migrations a worker
                                 // follows its own improvements.
                                 if (migrationSeconds != 0u) {
@@ -1277,8 +1320,12 @@ SearchResult RunWorkerPool(
                                          ? 1u
                                          : 0u);
                     }
-                    workerControl.iterationIndexOffset = workerIndex;
-                    workerControl.iterationIndexStride = workerCount;
+                    // (within the range a larger search gave this one: a group's machine)
+                    const std::uint64_t upstreamOffset = control != nullptr ? control->iterationIndexOffset : 0u;
+                    const std::uint64_t upstreamStride =
+                            control != nullptr && control->iterationIndexStride != 0u ? control->iterationIndexStride : 1u;
+                    workerControl.iterationIndexOffset = upstreamOffset + workerIndex * upstreamStride;
+                    workerControl.iterationIndexStride = upstreamStride * workerCount;
                     workerControl.sampleImprovementTimelines = false;
                     workerControl.sampleBestTimeline = false;
                     workerControl.reuseLoadedSandbox = false;
@@ -1426,6 +1473,10 @@ SearchResult RunWorkerPool(
                 continue;
             }
             if (!searchingReported) {
+                {
+                    std::lock_guard<std::mutex> guard(upstreamControlMutex);
+                    deviceStagesShown = false;
+                }
                 ReportProgress(
                         control,
                         SearchProgressStage::Mutations,
@@ -1458,6 +1509,10 @@ SearchResult RunWorkerPool(
                                 std::chrono::steady_clock::now() - started;
                     }
                 }
+            }
+            if (aggregateBest) {
+                std::lock_guard<std::mutex> guard(stateMutex);
+                sharedBest = aggregateBest;
             }
             if (control != nullptr && control->liveChanged &&
                 aggregateBest) {
@@ -1746,6 +1801,17 @@ PreparedSearch PrepareSearch(const SearchRequest &request,
 
 }  // namespace
 
+std::function<bool(const SearchLiveUpdate &, const SearchLiveUpdate &)> LiveImproves(const SearchRequest &request) {
+    const EvaluationTargetRegistration *const registration = FindEvaluationTarget(request.evaluationTarget.id);
+    if (registration == nullptr) throw std::invalid_argument("unknown evaluation target: " + request.evaluationTarget.id);
+    std::shared_ptr<const IterationEvaluator> evaluator =
+            registration->create(request.evaluationTarget.settings, kSearchTickDurationMs);
+    return [evaluator](const SearchLiveUpdate &candidate, const SearchLiveUpdate &incumbent) {
+        return ImprovesSearchResult(*evaluator, SampleOf(candidate), candidate.bestInputs.size(), SampleOf(incumbent),
+                                    incumbent.bestInputs.size());
+    };
+}
+
 SearchResult RunSearchOnDevices(const SearchRequest &request,
                                 const std::vector<SearchDevice> &devices,
                                 const DeviceSearchRunner &runOnDevice,
@@ -1918,6 +1984,8 @@ std::optional<SearchResult> EvaluateBaseline(const SearchRequest &request, const
     if (control != nullptr) {
         evaluation.cancellationRequested = control->cancellationRequested;
         evaluation.progressChanged = control->progressChanged;
+        // (many checks of one map: it stays loaded between them)
+        evaluation.reuseLoadedSandbox = control->reuseLoadedSandbox;
     }
     try {
         return RunSearch(baseline, &evaluation);

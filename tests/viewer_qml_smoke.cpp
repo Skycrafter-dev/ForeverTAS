@@ -1554,7 +1554,7 @@ int main(int argc, char **argv) {
     bool dockDragHeld = false;
     if (dockLayout != nullptr) {
         // Drag the docked Inputs panel by its header, hold it a while (its
-        // frame used to be thrown away mid-drag), then push the pointer
+        // frame must survive a long drag), then push the pointer
         // against the right window edge: it docks there.
         auto *const quickWindow = qobject_cast<QQuickWindow *>(root);
         auto *const space = qobject_cast<QQuickItem *>(dockSpace);

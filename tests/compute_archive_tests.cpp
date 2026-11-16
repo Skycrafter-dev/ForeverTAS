@@ -70,8 +70,8 @@ int main(int argc, char **argv) {
     QTemporaryDir root;
     const auto block = static_cast<qsizetype>(ZSTD_DStreamOutSize());
     bool okay = true;
-    // decompressed sizes that end exactly at the end of zstd's output buffer (the sm90 module of
-    // 2026-11-14 was 110 of them; a tar is whole 10240-byte records), and ones that do not
+    // decompressed sizes that end exactly at the end of zstd's output buffer (a real module can be
+    // 110 of them; a tar is whole 10240-byte records), and ones that do not
     for (const qsizetype tarSize : {5 * block, 110 * block, 5 * block + 10240, qsizetype{20480}})
         okay = RoundTrip(tarSize, root) && okay;
     std::cout << (okay ? "compute archive tests passed\n" : "compute archive tests FAILED\n");

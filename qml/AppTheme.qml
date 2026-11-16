@@ -88,7 +88,7 @@ QtObject {
     readonly property color overlay: Qt.rgba(0.07, 0.09, 0.08, 0.86)
     readonly property color overlayStrong: Qt.rgba(0.07, 0.09, 0.08, 0.94)
     readonly property color overlayBorder: Qt.rgba(1, 1, 1, 0.16)
-    // What used to sit straight on the race view now sits on glass panels.
+    // Viewer overlays sit on glass panels: no backdrop of their own.
     readonly property color viewerOverlay: "transparent"
     readonly property color viewerOverlayStrong: Qt.rgba(1, 1, 1, 0.05)
     readonly property color viewerOverlayText: "#f0f3ef"

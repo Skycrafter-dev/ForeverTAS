@@ -22,6 +22,10 @@ class QTimer;
 
 namespace forevertas::app {
 
+namespace remote {
+class RemoteSearch;
+}
+
 class SearchController final : public QObject {
     Q_OBJECT
 
@@ -178,6 +182,8 @@ class SearchController final : public QObject {
                        historyChanged)
 
 public:
+    // The machines that joined the room (docs/REMOTE.md): searches use the ticked ones.
+    void setRemoteSearch(remote::RemoteSearch *remoteSearch);
     explicit SearchController(QObject *parent = nullptr);
     explicit SearchController(const QStringList &packsSearchPatterns,
                               QObject *parent = nullptr);
@@ -429,6 +435,7 @@ private:
     // first ticked card's.
     bool gpusChosen() const;
     void setGpusChosen(bool chosen);
+    remote::RemoteSearch *remoteSearch_ = nullptr;
     QString deviceSettings(PhysicsBackend backend, SearchDevice *device) const;
 
     ValidationResult validate(bool baselineOnly = false) const;

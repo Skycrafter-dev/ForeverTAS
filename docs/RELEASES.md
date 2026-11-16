@@ -39,7 +39,7 @@ the GPU modules, and looks for its licenses.
 
 ## What gets built
 
-| | Linux (container, `linux.Dockerfile`) | Windows (builder VM, over ssh) |
+| | Linux (container, `linux.Dockerfile`) | Windows (the Windows builder, over ssh) |
 | --- | --- | --- |
 | app | AppImage | Inno Setup installer |
 | CUDA | 12 modules (`cuda-sm50` ... `cuda-sm120`, PTX in 120) | the same |
@@ -74,7 +74,7 @@ get them.
   `-DFOREVERTAS_CUDA_FILES_AT_ONCE=` (on Linux, changing it costs no
   rebuild: ccache ignores it).
 
-Measured on the lab (6 cores; Linux 24 GB, Windows VM 16 GB, both at once):
+Measured on a 6-core computer (Linux 24 GB, a Windows virtual machine 16 GB, both at once):
 
 | Release | Linux | Windows |
 | --- | --- | --- |
@@ -120,7 +120,9 @@ squashfs-root/AppRun --check-compute-module forevertas-compute-linux-hip-*.tar.z
   built on first use and again whenever the file changes. About 30 GB free
   for the image, build folders and compiler cache. (Podman: `--userns=keep-id`
   may copy the image once more.)
-- Windows builder (`release.json`: `windows.host`, ssh with a key, PowerShell):
+- Windows builder (ssh with a key, PowerShell; its address in `release.local.json`, `{"windows":
+  {"host": "user@address", "sccache": "C:/path/to/sccache.exe"}}` (`sccache`: when not
+  on `PATH`), or `--windows-host`):
   Visual Studio 2022 Build Tools, LLVM (clang-cl), Qt 6.11.1 msvc2022_64, the
   HIP SDK, Inno Setup 6, Python 3 with `zstandard` and `cmake` (CMake 4: Visual Studio's
   CMake 3.31 compiles HIP files as C++), sccache, git. CUDA 12.8 and
@@ -129,7 +131,8 @@ squashfs-root/AppRun --check-compute-module forevertas-compute-linux-hip-*.tar.z
 ## Files
 
 - `release.py`: the driver (build, check, publish).
-- `release.json`: repository, GPU generations, AMD targets, Windows builder.
+- `release.json`: repository, GPU generations, AMD targets, the Windows builder's folder and vcpkg.
+- `release.local.json` (untracked): the render module's repository and commit, the Windows builder.
 - `build-linux.sh`, `linux.Dockerfile`, `linux-check.Dockerfile`: Linux.
 - `build-windows.ps1`, `ensure-windows-cuda.ps1`: Windows.
 - `compute_modules.py`: modules from a GPU build (split, bundle, name).

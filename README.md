@@ -4,13 +4,9 @@
 
 Download the [Windows installer](https://github.com/Skycrafter-dev/ForeverTAS/releases/latest/download/ForeverTAS-Windows-Setup.exe)
 or [Linux AppImage](https://github.com/Skycrafter-dev/ForeverTAS/releases/latest/download/ForeverTAS-Linux.AppImage).
-The first download runs on any supported computer. On launch, the app offers
-the matching NVIDIA or AMD compute package; you can change packages later in
-the Bruteforce panel without losing settings. These links become active with
-the first hardware-specific release. Users who know their GPU can instead
-download a matching, separately packaged installer/AppImage directly from the
-[latest release assets](https://github.com/Skycrafter-dev/ForeverTAS/releases/latest).
-See [installation and updates](docs/UPDATES.md).
+One download per system, for every computer: at start, ForeverTAS downloads
+the GPU module for its NVIDIA or AMD card by itself. See
+[installation and updates](docs/UPDATES.md).
 
 ForeverTAS is the TAS client for
 [ForeverValidator](https://github.com/Skycrafter-dev/ForeverValidator).
@@ -23,8 +19,8 @@ ForeverTAS -> PhysicsSandbox -> ForeverValidator physics
 
 ## Dependency
 
-CMake `FetchContent` pins ForeverValidator to the exact commit
-`688071fa82c3d93b3617ac1529a24915c0fe3364`. The embedded build disables the
+CMake `FetchContent` pins ForeverValidator to an exact commit (its `GIT_TAG`
+in `CMakeLists.txt`). The embedded build disables the
 ForeverValidator CLI and tests and links its native asset adapter and core
 simulation library.
 
@@ -175,8 +171,6 @@ use attempt-ordered Pareto selection on serial CPU, multi-threaded CPU, CUDA,
 and HIP. GPU scripts support up to 16 objectives and 256 total
 expression instructions; a larger script reports an explicit configuration
 error. GPU nominees are accepted only after an optimized-CPU metric check.
-Local builds need a ForeverValidator source override until the new GPU
-contract is published and the remote Validator pin is updated.
 Volume-entry targets are managed as a persistent named cuboid collection. The
 selected cuboid is the active brute-force target; the evaluation panel can add,
 duplicate, remove, rename, and directly edit every cuboid or focus the viewer
@@ -293,8 +287,7 @@ file picker.
 ForeverTAS is distributed as a Linux AppImage or a per-user Windows installer.
 Install or save it once: on later launches, the application checks the latest
 stable GitHub release and offers an in-app update when a matching build is
-available. A Windows portable ZIP is also available, but it is not
-self-updating. macOS is not supported.
+available. macOS is not supported.
 
 See [docs/PACKAGING.md](docs/PACKAGING.md) for local packaging commands,
 artifact layouts, signing notes, and clean-machine release checks.
@@ -306,3 +299,7 @@ extension contracts.
 
 See `docs/RENDERER.md` for visual-scene extraction, replacement materials,
 fallbacks, caching, render modes, and asset ownership.
+
+See [docs/REMOTE.md](docs/REMOTE.md) for searching on other computers: your
+own (Colab, Kaggle, a rented GPU) and other people's (groups and the public
+pool).

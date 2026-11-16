@@ -6,8 +6,7 @@ ForeverValidator's Vulkan backend is not built into ForeverTAS.
 
 ## Combined developer build
 
-Use the matching local ForeverValidator checkout until the pinned Validator
-commit has been published:
+With a local ForeverValidator checkout:
 
 ```sh
 cmake -S . -B build/gpu -G Ninja \
