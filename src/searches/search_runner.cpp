@@ -1057,9 +1057,17 @@ SearchResult RunWorkerPool(
                     kScriptedTargetEvaluationId &&
             !gpu && control != nullptr && control->claimIterations &&
             control->attemptCompleted;
+    // The in-order ranking needs every candidate's
+    // attempt. A pool with GPU devices (a GPU search reports no attempts,
+    // and claims its candidates in large blocks) or a pool taking its
+    // candidates from a larger search (it sees only some of them) would wait
+    // forever at the first candidate it never sees: no improvement is ever
+    // ranked. Such a pool ranks each worker's own best instead, as for other
+    // targets (results may then depend on how candidates were shared out).
     const bool scripted = request.evaluationTarget.id ==
                     kScriptedTargetEvaluationId &&
-            !scriptedDevice;
+            !scriptedDevice && !gpu &&
+            !(control != nullptr && control->claimIterations);
     std::optional<SearchLiveUpdate> scriptedBest;
     std::map<std::uint64_t, std::optional<SearchLiveUpdate>>
             scriptedPending;
