@@ -93,8 +93,10 @@ if (-not $VcpkgRoot -and -not $Check) {
                                          git -C $VcpkgRoot checkout -q --detach --force $VcpkgCommit }
     Invoke-Native "bootstrapping vcpkg" { & (Join-Path $VcpkgRoot "bootstrap-vcpkg.bat") -disableMetrics }
 }
-$Sccache = Find-First @($Sccache, $env:FOREVERTAS_SCCACHE,
-                        (Get-Command sccache.exe -ErrorAction SilentlyContinue | ForEach-Object Source)) "sccache"
+if (-not $Check) {
+    $Sccache = Find-First @($Sccache, $env:FOREVERTAS_SCCACHE,
+                            (Get-Command sccache.exe -ErrorAction SilentlyContinue | ForEach-Object Source)) "sccache"
+}
 $Llvm = Find-First @("C:\Program Files\LLVM\bin") "LLVM (clang-cl)"
 $App = Join-Path $Build "app-install"
 
